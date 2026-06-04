@@ -1,0 +1,343 @@
+"""Metacritic score lookup for gamarr.
+
+Adapted from gamecritic's Nuxt JSON scraping approach.  Looks up a game
+title by first trying a direct slug URL, then falling back to browse
+page scanning.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import string
+from dataclasses import dataclass
+from typing import Any
+
+import requests
+from bs4 import BeautifulSoup
+from loguru import logger
+
+from gamarr.metacritic_cache import MetacriticCache
+
+_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+)
+
+_CONNECT_TIMEOUT = 30.0
+_READ_TIMEOUT = 90.0
+
+_BROWSE_GAME_KEY_PATTERN = re.compile(r'"(browse-game-[^"]*)":\s*(\d+)')
+
+
+@dataclass
+class ScoreResult:
+    """Result of a Metacritic score lookup for a single game."""
+
+    title: str
+    slug: str
+    metascore: float | None
+    metascore_review_count: int | None
+    user_score: float | None
+    user_review_count: int | None
+    passed: bool
+
+
+def _make_slug(title: str) -> str:
+    """Convert a game title into a Metacritic URL slug."""
+    slug = title.lower()
+    slug = slug.replace("'", "")
+    slug = slug.replace("&", "and")
+    slug = re.sub(r"[^a-z0-9\s-]", "", slug)
+    slug = re.sub(r"\s+", "-", slug)
+    slug = re.sub(r"-+", "-", slug)
+    return slug.strip("-")
+
+
+def _nuxt_val(data: list[Any], ref: Any) -> Any:
+    if isinstance(ref, int) and ref < len(data):
+        return data[ref]
+    return ref
+
+
+def _parse_game_details(page_content: bytes) -> dict[str, Any] | None:
+    try:
+        soup = BeautifulSoup(page_content, features="html.parser")
+    except TypeError:
+        return None
+
+    for script in soup.find_all("script"):
+        stext = script.string or ""
+        if len(stext) < 1000:
+            continue
+        try:
+            page_data = json.loads(stext)
+        except (json.JSONDecodeError, TypeError):
+            continue
+
+        metascore = metascore_reviews = user_score = user_reviews = None
+
+        for item in page_data:
+            if not isinstance(item, dict):
+                continue
+
+            if metascore is None and "score" in item and "reviewCount" in item:
+                score_val = _nuxt_val(page_data, item["score"])
+                if isinstance(score_val, (int, float)):
+                    metascore = float(score_val)
+                    metascore_reviews = _nuxt_val(page_data, item.get("reviewCount"))
+
+            if user_score is None and "userScore" in item:
+                us = _nuxt_val(page_data, item.get("userScore"))
+                if isinstance(us, dict) and "score" in us:
+                    us_score = _nuxt_val(page_data, us.get("score"))
+                    if isinstance(us_score, (int, float)):
+                        user_score = float(us_score)
+                        user_reviews = _nuxt_val(page_data, us.get("reviewCount"))
+
+        if metascore is not None or user_score is not None:
+            return {
+                "metascore": metascore,
+                "metascore_reviews": metascore_reviews,
+                "user_score": user_score,
+                "user_reviews": user_reviews,
+            }
+
+    return None
+
+
+def _parse_browse_page(content: bytes) -> list[dict[str, Any]] | None:
+    try:
+        soup = BeautifulSoup(content, features="html.parser")
+    except TypeError:
+        return None
+
+    nuxt_data = None
+    game_items = None
+
+    for script in soup.find_all("script"):
+        stext = script.string or ""
+        if "browse-game" not in stext:
+            continue
+        try:
+            parsed = json.loads(stext)
+            m = _BROWSE_GAME_KEY_PATTERN.search(stext)
+            if m:
+                root_idx = int(m.group(2))
+                root = parsed[root_idx]
+                items_ref = root.get("items")
+                if isinstance(items_ref, int) and items_ref < len(parsed):
+                    nuxt_data = parsed
+                    game_items = nuxt_data[items_ref]
+                    break
+        except (json.JSONDecodeError, TypeError, KeyError, IndexError):
+            pass
+
+    if game_items is None:
+        return None
+    if not isinstance(game_items, list):
+        return None
+
+    resolved_games: list[dict[str, Any]] = []
+    for game_idx in game_items:
+        try:
+            assert nuxt_data is not None
+            game = nuxt_data[game_idx]
+            cs = _nuxt_val(nuxt_data, game.get("criticScoreSummary"))
+            us = _nuxt_val(nuxt_data, game.get("userScore"))
+            resolved_games.append(
+                {
+                    "title": _nuxt_val(nuxt_data, game.get("title")),
+                    "slug": _nuxt_val(nuxt_data, game.get("slug")),
+                    "score": cs.get("score") if isinstance(cs, dict) else None,
+                    "critic_review_count": cs.get("reviewCount") if isinstance(cs, dict) else None,
+                    "user_rating": us.get("score") if isinstance(us, dict) else None,
+                    "user_review_count": us.get("reviewCount") if isinstance(us, dict) else None,
+                }
+            )
+        except (TypeError, KeyError, IndexError):
+            pass
+
+    return resolved_games
+
+
+class MetacriticClient:
+    """Client for looking up game scores on Metacritic.
+
+    Uses a two-step strategy:
+    1. Direct slug guess (fast path for common titles)
+    2. Browse page scan (fallback for non-standard slugs)
+
+    Results are cached in a local SQLite database.
+    """
+
+    def __init__(
+        self,
+        cache_path: str = "db/gamarr-cache.db",
+        user_agent: str = _USER_AGENT,
+    ) -> None:
+        """Initialise the client.
+
+        Args:
+            cache_path: Path to the SQLite cache database.
+            user_agent: User-Agent header to use for HTTP requests.
+        """
+        self.user_agent = user_agent
+        self._cache = MetacriticCache(cache_path)
+
+    def close(self) -> None:
+        """Close the underlying cache database connection."""
+        self._cache.close()
+
+    def lookup_game(
+        self,
+        title: str,
+        platform: str = "pc",
+        cache_ttl_days: int = 7,
+        browse_cache_ttl_hours: int = 4,
+    ) -> ScoreResult | None:
+        """Look up Metacritic scores for a game by title.
+
+        Args:
+            title: The game title to search for.
+            platform: The platform identifier (default ``"pc"``).
+            cache_ttl_days: TTL in days for game detail cache.
+            browse_cache_ttl_hours: TTL in hours for browse page cache.
+
+        Returns:
+            A :class:`ScoreResult` if found, or ``None`` if the game
+            could not be located on Metacritic.
+        """
+        slug = _make_slug(title)
+
+        result = self._try_direct_slug(slug, cache_ttl_days)
+        if result is not None:
+            return result
+
+        logger.debug("Direct slug '{}' failed for '{}', scanning browse pages...", slug, title)
+        result = self._scan_browse_pages(title, platform, browse_cache_ttl_hours, cache_ttl_days)
+        return result
+
+    def _try_direct_slug(self, slug: str, cache_ttl_days: int) -> ScoreResult | None:
+        cached = self._cache.get_game_detail(slug, ttl_days=cache_ttl_days)
+        if cached is not None:
+            logger.debug("Cache hit for slug '{}'", slug)
+            return ScoreResult(
+                title=slug.replace("-", " ").title(),
+                slug=slug,
+                metascore=cached["metascore"],
+                metascore_review_count=cached["metascore_reviews"],
+                user_score=cached["user_score"],
+                user_review_count=cached["user_reviews"],
+                passed=False,
+            )
+
+        url = f"https://www.metacritic.com/game/{slug}/"
+        logger.debug("Fetching game page '{}'", url)
+
+        try:
+            resp = requests.get(
+                url,
+                headers={"User-Agent": self.user_agent},
+                timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT),
+                allow_redirects=True,
+            )
+            if resp.status_code != 200:
+                logger.debug("Game page '{}' returned status {}", url, resp.status_code)
+                return None
+
+            parsed = _parse_game_details(resp.content)
+            if parsed is None:
+                return None
+
+            self._cache.set_game_detail(
+                slug=slug,
+                metascore=parsed.get("metascore"),
+                metascore_reviews=parsed.get("metascore_reviews"),
+                user_score=parsed.get("user_score"),
+                user_reviews=parsed.get("user_reviews"),
+            )
+
+            return ScoreResult(
+                title=slug.replace("-", " ").title(),
+                slug=slug,
+                metascore=parsed.get("metascore"),
+                metascore_review_count=parsed.get("metascore_reviews"),
+                user_score=parsed.get("user_score"),
+                user_review_count=parsed.get("user_reviews"),
+                passed=False,
+            )
+
+        except requests.RequestException as exc:
+            logger.warning("Failed to fetch game page '{}': {}", url, exc)
+            return None
+
+    def _scan_browse_pages(
+        self,
+        title: str,
+        platform: str,
+        browse_cache_ttl_hours: int,
+        cache_ttl_days: int,
+    ) -> ScoreResult | None:
+        normalized_title = _normalise_for_compare(title)
+        page_number = 1
+        max_pages = 10
+
+        while page_number <= max_pages:
+            url = (
+                f"https://www.metacritic.com/browse/game/{platform}/all/all-time/new/"
+                f"?releaseYearMin=1958&releaseYearMax=2035"
+                f"&platform={platform}&page={page_number}"
+            )
+
+            logger.debug("Scanning browse page {} for '{}'", page_number, title)
+
+            cached_games = self._cache.get_browse_page(platform, page_number, ttl_hours=browse_cache_ttl_hours)
+            if cached_games is not None:
+                games = cached_games
+            else:
+                try:
+                    resp = requests.get(
+                        url,
+                        headers={"User-Agent": self.user_agent},
+                        timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT),
+                        allow_redirects=True,
+                    )
+                    if resp.status_code != 200:
+                        break
+
+                    parsed_games = _parse_browse_page(resp.content)
+                    if parsed_games is None:
+                        break
+                    games = parsed_games
+                    self._cache.set_browse_page(platform, page_number, games)
+                except requests.RequestException as exc:
+                    logger.warning("Failed to fetch browse page '{}': {}", url, exc)
+                    break
+
+            if not games:
+                break
+
+            for game in games:
+                game_title = game.get("title")
+                if not game_title:
+                    continue
+                if _normalise_for_compare(str(game_title)) == normalized_title:
+                    logger.info(
+                        "Found matching game '{}' (slug: {}) on browse page {}",
+                        game_title,
+                        game.get("slug"),
+                        page_number,
+                    )
+                    slug = str(game.get("slug", ""))
+                    return self._try_direct_slug(slug, cache_ttl_days)
+
+            page_number += 1
+
+        logger.info("Game '{}' not found on Metacritic browse pages", title)
+        return None
+
+
+def _normalise_for_compare(text: str) -> str:
+    text = text.lower().strip()
+    text = text.translate(str.maketrans("", "", string.punctuation))
+    return re.sub(r"\s+", " ", text).strip()
