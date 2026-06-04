@@ -31,6 +31,11 @@ dependencies = [
     "requests",
     "sqlalchemy",
     "urllib3",
+    "pydantic>=2.0.0",
+    "qbittorrent-api",
+    "xmltodict",
+    "beautifulsoup4",
+    "lxml",
 ]
 
 [project.scripts]
@@ -83,6 +88,30 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 strict_equality = true
 mypy_path = "src"
+
+[[tool.mypy.overrides]]
+module = ["backoff"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["qbittorrentapi", "qbittorrentapi.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["apprise", "apprise.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["xmltodict"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["yaml"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["apscheduler", "apscheduler.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
