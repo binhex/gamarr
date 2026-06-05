@@ -482,6 +482,66 @@ class TestFindGameDetailsInNuxtData:
         result = _find_game_details_in_nuxt_data([None, "string", 42])
         assert result is None
 
+    def test_scan_user_review_count_from_summary(self) -> None:
+        """Coverage: scanning path picks user review count from summary."""
+        from gamarr.metacritic import _find_game_details_in_nuxt_data
+
+        # Nuxt data with inline userScore dict (no reviewCount) and
+        # a separate user review summary. The scanning path must
+        # call _extract_user_review_count_from_summary.
+        data = [
+            {"score": 1, "reviewCount": 2, "userScore": {"score": 8.0}},
+            96,
+            50,
+            {"score": 4, "reviewCount": 5, "url": "/game/x/user-reviews/"},
+            8.0,
+            300,
+            "x" * 2000,
+        ]
+        result = _find_game_details_in_nuxt_data(data)
+        assert result is not None
+        assert result["user_score"] == 8.0
+        # userScore dict has no reviewCount, so the summary must provide it
+        assert result["user_reviews"] == 300, f"Got {result['user_reviews']}"
+
+    def test_find_game_details_filters_by_slug(self) -> None:
+        """Reproduce cross-game score pollution.
+
+        Modern Metacritic pages embed Nuxt data for many games
+        (target + "similar games"). The parser must pick scores
+        from the game matching the slug, not the first game found.
+        """
+        from gamarr.metacritic import _find_game_details_in_nuxt_data
+
+        page_data = [
+            # --- OTHER GAME (decoy — appears first, high scores) ---
+            {"criticScoreSummary": 1, "userScore": 4, "slug": "other-game"},
+            {"score": 2, "reviewCount": 3},  # criticScoreSummary
+            96,  # score value
+            50,  # reviewCount value
+            {"score": 5},  # userScore sub-dict
+            8.5,  # user score
+            {"score": 5, "reviewCount": 6, "url": "/game/other-game/user-reviews/"},  # user review summary
+            200,  # user review count
+            # --- TARGET GAME (second, correct scores) ---
+            {"criticScoreSummary": 9, "userScore": 12, "slug": "target-game"},
+            {"score": 10, "reviewCount": 11},  # criticScoreSummary
+            65,  # score value
+            5,  # reviewCount value
+            {"score": 13},  # userScore sub-dict
+            7.2,  # user score
+            {"score": 13, "reviewCount": 15, "url": "/game/target-game/user-reviews/"},  # user review summary
+            29,  # user review count
+            "x" * 2000,
+        ]
+
+        result = _find_game_details_in_nuxt_data(page_data, slug="target-game")
+        assert result is not None
+        assert result["metascore"] == 65.0, f"Got {result['metascore']}"
+        assert result["metascore_reviews"] == 5
+        assert result["user_score"] == 7.2, f"Got {result['user_score']}"
+        assert result["user_reviews"] == 29, f"Got {result['user_reviews']}"
+
 
 class TestScanBrowsePagesEdgeCase:
     """_scan_browse_pages with mocked HTTP."""

@@ -89,53 +89,255 @@ def _extract_user_score(
     return (current, None)
 
 
-def _find_game_details_in_nuxt_data(page_data: list[Any]) -> dict[str, Any] | None:
-    """Extract critic scores, user scores, and game details from Nuxt JSON."""
+def _extract_user_review_count_from_summary(page_data: list[Any], item: dict[str, Any]) -> int | None:
+    """Extract user review count from a user-review-summary Nuxt item.
+
+    The user review count is NOT inside the ``userScore`` sub-dict
+    (which is just ``{"score": <index>}``). It lives in a separate
+    user review summary item that has ``"score"`` + ``"reviewCount"``
+    at the top level, where the resolved score is a **float**
+    (user rating), distinguishing it from critic score summaries
+    whose resolved scores are integers.
+
+    Returns the review count, or ``None`` if this item is not a
+    user review summary.
+    """
+    if "score" not in item or "reviewCount" not in item:
+        return None
+    sv = _nuxt_val(page_data, item["score"])
+    if isinstance(sv, (int, float)):
+        # Verify this is a user review summary, not a critic summary.
+        # User summaries have a URL containing "/user-reviews/".
+        url = _nuxt_val(page_data, item.get("url"))
+        if isinstance(url, str) and "/user-reviews/" in url:
+            count = _nuxt_val(page_data, item["reviewCount"])
+            return int(count) if isinstance(count, (int, float)) else None
+    return None
+
+
+def _extract_metadata_from_item(
+    page_data: list[Any], item: dict[str, Any]
+) -> tuple[list[str] | None, bool | None, str | None, str | None]:
+    """Extract genres, must_play, release_date, description from a Nuxt item.
+
+    Returns a 4-tuple ``(genres, must_play, release_date, description)``.
+    If the item does not contain ``"mustPlay"`` or ``"genres"``, all four
+    elements are ``None``.
+    """
+    if "mustPlay" not in item or "genres" not in item:
+        return (None, None, None, None)
+    must_play = _nuxt_val(page_data, item.get("mustPlay"))
+    genres_list = _nuxt_val(page_data, item.get("genres"))
+    genres = None
+    if isinstance(genres_list, list):
+        genres = []
+        for g in genres_list:
+            gd = _nuxt_val(page_data, g)
+            if isinstance(gd, dict):
+                name = _nuxt_val(page_data, gd.get("name"))
+                if name:
+                    genres.append(str(name))
+    release_date = _nuxt_val(page_data, item.get("releaseDate"))
+    description = _nuxt_val(page_data, item.get("description"))
+    return (genres, must_play, release_date, description)
+
+
+def _format_game_detail_result(
+    metascore: float | None,
+    metascore_reviews: int | None,
+    user_score: float | None,
+    user_reviews: int | None,
+    genres: list[str] | None,
+    must_play: bool | None,
+    release_date: str | None,
+    description: str | None,
+) -> dict[str, Any] | None:
+    """Format extracted fields into the result dict, or return None if nothing found."""
+    if metascore is None and user_score is None:
+        return None
+    return {
+        "metascore": metascore,
+        "metascore_reviews": metascore_reviews,
+        "user_score": user_score,
+        "user_reviews": user_reviews,
+        "genres": genres,
+        "must_play": must_play,
+        "release_date": str(release_date) if release_date else None,
+        "description": str(description)[:200] if description else None,
+    }
+
+
+def _scan_nuxt_items(
+    page_data: list[Any],
+) -> tuple[
+    float | None,
+    int | None,
+    float | None,
+    int | None,
+    list[str] | None,
+    bool | None,
+    str | None,
+    str | None,
+]:
+    """Scan all Nuxt items to extract critic scores, user scores, and metadata.
+
+    Used as the fallback path when no slug is provided or slug-specific
+    lookup doesn't find a matching game item.
+    """
     metascore = metascore_reviews = user_score = user_reviews = None
     genres = must_play = release_date = description = None
 
     for item in page_data:
         if not isinstance(item, dict):
             continue
-
         ms, msv = _extract_critic_score(page_data, item, metascore)
         if ms != metascore:
             metascore, metascore_reviews = ms, msv
 
         us, usv = _extract_user_score(page_data, item, user_score)
         if us != user_score:
-            user_score, user_reviews = us, usv
+            user_score = us
+            if usv is not None:
+                user_reviews = usv
 
-        if genres is None and "mustPlay" in item and "genres" in item:
-            must_play = _nuxt_val(page_data, item.get("mustPlay"))
-            genres_list = _nuxt_val(page_data, item.get("genres"))
-            if isinstance(genres_list, list):
-                genres = []
-                for g in genres_list:
-                    gd = _nuxt_val(page_data, g)
-                    if isinstance(gd, dict):
-                        name = _nuxt_val(page_data, gd.get("name"))
-                        if name:
-                            genres.append(str(name))
-            release_date = _nuxt_val(page_data, item.get("releaseDate"))
-            description = _nuxt_val(page_data, item.get("description"))
+        if user_reviews is None:
+            user_reviews = _extract_user_review_count_from_summary(page_data, item)
 
+        if genres is None:
+            genres, must_play, release_date, description = _extract_metadata_from_item(page_data, item)
+
+    return metascore, metascore_reviews, user_score, user_reviews, genres, must_play, release_date, description
+
+
+def _find_game_details_in_nuxt_data(page_data: list[Any], slug: str | None = None) -> dict[str, Any] | None:
+    """Extract critic scores, user scores, and game details from Nuxt JSON.
+
+    Args:
+        page_data: The Nuxt JSON data array from a Metacritic game page.
+        slug: When provided, only extract scores from the game item
+            matching this slug.  This prevents picking up scores from
+            unrelated games in the "similar games" carousel section
+            that modern Metacritic pages embed.
+    """
+    # When a slug is known, try the slug-specific lookup first.
+    if slug is not None:
+        result = _find_game_details_by_slug(page_data, slug)
+        if result is not None:
+            return result
+        # Fall through to scanning if slug lookup fails (e.g.
+        # test data without a game-item structure).
+        logger.debug("Slug '{}' lookup failed, falling back to unfiltered scan", slug)
+
+    fields = _scan_nuxt_items(page_data)
+    metascore, metascore_reviews, user_score, user_reviews = fields[:4]
     if metascore is not None or user_score is not None:
-        return {
-            "metascore": metascore,
-            "metascore_reviews": metascore_reviews,
-            "user_score": user_score,
-            "user_reviews": user_reviews,
-            "genres": genres,
-            "must_play": must_play,
-            "release_date": str(release_date) if release_date else None,
-            "description": str(description)[:200] if description else None,
-        }
+        return _format_game_detail_result(*fields)
     return None
 
 
-def _find_nuxt_scores_in_page(page_content: bytes) -> dict[str, Any] | None:
-    """Find and parse Nuxt JSON scores from a Metacritic game page."""
+def _find_game_item_by_slug(page_data: list[Any], slug: str) -> dict[str, Any] | None:
+    """Find the Nuxt game item whose ``slug`` field matches *slug*."""
+    for item in page_data:
+        if not isinstance(item, dict):
+            continue
+        item_slug = _nuxt_val(page_data, item.get("slug"))
+        if isinstance(item_slug, str) and item_slug == slug:
+            return item
+    return None
+
+
+def _extract_critic_from_summary(page_data: list[Any], game_item: dict[str, Any]) -> tuple[float | None, int | None]:
+    """Extract (metascore, metascore_reviews) from a game item's criticScoreSummary."""
+    cs = _nuxt_val(page_data, game_item.get("criticScoreSummary"))
+    if not isinstance(cs, dict):
+        return None, None
+    ms = _nuxt_val(page_data, cs.get("score"))
+    metascore = float(ms) if isinstance(ms, (int, float)) else None
+    rc = _nuxt_val(page_data, cs.get("reviewCount"))
+    return metascore, int(rc) if isinstance(rc, (int, float)) else None
+
+
+def _extract_user_score_from_game(page_data: list[Any], game_item: dict[str, Any]) -> float | None:
+    """Extract user score from a game item's userScore sub-dict."""
+    us = _nuxt_val(page_data, game_item.get("userScore"))
+    if not isinstance(us, dict) or "score" not in us:
+        return None
+    us_score = _nuxt_val(page_data, us.get("score"))
+    return float(us_score) if isinstance(us_score, (int, float)) else None
+
+
+def _check_user_review_item(page_data: list[Any], item: Any, slug: str) -> tuple[int | None, float] | None:
+    """Check if *item* is a user review summary for *slug*.
+
+    Returns ``(review_count, user_score)`` if the item matches, or
+    ``None`` if it doesn't.
+    """
+    if not isinstance(item, dict) or "score" not in item or "reviewCount" not in item:
+        return None
+    sv = _nuxt_val(page_data, item["score"])
+    if not isinstance(sv, (int, float)):
+        return None
+    if slug not in str(_nuxt_val(page_data, item.get("url")) or "").split("/"):
+        return None
+    count = _nuxt_val(page_data, item["reviewCount"])
+    return int(count) if isinstance(count, (int, float)) else None, float(sv)
+
+
+def _resolve_user_review_summary(page_data: list[Any], slug: str) -> tuple[int | None, float | None]:
+    """Find the user review summary for *slug*.
+
+    Returns (user_review_count, user_score_if_not_already_found).
+    The user review count is not inside the userScore sub-dict; it
+    lives in a separate summary item whose URL contains the slug.
+    """
+    for item in page_data:
+        result = _check_user_review_item(page_data, item, slug)
+        if result is not None:
+            return result
+    return None, None
+
+
+def _find_game_details_by_slug(page_data: list[Any], slug: str) -> dict[str, Any] | None:
+    """Extract game details for the specific game matching *slug*.
+
+    Finds the game item whose ``slug`` field matches *slug*, then
+    follows its ``criticScoreSummary`` and ``userScore`` references
+    for scores.  The user review count is found by scanning for the
+    user review summary item whose ``url`` contains the slug.
+    """
+    game_item = _find_game_item_by_slug(page_data, slug)
+    if game_item is None:
+        return None
+
+    metascore, metascore_reviews = _extract_critic_from_summary(page_data, game_item)
+    user_score = _extract_user_score_from_game(page_data, game_item)
+    user_reviews, us_override = _resolve_user_review_summary(page_data, slug)
+    if user_score is None and us_override is not None:
+        user_score = us_override
+
+    genres, must_play, release_date, description = _extract_metadata_from_item(page_data, game_item)
+
+    return _format_game_detail_result(
+        metascore,
+        metascore_reviews,
+        user_score,
+        user_reviews,
+        genres,
+        must_play,
+        release_date,
+        description,
+    )
+
+
+def _find_nuxt_scores_in_page(page_content: bytes, slug: str | None = None) -> dict[str, Any] | None:
+    """Find and parse Nuxt JSON scores from a Metacritic game page.
+
+    Args:
+        page_content: Raw HTML bytes of the game page.
+        slug: When provided, only extract scores for the game matching
+            this slug, preventing cross-game score pollution from the
+            "similar games" section.
+    """
     try:
         soup = BeautifulSoup(page_content, features="html.parser")
     except TypeError:
@@ -148,14 +350,21 @@ def _find_nuxt_scores_in_page(page_content: bytes) -> dict[str, Any] | None:
             page_data = json.loads(stext)
         except (json.JSONDecodeError, TypeError):
             continue
-        result = _find_game_details_in_nuxt_data(page_data)
+        result = _find_game_details_in_nuxt_data(page_data, slug=slug)
         if result is not None:
             return result
     return None
 
 
-def _parse_game_details(page_content: bytes) -> dict[str, Any] | None:
-    return _find_nuxt_scores_in_page(page_content)
+def _parse_game_details(page_content: bytes, slug: str | None = None) -> dict[str, Any] | None:
+    """Parse Metacritic game page, extracting scores and metadata.
+
+    Args:
+        page_content: Raw HTML bytes of the game page.
+        slug: When provided, only extract scores for the game matching
+            this slug.
+    """
+    return _find_nuxt_scores_in_page(page_content, slug=slug)
 
 
 def _try_resolve_script(parsed: list[Any], stext: str) -> tuple[list[Any], list[int]] | None:
@@ -318,7 +527,7 @@ class MetacriticClient:
                 logger.debug("Game page '{}' returned status {}", url, resp.status_code)
                 return None
 
-            parsed = _parse_game_details(resp.content)
+            parsed = _parse_game_details(resp.content, slug=slug)
             if parsed is None:
                 return None
 

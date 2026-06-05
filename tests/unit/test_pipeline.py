@@ -653,7 +653,7 @@ class TestEvaluateScoresNoneReviews:
         assert _evaluate_scores(mc_result, cfg) == "Failed"
 
 
-class TestLogGameDetails:
+class TestEscapeMarkup:
     """_escape_markup helper for log output."""
 
     def test_escape_markup_angle_brackets(self) -> None:
@@ -662,3 +662,99 @@ class TestLogGameDetails:
         assert _escape_markup("<title>") == "\\<title\\>"
         assert _escape_markup("plain text") == "plain text"
         assert _escape_markup(42) == "42"
+
+
+class TestEscapeOr:
+    """_escape_or helper for conditional escaping."""
+
+    def test_escape_or_escapes_value(self) -> None:
+        from gamarr.pipeline import _escape_or
+
+        assert _escape_or("hello", "N/A") == "hello"
+        assert _escape_or("<b>bold</b>", "N/A") == "\\<b\\>bold\\</b\\>"
+
+    def test_escape_or_none_returns_default(self) -> None:
+        from gamarr.pipeline import _escape_or
+
+        assert _escape_or(None, "?") == "?"
+        assert _escape_or(None, "N/A") == "N/A"
+
+
+class TestLogGameDetails:
+    """_log_game_details end-to-end behaviour."""
+
+    def test_log_game_details_logs_all_fields(self) -> None:
+        from unittest.mock import patch
+
+        from gamarr.metacritic import ScoreResult
+        from gamarr.pipeline import _log_game_details
+
+        mc = ScoreResult(
+            title="Elden Ring",
+            slug="elden-ring",
+            metascore=96.0,
+            metascore_review_count=120,
+            user_score=8.5,
+            user_review_count=5000,
+            passed=True,
+            genres=["Action", "RPG"],
+            must_play=True,
+            release_date="2022-02-25",
+            description="A great game",
+        )
+
+        with patch("gamarr.pipeline.logger") as mock_logger:
+            _log_game_details(mc)
+
+        mock_logger.opt.assert_called_once_with(colors=True)
+        mock_logger.opt.return_value.info.assert_called_once()
+        msg = mock_logger.opt.return_value.info.call_args[0][0]
+        assert "Elden Ring" in msg
+        assert "96" in msg
+        assert "120" in msg
+        assert "8.5" in msg
+        assert "5000" in msg
+        assert "Action" in msg
+        assert "Yes" in msg
+        assert "2022-02-25" in msg
+
+    def test_log_game_details_none_result_skips(self) -> None:
+        from unittest.mock import patch
+
+        from gamarr.pipeline import _log_game_details
+
+        with patch("gamarr.pipeline.logger") as mock_logger:
+            _log_game_details(None)
+
+        mock_logger.opt.assert_not_called()
+
+    def test_log_game_details_none_fields_use_fallbacks(self) -> None:
+        from unittest.mock import patch
+
+        from gamarr.metacritic import ScoreResult
+        from gamarr.pipeline import _log_game_details
+
+        mc = ScoreResult(
+            title="Unknown Game",
+            slug="unknown",
+            metascore=None,
+            metascore_review_count=None,
+            user_score=None,
+            user_review_count=None,
+            passed=False,
+            genres=None,
+            must_play=None,
+            release_date=None,
+            description=None,
+        )
+
+        with patch("gamarr.pipeline.logger") as mock_logger:
+            _log_game_details(mc)
+
+        mock_logger.opt.assert_called_once_with(colors=True)
+        mock_logger.opt.return_value.info.assert_called_once()
+        msg = mock_logger.opt.return_value.info.call_args[0][0]
+        assert "TBD" in msg
+        assert "?" in msg
+        assert "N/A" in msg
+        assert "No" in msg

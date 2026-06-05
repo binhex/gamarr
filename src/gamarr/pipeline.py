@@ -27,6 +27,15 @@ def _escape_markup(value: object) -> str:
     return str(value).replace("<", "\\<").replace(">", "\\>")
 
 
+def _escape_or(value: object, default: str) -> str:
+    """Escape *value* for Loguru markup, using *default* when *value* is ``None``.
+
+    Convenience wrapper that avoids repeating the ``X if X is not None else Y``
+    pattern for every field in :func:`_log_game_details`.
+    """
+    return _escape_markup(value) if value is not None else default
+
+
 def _log_game_details(mc_result: Any) -> None:
     """Log a colorized summary line for a looked-up game (gamecritic-style).
 
@@ -40,13 +49,13 @@ def _log_game_details(mc_result: Any) -> None:
     if mc_result is None:
         return
     title = _escape_markup(mc_result.title)
-    ms = _escape_markup(mc_result.metascore) if mc_result.metascore is not None else "TBD"
-    ms_r = _escape_markup(mc_result.metascore_review_count) if mc_result.metascore_review_count is not None else "?"
-    us = _escape_markup(mc_result.user_score) if mc_result.user_score is not None else "TBD"
-    us_r = _escape_markup(mc_result.user_review_count) if mc_result.user_review_count is not None else "?"
-    genre = ", ".join(mc_result.genres) if mc_result.genres else "N/A"
+    ms = _escape_or(mc_result.metascore, "TBD")
+    ms_r = _escape_or(mc_result.metascore_review_count, "?")
+    us = _escape_or(mc_result.user_score, "TBD")
+    us_r = _escape_or(mc_result.user_review_count, "?")
+    genre = _escape_markup(", ".join(mc_result.genres)) if mc_result.genres else "N/A"
     must_play = "<green><bold>Yes</bold></green>" if mc_result.must_play else "<dim>No</dim>"
-    release = _escape_markup(mc_result.release_date) if mc_result.release_date else "N/A"
+    release = _escape_or(mc_result.release_date, "N/A")
     sep = " <dim>|</dim> "
 
     logger.opt(colors=True).info(
