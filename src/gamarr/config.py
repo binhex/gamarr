@@ -61,6 +61,8 @@ class MetacriticPlatformConfig(BaseModel):
     days_since_release: int = 90
     cache_ttl_days: int = 7
     browse_cache_ttl_hours: int = 4
+    pending_days: int = 30
+    browse_enabled: bool = True
 
 
 class MetacriticConfig(BaseModel):
