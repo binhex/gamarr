@@ -142,31 +142,28 @@ class FitGirlSource:
             logger.warning("No RSS items found in FitGirl feed response.")
             return []
 
+        entries = self._build_entries(items)
+        logger.info("FitGirl RSS: found {} new entries", len(entries))
+        return entries
+
+    def _build_entries(self, items: list[dict[str, Any]]) -> list[GameEntry]:
+        """Convert RSS items to GameEntries, skipping already processed ones."""
         entries: list[GameEntry] = []
         for item in items:
             raw_title = item.get("title", "")
             link = item.get("link", "")
             if not raw_title or not link:
                 continue
-
             if self._db.is_processed(self.source_name, link):
                 logger.debug("Skipping already processed entry: '{}'", raw_title)
                 continue
-
             cleaned_title = _clean_title(raw_title)
             magnet_url = self._extract_magnet(item, link)
-
-            entry = GameEntry(
-                title=cleaned_title,
-                source_title=raw_title,
-                source=self.source_name,
-                platform=self._platform,
-                magnet_url=magnet_url or "",
-                source_url=link,
-            )
-            entries.append(entry)
-
-        logger.info("FitGirl RSS: found {} new entries", len(entries))
+            entries.append(GameEntry(
+                title=cleaned_title, source_title=raw_title,
+                source=self.source_name, platform=self._platform,
+                magnet_url=magnet_url or "", source_url=link,
+            ))
         return entries
 
     def _extract_magnet(self, item: dict[str, Any], link: str) -> str | None:

@@ -59,32 +59,45 @@ def _nuxt_val(data: list[Any], ref: Any) -> Any:
     return ref
 
 
-def _find_scores_in_nuxt_data(page_data: list[Any]) -> dict[str, Any] | None:
-    """Extract critic and user scores from a Nuxt JSON data array.
+def _extract_critic_score(page_data: list[Any], item: dict[str, Any],
+                           current: float | None) -> tuple[float | None, int | None]:
+    """Extract metascore and review count from a Nuxt data item if present."""
+    if current is not None or "score" not in item or "reviewCount" not in item:
+        return (current, None)
+    score_val = _nuxt_val(page_data, item["score"])
+    if isinstance(score_val, (int, float)):
+        return (float(score_val), _nuxt_val(page_data, item.get("reviewCount")))
+    return (current, None)
 
-    The Nuxt state on Metacritic game pages embeds score data as dict
-    items within a JSON array.  Score/reviewCount values may be literal
-    integers or indices into the same array.
-    """
+
+def _extract_user_score(page_data: list[Any], item: dict[str, Any],
+                         current: float | None) -> tuple[float | None, int | None]:
+    """Extract user score and review count from a Nuxt data item if present."""
+    if current is not None or "userScore" not in item:
+        return (current, None)
+    us = _nuxt_val(page_data, item.get("userScore"))
+    if isinstance(us, dict) and "score" in us:
+        us_score = _nuxt_val(page_data, us.get("score"))
+        if isinstance(us_score, (int, float)):
+            return (float(us_score), _nuxt_val(page_data, us.get("reviewCount")))
+    return (current, None)
+
+
+def _find_scores_in_nuxt_data(page_data: list[Any]) -> dict[str, Any] | None:
+    """Extract critic and user scores from a Nuxt JSON data array."""
     metascore = metascore_reviews = user_score = user_reviews = None
 
     for item in page_data:
         if not isinstance(item, dict):
             continue
 
-        if metascore is None and "score" in item and "reviewCount" in item:
-            score_val = _nuxt_val(page_data, item["score"])
-            if isinstance(score_val, (int, float)):
-                metascore = float(score_val)
-                metascore_reviews = _nuxt_val(page_data, item.get("reviewCount"))
+        ms, msv = _extract_critic_score(page_data, item, metascore)
+        if ms != metascore:
+            metascore, metascore_reviews = ms, msv
 
-        if user_score is None and "userScore" in item:
-            us = _nuxt_val(page_data, item.get("userScore"))
-            if isinstance(us, dict) and "score" in us:
-                us_score = _nuxt_val(page_data, us.get("score"))
-                if isinstance(us_score, (int, float)):
-                    user_score = float(us_score)
-                    user_reviews = _nuxt_val(page_data, us.get("reviewCount"))
+        us, usv = _extract_user_score(page_data, item, user_score)
+        if us != user_score:
+            user_score, user_reviews = us, usv
 
     if metascore is not None or user_score is not None:
         return {
@@ -96,12 +109,12 @@ def _find_scores_in_nuxt_data(page_data: list[Any]) -> dict[str, Any] | None:
     return None
 
 
-def _parse_game_details(page_content: bytes) -> dict[str, Any] | None:
+def _find_nuxt_scores_in_page(page_content: bytes) -> dict[str, Any] | None:
+    """Find and parse Nuxt JSON scores from a Metacritic game page."""
     try:
         soup = BeautifulSoup(page_content, features="html.parser")
     except TypeError:
         return None
-
     for script in soup.find_all("script"):
         stext = script.string or ""
         if len(stext) < 1000:
@@ -110,48 +123,69 @@ def _parse_game_details(page_content: bytes) -> dict[str, Any] | None:
             page_data = json.loads(stext)
         except (json.JSONDecodeError, TypeError):
             continue
-
         result = _find_scores_in_nuxt_data(page_data)
         if result is not None:
-            metascore = result["metascore"]
-            metascore_reviews = result["metascore_reviews"]
-            user_score = result["user_score"]
-            user_reviews = result["user_reviews"]
-
-        if metascore is not None or user_score is not None:
-            return {
-                "metascore": metascore,
-                "metascore_reviews": metascore_reviews,
-                "user_score": user_score,
-                "user_reviews": user_reviews,
-            }
-
+            return result
     return None
 
 
-def _resolve_browse_nuxt_data(soup: Any) -> tuple[list[Any], list[int]] | None:
-    """Find and resolve browse-game Nuxt data from a Metacritic browse page.
+def _parse_game_details(page_content: bytes) -> dict[str, Any] | None:
+    return _find_nuxt_scores_in_page(page_content)
 
-    Returns (nuxt_data, game_items) on success, None if no browse data found.
-    """
+
+def _try_resolve_script(parsed: list[Any], stext: str) -> tuple[list[Any], list[int]] | None:
+    """Attempt to resolve browse-game items from a single Nuxt script."""
+    m = _BROWSE_GAME_KEY_PATTERN.search(stext)
+    if not m:
+        return None
+    root_idx = int(m.group(2))
+    if root_idx >= len(parsed):
+        return None
+    root = parsed[root_idx]
+    items_ref = root.get("items")
+    if not isinstance(items_ref, int) or items_ref >= len(parsed):
+        return None
+    game_items = parsed[items_ref]
+    if not isinstance(game_items, list):
+        return None
+    return (parsed, game_items)
+
+
+def _resolve_browse_nuxt_data(soup: Any) -> tuple[list[Any], list[int]] | None:
+    """Find and resolve browse-game Nuxt data from a Metacritic browse page."""
     for script in soup.find_all("script"):
         stext = script.string or ""
         if "browse-game" not in stext:
             continue
         try:
             parsed = json.loads(stext)
-            m = _BROWSE_GAME_KEY_PATTERN.search(stext)
-            if m:
-                root_idx = int(m.group(2))
-                root = parsed[root_idx]
-                items_ref = root.get("items")
-                if isinstance(items_ref, int) and items_ref < len(parsed):
-                    game_items = parsed[items_ref]
-                    if isinstance(game_items, list):
-                        return (parsed, game_items)
+            result = _try_resolve_script(parsed, stext)
+            if result is not None:
+                return result
         except (json.JSONDecodeError, TypeError, KeyError, IndexError):
             pass
     return None
+
+
+def _resolve_browse_game_list(nuxt_data: list[Any], game_items: list[int]) -> list[dict[str, Any]]:
+    """Resolve game dicts from Nuxt data by following item indices."""
+    resolved: list[dict[str, Any]] = []
+    for game_idx in game_items:
+        try:
+            game = nuxt_data[game_idx]
+            cs = _nuxt_val(nuxt_data, game.get("criticScoreSummary"))
+            us = _nuxt_val(nuxt_data, game.get("userScore"))
+            resolved.append({
+                "title": _nuxt_val(nuxt_data, game.get("title")),
+                "slug": _nuxt_val(nuxt_data, game.get("slug")),
+                "score": cs.get("score") if isinstance(cs, dict) else None,
+                "critic_review_count": cs.get("reviewCount") if isinstance(cs, dict) else None,
+                "user_rating": us.get("score") if isinstance(us, dict) else None,
+                "user_review_count": us.get("reviewCount") if isinstance(us, dict) else None,
+            })
+        except (TypeError, KeyError, IndexError):
+            pass
+    return resolved
 
 
 def _parse_browse_page(content: bytes) -> list[dict[str, Any]] | None:
@@ -165,26 +199,7 @@ def _parse_browse_page(content: bytes) -> list[dict[str, Any]] | None:
         return None
 
     nuxt_data, game_items = result
-    resolved_games: list[dict[str, Any]] = []
-    for game_idx in game_items:
-        try:
-            game = nuxt_data[game_idx]
-            cs = _nuxt_val(nuxt_data, game.get("criticScoreSummary"))
-            us = _nuxt_val(nuxt_data, game.get("userScore"))
-            resolved_games.append(
-                {
-                    "title": _nuxt_val(nuxt_data, game.get("title")),
-                    "slug": _nuxt_val(nuxt_data, game.get("slug")),
-                    "score": cs.get("score") if isinstance(cs, dict) else None,
-                    "critic_review_count": cs.get("reviewCount") if isinstance(cs, dict) else None,
-                    "user_rating": us.get("score") if isinstance(us, dict) else None,
-                    "user_review_count": us.get("reviewCount") if isinstance(us, dict) else None,
-                }
-            )
-        except (TypeError, KeyError, IndexError):
-            pass
-
-    return resolved_games
+    return _resolve_browse_game_list(nuxt_data, game_items)
 
 
 class MetacriticClient:
@@ -309,58 +324,48 @@ class MetacriticClient:
         page_number = 1
         max_pages = 10
 
-        while page_number <= max_pages:
-            url = (
-                f"https://www.metacritic.com/browse/game/{platform}/all/all-time/new/"
-                f"?releaseYearMin=1958&releaseYearMax=2035"
-                f"&platform={platform}&page={page_number}"
-            )
-
+        for page_number in range(1, 11):
             logger.debug("Scanning browse page {} for '{}'", page_number, title)
-
-            cached_games = self._cache.get_browse_page(platform, page_number, ttl_hours=browse_cache_ttl_hours)
-            if cached_games is not None:
-                games = cached_games
-            else:
-                try:
-                    resp = requests.get(
-                        url,
-                        headers={"User-Agent": self.user_agent},
-                        timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT),
-                        allow_redirects=True,
-                    )
-                    if resp.status_code != 200:
-                        break
-
-                    parsed_games = _parse_browse_page(resp.content)
-                    if parsed_games is None:
-                        break
-                    games = parsed_games
-                    self._cache.set_browse_page(platform, page_number, games)
-                except requests.RequestException as exc:
-                    logger.warning("Failed to fetch browse page '{}': {}", url, exc)
-                    break
-
+            games = self._fetch_browse_page(platform, page_number, browse_cache_ttl_hours)
             if not games:
                 break
-
-            for game in games:
-                game_title = game.get("title")
-                if not game_title:
-                    continue
-                if _normalise_for_compare(str(game_title)) == normalized_title:
-                    logger.info(
-                        "Found matching game '{}' (slug: {}) on browse page {}",
-                        game_title,
-                        game.get("slug"),
-                        page_number,
-                    )
-                    slug = str(game.get("slug", ""))
-                    return self._try_direct_slug(slug, cache_ttl_days)
-
-            page_number += 1
+            slug = self._match_game_on_page(games, normalized_title)
+            if slug is not None:
+                logger.info("Found matching game on browse page {}", page_number)
+                return self._try_direct_slug(slug, cache_ttl_days)
 
         logger.info("Game '{}' not found on Metacritic browse pages", title)
+        return None
+
+    def _fetch_browse_page(self, platform: str, page_number: int, browse_cache_ttl_hours: int) -> list[dict] | None:
+        """Return game listings for a browse page from cache or HTTP."""
+        cached = self._cache.get_browse_page(platform, page_number, ttl_hours=browse_cache_ttl_hours)
+        if cached is not None:
+            return cached
+        url = (
+            f"https://www.metacritic.com/browse/game/{platform}/all/all-time/new/"
+            f"?releaseYearMin=1958&releaseYearMax=2035"
+            f"&platform={platform}&page={page_number}"
+        )
+        try:
+            resp = requests.get(url, headers={"User-Agent": self.user_agent},
+                                timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT), allow_redirects=True)
+            if resp.status_code != 200:
+                return None
+            parsed = _parse_browse_page(resp.content)
+            if parsed is not None:
+                self._cache.set_browse_page(platform, page_number, parsed)
+            return parsed
+        except requests.RequestException as exc:
+            logger.warning("Failed to fetch browse page '{}': {}", url, exc)
+            return None
+
+    def _match_game_on_page(self, games: list[dict], normalized_title: str) -> str | None:
+        """Search browse page for matching title, returning slug or None."""
+        for game in games:
+            game_title = game.get("title")
+            if game_title and _normalise_for_compare(str(game_title)) == normalized_title:
+                return str(game.get("slug", ""))
         return None
 
 

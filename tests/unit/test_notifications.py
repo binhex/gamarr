@@ -80,3 +80,21 @@ class TestNotifierSend:
                 metascore=80.0, user_score=7.5,
                 magnet_url="magnet:?xt=urn:btih:abc",
             )
+
+
+class TestNotifierEdgeCases:
+    """Edge cases for notification methods."""
+
+    def test_failure_notification_sends_when_enabled(self) -> None:
+        mock_apobj = MagicMock()
+        with patch.object(Notifier, "_init_apprise", return_value=mock_apobj):
+            notifier = Notifier(apprise_urls=["json://localhost"], on_failure=True)
+            notifier.send_failure_notification(title="Test", reason="Low score")
+            mock_apobj.notify.assert_called_once()
+
+    def test_error_notification_sends_when_enabled(self) -> None:
+        mock_apobj = MagicMock()
+        with patch.object(Notifier, "_init_apprise", return_value=mock_apobj):
+            notifier = Notifier(apprise_urls=["json://localhost"], on_error=True)
+            notifier.send_error_notification(error_message="Pipeline error")
+            mock_apobj.notify.assert_called_once()

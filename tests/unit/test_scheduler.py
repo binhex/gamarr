@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from gamarr.config import Config
 from gamarr.scheduler import run, run_once
@@ -133,3 +133,109 @@ class TestResolveCachePath:
 
         result = _resolve_cache_path("/tmp/db")
         assert result == "/tmp/db/gamarr-cache.db"
+
+
+class TestDaemonMode:
+    """Daemon mode scheduling."""
+
+    def test_run_daemon_creates_scheduler(self) -> None:
+        """Mock BackgroundScheduler to test _run_daemon."""
+        from gamarr.scheduler import _run_daemon
+        from gamarr.config import Config
+
+        with patch("gamarr.scheduler.BackgroundScheduler") as mock_sched_cls:
+            mock_sched = MagicMock()
+            mock_sched_cls.return_value = mock_sched
+            with patch("gamarr.scheduler.signal") as mock_signal:
+                mock_shutdown = MagicMock()
+                mock_signal.signal.return_value = None
+
+                config = MagicMock()
+                config.schedule.acquisition.schedule_time_mins = 60
+                config.schedule.acquisition.run_on_start = True
+                config.metacritic.platform_overrides = {"pc": MagicMock()}
+                config.metacritic.platform_overrides["pc"].min_metascore = 75
+                config.metacritic.platform_overrides["pc"].min_metascore_reviews = 5
+                config.metacritic.platform_overrides["pc"].min_user_score = 7.5
+                config.metacritic.platform_overrides["pc"].min_user_reviews = 10
+                config.metacritic.platform_overrides["pc"].days_since_release = 90
+                config.metacritic.platform_overrides["pc"].cache_ttl_days = 7
+                config.metacritic.platform_overrides["pc"].browse_cache_ttl_hours = 4
+                config.sources.fitgirl.rss_url = "http://example.com/feed"
+                config.sources.fitgirl.platform = "pc"
+                config.general.db_path = ":memory:"
+                config.torrent_client.qbittorrent.host = "localhost"
+                config.torrent_client.qbittorrent.port = 8080
+                config.torrent_client.qbittorrent.username = "admin"
+                config.torrent_client.qbittorrent.password = "adminadmin"
+                config.torrent_client.qbittorrent.category = "games-gamarr"
+                config.torrent_client.qbittorrent.add_paused = False
+                config.notification.apprise_urls = []
+                config.notification.on_download = True
+                config.notification.on_failure = False
+                config.notification.on_error = False
+
+                # Interrupt the wait() to prevent infinite loop
+                mock_shutdown_event = MagicMock()
+                mock_shutdown_event.wait.return_value = None
+
+                with patch("gamarr.scheduler._ShutdownEvent", return_value=mock_shutdown_event):
+                    _run_daemon(config)
+                    mock_sched.add_job.assert_called_once()
+                    mock_sched.start.assert_called_once()
+                    mock_signal.signal.assert_any_call(mock_signal.SIGINT, mock_shutdown_event)
+                    mock_sched.shutdown.assert_called_once()
+
+    def test_run_daemon_with_run_on_start_false(self) -> None:
+        """When run_on_start is False, the first run is delayed."""
+        from gamarr.scheduler import _run_daemon
+        from gamarr.config import Config
+
+        with patch("gamarr.scheduler.BackgroundScheduler") as mock_sched_cls:
+            mock_sched = MagicMock()
+            mock_sched_cls.return_value = mock_sched
+
+
+    def test_run_daemon_with_run_on_start_false(self) -> None:
+        """When run_on_start is False, the first run is delayed."""
+        from gamarr.scheduler import _run_daemon
+        from datetime import datetime, timedelta
+
+        with patch("gamarr.scheduler.BackgroundScheduler") as mock_sched_cls, \
+             patch("gamarr.scheduler.signal"):
+
+            mock_sched = MagicMock()
+            mock_sched_cls.return_value = mock_sched
+
+            config = MagicMock()
+            config.schedule.acquisition.schedule_time_mins = 60
+            config.schedule.acquisition.run_on_start = False
+            config.metacritic.platform_overrides = {"pc": MagicMock()}
+            config.metacritic.platform_overrides["pc"].min_metascore = 75
+            config.metacritic.platform_overrides["pc"].min_metascore_reviews = 5
+            config.metacritic.platform_overrides["pc"].min_user_score = 7.5
+            config.metacritic.platform_overrides["pc"].min_user_reviews = 10
+            config.metacritic.platform_overrides["pc"].days_since_release = 90
+            config.metacritic.platform_overrides["pc"].cache_ttl_days = 7
+            config.metacritic.platform_overrides["pc"].browse_cache_ttl_hours = 4
+            config.sources.fitgirl.rss_url = "http://example.com/feed"
+            config.sources.fitgirl.platform = "pc"
+            config.general.db_path = ":memory:"
+            config.torrent_client.qbittorrent.host = "localhost"
+            config.torrent_client.qbittorrent.port = 8080
+            config.torrent_client.qbittorrent.username = "admin"
+            config.torrent_client.qbittorrent.password = "adminadmin"
+            config.torrent_client.qbittorrent.category = "games-gamarr"
+            config.torrent_client.qbittorrent.add_paused = False
+            config.notification.apprise_urls = []
+            config.notification.on_download = True
+            config.notification.on_failure = False
+            config.notification.on_error = False
+
+            mock_shutdown_event = MagicMock()
+            mock_shutdown_event.wait.return_value = None
+
+            with patch("gamarr.scheduler._ShutdownEvent", return_value=mock_shutdown_event):
+                _run_daemon(config)
+                mock_sched.add_job.assert_called_once()
+                mock_sched.start.assert_called_once()

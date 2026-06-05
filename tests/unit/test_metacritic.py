@@ -386,3 +386,90 @@ class TestMetacriticClient:
         with patch("gamarr.metacritic.requests.get", side_effect=requests.exceptions.ConnectionError("mock")):
             result = client._scan_browse_pages("Some Game", "pc", 4, 7)
         assert result is None
+
+
+class TestParseGameDetailsEdgeCases:
+    """Additional edge cases for game detail parsing."""
+
+    def test_parse_game_details_with_exception(self) -> None:
+        from gamarr.metacritic import _parse_game_details
+
+        # Non-bytes input raises TypeError which is caught
+        result = _parse_game_details(None)  # type: ignore[arg-type]
+        assert result is None
+
+    def test_parse_game_details_json_decode_error(self) -> None:
+        from gamarr.metacritic import _parse_game_details
+
+        # Short script with non-JSON content that won't be parsed
+        html = b"<html><body><script>" + b"x" * 1001 + b"</script></body></html>"
+        result = _parse_game_details(html)
+        assert result is None
+
+
+class TestParseBrowsePageEdgeCases:
+    """Additional edge cases for browse page parsing."""
+
+    def test_parse_browse_page_non_html(self) -> None:
+        from gamarr.metacritic import _parse_browse_page
+
+        # Non-bytes input
+        result = _parse_browse_page(None)  # type: ignore[arg-type]
+        assert result is None
+
+    def test_parse_browse_page_empty(self) -> None:
+        from gamarr.metacritic import _parse_browse_page
+
+        result = _parse_browse_page(b"")
+        assert result is None
+
+
+class TestFindScoresInNuxtData:
+    """_find_scores_in_nuxt_data edge cases."""
+
+    def test_non_dict_items_skipped(self) -> None:
+        from gamarr.metacritic import _find_scores_in_nuxt_data
+
+        result = _find_scores_in_nuxt_data([None, "string", 42])
+        assert result is None
+
+
+class TestScanBrowsePagesEdgeCase:
+    """_scan_browse_pages with mocked HTTP."""
+
+    def test_scan_browse_pages_http_success_no_match(self) -> None:
+        """When browse page HTTP succeeds but no matching game found, returns None."""
+        import json
+        from unittest.mock import patch, MagicMock
+
+        # Build a browse page with one non-matching game
+        key = "browse-game-abc"
+        game = {"title": "Wrong Game", "slug": "wrong-game-2024"}
+        page_data = [{key: 1}, {"items": 2}, [3], game, "x" * 2000]
+
+        html = '<html><body><script>' + json.dumps(page_data) + '</script></body></html>'
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.content = html.encode()
+
+        client = MetacriticClient(cache_path=":memory:")
+        with patch("gamarr.metacritic.requests.get", return_value=mock_resp):
+            result = client._scan_browse_pages("Target Game", "pc", 4, 7)
+        assert result is None
+
+
+class TestScanBrowseCacheHit:
+    """Browse cache hit with matching game."""
+
+    def test_scan_browse_cache_hit_matching_game(self) -> None:
+        """When browse cache has a matching game, it returns the score."""
+        client = MetacriticClient(cache_path=":memory:")
+        client._cache.set_browse_page("pc", 1, [
+            {"title": "Elden Ring", "slug": "elden-ring-2022"},
+        ])
+        client._cache.set_game_detail("elden-ring-2022", 96.0, 100, 8.5, 5000)
+
+        result = client._scan_browse_pages("Elden Ring!", "pc", 4, 7)
+        assert result is not None
+        assert result.metascore == 96.0
+        assert result.slug == "elden-ring-2022"

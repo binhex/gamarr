@@ -226,3 +226,50 @@ class TestFitGirlSource:
         assert len(entries) == 1
         assert entries[0].title == "No Magnet Game"
         assert entries[0].magnet_url == ""
+
+
+class TestMagnetExtractionEdgeCases:
+    """Magnet extraction edge cases."""
+
+    def test_extract_magnet_fallback_fails_silently(self) -> None:
+        """When the article page fetch fails, magnet extraction returns None."""
+        from gamarr.sources.fitgirl import _extract_magnet_from_html
+
+        result = _extract_magnet_from_html("<html>no magnet</html>")
+        assert result is None
+
+
+class TestFetchNewProccessing:
+    """Additional fetch_new edge cases."""
+
+    def test_fetch_new_skips_processed(self) -> None:
+        """Entry already processed should be skipped."""
+        from unittest.mock import patch, MagicMock
+        import requests
+
+        # Create source, then simulate that the link is already in the DB
+        source = FitGirlSource("http://example.com/feed.xml", db_path=":memory:")
+        source._db.record_processed(
+            source="fitgirl", source_title="http://fitgirl-repacks.site/elden-ring/",
+            source_url="http://fitgirl-repacks.site/elden-ring/",
+            game_title="Elden Ring", result="Passed",
+        )
+
+        rss_xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<rss version="2.0"><channel>'
+            '<item><title>Elden Ring (v1.12 + DLC) [Repack]</title>'
+            '<link>http://fitgirl-repacks.site/elden-ring/</link>'
+            '<description>magnet:?xt=urn:btih:abc</description>'
+            '</item>'
+            '</channel></rss>'
+        )
+        mock_resp = MagicMock()
+        mock_resp.text = rss_xml
+        mock_resp.raise_for_status.return_value = None
+
+        with patch("gamarr.sources.fitgirl.requests.get", return_value=mock_resp):
+            entries = source.fetch_new()
+        # The entry should be skipped since it's already in the DB
+        assert len(entries) == 0
+        source.close()

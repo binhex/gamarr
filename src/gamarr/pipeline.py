@@ -30,6 +30,14 @@ class AcquisitionConfig:
     browse_cache_ttl_hours: int = 4
 
 
+def _score_check(value: float | None, threshold: float) -> bool:
+    """Return True if value is below threshold (or None).
+
+    When value is None the check passes (no data to fail against).
+    """
+    return value is not None and value < threshold
+
+
 def _evaluate_scores(
     mc_result: Any,
     cfg: AcquisitionConfig,
@@ -37,20 +45,14 @@ def _evaluate_scores(
     if mc_result.metascore is None and mc_result.user_score is None:
         return "Failed"
 
-    if mc_result.metascore is not None:
-        if mc_result.metascore < cfg.min_metascore:
-            return "Failed"
-        if (
-            mc_result.metascore_review_count is not None
-            and mc_result.metascore_review_count < cfg.min_metascore_reviews
-        ):
-            return "Failed"
-
-    if mc_result.user_score is not None:
-        if mc_result.user_score < cfg.min_user_score:
-            return "Failed"
-        if mc_result.user_review_count is not None and mc_result.user_review_count < cfg.min_user_reviews:
-            return "Failed"
+    if _score_check(mc_result.metascore, cfg.min_metascore):
+        return "Failed"
+    if _score_check(mc_result.metascore_review_count, cfg.min_metascore_reviews):
+        return "Failed"
+    if _score_check(mc_result.user_score, cfg.min_user_score):
+        return "Failed"
+    if _score_check(mc_result.user_review_count, cfg.min_user_reviews):
+        return "Failed"
 
     return "Passed"
 
@@ -137,6 +139,38 @@ def run_acquisition(
         db.close()
 
 
+def _record_result(
+    db: Database,
+    *,
+    source: str,
+    source_title: str,
+    source_url: str,
+    game_title: str | None,
+    platform: str,
+    metascore: float | None = None,
+    user_score: float | None = None,
+    result: str = "Passed",
+    result_details: str = "",
+    magnet_url: str | None = None,
+    torrent_tag: str | None = None,
+) -> dict[str, Any]:
+    """Record a result in the database and return a result dict."""
+    db.record_processed(
+        source=source, source_title=source_title, source_url=source_url,
+        game_title=game_title, platform=platform,
+        metascore=metascore, user_score=user_score,
+        result=result, result_details=result_details,
+        magnet_url=magnet_url, torrent_tag=torrent_tag,
+    )
+    return {
+        "result": result,
+        "game_title": game_title,
+        "metascore": metascore,
+        "user_score": user_score,
+        "result_details": result_details,
+    }
+
+
 def _process_entry(
     entry: GameEntry,
     cfg: AcquisitionConfig,
@@ -160,120 +194,76 @@ def _process_entry(
     user_score = mc_result.user_score if mc_result else None
 
     if mc_result is None:
-        if not entry.magnet_url:
-            result_details = "Game not found on Metacritic (no magnet URL)"
-        else:
-            result_details = "Game not found on Metacritic"
-        db.record_processed(
-            source=entry.source,
-            source_title=entry.source_title,
-            source_url=entry.source_url,
-            game_title=entry.title,
-            platform=entry.platform,
-            result="Failed",
-            result_details=result_details,
-        )
-        return {
-            "result": "Failed",
-            "game_title": entry.title,
-            "metascore": None,
-            "user_score": None,
-            "result_details": result_details,
-        }
+        return _handle_game_not_found(db, entry, mc_result)
 
     score_result = _evaluate_scores(mc_result, cfg)
     if score_result == "Failed":
-        db.record_processed(
-            source=entry.source,
-            source_title=entry.source_title,
-            source_url=entry.source_url,
-            game_title=game_title,
-            platform=entry.platform,
-            metascore=metascore,
-            user_score=user_score,
-            result="Failed",
-            result_details=f"Metascore {metascore}, User score {user_score} below thresholds",
-        )
-        notifier.send_failure_notification(
-            title=game_title,
-            reason=f"Metascore {metascore}, User score {user_score} below thresholds",
-        )
-        return {
-            "result": "Failed",
-            "game_title": game_title,
-            "metascore": metascore,
-            "user_score": user_score,
-            "result_details": "Score below thresholds",
-        }
+        return _handle_score_failure(db, notifier, entry, game_title, metascore, user_score)
 
+    return _handle_delivery(db, qbt, notifier, entry, game_title, metascore, user_score)
+
+
+def _handle_game_not_found(db: Database, entry: GameEntry,
+                            mc_result: Any) -> dict[str, Any]:
+    """Record that a game was not found on Metacritic."""
+    details = "Game not found on Metacritic"
+    if not entry.magnet_url:
+        details += " (no magnet URL)"
+    return _record_result(
+        db, source=entry.source, source_title=entry.source_title,
+        source_url=entry.source_url, game_title=entry.title,
+        platform=entry.platform, result="Failed", result_details=details,
+    )
+
+
+def _handle_score_failure(db: Database, notifier: Notifier, entry: GameEntry,
+                           game_title: str, metascore: float | None,
+                           user_score: float | None) -> dict[str, Any]:
+    """Record that a game failed score checks."""
+    details = f"Metascore {metascore}, User score {user_score} below thresholds"
+    notifier.send_failure_notification(title=game_title, reason=details)
+    return _record_result(
+        db, source=entry.source, source_title=entry.source_title,
+        source_url=entry.source_url, game_title=game_title,
+        platform=entry.platform, metascore=metascore, user_score=user_score,
+        result="Failed", result_details="Score below thresholds",
+    )
+
+
+def _handle_delivery(db: Database, qbt: QBittorrentClient, notifier: Notifier,
+                      entry: GameEntry, game_title: str,
+                      metascore: float | None,
+                      user_score: float | None) -> dict[str, Any]:
+    """Handle magnet delivery to qBittorrent or record failure."""
     magnet_url = entry.magnet_url or ""
     if not magnet_url:
-        db.record_processed(
-            source=entry.source,
-            source_title=entry.source_title,
-            source_url=entry.source_url,
-            game_title=game_title,
-            platform=entry.platform,
-            metascore=metascore,
-            user_score=user_score,
-            result="Failed",
-            result_details="No magnet URL available for this game",
+        return _record_result(
+            db, source=entry.source, source_title=entry.source_title,
+            source_url=entry.source_url, game_title=game_title,
+            platform=entry.platform, metascore=metascore, user_score=user_score,
+            result="Failed", result_details="No magnet URL available",
         )
-        return {
-            "result": "Failed",
-            "game_title": game_title,
-            "metascore": metascore,
-            "user_score": user_score,
-            "result_details": "No magnet URL available",
-        }
-
     tag = qbt.add_torrent(magnet_url=magnet_url, title=game_title)
     if tag:
-        db.record_processed(
-            source=entry.source,
-            source_title=entry.source_title,
-            source_url=entry.source_url,
-            game_title=game_title,
-            platform=entry.platform,
-            metascore=metascore,
-            user_score=user_score,
-            result="Passed",
-            result_details=f"Metascore {metascore}, User score {user_score}",
-            magnet_url=magnet_url,
-            torrent_tag=str(tag),
-        )
         notifier.send_download_notification(
-            title=game_title,
-            platform=entry.platform,
-            metascore=metascore,
-            user_score=user_score,
+            title=game_title, platform=entry.platform,
+            metascore=metascore, user_score=user_score,
             magnet_url=magnet_url,
         )
         logger.info("✓ Sent '{}' to qBittorrent (tag: {})", game_title, tag)
-        return {
-            "result": "Passed",
-            "game_title": game_title,
-            "metascore": metascore,
-            "user_score": user_score,
-            "torrent_tag": str(tag),
-            "result_details": f"Metascore {metascore}, User score {user_score}",
-        }
-
-    db.record_processed(
-        source=entry.source,
-        source_title=entry.source_title,
-        source_url=entry.source_url,
-        game_title=game_title,
-        platform=entry.platform,
-        metascore=metascore,
-        user_score=user_score,
-        result="Error",
-        result_details="Failed to add torrent to qBittorrent",
+        result = _record_result(
+            db, source=entry.source, source_title=entry.source_title,
+            source_url=entry.source_url, game_title=game_title,
+            platform=entry.platform, metascore=metascore, user_score=user_score,
+            result="Passed",
+            result_details=f"Metascore {metascore}, User score {user_score}",
+            magnet_url=magnet_url, torrent_tag=str(tag),
+        )
+        result["torrent_tag"] = str(tag)
+        return result
+    return _record_result(
+        db, source=entry.source, source_title=entry.source_title,
+        source_url=entry.source_url, game_title=game_title,
+        platform=entry.platform, metascore=metascore, user_score=user_score,
+        result="Error", result_details="Failed to add torrent to qBittorrent",
     )
-    return {
-        "result": "Error",
-        "game_title": game_title,
-        "metascore": metascore,
-        "user_score": user_score,
-        "result_details": "Failed to add torrent to qBittorrent",
-    }
