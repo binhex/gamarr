@@ -114,9 +114,7 @@ def _partial_match(entry_norm: str, index_key: str) -> float | None:
     # from matching multi-word game titles like "carx street"
     if len(shorter_str(entry_norm, index_key).split()) < 2:
         return None
-    if ratio >= 0.4:
-        return ratio
-    return None
+    return ratio
 
 
 def shorter_str(a: str, b: str) -> str:
