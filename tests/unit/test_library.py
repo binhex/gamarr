@@ -159,3 +159,35 @@ class TestLibraryScannerEdgeCases:
     def test_check_game_not_found_no_index(self) -> None:
         scanner = LibraryScanner([])
         assert scanner.check_game("Elden Ring") is None
+
+
+class TestLibraryScannerFalsePositive:
+    """Regression test for false positive matches from deep data folders."""
+
+    def test_deep_data_folder_not_indexed(self, tmp_path: Path) -> None:
+        """Data folders deep in game installations should not be indexed."""
+        # Create deeply nested structure like the user's setup:
+        # /media/Games/Platforms/Windows/_Installed/GTA IV/pc/data/maps/props/street/
+        # The "street" folder has no game files — only the GTA IV root has an .exe
+        game_root = tmp_path / "Platforms" / "Windows" / "_Installed" / "Grand Theft Auto IV"
+        game_root.mkdir(parents=True)
+        (game_root / "GTAIV.exe").write_text("")
+
+        deep_data = game_root / "pc" / "data" / "maps" / "props" / "street"
+        deep_data.mkdir(parents=True)
+        (deep_data / "texture.dat").write_text("")
+
+        scanner = LibraryScanner([str(tmp_path)])
+
+        # "street" should NOT be in the index (no game files there)
+        assert "street" not in scanner._index, (
+            f"'street' should NOT be in index but found: {scanner._index.get('street')}"
+        )
+
+        # "Grand Theft Auto IV" should still be findable
+        assert scanner.check_game("Grand Theft Auto IV") is not None
+
+        # "CarX Street" should NOT match "street" since "street" isn't indexed
+        assert scanner.check_game("CarX Street") is None, (
+            "CarX Street should NOT match — 'street' data folder isn't indexed"
+        )
