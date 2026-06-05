@@ -59,8 +59,9 @@ def _nuxt_val(data: list[Any], ref: Any) -> Any:
     return ref
 
 
-def _extract_critic_score(page_data: list[Any], item: dict[str, Any],
-                           current: float | None) -> tuple[float | None, int | None]:
+def _extract_critic_score(
+    page_data: list[Any], item: dict[str, Any], current: float | None
+) -> tuple[float | None, int | None]:
     """Extract metascore and review count from a Nuxt data item if present."""
     if current is not None or "score" not in item or "reviewCount" not in item:
         return (current, None)
@@ -70,8 +71,9 @@ def _extract_critic_score(page_data: list[Any], item: dict[str, Any],
     return (current, None)
 
 
-def _extract_user_score(page_data: list[Any], item: dict[str, Any],
-                         current: float | None) -> tuple[float | None, int | None]:
+def _extract_user_score(
+    page_data: list[Any], item: dict[str, Any], current: float | None
+) -> tuple[float | None, int | None]:
     """Extract user score and review count from a Nuxt data item if present."""
     if current is not None or "userScore" not in item:
         return (current, None)
@@ -175,14 +177,16 @@ def _resolve_browse_game_list(nuxt_data: list[Any], game_items: list[int]) -> li
             game = nuxt_data[game_idx]
             cs = _nuxt_val(nuxt_data, game.get("criticScoreSummary"))
             us = _nuxt_val(nuxt_data, game.get("userScore"))
-            resolved.append({
-                "title": _nuxt_val(nuxt_data, game.get("title")),
-                "slug": _nuxt_val(nuxt_data, game.get("slug")),
-                "score": cs.get("score") if isinstance(cs, dict) else None,
-                "critic_review_count": cs.get("reviewCount") if isinstance(cs, dict) else None,
-                "user_rating": us.get("score") if isinstance(us, dict) else None,
-                "user_review_count": us.get("reviewCount") if isinstance(us, dict) else None,
-            })
+            resolved.append(
+                {
+                    "title": _nuxt_val(nuxt_data, game.get("title")),
+                    "slug": _nuxt_val(nuxt_data, game.get("slug")),
+                    "score": cs.get("score") if isinstance(cs, dict) else None,
+                    "critic_review_count": cs.get("reviewCount") if isinstance(cs, dict) else None,
+                    "user_rating": us.get("score") if isinstance(us, dict) else None,
+                    "user_review_count": us.get("reviewCount") if isinstance(us, dict) else None,
+                }
+            )
         except (TypeError, KeyError, IndexError):
             pass
     return resolved
@@ -322,7 +326,6 @@ class MetacriticClient:
     ) -> ScoreResult | None:
         normalized_title = _normalise_for_compare(title)
         page_number = 1
-        max_pages = 10
 
         for page_number in range(1, 11):
             logger.debug("Scanning browse page {} for '{}'", page_number, title)
@@ -348,8 +351,12 @@ class MetacriticClient:
             f"&platform={platform}&page={page_number}"
         )
         try:
-            resp = requests.get(url, headers={"User-Agent": self.user_agent},
-                                timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT), allow_redirects=True)
+            resp = requests.get(
+                url,
+                headers={"User-Agent": self.user_agent},
+                timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT),
+                allow_redirects=True,
+            )
             if resp.status_code != 200:
                 return None
             parsed = _parse_browse_page(resp.content)

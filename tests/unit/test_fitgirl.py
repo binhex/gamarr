@@ -244,25 +244,26 @@ class TestFetchNewProccessing:
 
     def test_fetch_new_skips_processed(self) -> None:
         """Entry already processed should be skipped."""
-        from unittest.mock import patch, MagicMock
-        import requests
+        from unittest.mock import MagicMock, patch
 
         # Create source, then simulate that the link is already in the DB
         source = FitGirlSource("http://example.com/feed.xml", db_path=":memory:")
         source._db.record_processed(
-            source="fitgirl", source_title="http://fitgirl-repacks.site/elden-ring/",
+            source="fitgirl",
+            source_title="http://fitgirl-repacks.site/elden-ring/",
             source_url="http://fitgirl-repacks.site/elden-ring/",
-            game_title="Elden Ring", result="Passed",
+            game_title="Elden Ring",
+            result="Passed",
         )
 
         rss_xml = (
             '<?xml version="1.0" encoding="UTF-8"?>'
             '<rss version="2.0"><channel>'
-            '<item><title>Elden Ring (v1.12 + DLC) [Repack]</title>'
-            '<link>http://fitgirl-repacks.site/elden-ring/</link>'
-            '<description>magnet:?xt=urn:btih:abc</description>'
-            '</item>'
-            '</channel></rss>'
+            "<item><title>Elden Ring (v1.12 + DLC) [Repack]</title>"
+            "<link>http://fitgirl-repacks.site/elden-ring/</link>"
+            "<description>magnet:?xt=urn:btih:abc</description>"
+            "</item>"
+            "</channel></rss>"
         )
         mock_resp = MagicMock()
         mock_resp.text = rss_xml

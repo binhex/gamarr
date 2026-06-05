@@ -440,14 +440,14 @@ class TestScanBrowsePagesEdgeCase:
     def test_scan_browse_pages_http_success_no_match(self) -> None:
         """When browse page HTTP succeeds but no matching game found, returns None."""
         import json
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import MagicMock, patch
 
         # Build a browse page with one non-matching game
         key = "browse-game-abc"
         game = {"title": "Wrong Game", "slug": "wrong-game-2024"}
         page_data = [{key: 1}, {"items": 2}, [3], game, "x" * 2000]
 
-        html = '<html><body><script>' + json.dumps(page_data) + '</script></body></html>'
+        html = "<html><body><script>" + json.dumps(page_data) + "</script></body></html>"
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.content = html.encode()
@@ -464,9 +464,13 @@ class TestScanBrowseCacheHit:
     def test_scan_browse_cache_hit_matching_game(self) -> None:
         """When browse cache has a matching game, it returns the score."""
         client = MetacriticClient(cache_path=":memory:")
-        client._cache.set_browse_page("pc", 1, [
-            {"title": "Elden Ring", "slug": "elden-ring-2022"},
-        ])
+        client._cache.set_browse_page(
+            "pc",
+            1,
+            [
+                {"title": "Elden Ring", "slug": "elden-ring-2022"},
+            ],
+        )
         client._cache.set_game_detail("elden-ring-2022", 96.0, 100, 8.5, 5000)
 
         result = client._scan_browse_pages("Elden Ring!", "pc", 4, 7)

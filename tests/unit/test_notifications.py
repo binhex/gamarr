@@ -48,8 +48,10 @@ class TestNotifierSend:
         with patch.object(Notifier, "_init_apprise", return_value=mock_apobj):
             notifier = Notifier(apprise_urls=["json://localhost"])
             notifier.send_download_notification(
-                title="Test Game", platform="pc",
-                metascore=85.0, user_score=8.0,
+                title="Test Game",
+                platform="pc",
+                metascore=85.0,
+                user_score=8.0,
                 magnet_url="magnet:?xt=urn:btih:abc",
             )
             mock_apobj.notify.assert_called_once()
@@ -65,8 +67,10 @@ class TestNotifierSend:
         with patch.object(Notifier, "_init_apprise", return_value=None):
             notifier = Notifier(apprise_urls=["json://localhost"])
             notifier.send_download_notification(
-                title="Test", platform="pc",
-                metascore=80.0, user_score=7.5,
+                title="Test",
+                platform="pc",
+                metascore=80.0,
+                user_score=7.5,
                 magnet_url="magnet:?xt=urn:btih:abc",
             )
 
@@ -76,8 +80,10 @@ class TestNotifierSend:
         with patch.object(Notifier, "_init_apprise", return_value=mock_apobj):
             notifier = Notifier(apprise_urls=["json://localhost"])
             notifier.send_download_notification(
-                title="Test", platform="pc",
-                metascore=80.0, user_score=7.5,
+                title="Test",
+                platform="pc",
+                metascore=80.0,
+                user_score=7.5,
                 magnet_url="magnet:?xt=urn:btih:abc",
             )
 

@@ -159,11 +159,16 @@ class FitGirlSource:
                 continue
             cleaned_title = _clean_title(raw_title)
             magnet_url = self._extract_magnet(item, link)
-            entries.append(GameEntry(
-                title=cleaned_title, source_title=raw_title,
-                source=self.source_name, platform=self._platform,
-                magnet_url=magnet_url or "", source_url=link,
-            ))
+            entries.append(
+                GameEntry(
+                    title=cleaned_title,
+                    source_title=raw_title,
+                    source=self.source_name,
+                    platform=self._platform,
+                    magnet_url=magnet_url or "",
+                    source_url=link,
+                )
+            )
         return entries
 
     def _extract_magnet(self, item: dict[str, Any], link: str) -> str | None:

@@ -98,6 +98,7 @@ class TestBuildKwargs:
             TorrentClientConfig,
         )
         from gamarr.scheduler import _build_kwargs
+
         config = Config(
             general=GeneralConfig(daemon_mode="foreground", db_path=":memory:"),
             schedule=ScheduleConfig(
@@ -122,7 +123,6 @@ class TestBuildKwargs:
 
 
 class TestResolveCachePath:
-
     def test_cache_path_with_memory(self) -> None:
         from gamarr.scheduler import _resolve_cache_path
 
@@ -141,13 +141,12 @@ class TestDaemonMode:
     def test_run_daemon_creates_scheduler(self) -> None:
         """Mock BackgroundScheduler to test _run_daemon."""
         from gamarr.scheduler import _run_daemon
-        from gamarr.config import Config
 
         with patch("gamarr.scheduler.BackgroundScheduler") as mock_sched_cls:
             mock_sched = MagicMock()
             mock_sched_cls.return_value = mock_sched
             with patch("gamarr.scheduler.signal") as mock_signal:
-                mock_shutdown = MagicMock()
+                mock_shutdown = MagicMock()  # noqa: F841
                 mock_signal.signal.return_value = None
 
                 config = MagicMock()
@@ -185,25 +184,14 @@ class TestDaemonMode:
                     mock_sched.start.assert_called_once()
                     mock_signal.signal.assert_any_call(mock_signal.SIGINT, mock_shutdown_event)
                     mock_sched.shutdown.assert_called_once()
-
-    def test_run_daemon_with_run_on_start_false(self) -> None:
-        """When run_on_start is False, the first run is delayed."""
-        from gamarr.scheduler import _run_daemon
-        from gamarr.config import Config
-
-        with patch("gamarr.scheduler.BackgroundScheduler") as mock_sched_cls:
-            mock_sched = MagicMock()
             mock_sched_cls.return_value = mock_sched
 
-
     def test_run_daemon_with_run_on_start_false(self) -> None:
         """When run_on_start is False, the first run is delayed."""
+
         from gamarr.scheduler import _run_daemon
-        from datetime import datetime, timedelta
 
-        with patch("gamarr.scheduler.BackgroundScheduler") as mock_sched_cls, \
-             patch("gamarr.scheduler.signal"):
-
+        with patch("gamarr.scheduler.BackgroundScheduler") as mock_sched_cls, patch("gamarr.scheduler.signal"):
             mock_sched = MagicMock()
             mock_sched_cls.return_value = mock_sched
 

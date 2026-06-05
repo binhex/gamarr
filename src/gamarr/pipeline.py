@@ -42,7 +42,7 @@ def _evaluate_scores(
     mc_result: Any,
     cfg: AcquisitionConfig,
 ) -> str:
-    if mc_result.metascore is None and mc_result.user_score is None:
+    if mc_result.metascore is None or mc_result.user_score is None:
         return "Failed"
 
     if _score_check(mc_result.metascore, cfg.min_metascore):
@@ -156,11 +156,17 @@ def _record_result(
 ) -> dict[str, Any]:
     """Record a result in the database and return a result dict."""
     db.record_processed(
-        source=source, source_title=source_title, source_url=source_url,
-        game_title=game_title, platform=platform,
-        metascore=metascore, user_score=user_score,
-        result=result, result_details=result_details,
-        magnet_url=magnet_url, torrent_tag=torrent_tag,
+        source=source,
+        source_title=source_title,
+        source_url=source_url,
+        game_title=game_title,
+        platform=platform,
+        metascore=metascore,
+        user_score=user_score,
+        result=result,
+        result_details=result_details,
+        magnet_url=magnet_url,
+        torrent_tag=torrent_tag,
     )
     return {
         "result": result,
@@ -203,67 +209,107 @@ def _process_entry(
     return _handle_delivery(db, qbt, notifier, entry, game_title, metascore, user_score)
 
 
-def _handle_game_not_found(db: Database, entry: GameEntry,
-                            mc_result: Any) -> dict[str, Any]:
+def _handle_game_not_found(db: Database, entry: GameEntry, mc_result: Any) -> dict[str, Any]:
     """Record that a game was not found on Metacritic."""
     details = "Game not found on Metacritic"
     if not entry.magnet_url:
         details += " (no magnet URL)"
     return _record_result(
-        db, source=entry.source, source_title=entry.source_title,
-        source_url=entry.source_url, game_title=entry.title,
-        platform=entry.platform, result="Failed", result_details=details,
+        db,
+        source=entry.source,
+        source_title=entry.source_title,
+        source_url=entry.source_url,
+        game_title=entry.title,
+        platform=entry.platform,
+        result="Failed",
+        result_details=details,
     )
 
 
-def _handle_score_failure(db: Database, notifier: Notifier, entry: GameEntry,
-                           game_title: str, metascore: float | None,
-                           user_score: float | None) -> dict[str, Any]:
+def _handle_score_failure(
+    db: Database,
+    notifier: Notifier,
+    entry: GameEntry,
+    game_title: str,
+    metascore: float | None,
+    user_score: float | None,
+) -> dict[str, Any]:
     """Record that a game failed score checks."""
     details = f"Metascore {metascore}, User score {user_score} below thresholds"
     notifier.send_failure_notification(title=game_title, reason=details)
     return _record_result(
-        db, source=entry.source, source_title=entry.source_title,
-        source_url=entry.source_url, game_title=game_title,
-        platform=entry.platform, metascore=metascore, user_score=user_score,
-        result="Failed", result_details="Score below thresholds",
+        db,
+        source=entry.source,
+        source_title=entry.source_title,
+        source_url=entry.source_url,
+        game_title=game_title,
+        platform=entry.platform,
+        metascore=metascore,
+        user_score=user_score,
+        result="Failed",
+        result_details="Score below thresholds",
     )
 
 
-def _handle_delivery(db: Database, qbt: QBittorrentClient, notifier: Notifier,
-                      entry: GameEntry, game_title: str,
-                      metascore: float | None,
-                      user_score: float | None) -> dict[str, Any]:
+def _handle_delivery(
+    db: Database,
+    qbt: QBittorrentClient,
+    notifier: Notifier,
+    entry: GameEntry,
+    game_title: str,
+    metascore: float | None,
+    user_score: float | None,
+) -> dict[str, Any]:
     """Handle magnet delivery to qBittorrent or record failure."""
     magnet_url = entry.magnet_url or ""
     if not magnet_url:
         return _record_result(
-            db, source=entry.source, source_title=entry.source_title,
-            source_url=entry.source_url, game_title=game_title,
-            platform=entry.platform, metascore=metascore, user_score=user_score,
-            result="Failed", result_details="No magnet URL available",
+            db,
+            source=entry.source,
+            source_title=entry.source_title,
+            source_url=entry.source_url,
+            game_title=game_title,
+            platform=entry.platform,
+            metascore=metascore,
+            user_score=user_score,
+            result="Failed",
+            result_details="No magnet URL available",
         )
     tag = qbt.add_torrent(magnet_url=magnet_url, title=game_title)
     if tag:
         notifier.send_download_notification(
-            title=game_title, platform=entry.platform,
-            metascore=metascore, user_score=user_score,
+            title=game_title,
+            platform=entry.platform,
+            metascore=metascore,
+            user_score=user_score,
             magnet_url=magnet_url,
         )
         logger.info("✓ Sent '{}' to qBittorrent (tag: {})", game_title, tag)
         result = _record_result(
-            db, source=entry.source, source_title=entry.source_title,
-            source_url=entry.source_url, game_title=game_title,
-            platform=entry.platform, metascore=metascore, user_score=user_score,
+            db,
+            source=entry.source,
+            source_title=entry.source_title,
+            source_url=entry.source_url,
+            game_title=game_title,
+            platform=entry.platform,
+            metascore=metascore,
+            user_score=user_score,
             result="Passed",
             result_details=f"Metascore {metascore}, User score {user_score}",
-            magnet_url=magnet_url, torrent_tag=str(tag),
+            magnet_url=magnet_url,
+            torrent_tag=str(tag),
         )
         result["torrent_tag"] = str(tag)
         return result
     return _record_result(
-        db, source=entry.source, source_title=entry.source_title,
-        source_url=entry.source_url, game_title=game_title,
-        platform=entry.platform, metascore=metascore, user_score=user_score,
-        result="Error", result_details="Failed to add torrent to qBittorrent",
+        db,
+        source=entry.source,
+        source_title=entry.source_title,
+        source_url=entry.source_url,
+        game_title=game_title,
+        platform=entry.platform,
+        metascore=metascore,
+        user_score=user_score,
+        result="Error",
+        result_details="Failed to add torrent to qBittorrent",
     )
