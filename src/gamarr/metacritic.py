@@ -614,6 +614,26 @@ class MetacriticClient:
                 return str(game.get("slug", ""))
         return None
 
+    def scan_recent_games(
+        self, platform: str, *, max_pages: int = 10, browse_cache_ttl_hours: int = 4
+    ) -> list[dict[str, Any]]:
+        """Return all games from Metacritic browse pages.
+
+        Stops early when a page returns fewer items than expected
+        (signalling the end of the catalog).
+
+        Returns a list of game dicts with keys ``title``, ``slug``,
+        ``score``, ``critic_review_count``, ``user_rating``,
+        ``user_review_count``.
+        """
+        all_games: list[dict[str, Any]] = []
+        for page_number in range(1, max_pages + 1):
+            games = self._fetch_browse_page(platform, page_number, browse_cache_ttl_hours)
+            if not games:
+                break
+            all_games.extend(games)
+        return all_games
+
 
 def _normalise_for_compare(text: str) -> str:
     text = text.lower().strip()

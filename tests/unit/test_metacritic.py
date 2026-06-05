@@ -611,3 +611,18 @@ class TestScanBrowseCacheHit:
         result = _find_game_details_in_nuxt_data(data)
         assert result is not None
         assert "great game" in result["description"]
+
+
+class TestScanRecentGames:
+    """Metacritic browse-page scanning for discovery."""
+
+    def test_scan_recent_games_returns_list(self) -> None:
+        """With no network, scan returns empty list (not crash)."""
+        from unittest.mock import patch
+
+        from gamarr.metacritic import MetacriticClient
+
+        client = MetacriticClient(cache_path=":memory:")
+        with patch.object(client, "_fetch_browse_page", return_value=None):
+            result = client.scan_recent_games("pc", max_pages=1)
+        assert result == []
