@@ -526,3 +526,17 @@ class TestScanBrowseCacheHit:
         assert result is not None
         assert result.metascore == 96.0
         assert result.slug == "elden-ring-2022"
+
+    def test_extracts_description(self) -> None:
+        """Description should be extracted from Nuxt data."""
+        from gamarr.metacritic import _find_game_details_in_nuxt_data
+
+        data = [
+            {"score": 1, "reviewCount": 2, "userScore": {"score": 3, "reviewCount": 4}},
+            {"mustPlay": False, "genres": [{"name": "Action"}],
+             "releaseDate": "2025-01-01", "description": "A great game about action"},
+            "x" * 2000,
+        ]
+        result = _find_game_details_in_nuxt_data(data)
+        assert result is not None
+        assert "great game" in result["description"]
