@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 from gamarr.pipeline import AcquisitionConfig, run_acquisition
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class TestAcquisitionConfig:
@@ -678,6 +682,37 @@ class TestEscapeOr:
 
         assert _escape_or(None, "?") == "?"
         assert _escape_or(None, "N/A") == "N/A"
+
+
+class TestMetacriticBrowse:
+    """Metacritic browse discovery phase."""
+
+    def test_browse_qualifying_games_inserts_pending(self, tmp_path: Path) -> None:
+        from gamarr.database import Database
+        from gamarr.pipeline import _process_browse_games
+
+        db = Database(str(tmp_path / "test.db"))
+        browse_games = [
+            {
+                "title": "Elden Ring",
+                "slug": "elden-ring",
+                "score": 96,
+                "critic_review_count": 120,
+                "user_rating": 8.5,
+                "user_review_count": 5000,
+            },
+        ]
+        thresholds = {
+            "min_metascore": 75,
+            "min_metascore_reviews": 5,
+            "min_user_score": 7.5,
+            "min_user_reviews": 10,
+        }
+        _process_browse_games(browse_games, "pc", db, thresholds, pending_days=30)
+        pending = db.get_pending(platform="pc")
+        assert len(pending) == 1
+        assert pending[0].slug == "elden-ring"
+        db.close()
 
 
 class TestLogGameDetails:

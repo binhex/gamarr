@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -221,6 +222,81 @@ def run_acquisition(
         source.close()
         mc.close()
         db.close()
+
+
+def _process_browse_games(
+    browse_games: list[dict[str, Any]],
+    platform: str,
+    db: Database,
+    thresholds: dict[str, Any],
+    *,
+    pending_days: int = 30,
+) -> int:
+    """Evaluate browse-page games and insert qualifying ones into the pending queue.
+
+    Browse listings from ``_parse_browse_page`` already include scores
+    in their dict (``score`` = critic metascore, ``user_rating`` = user
+    score).  Games that pass the thresholds are inserted into
+    ``pending_games``.  Already-processed or already-pending games are
+    skipped.
+
+    Args:
+        browse_games: List from ``_parse_browse_page``.
+        platform: Target platform name.
+        db: Database instance.
+        thresholds: Dict with ``min_metascore`` keys.
+        pending_days: How many days to keep the game pending before expiry.
+
+    Returns:
+        Number of new pending games added.
+    """
+    new_count = 0
+    for game in browse_games:
+        slug = game.get("slug", "")
+        title = game.get("title", "")
+        if not slug or not title:
+            continue
+
+        if db.is_processed("metacritic", f"mc:{slug}") or db.is_pending(slug):
+            continue
+
+        metascore = game.get("score")
+        metascore_reviews = game.get("critic_review_count")
+        user_score = game.get("user_rating")
+        user_reviews = game.get("user_review_count")
+
+        if metascore is None or user_score is None:
+            continue
+        if metascore < thresholds["min_metascore"]:
+            continue
+        if (metascore_reviews or 0) < thresholds["min_metascore_reviews"]:
+            continue
+        if user_score < thresholds["min_user_score"]:
+            continue
+        if (user_reviews or 0) < thresholds["min_user_reviews"]:
+            continue
+
+        expires_at = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=pending_days)).isoformat()
+
+        db.record_pending(
+            slug=slug,
+            game_title=title,
+            platform=platform,
+            metascore=float(metascore) if metascore is not None else None,
+            metascore_reviews=metascore_reviews,
+            user_score=float(user_score) if user_score is not None else None,
+            user_reviews=user_reviews,
+            expires_at=expires_at,
+        )
+        new_count += 1
+        logger.info(
+            "Added pending game: '{}' (slug: {}, expires {})",
+            title,
+            slug,
+            expires_at,
+        )
+
+    return new_count
 
 
 def _record_result(
