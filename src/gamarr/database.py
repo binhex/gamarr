@@ -40,7 +40,10 @@ class Database:
 
     def __init__(self, db_path: str | Path) -> None:
         path = Path(db_path)
-        if path.suffix:
+        # Support in-memory SQLite database
+        if str(path) == ":memory:":
+            self._db_path = ":memory:"
+        elif path.suffix:
             self._db_path = str(path)
         else:
             path.mkdir(parents=True, exist_ok=True)

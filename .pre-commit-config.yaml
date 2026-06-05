@@ -36,6 +36,10 @@ repos:
           - tenacity
           - pydantic-settings
           - loguru
+          - sqlalchemy
+          - beautifulsoup4
+          - lxml
+          - xmltodict
 
   - repo: https://github.com/PyCQA/autoflake
     rev: v2.3.1

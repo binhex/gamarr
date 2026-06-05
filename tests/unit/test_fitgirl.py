@@ -44,6 +44,64 @@ class TestTitleCleaning:
         assert result == "Game Name"
 
 
+class TestExtractMagnetFromHtml:
+    """Magnet link extraction from HTML content."""
+
+    def test_extract_magnet_found(self) -> None:
+        from gamarr.sources.fitgirl import _extract_magnet_from_html
+
+        html = '<a href="magnet:?xt=urn:btih:abc123&dn=game">magnet</a>'
+        result = _extract_magnet_from_html(html)
+        assert result == "magnet:?xt=urn:btih:abc123&dn=game"
+
+    def test_extract_magnet_not_found(self) -> None:
+        from gamarr.sources.fitgirl import _extract_magnet_from_html
+
+        html = "<p>No magnet here</p>"
+        result = _extract_magnet_from_html(html)
+        assert result is None
+
+    def test_extract_magnet_empty(self) -> None:
+        from gamarr.sources.fitgirl import _extract_magnet_from_html
+
+        result = _extract_magnet_from_html("")
+        assert result is None
+
+
+class TestGetRssItems:
+    """RSS item extraction from parsed XML dict."""
+
+    def test_get_rss_items_multiple(self) -> None:
+        from gamarr.sources.fitgirl import _get_rss_items
+
+        feed = {"rss": {"channel": {"item": [{"title": "Game 1"}, {"title": "Game 2"}]}}}
+        items = _get_rss_items(feed)
+        assert items is not None
+        assert len(items) == 2
+
+    def test_get_rss_items_single_as_dict(self) -> None:
+        from gamarr.sources.fitgirl import _get_rss_items
+
+        feed = {"rss": {"channel": {"item": {"title": "Single Game"}}}}
+        items = _get_rss_items(feed)
+        assert items is not None
+        assert len(items) == 1
+
+    def test_get_rss_items_no_items(self) -> None:
+        from gamarr.sources.fitgirl import _get_rss_items
+
+        feed: dict = {"rss": {"channel": {}}}
+        items = _get_rss_items(feed)
+        assert items is None
+
+    def test_get_rss_items_malformed(self) -> None:
+        from gamarr.sources.fitgirl import _get_rss_items
+
+        feed = {"rss": "not-a-dict"}
+        items = _get_rss_items(feed)
+        assert items is None
+
+
 class TestFitGirlSource:
     """FitGirlSource construction and protocol conformance."""
 
@@ -65,3 +123,106 @@ class TestFitGirlSource:
         source = FitGirlSource("http://example.com/feed.xml", db_path=":memory:")
         entries = source.fetch_new()
         assert isinstance(entries, list)
+
+    def test_fetch_new_http_error(self) -> None:
+        """When requests.get raises, fetch_new returns empty list."""
+        from unittest.mock import patch
+
+        import requests
+
+        source = FitGirlSource("http://example.com/feed.xml", db_path=":memory:")
+        with patch(
+            "gamarr.sources.fitgirl.requests.get", side_effect=requests.exceptions.ConnectionError("mock error")
+        ):
+            entries = source.fetch_new()
+        assert entries == []
+
+    def test_fetch_new_with_valid_rss(self) -> None:
+        """Mock a valid RSS feed response and verify parsing."""
+        from unittest.mock import MagicMock, patch
+
+        rss_xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<rss version="2.0"><channel>'
+            "<item><title>Elden Ring (v1.12 + DLC, MULTi13) [Repack]</title>"
+            "<link>https://fitgirl-repacks.site/elden-ring/</link>"
+            "<description>magnet:?xt=urn:btih:abc123</description>"
+            "</item>"
+            "<item><title>Hades II [Repack]</title>"
+            "<link>https://fitgirl-repacks.site/hades-ii/</link>"
+            "<description>No magnet here</description>"
+            "</item>"
+            "</channel></rss>"
+        )
+
+        mock_resp = MagicMock()
+        mock_resp.text = rss_xml
+        mock_resp.raise_for_status.return_value = None
+
+        source = FitGirlSource("http://example.com/feed.xml", db_path=":memory:")
+        with patch("gamarr.sources.fitgirl.requests.get", return_value=mock_resp):
+            entries = source.fetch_new()
+        assert len(entries) == 2
+        assert entries[0].title == "Elden Ring"
+        assert entries[0].source == "fitgirl"
+        assert entries[0].magnet_url == "magnet:?xt=urn:btih:abc123"
+        assert entries[1].title == "Hades II"
+
+    def test_fetch_new_bad_xml(self) -> None:
+        """When RSS returns invalid XML, fetch_new returns empty list."""
+        from unittest.mock import MagicMock, patch
+
+        mock_resp = MagicMock()
+        mock_resp.text = "not valid xml"
+        mock_resp.raise_for_status.return_value = None
+
+        source = FitGirlSource("http://example.com/feed.xml", db_path=":memory:")
+        with patch("gamarr.sources.fitgirl.requests.get", return_value=mock_resp):
+            entries = source.fetch_new()
+        assert entries == []
+
+    def test_fetch_new_empty_channel(self) -> None:
+        """When RSS has no items, fetch_new returns empty list."""
+        from unittest.mock import MagicMock, patch
+
+        rss_xml = '<?xml version="1.0"?><rss version="2.0"><channel></channel></rss>'
+        mock_resp = MagicMock()
+        mock_resp.text = rss_xml
+        mock_resp.raise_for_status.return_value = None
+
+        source = FitGirlSource("http://example.com/feed.xml", db_path=":memory:")
+        with patch("gamarr.sources.fitgirl.requests.get", return_value=mock_resp):
+            entries = source.fetch_new()
+        assert entries == []
+
+    def test_extract_magnet_fallback_failure(self) -> None:
+        """When RSS description has no magnet and article fetch fails, magnet is empty."""
+        from unittest.mock import MagicMock, patch
+
+        import requests
+
+        # RSS with no magnet in description
+        rss_xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<rss version="2.0"><channel>'
+            "<item><title>No Magnet Game [Repack]</title>"
+            "<link>https://fitgirl-repacks.site/no-magnet/</link>"
+            "<description>No magnet here at all</description>"
+            "</item>"
+            "</channel></rss>"
+        )
+
+        # First call (RSS fetch) succeeds, second call (article fetch) fails
+        mock_rss_resp = MagicMock()
+        mock_rss_resp.text = rss_xml
+        mock_rss_resp.raise_for_status.return_value = None
+
+        source = FitGirlSource("http://example.com/feed.xml", db_path=":memory:")
+        mock_get = MagicMock()
+        mock_get.side_effect = [mock_rss_resp, requests.exceptions.ConnectionError("mock fail")]
+
+        with patch("gamarr.sources.fitgirl.requests.get", mock_get):
+            entries = source.fetch_new()
+        assert len(entries) == 1
+        assert entries[0].title == "No Magnet Game"
+        assert entries[0].magnet_url == ""

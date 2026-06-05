@@ -113,6 +113,14 @@ ignore_missing_imports = true
 module = ["apscheduler", "apscheduler.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = ["bs4", "bs4.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["sqlalchemy", "sqlalchemy.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 minversion = "7.0"
