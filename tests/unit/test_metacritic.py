@@ -533,8 +533,12 @@ class TestScanBrowseCacheHit:
 
         data = [
             {"score": 1, "reviewCount": 2, "userScore": {"score": 3, "reviewCount": 4}},
-            {"mustPlay": False, "genres": [{"name": "Action"}],
-             "releaseDate": "2025-01-01", "description": "A great game about action"},
+            {
+                "mustPlay": False,
+                "genres": [{"name": "Action"}],
+                "releaseDate": "2025-01-01",
+                "description": "A great game about action",
+            },
             "x" * 2000,
         ]
         result = _find_game_details_in_nuxt_data(data)

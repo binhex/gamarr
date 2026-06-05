@@ -301,6 +301,7 @@ class MetacriticClient:
                 genres=None,
                 must_play=None,
                 release_date=None,
+                description=None,
             )
 
         url = f"https://www.metacritic.com/game/{slug}/"
@@ -340,6 +341,7 @@ class MetacriticClient:
                 genres=parsed.get("genres"),
                 must_play=parsed.get("must_play"),
                 release_date=parsed.get("release_date"),
+                description=parsed.get("description"),
             )
 
         except requests.RequestException as exc:
