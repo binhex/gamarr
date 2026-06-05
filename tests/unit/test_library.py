@@ -67,6 +67,8 @@ class TestLibraryScanner:
     def test_check_game_exact_match(self, tmp_path: Path) -> None:
         game_dir = tmp_path / "Elden Ring"
         game_dir.mkdir()
+        (game_dir / "game.iso").write_text("")
+        (game_dir / "game.exe").write_text("")
         scanner = LibraryScanner([str(tmp_path)])
         match = scanner.check_game("Elden Ring")
         assert match is not None
@@ -76,6 +78,7 @@ class TestLibraryScanner:
     def test_check_game_not_found(self, tmp_path: Path) -> None:
         game_dir = tmp_path / "Some Game"
         game_dir.mkdir()
+        (game_dir / "game.exe").write_text("")
         scanner = LibraryScanner([str(tmp_path)])
         match = scanner.check_game("Elden Ring")
         assert match is None
@@ -83,6 +86,7 @@ class TestLibraryScanner:
     def test_check_game_partial_match(self, tmp_path: Path) -> None:
         game_dir = tmp_path / "Elden Ring Deluxe Edition"
         game_dir.mkdir()
+        (game_dir / "game.exe").write_text("")
         scanner = LibraryScanner([str(tmp_path)])
         match = scanner.check_game("Elden Ring")
         assert match is not None
@@ -91,6 +95,8 @@ class TestLibraryScanner:
     def test_check_game_partial_reverse(self, tmp_path: Path) -> None:
         game_dir = tmp_path / "Elden Ring"
         game_dir.mkdir()
+        (game_dir / "game.iso").write_text("")
+        (game_dir / "game.exe").write_text("")
         scanner = LibraryScanner([str(tmp_path)])
         match = scanner.check_game("Elden Ring Deluxe Edition")
         assert match is not None
@@ -99,7 +105,10 @@ class TestLibraryScanner:
     def test_mixed_structure_dirs_and_files(self, tmp_path: Path) -> None:
         game_dir = tmp_path / "Hades II"
         game_dir.mkdir()
-        (tmp_path / "cyberpunk-2077.iso").write_text("")
+        (game_dir / "game.exe").write_text("")
+        cp_path = tmp_path / "Cyberpunk 2077"
+        cp_path.mkdir()
+        (cp_path / "game.iso").write_text("")
         scanner = LibraryScanner([str(tmp_path)])
         assert scanner.check_game("Hades II") is not None
         assert scanner.check_game("Cyberpunk 2077") is not None

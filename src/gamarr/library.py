@@ -98,15 +98,30 @@ def _partial_match(entry_norm: str, index_key: str) -> float | None:
     """Return a similarity ratio if *entry_norm* and *index_key* partially match.
 
     One must be a substring of the other with a minimum length of 5
-    characters. Returns a float ratio (0.0 to 1.0) on match, None otherwise.
+    characters. The shorter string must have at least 2 word tokens to
+    prevent false positives from single-word data folder names.
+    Returns a float ratio (0.0 to 1.0) on match, None otherwise.
     """
     if len(entry_norm) < 5 or len(index_key) < 5:
         return None
-    if entry_norm in index_key or index_key in entry_norm:
-        shorter = min(len(entry_norm), len(index_key))
-        longer = max(len(entry_norm), len(index_key))
-        return shorter / longer
+    if not (entry_norm in index_key or index_key in entry_norm):
+        return None
+    shorter = min(len(entry_norm), len(index_key))
+    longer = max(len(entry_norm), len(index_key))
+    ratio = shorter / longer
+    # Require at least 2 word tokens in the shorter string
+    # This prevents single-word data folder names like "street"
+    # from matching multi-word game titles like "carx street"
+    if len(shorter_str(entry_norm, index_key).split()) < 2:
+        return None
+    if ratio >= 0.4:
+        return ratio
     return None
+
+
+def shorter_str(a: str, b: str) -> str:
+    """Return the shorter of two strings."""
+    return a if len(a) <= len(b) else b
 
 
 class LibraryScanner:
@@ -130,18 +145,24 @@ class LibraryScanner:
         logger.debug("Library index built: {} entries from {} path(s)", len(self._index), len(self._paths))
 
     def _index_path(self, lib_path: str) -> None:
-        """Walk a single library path and index its contents."""
+        """Walk a library path and index game directories by scanning for game files.
+
+        For each directory that contains at least one game file (e.g. .exe, .iso,
+        .zip), the directory's basename is indexed. This avoids indexing deeply
+        nested non-game data folders like "pc/data/maps/props/street".
+        """
         for root, dirs, files in os.walk(lib_path):
-            for dir_name in dirs:
-                if dir_name.startswith("."):
-                    continue
-                norm = _normalise_name(dir_name)
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            if any(self._is_game_file(f) for f in files):
+                parent = os.path.basename(root)
+                norm = _normalise_name(parent)
                 if norm:
-                    self._index.setdefault(norm, []).append(os.path.join(root, dir_name))
-            for file_name in files:
-                norm = _normalise_name(file_name)
-                if norm:
-                    self._index.setdefault(norm, []).append(os.path.join(root, file_name))
+                    self._index.setdefault(norm, []).append(root)
+
+    @staticmethod
+    def _is_game_file(filename: str) -> bool:
+        """Return True if *filename* has a known game file extension."""
+        return _strip_extension(filename) != filename
 
     def check_game(self, title: str) -> LibraryMatch | None:
         if not self._index:

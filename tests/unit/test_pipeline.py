@@ -566,7 +566,7 @@ class TestPipelineLibraryCheck:
             patch("gamarr.library.os.walk") as mock_walk,
         ):
             mock_isdir.return_value = True
-            mock_walk.return_value = [("/games", ["Elden Ring"], [])]
+            mock_walk.return_value = [("/games", ["Elden Ring"], []), ("/games/Elden Ring", [], ["game.exe"])]
 
             mock_source = MagicMock()
             mock_source.fetch_new.return_value = [entry]
