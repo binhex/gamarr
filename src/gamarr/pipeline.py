@@ -17,6 +17,48 @@ if TYPE_CHECKING:
     from gamarr.models import GameEntry
 
 
+def _escape_markup(value: object) -> str:
+    """Escape Loguru markup angle brackets in user-provided values.
+
+    Loguru's ``opt(colors=True)`` interprets ``<color>`` tags.  User-provided
+    game titles or descriptions may contain literal ``<`` or ``>`` characters
+    that would be incorrectly parsed as markup tags.
+    """
+    return str(value).replace("<", "\\<").replace(">", "\\>")
+
+
+def _log_game_details(mc_result: Any) -> None:
+    """Log a colorized summary line for a looked-up game (gamecritic-style).
+
+    The format matches ``/data/gamecritic/gamecritic.py`` and includes:
+    title, Metascore, critic review count, user score, user review count,
+    genre(s), must-play status, and release date.
+
+    Args:
+        mc_result: A :class:`ScoreResult` or anything with similar attributes.
+    """
+    if mc_result is None:
+        return
+    title = _escape_markup(mc_result.title)
+    ms = _escape_markup(mc_result.metascore) if mc_result.metascore is not None else "TBD"
+    ms_r = _escape_markup(mc_result.metascore_review_count) if mc_result.metascore_review_count is not None else "?"
+    us = _escape_markup(mc_result.user_score) if mc_result.user_score is not None else "TBD"
+    us_r = _escape_markup(mc_result.user_review_count) if mc_result.user_review_count is not None else "?"
+    genre = ", ".join(mc_result.genres) if mc_result.genres else "N/A"
+    must_play = "<green><bold>Yes</bold></green>" if mc_result.must_play else "<dim>No</dim>"
+    release = _escape_markup(mc_result.release_date) if mc_result.release_date else "N/A"
+    sep = " <dim>|</dim> "
+
+    logger.opt(colors=True).info(
+        f"<cyan><bold>{title}</bold></cyan>"
+        f"{sep}<green>Metascore: <bold>{ms}</bold></green> <dim>({ms_r} reviews)</dim>"
+        f"{sep}<yellow>User: <bold>{us}</bold></yellow> <dim>({us_r} reviews)</dim>"
+        f"{sep}<magenta>Genre: {genre}</magenta>"
+        f"{sep}Must Play: {must_play}"
+        f"{sep}Released: <dim>{release}</dim>"
+    )
+
+
 @dataclass
 class AcquisitionConfig:
     """Thresholds and settings for the acquisition run."""
@@ -230,6 +272,8 @@ def _process_entry(
 
     if mc_result is None:
         return _handle_game_not_found(db, entry)
+
+    _log_game_details(mc_result)
 
     game_title = mc_result.title
     metascore = mc_result.metascore

@@ -68,6 +68,9 @@ class TestRunAcquisition:
                 user_score=8.0,
                 metascore_review_count=50,
                 user_review_count=200,
+                genres=["Action", "RPG"],
+                must_play=True,
+                release_date="2025-01-15",
             )
 
             mock_mc = MagicMock()
@@ -122,6 +125,9 @@ class TestRunAcquisition:
                 user_score=2.0,
                 metascore_review_count=5,
                 user_review_count=10,
+                genres=["Action"],
+                must_play=False,
+                release_date="2025-03-20",
             )
 
             mock_mc = MagicMock()
@@ -317,6 +323,9 @@ class TestPipelineEdgeCases:
                 user_score=8.0,
                 metascore_review_count=50,
                 user_review_count=200,
+                genres=["Action"],
+                must_play=True,
+                release_date="2025-06-01",
             )
             mock_mc = MagicMock()
             mock_mc.lookup_game.return_value = mock_mc_result
@@ -436,6 +445,9 @@ class TestPipelineCoverageGaps:
                 user_score=8.0,
                 metascore_review_count=50,
                 user_review_count=200,
+                genres=["Simulation"],
+                must_play=False,
+                release_date="2025-02-10",
             )
             mock_mc = MagicMock()
             mock_mc.lookup_game.return_value = mock_mc_result
@@ -639,3 +651,14 @@ class TestEvaluateScoresNoneReviews:
             user_review_count=None,
         )
         assert _evaluate_scores(mc_result, cfg) == "Failed"
+
+
+class TestLogGameDetails:
+    """_escape_markup helper for log output."""
+
+    def test_escape_markup_angle_brackets(self) -> None:
+        from gamarr.pipeline import _escape_markup
+
+        assert _escape_markup("<title>") == "\\<title\\>"
+        assert _escape_markup("plain text") == "plain text"
+        assert _escape_markup(42) == "42"
