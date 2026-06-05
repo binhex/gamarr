@@ -1020,3 +1020,637 @@ class TestLogGameDetails:
         assert "?" in msg
         assert "N/A" in msg
         assert "No" in msg
+
+
+class TestSitemapDiscovery:
+    """Sitemap-based game discovery respects days_since_release."""
+
+    def test_process_sitemap_entries_filters_by_days_since_release(self, tmp_path: Path) -> None:
+        """Sitemap entries older than days_since_release should be skipped.
+
+        This reproduces the bug where increasing days_since_release had
+        no effect on the discovery path — the browse pages (1-10) only
+        contain unreviewed indies, and there was no sitemap-iterative
+        discovery that actually used days_since_release.
+        """
+        import datetime
+        import types
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import AcquisitionConfig, _process_sitemap_entries
+
+        db = Database(str(tmp_path / "gamarr.db"))
+
+        recent_date = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=30)).strftime("%Y-%m-%d")
+        old_date = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=365)).strftime("%Y-%m-%d")
+
+        db.rebuild_source_titles(
+            "fitgirl",
+            [
+                {"title": "Recent Game", "url": "https://fitgirl-repacks.site/recent-game/"},
+                {"title": "Old Game", "url": "https://fitgirl-repacks.site/old-game/"},
+            ],
+        )
+
+        cfg = AcquisitionConfig(
+            min_metascore=75,
+            min_metascore_reviews=5,
+            min_user_score=7.5,
+            min_user_reviews=10,
+            days_since_release=90,
+        )
+
+        result_recent = types.SimpleNamespace(
+            title="Recent Game",
+            slug="recent-game",
+            metascore=90.0,
+            metascore_review_count=50,
+            user_score=8.0,
+            user_review_count=200,
+            genres=["Action"],
+            must_play=False,
+            release_date=recent_date,
+            description=None,
+        )
+        result_old = types.SimpleNamespace(
+            title="Old Game",
+            slug="old-game",
+            metascore=90.0,
+            metascore_review_count=50,
+            user_score=8.0,
+            user_review_count=200,
+            genres=["Action"],
+            must_play=False,
+            release_date=old_date,
+            description=None,
+        )
+
+        def _lookup_side_effect(title: str, **kwargs: object) -> object:
+            if "Recent" in title:
+                return result_recent
+            return result_old
+
+        mock_mc = MagicMock()
+        mock_mc.lookup_game.side_effect = _lookup_side_effect
+
+        mock_qbt = MagicMock()
+        mock_qbt.add_torrent.return_value = "gamarr-test"
+        mock_notifier = MagicMock()
+        magnet_fetcher = MagicMock(return_value="magnet:?xt=urn:btih:test")
+
+        results = _process_sitemap_entries(
+            source_name="fitgirl",
+            mc=mock_mc,
+            db=db,
+            cfg=cfg,
+            qbt=mock_qbt,
+            notifier=mock_notifier,
+            max_entries=10,
+            magnet_fetcher=magnet_fetcher,
+        )
+
+        # Both entries are processed; Recent Game (30d) passes days_since_release=90,
+        # Old Game (365d) fails the age check
+        assert len(results) == 2, f"Expected 2 results, got {len(results)}: {results}"
+        passed = [r for r in results if r["result"] == "Passed"]
+        failed = [r for r in results if r["result"] == "Failed"]
+        assert len(passed) == 1, f"Expected 1 passed, got {len(passed)}: {passed}"
+        assert len(failed) == 1, f"Expected 1 failed, got {len(failed)}: {failed}"
+        assert passed[0]["game_title"] == "Recent Game"
+
+        assert mock_mc.lookup_game.call_count == 2
+        mock_qbt.add_torrent.assert_called_once()
+        # Magnet fetcher was called for the passing game (whichever it was)
+        assert magnet_fetcher.call_count == 1
+        assert any("recent" in call[0][0].lower() for call in magnet_fetcher.call_args_list)
+
+        assert db.is_processed("fitgirl", "https://fitgirl-repacks.site/recent-game/") is True
+        assert db.is_processed("fitgirl", "https://fitgirl-repacks.site/old-game/") is True
+
+        db.close()
+
+    def test_process_sitemap_entries_skips_already_processed(self, tmp_path: Path) -> None:
+        """Sitemap entries already in the history DB should be skipped."""
+        import types
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import AcquisitionConfig, _process_sitemap_entries
+
+        db = Database(str(tmp_path / "gamarr.db"))
+
+        db.record_processed(
+            source="fitgirl",
+            source_title="Already Processed",
+            source_url="https://fitgirl-repacks.site/already-done/",
+            game_title="Already Processed",
+            platform="pc",
+            result="Passed",
+        )
+
+        db.rebuild_source_titles(
+            "fitgirl",
+            [
+                {"title": "Already Processed", "url": "https://fitgirl-repacks.site/already-done/"},
+                {"title": "New Game", "url": "https://fitgirl-repacks.site/new-game/"},
+            ],
+        )
+
+        cfg = AcquisitionConfig(
+            min_metascore=75,
+            min_metascore_reviews=5,
+            min_user_score=7.5,
+            min_user_reviews=10,
+            days_since_release=9999,
+        )
+
+        mock_mc = MagicMock()
+        mock_mc.lookup_game.return_value = types.SimpleNamespace(
+            title="New Game",
+            slug="new-game",
+            metascore=90.0,
+            metascore_review_count=50,
+            user_score=8.0,
+            user_review_count=200,
+            genres=["Action"],
+            must_play=False,
+            release_date=None,
+            description=None,
+        )
+
+        mock_qbt = MagicMock()
+        mock_qbt.add_torrent.return_value = "gamarr-test"
+        mock_notifier = MagicMock()
+        magnet_fetcher = MagicMock(return_value="magnet:?xt=urn:btih:new")
+
+        results = _process_sitemap_entries(
+            source_name="fitgirl",
+            mc=mock_mc,
+            db=db,
+            cfg=cfg,
+            qbt=mock_qbt,
+            notifier=mock_notifier,
+            max_entries=10,
+            magnet_fetcher=magnet_fetcher,
+        )
+
+        assert len(results) == 1
+        assert results[0]["game_title"] == "New Game"
+        mock_mc.lookup_game.assert_called_once()
+        magnet_fetcher.assert_called_once_with("https://fitgirl-repacks.site/new-game/")
+        mock_qbt.add_torrent.assert_called_once()
+
+        db.close()
+
+    def test_process_sitemap_entries_mc_lookup_fails(self, tmp_path: Path) -> None:
+        """When MC lookup returns None, the entry should be recorded as Failed."""
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import AcquisitionConfig, _process_sitemap_entries
+
+        db = Database(str(tmp_path / "gamarr.db"))
+        db.rebuild_source_titles(
+            "fitgirl",
+            [{"title": "Unknown Game", "url": "https://fitgirl-repacks.site/unknown-game/"}],
+        )
+
+        cfg = AcquisitionConfig(
+            min_metascore=75,
+            min_metascore_reviews=5,
+            min_user_score=7.5,
+            min_user_reviews=10,
+            days_since_release=9999,
+        )
+
+        mock_mc = MagicMock()
+        mock_mc.lookup_game.return_value = None  # Game not found on MC
+
+        mock_qbt = MagicMock()
+        mock_notifier = MagicMock()
+        magnet_fetcher = MagicMock()
+
+        results = _process_sitemap_entries(
+            source_name="fitgirl",
+            mc=mock_mc,
+            db=db,
+            cfg=cfg,
+            qbt=mock_qbt,
+            notifier=mock_notifier,
+            max_entries=10,
+            magnet_fetcher=magnet_fetcher,
+        )
+
+        assert len(results) == 1
+        assert results[0]["result"] == "Failed"
+        assert "not found" in results[0]["result_details"].lower()
+        mock_mc.lookup_game.assert_called_once()
+        mock_qbt.add_torrent.assert_not_called()
+        magnet_fetcher.assert_not_called()
+
+        db.close()
+
+    def test_process_sitemap_entries_no_magnet_fails(self, tmp_path: Path) -> None:
+        """When magnet fetcher returns None, the entry should be recorded as Failed."""
+        import datetime
+        import types
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import AcquisitionConfig, _process_sitemap_entries
+
+        db = Database(str(tmp_path / "gamarr.db"))
+        db.rebuild_source_titles(
+            "fitgirl",
+            [{"title": "Recent Game", "url": "https://fitgirl-repacks.site/recent-game/"}],
+        )
+
+        cfg = AcquisitionConfig(
+            min_metascore=75,
+            min_metascore_reviews=5,
+            min_user_score=7.5,
+            min_user_reviews=10,
+            days_since_release=9999,
+        )
+
+        recent_date = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=30)).strftime("%Y-%m-%d")
+
+        mock_mc = MagicMock()
+        mock_mc.lookup_game.return_value = types.SimpleNamespace(
+            title="Recent Game",
+            slug="recent-game",
+            metascore=90.0,
+            metascore_review_count=50,
+            user_score=8.0,
+            user_review_count=200,
+            genres=["Action"],
+            must_play=False,
+            release_date=recent_date,
+            description=None,
+        )
+
+        mock_qbt = MagicMock()
+        mock_notifier = MagicMock()
+        magnet_fetcher = MagicMock(return_value=None)  # No magnet found
+
+        results = _process_sitemap_entries(
+            source_name="fitgirl",
+            mc=mock_mc,
+            db=db,
+            cfg=cfg,
+            qbt=mock_qbt,
+            notifier=mock_notifier,
+            max_entries=10,
+            magnet_fetcher=magnet_fetcher,
+        )
+
+        assert len(results) == 1
+        assert results[0]["result"] == "Failed"
+        assert "magnet" in results[0]["result_details"].lower()
+        mock_mc.lookup_game.assert_called_once()
+        magnet_fetcher.assert_called_once()
+        mock_qbt.add_torrent.assert_not_called()
+
+        db.close()
+
+    def test_process_sitemap_entries_qbt_fails(self, tmp_path: Path) -> None:
+        """When qBittorrent add_torrent fails, the entry should be recorded as Error."""
+        import datetime
+        import types
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import AcquisitionConfig, _process_sitemap_entries
+
+        db = Database(str(tmp_path / "gamarr.db"))
+        db.rebuild_source_titles(
+            "fitgirl",
+            [{"title": "Recent Game", "url": "https://fitgirl-repacks.site/recent-game/"}],
+        )
+
+        cfg = AcquisitionConfig(
+            min_metascore=75,
+            min_metascore_reviews=5,
+            min_user_score=7.5,
+            min_user_reviews=10,
+            days_since_release=9999,
+        )
+
+        recent_date = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=30)).strftime("%Y-%m-%d")
+
+        mock_mc = MagicMock()
+        mock_mc.lookup_game.return_value = types.SimpleNamespace(
+            title="Recent Game",
+            slug="recent-game",
+            metascore=90.0,
+            metascore_review_count=50,
+            user_score=8.0,
+            user_review_count=200,
+            genres=["Action"],
+            must_play=False,
+            release_date=recent_date,
+            description=None,
+        )
+
+        mock_qbt = MagicMock()
+        mock_qbt.add_torrent.return_value = False  # qBittorrent failure
+        mock_notifier = MagicMock()
+        magnet_fetcher = MagicMock(return_value="magnet:?xt=urn:btih:test")
+
+        results = _process_sitemap_entries(
+            source_name="fitgirl",
+            mc=mock_mc,
+            db=db,
+            cfg=cfg,
+            qbt=mock_qbt,
+            notifier=mock_notifier,
+            max_entries=10,
+            magnet_fetcher=magnet_fetcher,
+        )
+
+        assert len(results) == 1
+        assert results[0]["result"] == "Error"
+        assert "torrent" in results[0]["result_details"].lower()
+        mock_mc.lookup_game.assert_called_once()
+        magnet_fetcher.assert_called_once()
+        mock_qbt.add_torrent.assert_called_once()
+
+        db.close()
+
+    def test_process_sitemap_entries_score_fails(self, tmp_path: Path) -> None:
+        """When a game fails score checks, it should be recorded as Failed."""
+        import datetime
+        import types
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import AcquisitionConfig, _process_sitemap_entries
+
+        db = Database(str(tmp_path / "gamarr.db"))
+        db.rebuild_source_titles(
+            "fitgirl",
+            [{"title": "Low Score", "url": "https://fitgirl-repacks.site/low-score/"}],
+        )
+
+        cfg = AcquisitionConfig(
+            min_metascore=75,
+            min_metascore_reviews=5,
+            min_user_score=7.5,
+            min_user_reviews=10,
+            days_since_release=9999,
+        )
+
+        recent_date = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=30)).strftime("%Y-%m-%d")
+
+        mock_mc = MagicMock()
+        # Low metascore should fail thresholds
+        mock_mc.lookup_game.return_value = types.SimpleNamespace(
+            title="Low Score",
+            slug="low-score",
+            metascore=30.0,
+            metascore_review_count=5,
+            user_score=2.0,
+            user_review_count=10,
+            genres=["Action"],
+            must_play=False,
+            release_date=recent_date,
+            description=None,
+        )
+
+        mock_qbt = MagicMock()
+        mock_notifier = MagicMock()
+        magnet_fetcher = MagicMock()
+
+        results = _process_sitemap_entries(
+            source_name="fitgirl",
+            mc=mock_mc,
+            db=db,
+            cfg=cfg,
+            qbt=mock_qbt,
+            notifier=mock_notifier,
+            max_entries=10,
+            magnet_fetcher=magnet_fetcher,
+        )
+
+        assert len(results) == 1
+        assert results[0]["result"] == "Failed"
+        assert "score" in results[0]["result_details"].lower()
+        mock_mc.lookup_game.assert_called_once()
+        mock_qbt.add_torrent.assert_not_called()
+        magnet_fetcher.assert_not_called()
+
+        db.close()
+
+    def test_process_sitemap_entries_exception_isolation(self, tmp_path: Path) -> None:
+        """When one entry raises an exception, the batch should continue."""
+        import datetime
+        import types
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import AcquisitionConfig, _process_sitemap_entries
+
+        db = Database(str(tmp_path / "gamarr.db"))
+        db.rebuild_source_titles(
+            "fitgirl",
+            [
+                {"title": "Good Game", "url": "https://fitgirl-repacks.site/good-game/"},
+                {"title": "Crash Game", "url": "https://fitgirl-repacks.site/crash-game/"},
+                {"title": "Another Good", "url": "https://fitgirl-repacks.site/another-good/"},
+            ],
+        )
+
+        cfg = AcquisitionConfig(
+            min_metascore=75,
+            min_metascore_reviews=5,
+            min_user_score=7.5,
+            min_user_reviews=10,
+            days_since_release=9999,
+        )
+
+        recent_date = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=30)).strftime("%Y-%m-%d")
+
+        good_result = types.SimpleNamespace(
+            title="Good Game",
+            slug="good-game",
+            metascore=90.0,
+            metascore_review_count=50,
+            user_score=8.0,
+            user_review_count=200,
+            genres=["Action"],
+            must_play=False,
+            release_date=recent_date,
+            description=None,
+        )
+
+        call_count = [0]
+
+        def _side_effect(*args: object, **kwargs: object) -> object:
+            call_count[0] += 1
+            if call_count[0] == 2:
+                raise RuntimeError("Simulated crash")
+            return good_result
+
+        mock_mc = MagicMock()
+        mock_mc.lookup_game.side_effect = _side_effect
+
+        mock_qbt = MagicMock()
+        mock_qbt.add_torrent.return_value = "gamarr-test"
+        mock_notifier = MagicMock()
+        magnet_fetcher = MagicMock(return_value="magnet:?xt=urn:btih:test")
+
+        results = _process_sitemap_entries(
+            source_name="fitgirl",
+            platform="pc",
+            mc=mock_mc,
+            db=db,
+            cfg=cfg,
+            qbt=mock_qbt,
+            notifier=mock_notifier,
+            max_entries=10,
+            magnet_fetcher=magnet_fetcher,
+        )
+
+        assert len(results) == 3, f"Expected 3 results, got {len(results)}: {results}"
+        passed = [r for r in results if r["result"] == "Passed"]
+        errors = [r for r in results if r["result"] == "Error"]
+        assert len(passed) == 2, f"Expected 2 passed, got {len(passed)}"
+        assert len(errors) == 1, f"Expected 1 error, got {len(errors)}"
+
+        db.close()
+
+    def test_default_magnet_fetcher_requests_failure(self) -> None:
+        """_default_magnet_fetcher should return None on HTTP failure."""
+        from unittest.mock import patch
+
+        from gamarr.pipeline import _default_magnet_fetcher
+
+        with patch("gamarr.pipeline.requests.get") as mock_get:
+            mock_get.side_effect = ConnectionError("Network error")
+            result = _default_magnet_fetcher("https://example.com/")
+            assert result is None
+            mock_get.assert_called_once()
+
+    def test_default_magnet_fetcher_requests_success_no_magnet(self) -> None:
+        """_default_magnet_fetcher should return None when no magnet found."""
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.pipeline import _default_magnet_fetcher
+
+        with patch("gamarr.pipeline.requests.get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.text = "<html>No magnet here</html>"
+            mock_get.return_value = mock_resp
+            result = _default_magnet_fetcher("https://example.com/")
+            assert result is None
+            mock_get.assert_called_once()
+            mock_resp.raise_for_status.assert_called_once()
+
+    def test_default_magnet_fetcher_requests_success_with_magnet(self) -> None:
+        """_default_magnet_fetcher should return magnet URI when found."""
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.pipeline import _default_magnet_fetcher
+
+        with patch("gamarr.pipeline.requests.get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.text = '<html><a href="magnet:?xt=urn:btih:abc123&dn=test">magnet</a></html>'
+            mock_get.return_value = mock_resp
+            result = _default_magnet_fetcher("https://example.com/")
+            assert result == "magnet:?xt=urn:btih:abc123&dn=test"
+            mock_get.assert_called_once()
+            mock_resp.raise_for_status.assert_called_once()
+
+    def test_process_sitemap_entries_skips_when_empty(self, tmp_path: Path) -> None:
+        """_process_sitemap_entries returns empty when no source titles exist."""
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import AcquisitionConfig, _process_sitemap_entries
+
+        db = Database(str(tmp_path / "gamarr.db"))
+        cfg = AcquisitionConfig(
+            min_metascore=75,
+            min_metascore_reviews=5,
+            min_user_score=7.5,
+            min_user_reviews=10,
+            days_since_release=9999,
+        )
+
+        results = _process_sitemap_entries(
+            source_name="fitgirl",
+            platform="pc",
+            mc=MagicMock(),
+            db=db,
+            cfg=cfg,
+            qbt=MagicMock(),
+            notifier=MagicMock(),
+        )
+
+        assert results == []
+        db.close()
+
+    def test_process_sitemap_entries_respects_max_entries(self, tmp_path: Path) -> None:
+        """Only max_entries should be processed per run."""
+        import datetime
+        import types
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import AcquisitionConfig, _process_sitemap_entries
+
+        db = Database(str(tmp_path / "gamarr.db"))
+        # Add 5 entries but set max_entries=2
+        entries = [{"title": f"Game {i}", "url": f"https://fitgirl-repacks.site/game-{i}/"} for i in range(5)]
+        db.rebuild_source_titles("fitgirl", entries)
+
+        cfg = AcquisitionConfig(
+            min_metascore=75,
+            min_metascore_reviews=5,
+            min_user_score=7.5,
+            min_user_reviews=10,
+            days_since_release=9999,
+        )
+
+        recent_date = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=30)).strftime("%Y-%m-%d")
+
+        good_result = types.SimpleNamespace(
+            title="Game 0",
+            slug="game-0",
+            metascore=90.0,
+            metascore_review_count=50,
+            user_score=8.0,
+            user_review_count=200,
+            genres=["Action"],
+            must_play=False,
+            release_date=recent_date,
+            description=None,
+        )
+
+        mock_mc = MagicMock()
+        mock_mc.lookup_game.return_value = good_result
+
+        mock_qbt = MagicMock()
+        mock_qbt.add_torrent.return_value = "gamarr-test"
+        mock_notifier = MagicMock()
+        magnet_fetcher = MagicMock(return_value="magnet:?xt=urn:btih:test")
+
+        results = _process_sitemap_entries(
+            source_name="fitgirl",
+            platform="pc",
+            mc=mock_mc,
+            db=db,
+            cfg=cfg,
+            qbt=mock_qbt,
+            notifier=mock_notifier,
+            max_entries=2,
+            magnet_fetcher=magnet_fetcher,
+        )
+
+        # Only 2 of 5 entries processed
+        assert len(results) == 2, f"Expected 2 results, got {len(results)}"
+        assert all(r["result"] == "Passed" for r in results)
+        assert mock_mc.lookup_game.call_count == 2
+
+        db.close()

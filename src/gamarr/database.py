@@ -173,6 +173,12 @@ class Database:
                 )
             session.commit()
 
+    def get_all_source_titles(self, source: str) -> list[dict[str, str]]:
+        """Return all source title/url pairs for *source*."""
+        with self._session() as session:
+            rows = session.query(SourceTitle).filter(SourceTitle.source == source).order_by(SourceTitle.url).all()
+        return [{"title": str(row.title), "url": str(row.url)} for row in rows]
+
     def match_source_title(self, source: str, normalized_title: str) -> list[dict[str, str]]:
         from gamarr.metacritic import _normalise_for_compare
 

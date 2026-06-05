@@ -6,15 +6,18 @@ import datetime
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+import requests
 from loguru import logger
 
 from gamarr.database import Database
 from gamarr.metacritic import MetacriticClient
 from gamarr.notifications import Notifier
 from gamarr.qbittorrent import QBittorrentClient
-from gamarr.sources.fitgirl import FitGirlSource
+from gamarr.sources.fitgirl import _USER_AGENT, FitGirlSource, _extract_magnet_from_html
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from gamarr.models import GameEntry
 
 
@@ -78,9 +81,7 @@ def _is_older_than(release_date: str | None, days: int) -> bool:
     if release_date is None:
         return False
     try:
-        released = datetime.datetime.strptime(
-            release_date.strip(), "%Y-%m-%d"
-        ).date()
+        released = datetime.datetime.strptime(release_date.strip(), "%Y-%m-%d").date()
         cutoff = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=days)).date()
         return released < cutoff
     except (ValueError, TypeError):
@@ -216,9 +217,28 @@ def run_acquisition(
         platform: str,
         qbt: Any,
         notifier: Any,
-    ) -> None:
-        """Run sitemap indexing, Metacritic browse, and pending matching."""
+    ) -> list[dict[str, Any]]:
+        """Run sitemap indexing, Metacritic browse, and pending matching.
+
+        Returns combined results from sitemap discovery and pending-game matching.
+        """
         source.fetch_sitemap(db)
+
+        # Process sitemap entries directly — each entry gets checked against
+        # Metacritic scores and delivered to qBittorrent if it qualifies.
+        # This is the primary discovery path; browse-based discovery below
+        # is a secondary fallback.
+        sitemap_results = _process_sitemap_entries(
+            source_name="fitgirl",
+            platform=platform,
+            library=library,
+            mc=mc,
+            db=db,
+            cfg=cfg,
+            qbt=qbt,
+            notifier=notifier,
+        )
+
         if cfg.browse_enabled:
             browse_games = mc.scan_recent_games(
                 platform,
@@ -245,15 +265,17 @@ def run_acquisition(
         if matched:
             logger.info("Matched {} pending games to sources", len(matched))
 
+        return sitemap_results
+
     try:
-        _run_discovery_phases(source, mc, db, cfg, platform, qbt, notifier)
+        sitemap_results = _run_discovery_phases(source, mc, db, cfg, platform, qbt, notifier)
 
         entries = source.fetch_new()
         if not entries:
             logger.info("No new entries found.")
-            return []
+            return sitemap_results
 
-        results: list[dict[str, Any]] = []
+        results: list[dict[str, Any]] = list(sitemap_results)
         for entry in entries:
             match = library.check_game(entry.title)
             if match:
@@ -448,6 +470,258 @@ def _match_pending_games(
         results.append(record_result)
         logger.info("Pending game '{}' expired \u2014 recorded to history", game_title)
 
+    return results
+
+
+_SITEMAP_TIMEOUT = 30.0
+
+
+def _default_magnet_fetcher(url: str) -> str | None:
+    """Fetch a FitGirl page and extract its magnet link."""
+    try:
+        resp = requests.get(
+            url,
+            headers={"User-Agent": _USER_AGENT},
+            timeout=_SITEMAP_TIMEOUT,
+        )
+        resp.raise_for_status()
+        return _extract_magnet_from_html(resp.text)
+    except Exception as exc:
+        logger.warning("Failed to fetch magnet from '{}': {}", url, exc)
+        return None
+
+
+def _process_one_sitemap_entry(
+    *,
+    source_name: str,
+    entry_title: str,
+    entry_url: str,
+    platform: str,
+    library: Any,
+    mc: MetacriticClient,
+    db: Database,
+    cfg: AcquisitionConfig,
+    qbt: QBittorrentClient,
+    notifier: Notifier,
+    magnet_fetcher: Callable[[str], str | None],
+) -> dict[str, Any]:
+    """Look up a single sitemap entry on Metacritic, evaluate, and deliver.
+
+    Returns a result dict with keys ``result``, ``game_title``, etc.
+    """
+    logger.info("Sitemap discovery: checking '{}'", entry_title)
+
+    # Check library first — skip if already owned
+    if library is not None:
+        match = library.check_game(entry_title)
+        if match:
+            db.record_processed(
+                source=source_name,
+                source_title=entry_title,
+                source_url=entry_url,
+                game_title=entry_title,
+                platform=platform,
+                result="Already owned",
+                result_details=f"Found in library: {match.matched_path}",
+            )
+            logger.info("Already in library, skipping: '{}'", entry_title)
+            return {
+                "result": "Already owned",
+                "game_title": entry_title,
+                "result_details": f"Found in library: {match.matched_path}",
+            }
+
+    mc_result = mc.lookup_game(
+        title=entry_title,
+        platform=platform,
+        cache_ttl_days=cfg.cache_ttl_days,
+        browse_cache_ttl_hours=cfg.browse_cache_ttl_hours,
+    )
+
+    if mc_result is None:
+        db.record_processed(
+            source=source_name,
+            source_title=entry_title,
+            source_url=entry_url,
+            game_title=entry_title,
+            platform=platform,
+            result="Failed",
+            result_details="Game not found on Metacritic",
+        )
+        return {"result": "Failed", "game_title": entry_title, "result_details": "Game not found on Metacritic"}
+
+    _log_game_details(mc_result)
+
+    score_result = _evaluate_scores(mc_result, cfg)
+    if score_result == "Failed":
+        logger.warning(
+            "Sitemap '{}' failed score check: Metascore {}, User {}",
+            mc_result.title,
+            mc_result.metascore,
+            mc_result.user_score,
+        )
+        details = f"Score check failed: Metascore {mc_result.metascore}, User {mc_result.user_score}"
+        notifier.send_failure_notification(title=mc_result.title, reason=details)
+        db.record_processed(
+            source=source_name,
+            source_title=entry_title,
+            source_url=entry_url,
+            game_title=mc_result.title,
+            platform=platform,
+            metascore=mc_result.metascore,
+            user_score=mc_result.user_score,
+            result="Failed",
+            result_details="Score below thresholds",
+        )
+        return {"result": "Failed", "game_title": mc_result.title, "result_details": "Score below thresholds"}
+
+    magnet = magnet_fetcher(entry_url)
+    if not magnet:
+        db.record_processed(
+            source=source_name,
+            source_title=entry_title,
+            source_url=entry_url,
+            game_title=mc_result.title,
+            platform=platform,
+            metascore=mc_result.metascore,
+            user_score=mc_result.user_score,
+            result="Failed",
+            result_details="No magnet URL available from source page",
+        )
+        return {"result": "Failed", "game_title": mc_result.title, "result_details": "No magnet URL available"}
+
+    tag = qbt.add_torrent(magnet_url=magnet, title=mc_result.title)
+    if not tag:
+        db.record_processed(
+            source=source_name,
+            source_title=entry_title,
+            source_url=entry_url,
+            game_title=mc_result.title,
+            platform=platform,
+            metascore=mc_result.metascore,
+            user_score=mc_result.user_score,
+            result="Error",
+            result_details="Failed to add torrent to qBittorrent",
+        )
+        return {"result": "Error", "game_title": mc_result.title, "result_details": "Failed to add torrent"}
+
+    # Record success in DB BEFORE sending the notification, so that even if
+    # the notification raises, the entry is recorded and won't be duplicated.
+    result = {
+        "result": "Passed",
+        "game_title": mc_result.title,
+        "metascore": mc_result.metascore,
+        "user_score": mc_result.user_score,
+        "result_details": f"Metascore {mc_result.metascore}, User score {mc_result.user_score}",
+        "torrent_tag": str(tag),
+    }
+    db.record_processed(
+        source=source_name,
+        source_title=entry_title,
+        source_url=entry_url,
+        game_title=mc_result.title,
+        platform=platform,
+        metascore=mc_result.metascore,
+        user_score=mc_result.user_score,
+        result="Passed",
+        result_details=f"Metascore {mc_result.metascore}, User score {mc_result.user_score}",
+        magnet_url=magnet,
+        torrent_tag=str(tag),
+    )
+    logger.info("\u2713 Sent '{}' to qBittorrent (tag: {})", mc_result.title, tag)
+    notifier.send_download_notification(
+        title=mc_result.title,
+        platform=platform,
+        metascore=mc_result.metascore,
+        user_score=mc_result.user_score,
+        magnet_url=magnet,
+    )
+    return result
+
+
+def _process_sitemap_entries(
+    source_name: str,
+    platform: str = "pc",
+    library: Any = None,
+    mc: MetacriticClient = None,  # type: ignore[assignment]
+    db: Database = None,  # type: ignore[assignment]
+    cfg: AcquisitionConfig = None,  # type: ignore[assignment]
+    qbt: QBittorrentClient = None,  # type: ignore[assignment]
+    notifier: Notifier = None,  # type: ignore[assignment]
+    *,
+    max_entries: int = 50,
+    magnet_fetcher: Callable[[str], str | None] | None = None,
+) -> list[dict[str, Any]]:
+    """Iterate sitemap entries and process qualifying games through the pipeline.
+
+    For each unprocessed sitemap entry:
+    1. Look up the game on Metacritic
+    2. Evaluate scores (respecting ``days_since_release``)
+    3. If qualifying, fetch the magnet link and send to qBittorrent
+
+    This replaces the ineffective browse-first discovery which was broken
+    because Metacritic browse pages 1-10 show mostly unreviewed indie games
+    (pages 1-10 of \"newest first\" have ~2 games with scores out of ~240).
+
+    Args:
+        source_name: Source identifier (e.g. "fitgirl").
+        mc: Metacritic client for score lookups.
+        db: Database instance.
+        cfg: Acquisition configuration (thresholds + days_since_release).
+        qbt: qBittorrent client for torrent delivery.
+        notifier: Notification dispatcher.
+        max_entries: Max sitemap entries to process per run.
+        magnet_fetcher: Callable that extracts magnet from a source URL.
+            Defaults to fetching the page and searching for magnet links.
+
+    Returns:
+        List of result dicts for qualifying entries.
+    """
+    if magnet_fetcher is None:
+        magnet_fetcher = _default_magnet_fetcher
+
+    entries = db.get_all_source_titles(source_name)
+    if not entries:
+        return []
+
+    results: list[dict[str, Any]] = []
+    processed = 0
+    passed_count = 0
+
+    for entry in entries:
+        if processed >= max_entries:
+            break
+
+        source_url: str = entry["url"]
+        title: str = entry["title"]
+
+        if db.is_processed(source_name, source_url):
+            logger.debug("Sitemap entry already processed: '{}'", title)
+            continue
+
+        processed += 1
+        try:
+            result = _process_one_sitemap_entry(
+                source_name=source_name,
+                entry_title=title,
+                entry_url=source_url,
+                platform=platform,
+                library=library,
+                mc=mc,
+                db=db,
+                cfg=cfg,
+                qbt=qbt,
+                notifier=notifier,
+                magnet_fetcher=magnet_fetcher,
+            )
+        except Exception as exc:
+            logger.error("Sitemap discovery: error processing '{}': {}", title, exc)
+            result = {"result": "Error", "game_title": title, "result_details": str(exc)}
+        results.append(result)
+        if result["result"] == "Passed":
+            passed_count += 1
+
+    logger.info("Sitemap discovery: {} processed, {} passed", processed, passed_count)
     return results
 
 

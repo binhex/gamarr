@@ -101,6 +101,34 @@ def _parse_sitemap(xml_content: bytes) -> list[dict[str, str]]:
     return results
 
 
+_NON_GAME_URL_PATTERNS = ("/tag/", "/author/", "/category/")
+
+
+def _filter_game_urls(titles: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Filter a sitemap entry list to only game URLs.
+
+    Removes entries whose URL is the site root (homepage) or contains
+    non-game path segments like ``/tag/``, ``/author/``, ``/category/``.
+
+    Args:
+        titles: List of ``{"title": ..., "url": ...}`` dicts from a sitemap.
+
+    Returns:
+        Filtered list containing only game-page entries.
+    """
+    results: list[dict[str, str]] = []
+    for entry in titles:
+        url = entry["url"]
+        # Skip the root URL (homepage)
+        if url.rstrip("/") == "https://fitgirl-repacks.site":
+            continue
+        # Skip tag, author, and category pages
+        if any(pattern in url for pattern in _NON_GAME_URL_PATTERNS):
+            continue
+        results.append(entry)
+    return results
+
+
 def _parse_sitemap_index(xml_content: bytes) -> list[str]:
     """Parse a ``<sitemapindex>`` XML and return child sitemap URLs.
 
@@ -379,12 +407,11 @@ class FitGirlSource:
             resp.raise_for_status()
             titles = _resolve_sitemap(
                 resp.content,
-                fetcher=lambda url: requests.get(
-                    url, timeout=30, headers={"User-Agent": _USER_AGENT}
-                ),
+                fetcher=lambda url: requests.get(url, timeout=30, headers={"User-Agent": _USER_AGENT}),
             )
+            titles = _filter_game_urls(titles)
             db.rebuild_source_titles("fitgirl", titles)
-            logger.info("FitGirl sitemap indexed {} titles", len(titles))
+            logger.info("FitGirl sitemap indexed {} game titles", len(titles))
         except requests.RequestException as exc:
             logger.warning("Failed to fetch FitGirl sitemap: {}", exc)
 

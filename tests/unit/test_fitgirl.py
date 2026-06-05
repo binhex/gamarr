@@ -547,3 +547,37 @@ class TestFitGirlSitemap:
         urls = [r["url"] for r in results]
         assert len(urls) == 2, f"Expected 2 deduplicated URLs, got {len(urls)}: {urls}"
         assert len(set(urls)) == 2, f"Duplicate URLs still present: {urls}"
+
+
+class TestFilterGameUrls:
+    """_filter_game_urls strips non-game entries from sitemap lists."""
+
+    def test_filter_excludes_homepage_tags_and_authors(self) -> None:
+        """Homepage, tag, author and category URLs should be removed."""
+        from gamarr.sources.fitgirl import _filter_game_urls
+
+        entries = [
+            {"title": "fitgirl-repacks.site", "url": "https://fitgirl-repacks.site/"},
+            {"title": "Elden Ring", "url": "https://fitgirl-repacks.site/elden-ring/"},
+            {"title": "Action", "url": "https://fitgirl-repacks.site/tag/action/"},
+            {"title": "Admin Fitgirl", "url": "https://fitgirl-repacks.site/author/admin-fitgirl/"},
+            {"title": "Cyberpunk 2077", "url": "https://fitgirl-repacks.site/cyberpunk-2077/"},
+            {"title": "RPG", "url": "https://fitgirl-repacks.site/category/rpg/"},
+            {"title": "Baldur's Gate 3", "url": "https://fitgirl-repacks.site/baldurs-gate-3/"},
+        ]
+
+        filtered = _filter_game_urls(entries)
+
+        # Game entries should be kept
+        urls = [e["url"] for e in filtered]
+        assert "https://fitgirl-repacks.site/elden-ring/" in urls
+        assert "https://fitgirl-repacks.site/cyberpunk-2077/" in urls
+        assert "https://fitgirl-repacks.site/baldurs-gate-3/" in urls
+
+        # Non-game entries should be removed
+        assert "https://fitgirl-repacks.site/" not in urls
+        assert "https://fitgirl-repacks.site/tag/action/" not in urls
+        assert "https://fitgirl-repacks.site/author/admin-fitgirl/" not in urls
+        assert "https://fitgirl-repacks.site/category/rpg/" not in urls
+
+        assert len(filtered) == 3, f"Expected 3 game entries, got {len(filtered)}"
