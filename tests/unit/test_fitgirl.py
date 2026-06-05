@@ -435,3 +435,25 @@ class TestFitGirlSitemap:
         assert result[0]["title"] == "Elden Ring"  # from URL slug
         assert result[0]["url"] == "https://fitgirl-repacks.site/elden-ring/"
         assert result[1]["title"] == "Baldurs Gate 3"
+
+    def test_title_from_url_non_conforming_slug(self) -> None:
+        """Non-conforming slugs should be returned as-is."""
+        from gamarr.sources.fitgirl import _title_from_url
+
+        # Slug with underscore — doesn't match [a-z0-9][a-z0-9-]*
+        result = _title_from_url("https://fitgirl-repacks.site/some_underscore_game/")
+        assert result == "some_underscore_game"
+
+    def test_parse_sitemap_no_namespace(self) -> None:
+        """Handle sitemap without namespace prefix gracefully."""
+        from gamarr.sources.fitgirl import _parse_sitemap
+
+        xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+<urlset>
+  <url>
+    <loc>https://fitgirl-repacks.site/test-game/</loc>
+  </url>
+</urlset>"""
+        result = _parse_sitemap(xml)
+        # Without namespace, the xpath won't match — returns empty
+        assert result == []

@@ -133,12 +133,6 @@ class Database:
             if platform is not None:
                 query = query.filter(PendingGame.platform == platform)
             rows = query.all()
-            for row in rows:
-                if row.genres:
-                    try:
-                        row.genres = json.loads(str(row.genres))
-                    except (json.JSONDecodeError, TypeError):
-                        row.genres = None  # type: ignore[assignment]
             return list(rows)
 
     def get_expired_pending(self) -> list[PendingGame]:

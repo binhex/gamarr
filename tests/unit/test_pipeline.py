@@ -722,9 +722,7 @@ class TestMetacriticBrowse:
 
         db = Database(str(tmp_path / "test.db"))
 
-        expires = (
-            datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)
-        ).isoformat()
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
         db.record_pending(
             slug="elden-ring",
             game_title="Elden Ring",
@@ -734,14 +732,67 @@ class TestMetacriticBrowse:
             expires_at=expires,
         )
 
-        db.rebuild_source_titles("fitgirl", [
-            {"title": "Elden Ring", "url": "https://fitgirl-repacks.site/elden-ring/"},
-        ])
+        db.rebuild_source_titles(
+            "fitgirl",
+            [
+                {"title": "Elden Ring", "url": "https://fitgirl-repacks.site/elden-ring/"},
+            ],
+        )
 
-        matched = _match_pending_games(db, pending_days=30)
+        matched = _match_pending_games(db)
         assert len(matched) == 1
         assert matched[0]["slug"] == "elden-ring"
         assert db.is_pending("elden-ring") is False
+        db.close()
+
+    def test_match_pending_expired_game(self, tmp_path: Path) -> None:
+        """Expired pending games should be moved to history as 'Expired'."""
+        import datetime
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _match_pending_games
+
+        db = Database(str(tmp_path / "test.db"))
+        past = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=1)).isoformat()
+        db.record_pending(
+            slug="old-game",
+            game_title="Old Game",
+            platform="pc",
+            expires_at=past,
+        )
+        matched = _match_pending_games(db)
+        # Expired game should be returned with result "Expired"
+        assert len(matched) == 1
+        assert matched[0]["result"] == "Expired"
+        assert db.is_pending("old-game") is False
+        db.close()
+
+    def test_browse_skips_below_threshold(self, tmp_path: Path) -> None:
+        """Games below score thresholds should NOT be inserted as pending."""
+        from gamarr.database import Database
+        from gamarr.pipeline import _process_browse_games
+
+        db = Database(str(tmp_path / "test.db"))
+        games = [
+            {
+                "title": "Low Score Game",
+                "slug": "low-score",
+                "score": 30,
+                "critic_review_count": 2,
+                "user_rating": 4.0,
+                "user_review_count": 1,
+            },
+        ]
+        thresholds = {
+            "min_metascore": 75,
+            "min_metascore_reviews": 5,
+            "min_user_score": 7.5,
+            "min_user_reviews": 10,
+        }
+        new_count = _process_browse_games(games, "pc", db, thresholds, pending_days=30)
+        assert new_count == 0
+        pending = db.get_pending()
+        assert len(pending) == 0
         db.close()
 
 
@@ -750,13 +801,11 @@ class TestRunAcquisitionMetacritic:
 
     def test_acquisition_browse_and_match(self, tmp_path: Path) -> None:
         """End-to-end: browse inserts pending, sitemap matching moves to history."""
-        import datetime
         from unittest.mock import MagicMock, patch
 
         from gamarr.database import Database
         from gamarr.pipeline import run_acquisition
 
-        db = Database(str(tmp_path / "test.db"))
         sitemap_xml = b"""<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url><loc>https://fitgirl-repacks.site/elden-ring/</loc></url>
@@ -765,16 +814,13 @@ class TestRunAcquisitionMetacritic:
         with (
             patch("gamarr.sources.fitgirl.FitGirlSource.fetch_new", return_value=[]),
             patch("gamarr.sources.fitgirl.requests.get") as mock_get,
-            patch("gamarr.pipeline.MetacriticClient") as MockMC,
+            patch("gamarr.pipeline.MetacriticClient") as _,
         ):
             # Mock sitemap fetch
             sitemap_resp = MagicMock()
             sitemap_resp.content = sitemap_xml
             sitemap_resp.raise_for_status = MagicMock()
             mock_get.return_value = sitemap_resp
-
-            mc_instance = MagicMock()
-            MockMC.return_value = mc_instance
 
             results = run_acquisition(
                 fitgirl_rss_url="http://example.com/feed",

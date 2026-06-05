@@ -125,6 +125,66 @@ class TestPendingGame:
         assert db.is_pending("unknown-game") is False
         db.close()
 
+    def test_record_pending_duplicate_slug(self, tmp_path: Path) -> None:
+        """Inserting the same slug twice should be a no-op."""
+        db = Database(str(tmp_path / "test.db"))
+        db.record_pending(
+            slug="test-game",
+            game_title="Original",
+            platform="pc",
+            expires_at="2026-07-05T00:00:00",
+        )
+        db.record_pending(
+            slug="test-game",
+            game_title="Duplicate",
+            platform="pc",
+            expires_at="2026-07-05T00:00:00",
+        )
+        pending = db.get_pending()
+        assert len(pending) == 1
+        assert pending[0].game_title == "Original"  # unchanged
+        db.close()
+
+    def test_get_expired_pending(self, tmp_path: Path) -> None:
+        """Games past their expiry should appear in get_expired_pending."""
+        import datetime
+
+        db = Database(str(tmp_path / "test.db"))
+        past = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=1)).isoformat()
+        db.record_pending(
+            slug="old-game",
+            game_title="Old Game",
+            platform="pc",
+            expires_at=past,
+        )
+        expired = db.get_expired_pending()
+        assert len(expired) == 1
+        assert expired[0].slug == "old-game"
+        db.close()
+
+    def test_touch_pending_updates_timestamp(self, tmp_path: Path) -> None:
+        """touch_pending should set last_checked_at."""
+        import datetime
+
+        db = Database(str(tmp_path / "test.db"))
+        future = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="test-game",
+            game_title="Test Game",
+            platform="pc",
+            expires_at=future,
+        )
+        db.touch_pending("test-game")
+        pending = db.get_pending()
+        assert pending[0].last_checked_at is not None
+        db.close()
+
+    def test_touch_pending_nonexistent_does_not_error(self, tmp_path: Path) -> None:
+        """Touching a non-existent slug should silently do nothing."""
+        db = Database(str(tmp_path / "test.db"))
+        db.touch_pending("does-not-exist")  # should not raise
+        db.close()
+
 
 class TestSourceTitle:
     """SourceTitle operations."""

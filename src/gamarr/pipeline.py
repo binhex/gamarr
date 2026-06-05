@@ -187,11 +187,17 @@ def run_acquisition(
 
     library = LibraryScanner(library_paths)
 
-    try:
-        # ── Phase 1: Build FitGirl source index ──
+    def _run_discovery_phases(
+        source: Any,
+        mc: Any,
+        db: Database,
+        cfg: AcquisitionConfig,
+        platform: str,
+        qbt: Any,
+        notifier: Any,
+    ) -> None:
+        """Run sitemap indexing, Metacritic browse, and pending matching."""
         source.fetch_sitemap(db)
-
-        # ── Phase 2: Metacritic browse — discover new games ──
         if cfg.browse_enabled:
             browse_games = mc.scan_recent_games(
                 platform,
@@ -206,16 +212,20 @@ def run_acquisition(
                     "min_user_reviews": cfg.min_user_reviews,
                 }
                 new_pending = _process_browse_games(
-                    browse_games, platform, db, thresholds,
+                    browse_games,
+                    platform,
+                    db,
+                    thresholds,
                     pending_days=cfg.pending_days,
                 )
                 if new_pending:
                     logger.info("Browse added {} new pending games", new_pending)
-
-        # ── Phase 3: Match pending games against sources ──
-        matched = _match_pending_games(db, qbt=qbt, notifier=notifier)
+        matched = _match_pending_games(db)
         if matched:
             logger.info("Matched {} pending games to sources", len(matched))
+
+    try:
+        _run_discovery_phases(source, mc, db, cfg, platform, qbt, notifier)
 
         entries = source.fetch_new()
         if not entries:
@@ -259,6 +269,22 @@ def run_acquisition(
         db.close()
 
 
+def _game_passes_thresholds(game: dict[str, Any], thresholds: dict[str, Any]) -> bool:
+    """Check if a browse-page game dict passes all score thresholds."""
+    metascore = game.get("score")
+    user_score = game.get("user_rating")
+    if metascore is None or user_score is None:
+        return False
+    return all(
+        [
+            metascore >= thresholds["min_metascore"],
+            (game.get("critic_review_count") or 0) >= thresholds["min_metascore_reviews"],
+            user_score >= thresholds["min_user_score"],
+            (game.get("user_review_count") or 0) >= thresholds["min_user_reviews"],
+        ]
+    )
+
+
 def _process_browse_games(
     browse_games: list[dict[str, Any]],
     platform: str,
@@ -295,20 +321,7 @@ def _process_browse_games(
         if db.is_processed("metacritic", f"mc:{slug}") or db.is_pending(slug):
             continue
 
-        metascore = game.get("score")
-        metascore_reviews = game.get("critic_review_count")
-        user_score = game.get("user_rating")
-        user_reviews = game.get("user_review_count")
-
-        if metascore is None or user_score is None:
-            continue
-        if metascore < thresholds["min_metascore"]:
-            continue
-        if (metascore_reviews or 0) < thresholds["min_metascore_reviews"]:
-            continue
-        if user_score < thresholds["min_user_score"]:
-            continue
-        if (user_reviews or 0) < thresholds["min_user_reviews"]:
+        if not _game_passes_thresholds(game, thresholds):
             continue
 
         expires_at = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=pending_days)).isoformat()
@@ -317,10 +330,10 @@ def _process_browse_games(
             slug=slug,
             game_title=title,
             platform=platform,
-            metascore=float(metascore) if metascore is not None else None,
-            metascore_reviews=metascore_reviews,
-            user_score=float(user_score) if user_score is not None else None,
-            user_reviews=user_reviews,
+            metascore=float(game.get("score", 0)),
+            metascore_reviews=game.get("critic_review_count"),
+            user_score=float(game.get("user_rating", 0)),
+            user_reviews=game.get("user_review_count"),
             expires_at=expires_at,
         )
         new_count += 1
@@ -336,10 +349,6 @@ def _process_browse_games(
 
 def _match_pending_games(
     db: Database,
-    *,
-    pending_days: int = 30,
-    qbt: Any = None,
-    notifier: Any = None,
 ) -> list[dict[str, Any]]:
     """Match pending games against torrent source indices.
 
@@ -359,54 +368,64 @@ def _match_pending_games(
     # Match non-expired pending games
     pending = db.get_pending()
     for game in pending:
-        normalized = _normalise_for_compare(game.game_title)
+        game_title: str = str(game.game_title)
+        game_slug: str = str(game.slug)
+        game_platform: str = str(game.platform)
+        game_metascore: float | None = game.metascore  # type: ignore[assignment]
+        game_user_score: float | None = game.user_score  # type: ignore[assignment]
+
+        normalized = _normalise_for_compare(game_title)
         matches = db.match_source_title("fitgirl", normalized)
 
         if matches:
             best = matches[0]
             logger.info(
                 "Pending game '{}' matched to '{}' at {}",
-                game.game_title, best["title"], best["url"],
+                game_title,
+                best["title"],
+                best["url"],
             )
 
             record_result = _record_result(
                 db,
                 source="metacritic",
-                source_title=game.game_title,
-                source_url=f"https://www.metacritic.com/game/{game.slug}/",
-                game_title=game.game_title,
-                platform=game.platform,
-                metascore=game.metascore,
-                user_score=game.user_score,
+                source_title=game_title,
+                source_url=f"mc:{game_slug}",
+                game_title=game_title,
+                platform=game_platform,
+                metascore=game_metascore,
+                user_score=game_user_score,
                 result="Passed",
                 result_details=f"Matched source: {best['url']}",
             )
-            record_result["slug"] = game.slug
-            db.remove_pending(game.slug)
+            record_result["slug"] = game_slug
+            db.remove_pending(game_slug)
             results.append(record_result)
-            logger.info("\u2713 Matched '{}' \u2014 recorded to history", game.game_title)
+            logger.info("\u2713 Matched '{}' \u2014 recorded to history", game_title)
         else:
-            db.touch_pending(game.slug)
+            db.touch_pending(game_slug)
 
     # Expire overdue pending games
     expired = db.get_expired_pending()
     for game in expired:
+        game_title = str(game.game_title)
+        game_slug = str(game.slug)
         record_result = _record_result(
             db,
             source="metacritic",
-            source_title=game.game_title,
-            source_url=f"https://www.metacritic.com/game/{game.slug}/",
-            game_title=game.game_title,
-            platform=game.platform,
-            metascore=game.metascore,
-            user_score=game.user_score,
+            source_title=game_title,
+            source_url=f"mc:{game_slug}",
+            game_title=game_title,
+            platform=str(game.platform),
+            metascore=game.metascore,  # type: ignore[arg-type]
+            user_score=game.user_score,  # type: ignore[arg-type]
             result="Expired",
             result_details="Not available on any source within pending window",
         )
-        record_result["slug"] = game.slug
-        db.remove_pending(game.slug)
+        record_result["slug"] = game_slug
+        db.remove_pending(game_slug)
         results.append(record_result)
-        logger.info("Pending game '{}' expired \u2014 recorded to history", game.game_title)
+        logger.info("Pending game '{}' expired \u2014 recorded to history", game_title)
 
     return results
 

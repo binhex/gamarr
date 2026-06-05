@@ -8,14 +8,16 @@ from __future__ import annotations
 
 import re
 import xml.etree.ElementTree as ET
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import requests
 from loguru import logger
 from xmltodict import parse as parse_xml
 
-from gamarr.database import Database
 from gamarr.models import GameEntry
+
+if TYPE_CHECKING:
+    from gamarr.database import Database
 
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
