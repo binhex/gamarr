@@ -364,7 +364,7 @@ class FitGirlSource:
         """
         url = "https://fitgirl-repacks.site/sitemap.xml"
         try:
-            resp = requests.get(url, timeout=30)
+            resp = requests.get(url, timeout=30, headers={"User-Agent": _USER_AGENT})
             resp.raise_for_status()
             titles = _resolve_sitemap(
                 resp.content,
