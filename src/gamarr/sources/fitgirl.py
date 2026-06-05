@@ -44,6 +44,9 @@ _VERSION_COMMA_PATTERN = re.compile(
 # e.g. ", v1.0" where edition was already stripped
 _BARE_VERSION_PATTERN = re.compile(r",\s*v?\d[\d.]*.*", re.IGNORECASE)
 
+# RSS categories that indicate a non-game entry (blog/news posts)
+_NON_GAME_CATEGORIES = frozenset({"Uncategorized", "Updates Digest"})
+
 _MAGNET_PATTERN = re.compile(r"(magnet:\?xt=urn:btih:[a-zA-Z0-9]+[^\s\"'<>]*)")
 
 _CONNECT_TIMEOUT = 30.0
@@ -173,9 +176,11 @@ class FitGirlSource:
         return entries
 
     def _build_entries(self, items: list[dict[str, Any]]) -> list[GameEntry]:
-        """Convert RSS items to GameEntries, skipping already processed ones."""
+        """Convert RSS items to GameEntries, skipping non-game and already processed."""
         entries: list[GameEntry] = []
         for item in items:
+            if not self._is_game_item(item):
+                continue
             raw_title = item.get("title", "")
             link = item.get("link", "")
             if not raw_title or not link:
@@ -196,6 +201,18 @@ class FitGirlSource:
                 )
             )
         return entries
+
+    @staticmethod
+    def _is_game_item(item: dict[str, Any]) -> bool:
+        """Return True if the RSS item represents a game (not a blog/news post)."""
+        category = item.get("category")
+        if category is None:
+            return True
+        if isinstance(category, str):
+            return category not in _NON_GAME_CATEGORIES
+        if isinstance(category, list):
+            return not all(c in _NON_GAME_CATEGORIES for c in category)
+        return True
 
     def _extract_magnet(self, item: dict[str, Any], link: str) -> str | None:
         """Attempt to extract a magnet link from the RSS item or its linked page.

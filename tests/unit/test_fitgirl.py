@@ -1,6 +1,7 @@
 """Tests for gamarr FitGirl RSS source."""
 
 from __future__ import annotations
+from typing import Any
 
 from gamarr.sources.fitgirl import FitGirlSource, _clean_title
 
@@ -320,3 +321,65 @@ class TestFetchNewProccessing:
         # The entry should be skipped since it's already in the DB
         assert len(entries) == 0
         source.close()
+
+
+class TestBuildEntriesCategoryFilter:
+    """RSS category-based filtering in _build_entries."""
+
+    def test_build_entries_skips_news_posts(self) -> None:
+        """Items with non-game categories like 'Updates Digest' should be skipped."""
+        source = FitGirlSource("http://example.com/feed.xml", db_path=":memory:")
+        items: list[dict[str, Any]] = [
+            {
+                "title": "Updates Digest for June 4",
+                "link": "http://example.com/updates-digest",
+                "category": "Updates Digest",
+            },
+            {
+                "title": "Game Name [Repack]",
+                "link": "http://example.com/game",
+                "category": ["Lossless Repack", "3D"],
+            },
+        ]
+        entries = source._build_entries(items)
+        assert len(entries) == 1
+        assert entries[0].title == "Game Name"
+
+    def test_build_entries_skips_uncategorized(self) -> None:
+        """Items with Uncategorized category should be skipped."""
+        source = FitGirlSource("http://example.com/feed.xml", db_path=":memory:")
+        items = [
+            {
+                "title": "Upcoming Repacks",
+                "link": "http://example.com/upcoming",
+                "category": "Uncategorized",
+            },
+            {
+                "title": "Real Game [Repack]",
+                "link": "http://example.com/real-game",
+                "category": "Lossless Repack",
+            },
+        ]
+        entries = source._build_entries(items)
+        assert len(entries) == 1
+        assert entries[0].title == "Real Game"
+
+    def test_build_entries_no_category_still_included(self) -> None:
+        """Items without a category should still be included (backward compat)."""
+        source = FitGirlSource("http://example.com/feed.xml", db_path=":memory:")
+        items = [
+            {"title": "Some Game", "link": "http://example.com/game"},
+        ]
+        entries = source._build_entries(items)
+        assert len(entries) == 1
+        assert entries[0].title == "Some Game"
+
+    def test_build_entries_all_news_only(self) -> None:
+        """When all items are news posts, return empty list."""
+        source = FitGirlSource("http://example.com/feed.xml", db_path=":memory:")
+        items = [
+            {"title": "Updates Digest", "link": "http://example.com/upd", "category": "Updates Digest"},
+            {"title": "Upcoming Repacks", "link": "http://example.com/upcoming", "category": "Uncategorized"},
+        ]
+        entries = source._build_entries(items)
+        assert len(entries) == 0
