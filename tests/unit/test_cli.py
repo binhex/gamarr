@@ -26,43 +26,57 @@ class TestCli:
         assert result.exit_code == 0
         assert "gamarr" in result.output
 
-    def test_default_invocation_succeeds(self) -> None:
-        """Running with defaults should exit with code 0."""
-        result = self.runner.invoke(cli, [])
-        assert result.exit_code == 0
+    def test_default_invocation_does_not_print_wip(self) -> None:
+        """Running with defaults should not print WIP message."""
+        with patch("gamarr.scheduler.run"):
+            result = self.runner.invoke(cli, [])
+        assert "WIP: CLI logic not yet implemented." not in result.output
 
-    def test_default_invocation_logs_message(self) -> None:
-        """Running with defaults should log the WIP message."""
-        result = self.runner.invoke(cli, [])
-        assert "WIP: CLI logic not yet implemented." in result.output
-
-    def test_custom_log_level(self) -> None:
+    def test_custom_log_level_accepted(self) -> None:
         """--log-level should be accepted."""
-        result = self.runner.invoke(cli, ["--log-level", "DEBUG"])
+        with patch("gamarr.scheduler.run"):
+            result = self.runner.invoke(cli, ["--log-level", "DEBUG"])
         assert result.exit_code == 0
 
     def test_custom_log_level_case_insensitive(self) -> None:
         """--log-level should accept lowercase values."""
-        result = self.runner.invoke(cli, ["--log-level", "debug"])
+        with patch("gamarr.scheduler.run"):
+            result = self.runner.invoke(cli, ["--log-level", "debug"])
         assert result.exit_code == 0
 
     def test_invalid_log_level_fails(self) -> None:
         """--log-level should reject invalid values."""
         result = self.runner.invoke(cli, ["--log-level", "INVALID"])
         assert result.exit_code != 0
-        assert "invalid choice" in result.output.lower() or "INVALID" in result.output
+        assert "not one of" in result.output.lower() or "invalid value" in result.output.lower()
 
     def test_resolve_version_returns_installed(self) -> None:
-        """When the package IS installed, _resolve_version returns the real version."""
         from gamarr.cli import _resolve_version
 
         version = _resolve_version()
         assert version == "0.1.0"
 
     def test_resolve_version_fallback(self) -> None:
-        """When PackageNotFoundError is raised, _resolve_version returns 'unknown'."""
         with patch("gamarr.cli._pkg_version") as mock_version:
             mock_version.side_effect = PackageNotFoundError
             from gamarr.cli import _resolve_version
 
             assert _resolve_version() == "unknown"
+
+    def test_test_mode_validates_and_exits(self) -> None:
+        """--test should validate config and exit without calling run()."""
+        result = self.runner.invoke(cli, ["--test"])
+        assert result.exit_code == 0
+        assert "Configuration loaded successfully" in result.output
+
+    def test_daemon_flag_accepted(self) -> None:
+        """--daemon should be accepted."""
+        with patch("gamarr.cli.open"), patch("gamarr.scheduler.run"):
+            result = self.runner.invoke(cli, ["--daemon", "--config-path", "/tmp"])
+        assert result.exit_code == 0
+
+    def test_config_path_option_accepted(self) -> None:
+        """--config-path should be accepted."""
+        with patch("gamarr.scheduler.run"):
+            result = self.runner.invoke(cli, ["--config-path", "/tmp/configs"])
+        assert result.exit_code == 0

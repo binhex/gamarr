@@ -1,5 +1,7 @@
 """Command-line interface for gamarr."""
 
+from __future__ import annotations
+
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 
@@ -18,57 +20,99 @@ def _resolve_version() -> str:
 
 
 _VERSION = _resolve_version()
-
-# Compute default database path (project_root/db/gamarr.db)
 _PROJECT_ROOT = get_project_root()
-_DEFAULT_DB_PATH = f"{_PROJECT_ROOT}/db/gamarr.db"
 _DEFAULT_LOGS_PATH = f"{_PROJECT_ROOT}/logs/gamarr.log"
 
 
 @click.command()
 @click.option(
-    "--database-path",
-    type=click.Path(file_okay=True, dir_okay=False, resolve_path=True),
-    required=False,
-    default=_DEFAULT_DB_PATH,
+    "--config-path",
+    type=click.Path(file_okay=False, dir_okay=True, resolve_path=True),
+    default="configs",
     show_default=True,
-    metavar="<path>",
-    help="Path to SQLite database file for tracking processed files.",
+    metavar="<dir>",
+    help="Directory containing gamarr.yml configuration file.",
 )
 @click.option(
     "--log-level",
-    default="INFO",
+    default=None,
     type=click.Choice(["DEBUG", "INFO", "SUCCESS", "WARNING", "ERROR"], case_sensitive=False),
+    show_default=False,
     metavar="<level>",
-    show_default=True,
-    help="Logging level for console output",
+    help="Override the console log level (default from config).",
 )
 @click.option(
     "--log-path",
     type=click.Path(file_okay=True, dir_okay=False, resolve_path=True),
-    required=False,
-    default=_DEFAULT_LOGS_PATH,
-    show_default=True,
+    default=None,
+    show_default=False,
     metavar="<path>",
-    help="Path to log file for tracking application events.",
+    help="Override the log file path from config.",
+)
+@click.option(
+    "--daemon",
+    is_flag=True,
+    default=False,
+    help="Run in continuous scheduling mode (use systemd or Docker for daemonization).",
+)
+@click.option(
+    "--test",
+    is_flag=True,
+    default=False,
+    help="Validate configuration and exit without running any tasks.",
 )
 @click.version_option(version=_VERSION, prog_name="gamarr")
 def cli(
-    database_path: str,
-    log_level: str,
-    log_path: str,
+    config_path: str,
+    log_level: str | None,
+    log_path: str | None,
+    daemon: bool,
+    test: bool,
 ) -> None:
-    """gamarr - Metadata game downloader.
+    """gamarr — Metadata game downloader.
 
-    Downloads torrent metadata (torrent files and magnet links) for games.
+    Monitors FitGirl repacks RSS feed for new game releases, checks
+    them against Metacritic scores, and adds qualifying games to
+    qBittorrent.
+
+    All runtime configuration lives in the YAML config file inside
+    --config-path. Use --log-level to override the console log level
+    at runtime without editing the config.
     """
-
-    # Logger format for consistent output styling
     log_format = "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>"
+    effective_log_path = log_path or _DEFAULT_LOGS_PATH
+    effective_log_level = log_level.upper() if log_level else "INFO"
+    create_logger(
+        log_format=log_format,
+        log_level=effective_log_level,
+        log_path=effective_log_path,
+    )
 
-    logger = create_logger(log_format=log_format, log_level=log_level, log_path=log_path)
+    from gamarr.scheduler import run
 
-    logger.info("WIP: CLI logic not yet implemented.")
+    if test:
+        from gamarr.config import load_config
+
+        load_config(config_path)
+        click.echo("Configuration loaded successfully. Test mode \u2014 exiting.")
+        return
+
+    if daemon:
+        from pathlib import Path
+
+        import yaml
+
+        from gamarr.config import load_config
+
+        config = load_config(config_path)
+        config.general.daemon_mode = "background"
+        config_dir = Path(config_path)
+        config_dir.mkdir(parents=True, exist_ok=True)
+        config_file = config_dir / "gamarr.yml"
+        with config_file.open("w", encoding="utf-8") as fh:
+            yaml.dump(config.model_dump(), fh, default_flow_style=False, sort_keys=False)
+
+    run(config_path=config_path)
 
 
 if __name__ == "__main__":
