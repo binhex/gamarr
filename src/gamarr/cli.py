@@ -97,22 +97,7 @@ def cli(
         click.echo("Configuration loaded successfully. Test mode \u2014 exiting.")
         return
 
-    if daemon:
-        from pathlib import Path
-
-        import yaml
-
-        from gamarr.config import load_config
-
-        config = load_config(config_path)
-        config.general.daemon_mode = "background"
-        config_dir = Path(config_path)
-        config_dir.mkdir(parents=True, exist_ok=True)
-        config_file = config_dir / "gamarr.yml"
-        with config_file.open("w", encoding="utf-8") as fh:
-            yaml.dump(config.model_dump(), fh, default_flow_style=False, sort_keys=False)
-
-    run(config_path=config_path)
+    run(config_path=config_path, daemon_mode="background" if daemon else None)
 
 
 if __name__ == "__main__":

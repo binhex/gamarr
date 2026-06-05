@@ -31,7 +31,6 @@ class AcquisitionConfig:
 
 
 def _evaluate_scores(
-    entry: GameEntry,
     mc_result: Any,
     cfg: AcquisitionConfig,
 ) -> str:
@@ -161,28 +160,32 @@ def _process_entry(
     user_score = mc_result.user_score if mc_result else None
 
     if mc_result is None:
+        if not entry.magnet_url:
+            result_details = "Game not found on Metacritic (no magnet URL)"
+        else:
+            result_details = "Game not found on Metacritic"
         db.record_processed(
             source=entry.source,
-            source_title=entry.source_url,
+            source_title=entry.source_title,
             source_url=entry.source_url,
             game_title=entry.title,
             platform=entry.platform,
             result="Failed",
-            result_details="Game not found on Metacritic",
+            result_details=result_details,
         )
         return {
             "result": "Failed",
             "game_title": entry.title,
             "metascore": None,
             "user_score": None,
-            "result_details": "Game not found on Metacritic",
+            "result_details": result_details,
         }
 
-    score_result = _evaluate_scores(entry, mc_result, cfg)
+    score_result = _evaluate_scores(mc_result, cfg)
     if score_result == "Failed":
         db.record_processed(
             source=entry.source,
-            source_title=entry.source_url,
+            source_title=entry.source_title,
             source_url=entry.source_url,
             game_title=game_title,
             platform=entry.platform,
@@ -204,11 +207,31 @@ def _process_entry(
         }
 
     magnet_url = entry.magnet_url or ""
+    if not magnet_url:
+        db.record_processed(
+            source=entry.source,
+            source_title=entry.source_title,
+            source_url=entry.source_url,
+            game_title=game_title,
+            platform=entry.platform,
+            metascore=metascore,
+            user_score=user_score,
+            result="Failed",
+            result_details="No magnet URL available for this game",
+        )
+        return {
+            "result": "Failed",
+            "game_title": game_title,
+            "metascore": metascore,
+            "user_score": user_score,
+            "result_details": "No magnet URL available",
+        }
+
     tag = qbt.add_torrent(magnet_url=magnet_url, title=game_title)
     if tag:
         db.record_processed(
             source=entry.source,
-            source_title=entry.source_url,
+            source_title=entry.source_title,
             source_url=entry.source_url,
             game_title=game_title,
             platform=entry.platform,
@@ -238,7 +261,7 @@ def _process_entry(
 
     db.record_processed(
         source=entry.source,
-        source_title=entry.source_url,
+        source_title=entry.source_title,
         source_url=entry.source_url,
         game_title=game_title,
         platform=entry.platform,

@@ -21,8 +21,10 @@ class MetacriticCache:
     """
 
     def __init__(self, cache_path: str) -> None:
-        self._conn = sqlite3.connect(cache_path)
+        self._conn = sqlite3.connect(cache_path, timeout=10)
         self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript("""
             CREATE TABLE IF NOT EXISTS game_detail_cache (
                 slug              TEXT PRIMARY KEY,

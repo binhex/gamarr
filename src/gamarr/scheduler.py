@@ -13,14 +13,30 @@ from gamarr.config import Config, load_config
 from gamarr.pipeline import run_acquisition
 
 
-def run(config_path: str = "configs") -> None:
-    """Start the acquisition scheduler in daemon or foreground mode."""
+def run(config_path: str = "configs", daemon_mode: str | None = None) -> None:
+    """Start the acquisition scheduler in daemon or foreground mode.
+
+    Args:
+        config_path: Path to the config directory or file.
+        daemon_mode: Override the daemon mode from config. Pass "background"
+            to run in daemon mode without modifying the config file on disk.
+    """
     config = load_config(config_path)
+
+    if daemon_mode:
+        config.general.daemon_mode = daemon_mode
 
     if config.general.daemon_mode == "background":
         _run_daemon(config)
     else:
         run_once(config)
+
+
+def _resolve_cache_path(db_path: str) -> str:
+    """Return the metacritic cache path, handling :memory: databases."""
+    if db_path == ":memory:":
+        return ":memory:"
+    return os.path.join(db_path, "gamarr-cache.db")
 
 
 def _build_kwargs(config: Config) -> dict[str, Any]:
@@ -33,7 +49,6 @@ def _build_kwargs(config: Config) -> dict[str, Any]:
         "fitgirl_rss_url": config.sources.fitgirl.rss_url,
         "platform": config.sources.fitgirl.platform,
         "db_path": config.general.db_path,
-        "mc_cache_path": os.path.join(config.general.db_path, "gamarr-cache.db"),
         "qbt_host": config.torrent_client.qbittorrent.host,
         "qbt_port": config.torrent_client.qbittorrent.port,
         "qbt_username": config.torrent_client.qbittorrent.username,
@@ -51,6 +66,7 @@ def _build_kwargs(config: Config) -> dict[str, Any]:
         "notify_on_download": config.notification.on_download,
         "notify_on_failure": config.notification.on_failure,
         "notify_on_error": config.notification.on_error,
+        "mc_cache_path": _resolve_cache_path(config.general.db_path),
     }
 
 
@@ -72,27 +88,23 @@ def _run_daemon(config: Config) -> None:
     acq_cfg = config.schedule.acquisition
     kwargs = _build_kwargs(config)
 
+    from datetime import datetime, timedelta
+
+    from apscheduler.triggers.interval import IntervalTrigger
+
+    if acq_cfg.run_on_start:
+        _next_run = datetime.now()
+    else:
+        _next_run = datetime.now() + timedelta(minutes=acq_cfg.schedule_time_mins)
+
     scheduler.add_job(
         run_acquisition,
-        trigger="interval",
-        minutes=acq_cfg.schedule_time_mins,
+        trigger=IntervalTrigger(minutes=acq_cfg.schedule_time_mins),
         kwargs=kwargs,
         id="acquisition",
         name="Acquisition",
-        next_run_time=None if acq_cfg.run_on_start else None,
+        next_run_time=_next_run,
     )
-
-    if not acq_cfg.run_on_start:
-        from datetime import datetime, timedelta
-
-        from apscheduler.triggers.interval import IntervalTrigger
-
-        first_run = datetime.now() + timedelta(minutes=acq_cfg.schedule_time_mins)
-        scheduler.reschedule_job(
-            "acquisition",
-            trigger=IntervalTrigger(minutes=acq_cfg.schedule_time_mins),
-            next_run_time=first_run,
-        )
 
     scheduler.start()
     logger.info("Scheduler started (interval={} min)", acq_cfg.schedule_time_mins)

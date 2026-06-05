@@ -25,25 +25,30 @@ class QBittorrentClient:
         password: str = "adminadmin",
         category: str = "games-gamarr",
         add_paused: bool = False,
+        verify_ssl: bool = False,
     ) -> None:
         self._host = host
         self._port = port
         self._category = category
         self._add_paused = add_paused
+        if username == "admin" and password == "adminadmin":
+            logger.warning(
+                "Using default qBittorrent credentials (admin:adminadmin) - override in config/gamarr.yml for security"
+            )
         self._client = qbittorrentapi.Client(
             host=host,
             port=port,
             username=username,
             password=password,
-            VERIFY_WEBUI_CERTIFICATE=False,
+            VERIFY_WEBUI_CERTIFICATE=verify_ssl,
         )
 
     def is_connected(self) -> bool:
-        """Return True if qBittorrent has internet access."""
+        """Return True if the qBittorrent API is reachable and reports a connected status."""
         try:
             status = self._client.sync_maindata().server_state.connection_status
             return status in {"connected", "firewalled"}
-        except qbittorrentapi.APIError as exc:
+        except Exception as exc:
             logger.warning("qBittorrent connectivity check failed: {}", exc)
             return False
 
@@ -64,7 +69,7 @@ class QBittorrentClient:
                 tags=tag,
             )
             logger.info("Added torrent '{}' with tag '{}'", title, tag)
-        except qbittorrentapi.APIError as exc:
+        except Exception as exc:
             logger.warning("Failed to add torrent '{}': {}", title, exc)
             return False
 
@@ -72,7 +77,7 @@ class QBittorrentClient:
             infos = self._client.torrents_info(tag=tag)
             if infos:
                 self._client.torrents_reannounce(torrent_hashes=str(infos[0].hash))
-        except qbittorrentapi.APIError as exc:
+        except Exception as exc:
             logger.warning("Reannounce failed for '{}': {}; continuing.", title, exc)
 
         return tag
