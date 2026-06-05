@@ -120,6 +120,26 @@ def _parse_sitemap_index(xml_content: bytes) -> list[str]:
     return urls
 
 
+def _fetch_child_sitemaps(
+    child_urls: list[str],
+    fetcher: Any,
+) -> list[dict[str, str]]:
+    """Fetch and parse child sitemaps, deduplicating by URL."""
+    results: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+    for child_url in child_urls:
+        try:
+            resp = fetcher(child_url)
+            resp.raise_for_status()
+            for entry in _parse_sitemap(resp.content):
+                if entry["url"] not in seen_urls:
+                    seen_urls.add(entry["url"])
+                    results.append(entry)
+        except Exception as exc:
+            logger.warning("Failed to fetch child sitemap '{}': {}", child_url, exc)
+    return results
+
+
 def _resolve_sitemap(
     xml_content: bytes,
     fetcher: Any = None,
@@ -149,20 +169,7 @@ def _resolve_sitemap(
     if local_tag == "sitemapindex":
         if fetcher is None:
             return []
-        child_urls = _parse_sitemap_index(xml_content)
-        results: list[dict[str, str]] = []
-        seen_urls: set[str] = set()
-        for child_url in child_urls:
-            try:
-                resp = fetcher(child_url)
-                resp.raise_for_status()
-                for entry in _parse_sitemap(resp.content):
-                    if entry["url"] not in seen_urls:
-                        seen_urls.add(entry["url"])
-                        results.append(entry)
-            except Exception as exc:
-                logger.warning("Failed to fetch child sitemap '{}': {}", child_url, exc)
-        return results
+        return _fetch_child_sitemaps(_parse_sitemap_index(xml_content), fetcher)
 
     return []
 
