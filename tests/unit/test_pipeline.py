@@ -587,3 +587,55 @@ class TestPipelineLibraryCheck:
             assert results[0]["result"] == "Already owned"
             mock_mc = mock_mc_cls.return_value
             mock_mc.lookup_game.assert_not_called()
+
+
+class TestEvaluateScoresNoneReviews:
+    """When review counts are None, the game should fail."""
+
+    def test_none_metascore_reviews_fails(self) -> None:
+        """When metascore_review_count is None, game should fail."""
+        import types
+
+        from gamarr.pipeline import _evaluate_scores
+
+        cfg = type(
+            "Cfg",
+            (),
+            {
+                "min_metascore": 75,
+                "min_metascore_reviews": 5,
+                "min_user_score": 7.5,
+                "min_user_reviews": 10,
+            },
+        )()
+        mc_result = types.SimpleNamespace(
+            metascore=96.0,
+            metascore_review_count=None,
+            user_score=8.4,
+            user_review_count=200,
+        )
+        assert _evaluate_scores(mc_result, cfg) == "Failed"
+
+    def test_none_user_reviews_fails(self) -> None:
+        """When user_review_count is None, game should fail."""
+        import types
+
+        from gamarr.pipeline import _evaluate_scores
+
+        cfg = type(
+            "Cfg",
+            (),
+            {
+                "min_metascore": 75,
+                "min_metascore_reviews": 5,
+                "min_user_score": 7.5,
+                "min_user_reviews": 10,
+            },
+        )()
+        mc_result = types.SimpleNamespace(
+            metascore=96.0,
+            metascore_review_count=93,
+            user_score=8.4,
+            user_review_count=None,
+        )
+        assert _evaluate_scores(mc_result, cfg) == "Failed"

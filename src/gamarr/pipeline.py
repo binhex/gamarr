@@ -31,11 +31,13 @@ class AcquisitionConfig:
 
 
 def _score_check(value: float | None, threshold: float) -> bool:
-    """Return True if value is below threshold (or None).
+    """Return True if value is below threshold (or None — missing data fails).
 
-    When value is None the check passes (no data to fail against).
+    When value is None the check fails (no data to verify against).
     """
-    return value is not None and value < threshold
+    if value is None:
+        return True
+    return value < threshold
 
 
 def _evaluate_scores(
