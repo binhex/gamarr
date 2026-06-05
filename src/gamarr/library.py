@@ -126,20 +126,22 @@ class LibraryScanner:
             if not os.path.isdir(lib_path):
                 logger.warning("Library path '{}' does not exist or is not a directory.", lib_path)
                 continue
-            for root, dirs, files in os.walk(lib_path):
-                for dir_name in dirs:
-                    if dir_name.startswith("."):
-                        continue
-                    norm = _normalise_name(dir_name)
-                    if norm:
-                        full = os.path.join(root, dir_name)
-                        self._index.setdefault(norm, []).append(full)
-                for file_name in files:
-                    norm = _normalise_name(file_name)
-                    if norm:
-                        full = os.path.join(root, file_name)
-                        self._index.setdefault(norm, []).append(full)
+            self._index_path(lib_path)
         logger.debug("Library index built: {} entries from {} path(s)", len(self._index), len(self._paths))
+
+    def _index_path(self, lib_path: str) -> None:
+        """Walk a single library path and index its contents."""
+        for root, dirs, files in os.walk(lib_path):
+            for dir_name in dirs:
+                if dir_name.startswith("."):
+                    continue
+                norm = _normalise_name(dir_name)
+                if norm:
+                    self._index.setdefault(norm, []).append(os.path.join(root, dir_name))
+            for file_name in files:
+                norm = _normalise_name(file_name)
+                if norm:
+                    self._index.setdefault(norm, []).append(os.path.join(root, file_name))
 
     def check_game(self, title: str) -> LibraryMatch | None:
         if not self._index:
@@ -153,6 +155,10 @@ class LibraryScanner:
             paths = self._index[norm]
             return LibraryMatch(found=True, matched_name=norm, matched_path=paths[0])
 
+        return self._find_best_partial_match(norm)
+
+    def _find_best_partial_match(self, norm: str) -> LibraryMatch | None:
+        """Return the best partial match for *norm* in the index, or None."""
         best_key, best_path, best_ratio = None, None, 0.0
         for index_key, paths in self._index.items():
             ratio = _partial_match(norm, index_key)
@@ -161,5 +167,4 @@ class LibraryScanner:
         if best_key is not None and best_ratio >= 0.5:
             assert best_path is not None
             return LibraryMatch(found=True, matched_name=best_key, matched_path=best_path)
-
         return None

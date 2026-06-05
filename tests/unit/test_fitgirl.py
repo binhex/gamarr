@@ -1,6 +1,7 @@
 """Tests for gamarr FitGirl RSS source."""
 
 from __future__ import annotations
+
 from typing import Any
 
 from gamarr.sources.fitgirl import FitGirlSource, _clean_title

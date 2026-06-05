@@ -103,3 +103,50 @@ class TestLibraryScanner:
         scanner = LibraryScanner([str(tmp_path)])
         assert scanner.check_game("Hades II") is not None
         assert scanner.check_game("Cyberpunk 2077") is not None
+
+
+class TestPartialMatchDirect:
+    """Direct tests for _partial_match function."""
+
+    def test_partial_match_exact(self) -> None:
+        from gamarr.library import _partial_match
+
+        result = _partial_match("elden ring", "elden ring")
+        assert result is not None
+        assert result >= 0.5
+
+    def test_partial_match_substring(self) -> None:
+        from gamarr.library import _partial_match
+
+        result = _partial_match("elden ring", "elden ring deluxe edition")
+        assert result is not None
+
+    def test_partial_match_too_short(self) -> None:
+        from gamarr.library import _partial_match
+
+        result = _partial_match("ab", "abcdef")
+        assert result is None
+
+    def test_partial_match_no_commonality(self) -> None:
+        from gamarr.library import _partial_match
+
+        result = _partial_match("abcdefghij", "klmnopqrst")
+        assert result is None
+
+
+class TestLibraryScannerEdgeCases:
+    """Edge cases for LibraryScanner."""
+
+    def test_nonexistent_path_warns(self, tmp_path: Path) -> None:
+        scanner = LibraryScanner([str(tmp_path / "nonexistent")])
+        assert scanner.check_game("Elden Ring") is None
+
+    def test_check_game_empty_title(self, tmp_path: Path) -> None:
+        game_dir = tmp_path / "Game"
+        game_dir.mkdir()
+        scanner = LibraryScanner([str(tmp_path)])
+        assert scanner.check_game("") is None
+
+    def test_check_game_not_found_no_index(self) -> None:
+        scanner = LibraryScanner([])
+        assert scanner.check_game("Elden Ring") is None
