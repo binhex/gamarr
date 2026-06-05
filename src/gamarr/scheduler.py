@@ -67,6 +67,7 @@ def _build_kwargs(config: Config) -> dict[str, Any]:
         "notify_on_failure": config.notification.on_failure,
         "notify_on_error": config.notification.on_error,
         "mc_cache_path": _resolve_cache_path(config.general.db_path),
+        "library_paths": config.library.paths,
     }
 
 

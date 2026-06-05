@@ -159,6 +159,7 @@ class LibraryScanner:
             if ratio is not None and ratio > best_ratio:
                 best_key, best_path, best_ratio = index_key, paths[0], ratio
         if best_key is not None and best_ratio >= 0.5:
+            assert best_path is not None
             return LibraryMatch(found=True, matched_name=best_key, matched_path=best_path)
 
         return None

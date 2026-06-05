@@ -80,6 +80,7 @@ def run_acquisition(
     notify_on_download: bool = True,
     notify_on_failure: bool = False,
     notify_on_error: bool = False,
+    library_paths: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Execute one acquisition cycle."""
     cfg = AcquisitionConfig(
@@ -122,6 +123,10 @@ def run_acquisition(
         db.close()
         return []
 
+    from gamarr.library import LibraryScanner
+
+    library = LibraryScanner(library_paths)
+
     try:
         entries = source.fetch_new()
         if not entries:
@@ -130,6 +135,27 @@ def run_acquisition(
 
         results: list[dict[str, Any]] = []
         for entry in entries:
+            match = library.check_game(entry.title)
+            if match:
+                db.record_processed(
+                    source=entry.source,
+                    source_title=entry.source_url,
+                    source_url=entry.source_url,
+                    game_title=entry.title,
+                    platform=entry.platform,
+                    result="Already owned",
+                    result_details=f"Found in library: {match.matched_path}",
+                )
+                logger.info("Already in library, skipping: '{}'", entry.title)
+                results.append(
+                    {
+                        "result": "Already owned",
+                        "game_title": entry.title,
+                        "result_details": f"Found in library: {match.matched_path}",
+                    }
+                )
+                continue
+
             result = _process_entry(entry, cfg, mc, qbt, db, notifier)
             results.append(result)
         return results

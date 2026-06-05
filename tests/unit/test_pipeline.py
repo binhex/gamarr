@@ -538,3 +538,52 @@ class TestEvaluateScoresCoverage:
             user_review_count=200,
         )
         assert _evaluate_scores(mc_result, cfg) == "Failed"
+
+
+class TestPipelineLibraryCheck:
+    """Library check integration in the acquisition pipeline."""
+
+    def test_library_match_skips_mc_lookup(self) -> None:
+        """When a game is found in the library, MC lookup should NOT be called."""
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.models import GameEntry
+
+        entry = GameEntry(
+            title="Elden Ring",
+            source_title="Elden Ring [Repack]",
+            source="fitgirl",
+            platform="pc",
+            magnet_url="magnet:?xt=urn:btih:abc",
+            source_url="http://example.com/elden-ring",
+        )
+
+        with (
+            patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
+            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+            patch("gamarr.library.os.path.isdir") as mock_isdir,
+            patch("gamarr.library.os.walk") as mock_walk,
+        ):
+            mock_isdir.return_value = True
+            mock_walk.return_value = [("/games", ["Elden Ring"], [])]
+
+            mock_source = MagicMock()
+            mock_source.fetch_new.return_value = [entry]
+            mock_source_cls.return_value = mock_source
+
+            mock_qbt = MagicMock()
+            mock_qbt.is_connected.return_value = True
+            mock_qbt_cls.return_value = mock_qbt
+
+            results = run_acquisition(
+                fitgirl_rss_url="http://example.com/feed",
+                platform="pc",
+                qbt_host="localhost",
+                qbt_port=8080,
+                library_paths=["/games"],
+            )
+            assert len(results) == 1
+            assert results[0]["result"] == "Already owned"
+            mock_mc = mock_mc_cls.return_value
+            mock_mc.lookup_game.assert_not_called()
