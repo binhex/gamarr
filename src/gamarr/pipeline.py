@@ -79,9 +79,9 @@ def _is_older_than(release_date: str | None, days: int) -> bool:
         return False
     try:
         released = datetime.datetime.strptime(
-            release_date, "%Y-%m-%d"
-        ).replace(tzinfo=datetime.UTC)
-        cutoff = datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=days)
+            release_date.strip(), "%Y-%m-%d"
+        ).date()
+        cutoff = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=days)).date()
         return released < cutoff
     except (ValueError, TypeError):
         return False

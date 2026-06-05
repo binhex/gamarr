@@ -379,7 +379,9 @@ class FitGirlSource:
             resp.raise_for_status()
             titles = _resolve_sitemap(
                 resp.content,
-                fetcher=lambda url: requests.get(url, timeout=30),
+                fetcher=lambda url: requests.get(
+                    url, timeout=30, headers={"User-Agent": _USER_AGENT}
+                ),
             )
             db.rebuild_source_titles("fitgirl", titles)
             logger.info("FitGirl sitemap indexed {} titles", len(titles))

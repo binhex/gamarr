@@ -375,6 +375,32 @@ class TestEvaluateScores:
         )
         assert _evaluate_scores(mc_result, cfg) == "Passed"
 
+    def test_malformed_release_date_treated_as_recent(self) -> None:
+        """A malformed release date should not cause failure."""
+        import types
+
+        from gamarr.pipeline import _evaluate_scores
+
+        cfg = type(
+            "Cfg",
+            (),
+            {
+                "min_metascore": 0,
+                "min_metascore_reviews": 0,
+                "min_user_score": 0.0,
+                "min_user_reviews": 0,
+                "days_since_release": 30,
+            },
+        )()
+        mc_result = types.SimpleNamespace(
+            metascore=90.0,
+            metascore_review_count=50,
+            user_score=8.5,
+            user_review_count=100,
+            release_date="not-a-date",
+        )
+        assert _evaluate_scores(mc_result, cfg) == "Passed"
+
 
 class TestPipelineEdgeCases:
     """Pipeline edge cases with mocked dependencies."""
