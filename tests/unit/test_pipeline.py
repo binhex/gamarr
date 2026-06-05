@@ -714,6 +714,36 @@ class TestMetacriticBrowse:
         assert pending[0].slug == "elden-ring"
         db.close()
 
+    def test_match_pending_against_source(self, tmp_path: Path) -> None:
+        import datetime
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _match_pending_games
+
+        db = Database(str(tmp_path / "test.db"))
+
+        expires = (
+            datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)
+        ).isoformat()
+        db.record_pending(
+            slug="elden-ring",
+            game_title="Elden Ring",
+            platform="pc",
+            metascore=96.0,
+            user_score=8.5,
+            expires_at=expires,
+        )
+
+        db.rebuild_source_titles("fitgirl", [
+            {"title": "Elden Ring", "url": "https://fitgirl-repacks.site/elden-ring/"},
+        ])
+
+        matched = _match_pending_games(db, pending_days=30)
+        assert len(matched) == 1
+        assert matched[0]["slug"] == "elden-ring"
+        assert db.is_pending("elden-ring") is False
+        db.close()
+
 
 class TestLogGameDetails:
     """_log_game_details end-to-end behaviour."""

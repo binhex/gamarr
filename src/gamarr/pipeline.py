@@ -299,6 +299,83 @@ def _process_browse_games(
     return new_count
 
 
+def _match_pending_games(
+    db: Database,
+    *,
+    pending_days: int = 30,
+    qbt: Any = None,
+    notifier: Any = None,
+) -> list[dict[str, Any]]:
+    """Match pending games against torrent source indices.
+
+    For each non-expired pending game:
+      1. Normalize its title
+      2. Search ``source_titles`` for a match (currently FitGirl only)
+      3. On match: record in history, remove from pending
+      4. If no match: update ``last_checked_at``
+      5. On expiry: move to history with ``result="Expired"``
+
+    Returns a list of result dicts.
+    """
+    from gamarr.metacritic import _normalise_for_compare
+
+    results: list[dict[str, Any]] = []
+
+    # Match non-expired pending games
+    pending = db.get_pending()
+    for game in pending:
+        normalized = _normalise_for_compare(game.game_title)
+        matches = db.match_source_title("fitgirl", normalized)
+
+        if matches:
+            best = matches[0]
+            logger.info(
+                "Pending game '{}' matched to '{}' at {}",
+                game.game_title, best["title"], best["url"],
+            )
+
+            record_result = _record_result(
+                db,
+                source="metacritic",
+                source_title=game.game_title,
+                source_url=f"https://www.metacritic.com/game/{game.slug}/",
+                game_title=game.game_title,
+                platform=game.platform,
+                metascore=game.metascore,
+                user_score=game.user_score,
+                result="Passed",
+                result_details=f"Matched source: {best['url']}",
+            )
+            record_result["slug"] = game.slug
+            db.remove_pending(game.slug)
+            results.append(record_result)
+            logger.info("\u2713 Matched '{}' \u2014 recorded to history", game.game_title)
+        else:
+            db.touch_pending(game.slug)
+
+    # Expire overdue pending games
+    expired = db.get_expired_pending()
+    for game in expired:
+        record_result = _record_result(
+            db,
+            source="metacritic",
+            source_title=game.game_title,
+            source_url=f"https://www.metacritic.com/game/{game.slug}/",
+            game_title=game.game_title,
+            platform=game.platform,
+            metascore=game.metascore,
+            user_score=game.user_score,
+            result="Expired",
+            result_details="Not available on any source within pending window",
+        )
+        record_result["slug"] = game.slug
+        db.remove_pending(game.slug)
+        results.append(record_result)
+        logger.info("Pending game '{}' expired \u2014 recorded to history", game.game_title)
+
+    return results
+
+
 def _record_result(
     db: Database,
     *,
