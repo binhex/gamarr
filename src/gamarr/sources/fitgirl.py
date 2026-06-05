@@ -30,20 +30,20 @@ _EDITION_PATTERN = re.compile(
     r"Collectors?(?:'s)?\s+Edition|Limited\s+Edition|Special\s+Edition|"
     r"Standard\s+Edition|Phantom\s+Liberty\s+Edition|"
     r"GOTY(?:\s+Edition)?|Game\s+of\s+the\s+Year(?:\s+Edition)?)"
-    r"\b(?=\s*[,\d]|\s*$)",
+    r"\b(?=\s*[,\d–-]|\s*$)",
     re.IGNORECASE,
 )
 
 # Strip comma-separated version/DLC/bonus metadata
 # Also handles bare version strings like ", v1.0" when no trailing keywords
 _VERSION_COMMA_PATTERN = re.compile(
-    r",\s*v?\d[\d.,\s\w/\+]+(?:\+?\s*DLCs?|Bonuses|HV|Non[_-]?HV).*",
+    r"(?:,\s*|\s*[–-]\s*)v?\d[\d.,\s\w/\+]+(?:\+?\s*DLCs?|Bonuses|HV|Non[_-]?HV).*",
     re.IGNORECASE,
 )
 
-# Strip bare version strings after comma (no trailing keywords required)
-# e.g. ", v1.0" where edition was already stripped
-_BARE_VERSION_PATTERN = re.compile(r",\s*v?\d[\d.]*.*", re.IGNORECASE)
+# Strip bare version strings after comma or dash (no trailing keywords required)
+# e.g. ", v1.0" or " – v1.0" where edition was already stripped
+_BARE_VERSION_PATTERN = re.compile(r"(?:,\s*|\s*[–-]\s*)v?\d[\d.]*.*", re.IGNORECASE)
 
 # RSS categories that indicate a non-game entry (blog/news posts)
 _NON_GAME_CATEGORIES = frozenset({"Uncategorized", "Updates Digest"})

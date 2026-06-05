@@ -384,3 +384,27 @@ class TestBuildEntriesCategoryFilter:
         ]
         entries = source._build_entries(items)
         assert len(entries) == 0
+
+
+class TestCleanTitleDashVersion:
+    """Regression tests for version numbers after en-dash."""
+
+    def test_clean_dash_version_basic(self) -> None:
+        """Version after en-dash should be stripped."""
+        result = _clean_title("The 7th Guest Remake – v1.2.14011.0")
+        assert result == "The 7th Guest Remake"
+
+    def test_clean_dash_version_dlc(self) -> None:
+        """Version + DLCs after en-dash should be stripped."""
+        result = _clean_title("CarX Street: Deluxe Edition – v1.13.0 + 5 DLCs")
+        assert result == "CarX Street"
+
+    def test_clean_dash_version_simple(self) -> None:
+        """Simple version after en-dash should be stripped."""
+        result = _clean_title("A Bumpy Ride – v1.0.5")
+        assert result == "A Bumpy Ride"
+
+    def test_clean_dash_version_leading_zero(self) -> None:
+        """Version with leading zero after en-dash should be stripped."""
+        result = _clean_title("Realm of Ink – v0.18.04")
+        assert result == "Realm of Ink"
