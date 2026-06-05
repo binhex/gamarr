@@ -21,6 +21,20 @@ _USER_AGENT = (
 
 _TECH_PAREN_PATTERN = re.compile(r"\s*\(.*?(?:v?\d[\d.]*|MULTi|Selective|Repack).*?\)", re.IGNORECASE)
 _REPACK_TAG_PATTERN = re.compile(r"\s*\[Repack\]", re.IGNORECASE)
+
+# Strip edition suffixes after en-dash, colon, or comma
+_EDITION_PATTERN = re.compile(
+    r"(?:\s*[–-]\s*|\s*:\s*|,\s*)(?:(?:Digital\s+)?Deluxe\s+Edition|"
+    r"Complete\s+Edition|Game\s+of\s+the\s+Year\s+Edition|Gold\s+Edition|"
+    r"Platinum\s+Edition|Ultimate\s+Edition|Premium\s+Edition|"
+    r"Collectors\s+Edition|Limited\s+Edition|Special\s+Edition|"
+    r"Standard\s+Edition|Phantom\s+Liberty\s+Edition)",
+    re.IGNORECASE,
+)
+
+# Strip comma-separated version/DLC/bonus metadata
+_VERSION_COMMA_PATTERN = re.compile(r",\s*v?\d[\d.,\s\w/\+]+(?:\+?\s*DLCs?|Bonuses|HV|Non_HV).*", re.IGNORECASE)
+
 _MAGNET_PATTERN = re.compile(r"(magnet:\?xt=urn:btih:[a-zA-Z0-9]+[^\s\"'<>]*)")
 
 _CONNECT_TIMEOUT = 30.0
@@ -39,6 +53,8 @@ def _clean_title(raw_title: str) -> str:
     title = raw_title.strip()
     title = _REPACK_TAG_PATTERN.sub("", title)
     title = _TECH_PAREN_PATTERN.sub("", title)
+    title = _EDITION_PATTERN.sub("", title).strip()
+    title = _VERSION_COMMA_PATTERN.sub("", title).strip()
     return title.strip()
 
 

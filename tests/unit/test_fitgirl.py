@@ -44,6 +44,32 @@ class TestTitleCleaning:
         assert result == "Game Name"
 
 
+class TestTitleCleaningRegression:
+    """Regression tests for comma-separated and dash-separated metadata."""
+
+    def test_clean_title_comma_version(self) -> None:
+        """Strip comma-separated version metadata."""
+        result = _clean_title(
+            "Need for Speed: Payback – Deluxe Edition, v1.0.51.41148 HV / v1.0.51.15364 Non_HV + DLCs [Repack]"
+        )
+        assert result == "Need for Speed: Payback"
+
+    def test_clean_title_deluxe_edition(self) -> None:
+        """Strip Deluxe Edition suffix after comma."""
+        result = _clean_title("FINAL FANTASY VII REBIRTH: Digital Deluxe Edition, v1.005 + 15 DLCs/Bonuses [Repack]")
+        assert result == "FINAL FANTASY VII REBIRTH"
+
+    def test_clean_title_edition_after_dash(self) -> None:
+        """Strip edition info after dash."""
+        result = _clean_title("Cyberpunk 2077 – Phantom Liberty Edition, v2.1 + DLC [Repack]")
+        assert result == "Cyberpunk 2077"
+
+    def test_clean_title_preserves_hyphenated_name(self) -> None:
+        """Game names with hyphens should be preserved."""
+        result = _clean_title("Assassins Creed Valhalla – Complete Edition, v1.7 + DLC [Repack]")
+        assert result == "Assassins Creed Valhalla"
+
+
 class TestExtractMagnetFromHtml:
     """Magnet link extraction from HTML content."""
 
