@@ -74,7 +74,7 @@ class TestRunAcquisition:
                 user_review_count=200,
                 genres=["Action", "RPG"],
                 must_play=True,
-                release_date="2025-01-15",
+                release_date="2026-06-01",
             )
 
             mock_mc = MagicMock()
@@ -131,7 +131,7 @@ class TestRunAcquisition:
                 user_review_count=10,
                 genres=["Action"],
                 must_play=False,
-                release_date="2025-03-20",
+                release_date="2026-06-01",
             )
 
             mock_mc = MagicMock()
@@ -293,6 +293,88 @@ class TestEvaluateScores:
         )
         assert _evaluate_scores(mc_result, cfg) == "Failed"
 
+    def test_old_game_fails_days_since_release(self) -> None:
+        """A game older than days_since_release should fail."""
+        import types
+
+        from gamarr.pipeline import _evaluate_scores
+
+        cfg = type(
+            "Cfg",
+            (),
+            {
+                "min_metascore": 0,
+                "min_metascore_reviews": 0,
+                "min_user_score": 0.0,
+                "min_user_reviews": 0,
+                "days_since_release": 30,
+            },
+        )()
+        mc_result = types.SimpleNamespace(
+            metascore=90.0,
+            metascore_review_count=50,
+            user_score=8.5,
+            user_review_count=100,
+            release_date="2020-01-01",
+        )
+        assert _evaluate_scores(mc_result, cfg) == "Failed"
+
+    def test_recent_game_passes_days_since_release(self) -> None:
+        """A game within days_since_release should pass (if scores are fine)."""
+        import datetime
+        import types
+
+        from gamarr.pipeline import _evaluate_scores
+
+        recent = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=5)).strftime("%Y-%m-%d")
+
+        cfg = type(
+            "Cfg",
+            (),
+            {
+                "min_metascore": 0,
+                "min_metascore_reviews": 0,
+                "min_user_score": 0.0,
+                "min_user_reviews": 0,
+                "days_since_release": 30,
+            },
+        )()
+        mc_result = types.SimpleNamespace(
+            metascore=90.0,
+            metascore_review_count=50,
+            user_score=8.5,
+            user_review_count=100,
+            release_date=recent,
+        )
+        assert _evaluate_scores(mc_result, cfg) == "Passed"
+
+    def test_no_release_date_passes_days_check(self) -> None:
+        """When release_date is None, the game should NOT be failed
+        (we don't know the release date, so assume it's fine)."""
+        import types
+
+        from gamarr.pipeline import _evaluate_scores
+
+        cfg = type(
+            "Cfg",
+            (),
+            {
+                "min_metascore": 0,
+                "min_metascore_reviews": 0,
+                "min_user_score": 0.0,
+                "min_user_reviews": 0,
+                "days_since_release": 30,
+            },
+        )()
+        mc_result = types.SimpleNamespace(
+            metascore=90.0,
+            metascore_review_count=50,
+            user_score=8.5,
+            user_review_count=100,
+            release_date=None,
+        )
+        assert _evaluate_scores(mc_result, cfg) == "Passed"
+
 
 class TestPipelineEdgeCases:
     """Pipeline edge cases with mocked dependencies."""
@@ -329,7 +411,7 @@ class TestPipelineEdgeCases:
                 user_review_count=200,
                 genres=["Action"],
                 must_play=True,
-                release_date="2025-06-01",
+                release_date="2026-06-01",
             )
             mock_mc = MagicMock()
             mock_mc.lookup_game.return_value = mock_mc_result
@@ -451,7 +533,7 @@ class TestPipelineCoverageGaps:
                 user_review_count=200,
                 genres=["Simulation"],
                 must_play=False,
-                release_date="2025-02-10",
+                release_date="2026-06-01",
             )
             mock_mc = MagicMock()
             mock_mc.lookup_game.return_value = mock_mc_result

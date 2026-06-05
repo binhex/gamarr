@@ -69,6 +69,24 @@ def _log_game_details(mc_result: Any) -> None:
     )
 
 
+def _is_older_than(release_date: str | None, days: int) -> bool:
+    """Check if a release date string is older than *days* from today.
+
+    Returns ``False`` when *release_date* is ``None`` (unknown age
+    — assume recent).  Malformed dates are treated as recent.
+    """
+    if release_date is None:
+        return False
+    try:
+        released = datetime.datetime.strptime(
+            release_date, "%Y-%m-%d"
+        ).replace(tzinfo=datetime.UTC)
+        cutoff = datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=days)
+        return released < cutoff
+    except (ValueError, TypeError):
+        return False
+
+
 @dataclass
 class AcquisitionConfig:
     """Thresholds and settings for the acquisition run."""
@@ -108,6 +126,9 @@ def _evaluate_scores(
     if _score_check(mc_result.user_score, cfg.min_user_score):
         return "Failed"
     if _score_check(mc_result.user_review_count, cfg.min_user_reviews):
+        return "Failed"
+
+    if _is_older_than(getattr(mc_result, "release_date", None), cfg.days_since_release):
         return "Failed"
 
     return "Passed"
