@@ -115,12 +115,10 @@ class LibraryScanner:
     def __init__(
         self,
         library_paths: list[str] | None = None,
-        enabled: bool = True,
     ) -> None:
-        self._enabled = enabled
         self._paths = library_paths or []
         self._index: dict[str, list[str]] = {}
-        if enabled and self._paths:
+        if self._paths:
             self._build_index()
 
     def _build_index(self) -> None:
@@ -144,7 +142,7 @@ class LibraryScanner:
         logger.debug("Library index built: {} entries from {} path(s)", len(self._index), len(self._paths))
 
     def check_game(self, title: str) -> LibraryMatch | None:
-        if not self._enabled or not self._index:
+        if not self._index:
             return None
 
         norm = _normalise_name(title)

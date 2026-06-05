@@ -68,12 +68,10 @@ class TestConfigModels:
 
     def test_library_config_defaults(self) -> None:
         cfg = LibraryConfig()
-        assert cfg.enabled is True
         assert cfg.paths == []
 
     def test_library_in_root_config(self) -> None:
         cfg = Config()
-        assert cfg.library.enabled is True
         assert cfg.library.paths == []
 
     def test_root_config_defaults(self) -> None:

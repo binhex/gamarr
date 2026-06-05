@@ -56,17 +56,13 @@ class TestLibraryMatch:
 class TestLibraryScanner:
     """LibraryScanner index building and game lookup."""
 
-    def test_scanner_disabled(self) -> None:
-        scanner = LibraryScanner(enabled=False)
+    def test_scanner_empty(self) -> None:
+        scanner = LibraryScanner()
         assert scanner.check_game("Elden Ring") is None
 
     def test_scanner_empty_paths(self) -> None:
         scanner = LibraryScanner([])
         assert scanner.check_game("Elden Ring") is None
-
-    def test_scanner_no_index_when_disabled(self) -> None:
-        scanner = LibraryScanner(["/nonexistent"], enabled=False)
-        assert scanner._index == {}
 
     def test_check_game_exact_match(self, tmp_path: Path) -> None:
         game_dir = tmp_path / "Elden Ring"

@@ -105,9 +105,11 @@ class DatabaseConfig(BaseModel):
 
 
 class LibraryConfig(BaseModel):
-    """Game library scanning settings."""
+    """Game library scanning settings.
 
-    enabled: bool = True
+    When ``paths`` is non-empty, library scanning is enabled.
+    """
+
     paths: list[str] = Field(default_factory=list)
 
 
