@@ -62,6 +62,8 @@ def _build_kwargs(config: Config) -> dict[str, Any]:
         "days_since_release": mc_cfg.days_since_release,
         "cache_ttl_days": mc_cfg.cache_ttl_days,
         "browse_cache_ttl_hours": mc_cfg.browse_cache_ttl_hours,
+        "browse_enabled": mc_cfg.browse_enabled,
+        "pending_days": mc_cfg.pending_days,
         "apprise_urls": config.notification.apprise_urls,
         "notify_on_download": config.notification.on_download,
         "notify_on_failure": config.notification.on_failure,
