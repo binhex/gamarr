@@ -803,7 +803,6 @@ class TestRunAcquisitionMetacritic:
         """End-to-end: browse inserts pending, sitemap matching moves to history."""
         from unittest.mock import MagicMock, patch
 
-        from gamarr.database import Database
         from gamarr.pipeline import run_acquisition
 
         sitemap_xml = b"""<?xml version="1.0" encoding="UTF-8"?>

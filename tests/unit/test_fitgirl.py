@@ -457,3 +457,50 @@ class TestFitGirlSitemap:
         result = _parse_sitemap(xml)
         # Without namespace, the xpath won't match — returns empty
         assert result == []
+
+    def test_fetch_sitemap_resolves_index(self) -> None:
+        """Reproduce: main sitemap is a <sitemapindex> with child sitemaps.
+
+        The current code only parses <urlset> and returns 0 for
+        <sitemapindex>. The fix must follow child sitemap references
+        and parse their URLs.
+        """
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.sources.fitgirl import FitGirlSource
+
+        index_xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap>
+    <loc>https://fitgirl-repacks.site/post-sitemap.xml</loc>
+  </sitemap>
+</sitemapindex>"""
+        child_xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://fitgirl-repacks.site/elden-ring/</loc></url>
+  <url><loc>https://fitgirl-repacks.site/baldurs-gate-3/</loc></url>
+</urlset>"""
+
+        source = FitGirlSource(db_path=":memory:", rss_url="http://example.com/feed")
+        # Manually create a mock DB that stores what gets indexed
+        mock_db = MagicMock()
+
+        with patch("gamarr.sources.fitgirl.requests.get") as mock_get:
+            def side_effect(url: str, **kwargs: object) -> MagicMock:
+                resp = MagicMock()
+                resp.raise_for_status = MagicMock()
+                if "post-sitemap" in url:
+                    resp.content = child_xml
+                else:
+                    resp.content = index_xml
+                return resp
+            mock_get.side_effect = side_effect
+
+            source.fetch_sitemap(mock_db)
+
+        # Should have indexed the child sitemap's URLs
+        mock_db.rebuild_source_titles.assert_called_once()
+        args = mock_db.rebuild_source_titles.call_args[0]
+        assert args[0] == "fitgirl"
+        assert len(args[1]) == 2
+        assert args[1][0]["title"] == "Elden Ring"

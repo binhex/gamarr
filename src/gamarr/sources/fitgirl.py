@@ -81,16 +81,15 @@ def _title_from_url(url: str) -> str:
 
 
 def _parse_sitemap(xml_content: bytes) -> list[dict[str, str]]:
-    """Parse FitGirl sitemap XML into a list of ``{title, url}`` dicts.
+    """Parse a ``<urlset>`` sitemap XML into a list of ``{title, url}`` dicts.
 
     Args:
-        xml_content: Raw XML bytes of the sitemap.
+        xml_content: Raw XML bytes of a sitemap urlset.
 
     Returns:
         List of dicts with ``title`` and ``url`` keys.
     """
     root = ET.fromstring(xml_content)
-    # Namespace is typically http://www.sitemaps.org/schemas/sitemap/0.9
     ns = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
     results: list[dict[str, str]] = []
     for url_elem in root.findall("sm:url", ns):
@@ -100,6 +99,70 @@ def _parse_sitemap(xml_content: bytes) -> list[dict[str, str]]:
             title = _title_from_url(url)
             results.append({"title": title, "url": url})
     return results
+
+
+def _parse_sitemap_index(xml_content: bytes) -> list[str]:
+    """Parse a ``<sitemapindex>`` XML and return child sitemap URLs.
+
+    Args:
+        xml_content: Raw XML bytes of a sitemap index.
+
+    Returns:
+        List of child sitemap ``<loc>`` URLs.
+    """
+    root = ET.fromstring(xml_content)
+    ns = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    urls: list[str] = []
+    for sitemap_elem in root.findall("sm:sitemap", ns):
+        loc = sitemap_elem.find("sm:loc", ns)
+        if loc is not None and loc.text:
+            urls.append(loc.text.strip())
+    return urls
+
+
+def _resolve_sitemap(
+    xml_content: bytes,
+    fetcher: Any = None,
+) -> list[dict[str, str]]:
+    """Resolve a sitemap that may be a ``<urlset>`` or ``<sitemapindex>``.
+
+    For a ``<urlset>``, extracts game title/url pairs directly.
+    For a ``<sitemapindex>``, fetches each child sitemap via *fetcher*
+    and aggregates all URL entries.  *fetcher* must be a callable that
+    accepts a URL and returns a response with a ``.content`` attribute.
+
+    Args:
+        xml_content: Raw XML bytes of the sitemap.
+        fetcher: Callable ``(url) -> response`` for fetching child
+            sitemaps.  Required when the root is ``<sitemapindex>``.
+
+    Returns:
+        List of ``{"title": ..., "url": ...}`` dicts.
+    """
+    root = ET.fromstring(xml_content)
+    tag = root.tag
+    local_tag = tag.split("}", 1)[-1] if "}" in tag else tag
+
+    if local_tag == "urlset":
+        return _parse_sitemap(xml_content)
+
+    if local_tag == "sitemapindex":
+        if fetcher is None:
+            return []
+        child_urls = _parse_sitemap_index(xml_content)
+        results: list[dict[str, str]] = []
+        for child_url in child_urls:
+            try:
+                resp = fetcher(child_url)
+                resp.raise_for_status()
+                results.extend(_parse_sitemap(resp.content))
+            except Exception as exc:
+                logger.warning(
+                    "Failed to fetch child sitemap '{}': {}", child_url, exc
+                )
+        return results
+
+    return []
 
 
 def _clean_title(raw_title: str) -> str:
@@ -297,12 +360,15 @@ class FitGirlSource:
         return None
 
     def fetch_sitemap(self, db: Database) -> None:
-        """Fetch the FitGirl sitemap and rebuild the source_titles index."""
+        """Fetch the FitGirl sitemap and rebuild the source_titles index.
+
+        Handles both ``<urlset>`` and ``<sitemapindex>`` sitemap formats.
+        """
         url = "https://fitgirl-repacks.site/sitemap.xml"
         try:
             resp = requests.get(url, timeout=30)
             resp.raise_for_status()
-            titles = _parse_sitemap(resp.content)
+            titles = _resolve_sitemap(resp.content, fetcher=requests.get)
             db.rebuild_source_titles("fitgirl", titles)
             logger.info("FitGirl sitemap indexed {} titles", len(titles))
         except requests.RequestException as exc:
