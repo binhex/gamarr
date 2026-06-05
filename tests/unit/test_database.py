@@ -75,3 +75,18 @@ class TestDatabase:
         assert stats["passed"] == 1
         assert stats["failed"] == 1
         db.close()
+
+
+class TestDatabaseAlreadyOwned:
+    """Already owned stats tracking."""
+
+    def test_get_stats_counts_already_owned(self, tmp_path: Path) -> None:
+        db = Database(str(tmp_path / "test.db"))
+        db.record_processed(source="fitgirl", source_title="A", result="Passed")
+        db.record_processed(source="fitgirl", source_title="B", result="Already owned")
+        db.record_processed(source="fitgirl", source_title="C", result="Already owned")
+        stats = db.get_stats()
+        assert stats["total"] == 3
+        assert stats["passed"] == 1
+        assert stats["already_owned"] == 2
+        db.close()

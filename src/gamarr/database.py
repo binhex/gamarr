@@ -110,4 +110,12 @@ class Database:
             total = session.query(HistoryRow).count()
             passed = session.query(HistoryRow).filter(HistoryRow.result == "Passed").count()
             failed = session.query(HistoryRow).filter(HistoryRow.result == "Failed").count()
-            return {"total": total, "passed": passed, "failed": failed}
+            already_owned = session.query(HistoryRow).filter(
+                HistoryRow.result == "Already owned"
+            ).count()
+            return {
+                "total": total,
+                "passed": passed,
+                "failed": failed,
+                "already_owned": already_owned,
+            }
