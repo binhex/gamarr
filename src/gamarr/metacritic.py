@@ -59,6 +59,43 @@ def _nuxt_val(data: list[Any], ref: Any) -> Any:
     return ref
 
 
+def _find_scores_in_nuxt_data(page_data: list[Any]) -> dict[str, Any] | None:
+    """Extract critic and user scores from a Nuxt JSON data array.
+
+    The Nuxt state on Metacritic game pages embeds score data as dict
+    items within a JSON array.  Score/reviewCount values may be literal
+    integers or indices into the same array.
+    """
+    metascore = metascore_reviews = user_score = user_reviews = None
+
+    for item in page_data:
+        if not isinstance(item, dict):
+            continue
+
+        if metascore is None and "score" in item and "reviewCount" in item:
+            score_val = _nuxt_val(page_data, item["score"])
+            if isinstance(score_val, (int, float)):
+                metascore = float(score_val)
+                metascore_reviews = _nuxt_val(page_data, item.get("reviewCount"))
+
+        if user_score is None and "userScore" in item:
+            us = _nuxt_val(page_data, item.get("userScore"))
+            if isinstance(us, dict) and "score" in us:
+                us_score = _nuxt_val(page_data, us.get("score"))
+                if isinstance(us_score, (int, float)):
+                    user_score = float(us_score)
+                    user_reviews = _nuxt_val(page_data, us.get("reviewCount"))
+
+    if metascore is not None or user_score is not None:
+        return {
+            "metascore": metascore,
+            "metascore_reviews": metascore_reviews,
+            "user_score": user_score,
+            "user_reviews": user_reviews,
+        }
+    return None
+
+
 def _parse_game_details(page_content: bytes) -> dict[str, Any] | None:
     try:
         soup = BeautifulSoup(page_content, features="html.parser")
@@ -74,25 +111,12 @@ def _parse_game_details(page_content: bytes) -> dict[str, Any] | None:
         except (json.JSONDecodeError, TypeError):
             continue
 
-        metascore = metascore_reviews = user_score = user_reviews = None
-
-        for item in page_data:
-            if not isinstance(item, dict):
-                continue
-
-            if metascore is None and "score" in item and "reviewCount" in item:
-                score_val = _nuxt_val(page_data, item["score"])
-                if isinstance(score_val, (int, float)):
-                    metascore = float(score_val)
-                    metascore_reviews = _nuxt_val(page_data, item.get("reviewCount"))
-
-            if user_score is None and "userScore" in item:
-                us = _nuxt_val(page_data, item.get("userScore"))
-                if isinstance(us, dict) and "score" in us:
-                    us_score = _nuxt_val(page_data, us.get("score"))
-                    if isinstance(us_score, (int, float)):
-                        user_score = float(us_score)
-                        user_reviews = _nuxt_val(page_data, us.get("reviewCount"))
+        result = _find_scores_in_nuxt_data(page_data)
+        if result is not None:
+            metascore = result["metascore"]
+            metascore_reviews = result["metascore_reviews"]
+            user_score = result["user_score"]
+            user_reviews = result["user_reviews"]
 
         if metascore is not None or user_score is not None:
             return {
@@ -105,15 +129,11 @@ def _parse_game_details(page_content: bytes) -> dict[str, Any] | None:
     return None
 
 
-def _parse_browse_page(content: bytes) -> list[dict[str, Any]] | None:
-    try:
-        soup = BeautifulSoup(content, features="html.parser")
-    except TypeError:
-        return None
+def _resolve_browse_nuxt_data(soup: Any) -> tuple[list[Any], list[int]] | None:
+    """Find and resolve browse-game Nuxt data from a Metacritic browse page.
 
-    nuxt_data = None
-    game_items = None
-
+    Returns (nuxt_data, game_items) on success, None if no browse data found.
+    """
     for script in soup.find_all("script"):
         stext = script.string or ""
         if "browse-game" not in stext:
@@ -126,21 +146,28 @@ def _parse_browse_page(content: bytes) -> list[dict[str, Any]] | None:
                 root = parsed[root_idx]
                 items_ref = root.get("items")
                 if isinstance(items_ref, int) and items_ref < len(parsed):
-                    nuxt_data = parsed
-                    game_items = nuxt_data[items_ref]
-                    break
+                    game_items = parsed[items_ref]
+                    if isinstance(game_items, list):
+                        return (parsed, game_items)
         except (json.JSONDecodeError, TypeError, KeyError, IndexError):
             pass
+    return None
 
-    if game_items is None:
-        return None
-    if not isinstance(game_items, list):
+
+def _parse_browse_page(content: bytes) -> list[dict[str, Any]] | None:
+    try:
+        soup = BeautifulSoup(content, features="html.parser")
+    except TypeError:
         return None
 
+    result = _resolve_browse_nuxt_data(soup)
+    if result is None:
+        return None
+
+    nuxt_data, game_items = result
     resolved_games: list[dict[str, Any]] = []
     for game_idx in game_items:
         try:
-            assert nuxt_data is not None
             game = nuxt_data[game_idx]
             cs = _nuxt_val(nuxt_data, game.get("criticScoreSummary"))
             us = _nuxt_val(nuxt_data, game.get("userScore"))

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock, patch
+
 from gamarr.notifications import Notifier
 
 
@@ -36,3 +38,45 @@ class TestNotifier:
         notifier.send_download_notification(
             title="Game", platform="pc", metascore=80.0, user_score=8.0, magnet_url="magnet:?xt=urn:btih:abc"
         )
+
+
+class TestNotifierSend:
+    """Test notification dispatch with mocked Apprise."""
+
+    def test_send_with_mocked_apprise(self) -> None:
+        mock_apobj = MagicMock()
+        with patch.object(Notifier, "_init_apprise", return_value=mock_apobj):
+            notifier = Notifier(apprise_urls=["json://localhost"])
+            notifier.send_download_notification(
+                title="Test Game", platform="pc",
+                metascore=85.0, user_score=8.0,
+                magnet_url="magnet:?xt=urn:btih:abc",
+            )
+            mock_apobj.notify.assert_called_once()
+
+    def test_send_error_notification_with_mock(self) -> None:
+        mock_apobj = MagicMock()
+        with patch.object(Notifier, "_init_apprise", return_value=mock_apobj):
+            notifier = Notifier(apprise_urls=["json://localhost"], on_error=True)
+            notifier.send_error_notification(error_message="Test error")
+            mock_apobj.notify.assert_called_once()
+
+    def test_init_apprise_failure_logs_warning(self) -> None:
+        with patch.object(Notifier, "_init_apprise", return_value=None):
+            notifier = Notifier(apprise_urls=["json://localhost"])
+            notifier.send_download_notification(
+                title="Test", platform="pc",
+                metascore=80.0, user_score=7.5,
+                magnet_url="magnet:?xt=urn:btih:abc",
+            )
+
+    def test_send_exception_caught(self) -> None:
+        mock_apobj = MagicMock()
+        mock_apobj.notify.side_effect = Exception("send failure")
+        with patch.object(Notifier, "_init_apprise", return_value=mock_apobj):
+            notifier = Notifier(apprise_urls=["json://localhost"])
+            notifier.send_download_notification(
+                title="Test", platform="pc",
+                metascore=80.0, user_score=7.5,
+                magnet_url="magnet:?xt=urn:btih:abc",
+            )
