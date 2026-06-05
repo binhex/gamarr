@@ -255,6 +255,13 @@ class TestNormaliseForCompare:
 
         assert _normalise_for_compare("  Game   Name  ") == "game name"
 
+    def test_normalise_en_dash(self) -> None:
+        """Strip en-dash (U+2013) like other punctuation."""
+        from gamarr.metacritic import _normalise_for_compare
+
+        result = _normalise_for_compare("Magin: The Rat Project Stories \u2013 Essence Edition")
+        assert result == "magin the rat project stories essence edition"
+
 
 class TestNuxtVal:
     """Nuxt value resolution helper."""

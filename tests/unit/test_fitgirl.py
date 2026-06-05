@@ -86,6 +86,11 @@ class TestTitleCleaningRegression:
         result = _clean_title("Game, v1.0 Non-HV [Repack]")
         assert result == "Game"
 
+    def test_clean_title_essence_edition(self) -> None:
+        """Strip '– Essence Edition' suffix (not in original edition list)."""
+        result = _clean_title("Magin: The Rat Project Stories \u2013 Essence Edition (v1.0, MULTi13) [Repack]")
+        assert result == "Magin: The Rat Project Stories"
+
     def test_clean_title_bare_version_after_edition(self) -> None:
         """Strip bare version after edition (no trailing keywords)."""
         result = _clean_title("Game – Deluxe Edition, v1.0")

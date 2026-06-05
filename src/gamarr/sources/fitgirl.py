@@ -24,26 +24,30 @@ _REPACK_TAG_PATTERN = re.compile(r"\s*\[(?:FitGirl\s+)?Repack\]", re.IGNORECASE)
 
 # Strip edition suffixes after en-dash, colon, or comma
 _EDITION_PATTERN = re.compile(
-    r"(?:\s*[-–]\s*|\s*:\s*|,\s*)(?:(?:Digital\s+)?Deluxe\s+Edition|"
-    r"Complete\s+Edition|Enhanced\s+Edition|Game\s+of\s+the\s+Year\s+Edition|"
-    r"Gold\s+Edition|Platinum\s+Edition|Ultimate\s+Edition|Premium\s+Edition|"
-    r"Collectors?(?:'s)?\s+Edition|Limited\s+Edition|Special\s+Edition|"
-    r"Standard\s+Edition|Phantom\s+Liberty\s+Edition|"
+    r"(?:\s*[-–—]\s*|\s*:\s*|,\s*)(?:"
+    r"(?:Digital\s+)?Deluxe\s+Edition|"
+    r"Complete\s+Edition|Enhanced\s+Edition|Essence\s+Edition|"
+    r"Definitive\s+Edition|Anniversary\s+Edition|Legendary\s+Edition|"
+    r"Game\s+of\s+the\s+Year\s+Edition|"
+    r"Gold\s+Edition|Platinum\s+Edition|Ultimate\s+Edition|"
+    r"Premium\s+Edition|Collectors?(?:'s)?\s+Edition|"
+    r"Limited\s+Edition|Special\s+Edition|Standard\s+Edition|"
+    r"Phantom\s+Liberty\s+Edition|"
     r"GOTY(?:\s+Edition)?|Game\s+of\s+the\s+Year(?:\s+Edition)?)"
-    r"\b(?=\s*[,\d–-]|\s*$)",
+    r"\b(?=\s*[,\d–—-]|\s*$)",
     re.IGNORECASE,
 )
 
 # Strip comma-separated version/DLC/bonus metadata
 # Also handles bare version strings like ", v1.0" when no trailing keywords
 _VERSION_COMMA_PATTERN = re.compile(
-    r"(?:,\s*|\s*[–-]\s*)v?\d[\d.,\s\w/\+]+(?:\+?\s*DLCs?|Bonuses|HV|Non[_-]?HV).*",
+    r"(?:,\s*|\s*[–—-]\s*)v?\d[\d.,\s\w/\+]+(?:\+?\s*DLCs?|Bonuses|HV|Non[_-]?HV).*",
     re.IGNORECASE,
 )
 
 # Strip bare version strings after comma or dash (no trailing keywords required)
 # e.g. ", v1.0" or " – v1.0" where edition was already stripped
-_BARE_VERSION_PATTERN = re.compile(r"(?:,\s*|\s*[–-]\s*)v?\d[\d.]*.*", re.IGNORECASE)
+_BARE_VERSION_PATTERN = re.compile(r"(?:,\s*|\s*[–—-]\s*)v?\d[\d.]*.*", re.IGNORECASE)
 
 # RSS categories that indicate a non-game entry (blog/news posts)
 _NON_GAME_CATEGORIES = frozenset({"Uncategorized", "Updates Digest"})

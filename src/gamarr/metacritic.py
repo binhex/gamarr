@@ -617,5 +617,8 @@ class MetacriticClient:
 
 def _normalise_for_compare(text: str) -> str:
     text = text.lower().strip()
-    text = text.translate(str.maketrans("", "", string.punctuation))
+    # Remove both ASCII punctuation and Unicode dashes that can appear
+    # in FitGirl titles (e.g. en-dash U+2013, em-dash U+2014).
+    remove_chars = string.punctuation + "\u2013\u2014"
+    text = text.translate(str.maketrans("", "", remove_chars))
     return re.sub(r"\s+", " ", text).strip()
