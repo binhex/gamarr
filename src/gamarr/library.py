@@ -36,12 +36,18 @@ _EDITION_SUFFIX_PATTERN = re.compile(
     r"|\(\d{4}\)"
     r"|(?:Digital\s+)?Deluxe\s+Edition"
     r"|Complete\s+Edition"
+    r"|Enhanced\s+Edition"
     r"|Game\s+of\s+the\s+Year\s+Edition"
     r"|Gold\s+Edition"
+    r"|Platinum\s+Edition"
     r"|Ultimate\s+Edition"
     r"|Premium\s+Edition"
-    r"|GOTY\b"
+    r"|Limited\s+Edition"
+    r"|Special\s+Edition"
+    r"|Collectors?\s+(?:'s\s+)?Edition"
     r"|Standard\s+Edition"
+    r"|Phantom\s+Liberty\s+Edition"
+    r"|GOTY(?:\s+Edition)?"
     r")",
     re.IGNORECASE,
 )
@@ -61,8 +67,10 @@ def _strip_extension(name: str) -> str:
     for ext in _GAME_EXTENSIONS:
         if lower.endswith(ext):
             return name[: -len(ext)]
-        if lower.endswith(ext + ".part") or lower.endswith(ext + ".001"):
-            return name[: -(len(ext) + 5)]
+        if lower.endswith(ext + ".part"):
+            return name[: -(len(ext) + len(".part"))]
+        if lower.endswith(ext + ".001"):
+            return name[: -(len(ext) + len(".001"))]
     return name
 
 
@@ -86,15 +94,19 @@ def _normalise_name(name: str) -> str:
     return name
 
 
-def _partial_match(entry_norm: str, index_key: str) -> bool:
+def _partial_match(entry_norm: str, index_key: str) -> float | None:
+    """Return a similarity ratio if *entry_norm* and *index_key* partially match.
+
+    One must be a substring of the other with a minimum length of 5
+    characters. Returns a float ratio (0.0 to 1.0) on match, None otherwise.
+    """
     if len(entry_norm) < 5 or len(index_key) < 5:
-        return False
+        return None
     if entry_norm in index_key or index_key in entry_norm:
         shorter = min(len(entry_norm), len(index_key))
         longer = max(len(entry_norm), len(index_key))
-        if shorter / longer >= 0.6:
-            return True
-    return False
+        return shorter / longer
+    return None
 
 
 class LibraryScanner:
@@ -118,9 +130,12 @@ class LibraryScanner:
                 continue
             for root, dirs, files in os.walk(lib_path):
                 for dir_name in dirs:
+                    if dir_name.startswith("."):
+                        continue
                     norm = _normalise_name(dir_name)
-                    full = os.path.join(root, dir_name)
-                    self._index.setdefault(norm, []).append(full)
+                    if norm:
+                        full = os.path.join(root, dir_name)
+                        self._index.setdefault(norm, []).append(full)
                 for file_name in files:
                     norm = _normalise_name(file_name)
                     if norm:
@@ -140,8 +155,12 @@ class LibraryScanner:
             paths = self._index[norm]
             return LibraryMatch(found=True, matched_name=norm, matched_path=paths[0])
 
+        best_key, best_path, best_ratio = None, None, 0.0
         for index_key, paths in self._index.items():
-            if _partial_match(norm, index_key):
-                return LibraryMatch(found=True, matched_name=index_key, matched_path=paths[0])
+            ratio = _partial_match(norm, index_key)
+            if ratio is not None and ratio > best_ratio:
+                best_key, best_path, best_ratio = index_key, paths[0], ratio
+        if best_key is not None and best_ratio >= 0.5:
+            return LibraryMatch(found=True, matched_name=best_key, matched_path=best_path)
 
         return None
