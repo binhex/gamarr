@@ -24,16 +24,25 @@ _REPACK_TAG_PATTERN = re.compile(r"\s*\[Repack\]", re.IGNORECASE)
 
 # Strip edition suffixes after en-dash, colon, or comma
 _EDITION_PATTERN = re.compile(
-    r"(?:\s*[–-]\s*|\s*:\s*|,\s*)(?:(?:Digital\s+)?Deluxe\s+Edition|"
-    r"Complete\s+Edition|Game\s+of\s+the\s+Year\s+Edition|Gold\s+Edition|"
-    r"Platinum\s+Edition|Ultimate\s+Edition|Premium\s+Edition|"
-    r"Collectors\s+Edition|Limited\s+Edition|Special\s+Edition|"
-    r"Standard\s+Edition|Phantom\s+Liberty\s+Edition)",
+    r"(?:\s*[-–]\s*|\s*:\s*|,\s*)(?:(?:Digital\s+)?Deluxe\s+Edition|"
+    r"Complete\s+Edition|Enhanced\s+Edition|Game\s+of\s+the\s+Year\s+Edition|"
+    r"Gold\s+Edition|Platinum\s+Edition|Ultimate\s+Edition|Premium\s+Edition|"
+    r"Collectors?\s+Edition|Limited\s+Edition|Special\s+Edition|"
+    r"Standard\s+Edition|Phantom\s+Liberty\s+Edition)"
+    r"\b(?=\s*[,\d]|\s*$)",
     re.IGNORECASE,
 )
 
 # Strip comma-separated version/DLC/bonus metadata
-_VERSION_COMMA_PATTERN = re.compile(r",\s*v?\d[\d.,\s\w/\+]+(?:\+?\s*DLCs?|Bonuses|HV|Non_HV).*", re.IGNORECASE)
+# Also handles bare version strings like ", v1.0" when no trailing keywords
+_VERSION_COMMA_PATTERN = re.compile(
+    r",\s*v?\d[\d.,\s\w/\+]+(?:\+?\s*DLCs?|Bonuses|HV|Non[_-]?HV).*",
+    re.IGNORECASE,
+)
+
+# Strip bare version strings after comma (no trailing keywords required)
+# e.g. ", v1.0" where edition was already stripped
+_BARE_VERSION_PATTERN = re.compile(r",\s*v?\d[\d.]*.*", re.IGNORECASE)
 
 _MAGNET_PATTERN = re.compile(r"(magnet:\?xt=urn:btih:[a-zA-Z0-9]+[^\s\"'<>]*)")
 
@@ -55,6 +64,7 @@ def _clean_title(raw_title: str) -> str:
     title = _TECH_PAREN_PATTERN.sub("", title)
     title = _EDITION_PATTERN.sub("", title).strip()
     title = _VERSION_COMMA_PATTERN.sub("", title).strip()
+    title = _BARE_VERSION_PATTERN.sub("", title).strip()
     return title.strip()
 
 

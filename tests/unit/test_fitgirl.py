@@ -66,8 +66,13 @@ class TestTitleCleaningRegression:
 
     def test_clean_title_preserves_hyphenated_name(self) -> None:
         """Game names with hyphens should be preserved."""
-        result = _clean_title("Assassins Creed Valhalla – Complete Edition, v1.7 + DLC [Repack]")
-        assert result == "Assassins Creed Valhalla"
+        result = _clean_title("Assassin\x27s Creed Valhalla – Complete Edition, v1.7 + DLC [Repack]")
+        assert result == "Assassin\x27s Creed Valhalla"
+
+    def test_clean_title_bare_version_after_edition(self) -> None:
+        """Strip bare version after edition (no trailing keywords)."""
+        result = _clean_title("Game – Deluxe Edition, v1.0")
+        assert result == "Game"
 
 
 class TestExtractMagnetFromHtml:
