@@ -151,11 +151,15 @@ def _resolve_sitemap(
             return []
         child_urls = _parse_sitemap_index(xml_content)
         results: list[dict[str, str]] = []
+        seen_urls: set[str] = set()
         for child_url in child_urls:
             try:
                 resp = fetcher(child_url)
                 resp.raise_for_status()
-                results.extend(_parse_sitemap(resp.content))
+                for entry in _parse_sitemap(resp.content):
+                    if entry["url"] not in seen_urls:
+                        seen_urls.add(entry["url"])
+                        results.append(entry)
             except Exception as exc:
                 logger.warning("Failed to fetch child sitemap '{}': {}", child_url, exc)
         return results

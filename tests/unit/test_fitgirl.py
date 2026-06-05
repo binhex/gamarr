@@ -506,3 +506,44 @@ class TestFitGirlSitemap:
         assert args[0] == "fitgirl"
         assert len(args[1]) == 2
         assert args[1][0]["title"] == "Elden Ring"
+
+    def test_resolve_sitemap_deduplicates_urls(self) -> None:
+        """Reproduce the UNIQUE constraint crash.
+
+        When multiple child sitemaps contain the same game URL,
+        _resolve_sitemap must deduplicate to prevent an IntegrityError
+        on INSERT into the source_titles table.
+        """
+        from gamarr.sources.fitgirl import _resolve_sitemap
+
+        index_xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap>
+    <loc>https://fitgirl-repacks.site/post-sitemap1.xml</loc>
+  </sitemap>
+  <sitemap>
+    <loc>https://fitgirl-repacks.site/post-sitemap2.xml</loc>
+  </sitemap>
+</sitemapindex>"""
+        child_xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://fitgirl-repacks.site/game-one/</loc></url>
+  <url><loc>https://fitgirl-repacks.site/shared-game/</loc></url>
+</urlset>"""
+
+        class FakeResponse:
+            def __init__(self, url: str) -> None:
+                self.content = child_xml
+                self.url = url
+
+            def raise_for_status(self) -> None:
+                pass
+
+        results = _resolve_sitemap(index_xml, fetcher=FakeResponse)
+
+        # Both child sitemaps return the same 2 URLs.  Without
+        # deduplication the result would have 4 entries.  With
+        # deduplication it should have 2 (no duplicates).
+        urls = [r["url"] for r in results]
+        assert len(urls) == 2, f"Expected 2 deduplicated URLs, got {len(urls)}: {urls}"
+        assert len(set(urls)) == 2, f"Duplicate URLs still present: {urls}"
