@@ -40,6 +40,10 @@ class ScoreResult:
     user_score: float | None
     user_review_count: int | None
     passed: bool
+    genres: list[str] | None = None
+    must_play: bool | None = None
+    release_date: str | None = None
+    description: str | None = None
 
 
 def _make_slug(title: str) -> str:
@@ -54,7 +58,7 @@ def _make_slug(title: str) -> str:
 
 
 def _nuxt_val(data: list[Any], ref: Any) -> Any:
-    if isinstance(ref, int) and ref < len(data):
+    if isinstance(ref, int) and not isinstance(ref, bool) and ref < len(data):
         return data[ref]
     return ref
 
@@ -85,9 +89,10 @@ def _extract_user_score(
     return (current, None)
 
 
-def _find_scores_in_nuxt_data(page_data: list[Any]) -> dict[str, Any] | None:
-    """Extract critic and user scores from a Nuxt JSON data array."""
+def _find_game_details_in_nuxt_data(page_data: list[Any]) -> dict[str, Any] | None:
+    """Extract critic scores, user scores, and game details from Nuxt JSON."""
     metascore = metascore_reviews = user_score = user_reviews = None
+    genres = must_play = release_date = description = None
 
     for item in page_data:
         if not isinstance(item, dict):
@@ -101,12 +106,30 @@ def _find_scores_in_nuxt_data(page_data: list[Any]) -> dict[str, Any] | None:
         if us != user_score:
             user_score, user_reviews = us, usv
 
+        if genres is None and "mustPlay" in item and "genres" in item:
+            must_play = _nuxt_val(page_data, item.get("mustPlay"))
+            genres_list = _nuxt_val(page_data, item.get("genres"))
+            if isinstance(genres_list, list):
+                genres = []
+                for g in genres_list:
+                    gd = _nuxt_val(page_data, g)
+                    if isinstance(gd, dict):
+                        name = _nuxt_val(page_data, gd.get("name"))
+                        if name:
+                            genres.append(str(name))
+            release_date = _nuxt_val(page_data, item.get("releaseDate"))
+            description = _nuxt_val(page_data, item.get("description"))
+
     if metascore is not None or user_score is not None:
         return {
             "metascore": metascore,
             "metascore_reviews": metascore_reviews,
             "user_score": user_score,
             "user_reviews": user_reviews,
+            "genres": genres,
+            "must_play": must_play,
+            "release_date": str(release_date) if release_date else None,
+            "description": str(description)[:200] if description else None,
         }
     return None
 
@@ -125,7 +148,7 @@ def _find_nuxt_scores_in_page(page_content: bytes) -> dict[str, Any] | None:
             page_data = json.loads(stext)
         except (json.JSONDecodeError, TypeError):
             continue
-        result = _find_scores_in_nuxt_data(page_data)
+        result = _find_game_details_in_nuxt_data(page_data)
         if result is not None:
             return result
     return None
@@ -275,6 +298,9 @@ class MetacriticClient:
                 user_score=cached["user_score"],
                 user_review_count=cached["user_reviews"],
                 passed=False,
+                genres=None,
+                must_play=None,
+                release_date=None,
             )
 
         url = f"https://www.metacritic.com/game/{slug}/"
@@ -311,6 +337,9 @@ class MetacriticClient:
                 user_score=parsed.get("user_score"),
                 user_review_count=parsed.get("user_reviews"),
                 passed=False,
+                genres=parsed.get("genres"),
+                must_play=parsed.get("must_play"),
+                release_date=parsed.get("release_date"),
             )
 
         except requests.RequestException as exc:

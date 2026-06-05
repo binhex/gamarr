@@ -425,12 +425,61 @@ class TestParseBrowsePageEdgeCases:
 
 
 class TestFindScoresInNuxtData:
-    """_find_scores_in_nuxt_data edge cases."""
+    """_find_game_details_in_nuxt_data edge cases."""
 
     def test_non_dict_items_skipped(self) -> None:
-        from gamarr.metacritic import _find_scores_in_nuxt_data
+        from gamarr.metacritic import _find_game_details_in_nuxt_data
 
-        result = _find_scores_in_nuxt_data([None, "string", 42])
+        result = _find_game_details_in_nuxt_data([None, "string", 42])
+        assert result is None
+
+
+class TestFindGameDetailsInNuxtData:
+    """Extraction of game metadata from Nuxt data."""
+
+    def test_extracts_genres(self) -> None:
+        from gamarr.metacritic import _find_game_details_in_nuxt_data
+
+        data = [
+            {"score": 1, "reviewCount": 2, "userScore": {"score": 3, "reviewCount": 4}},
+            {"mustPlay": False, "genres": [{"name": "Action"}], "releaseDate": "2025-01-01"},
+            "x" * 2000,
+        ]
+        result = _find_game_details_in_nuxt_data(data)
+        assert result is not None
+        assert result["genres"] == ["Action"]
+        assert result["must_play"] is False
+
+    def test_extracts_release_date(self) -> None:
+        from gamarr.metacritic import _find_game_details_in_nuxt_data
+
+        data = [
+            {"score": 1, "reviewCount": 2, "userScore": {"score": 3, "reviewCount": 4}},
+            {"mustPlay": True, "genres": [{"name": "RPG"}], "releaseDate": "2024-06-15"},
+            "x" * 2000,
+        ]
+        result = _find_game_details_in_nuxt_data(data)
+        assert result is not None
+        assert result["release_date"] == "2024-06-15"
+        assert result["must_play"] is True
+
+    def test_backward_compat_no_metadata(self) -> None:
+        from gamarr.metacritic import _find_game_details_in_nuxt_data
+
+        data = [
+            {"score": 85, "reviewCount": 50, "userScore": {"score": 8.0, "reviewCount": 200}},
+            "x" * 2000,
+        ]
+        result = _find_game_details_in_nuxt_data(data)
+        assert result is not None
+        assert result["metascore"] == 85.0
+        assert result["user_score"] == 8.0
+        assert result["genres"] is None
+
+    def test_non_dict_items_skipped(self) -> None:
+        from gamarr.metacritic import _find_game_details_in_nuxt_data
+
+        result = _find_game_details_in_nuxt_data([None, "string", 42])
         assert result is None
 
 

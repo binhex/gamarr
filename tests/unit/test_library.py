@@ -199,6 +199,7 @@ class TestPartialMatchTokens:
     def test_single_token_does_not_match(self) -> None:
         """Single-word token should not partially match multi-word title."""
         from gamarr.library import _partial_match
+
         # "street" (1 token) should not match "carx street" (2 tokens)
         result = _partial_match("carx street", "street")
         assert result is None
@@ -206,6 +207,7 @@ class TestPartialMatchTokens:
     def test_multi_token_does_match(self) -> None:
         """Multi-word tokens should still partially match."""
         from gamarr.library import _partial_match
+
         result = _partial_match("elden ring", "elden ring deluxe edition")
         assert result is not None
         assert result > 0
