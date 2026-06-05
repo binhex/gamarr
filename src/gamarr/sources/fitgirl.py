@@ -7,6 +7,7 @@ and extracts magnet links.
 from __future__ import annotations
 
 import re
+import xml.etree.ElementTree as ET
 from typing import Any
 
 import requests
@@ -56,6 +57,46 @@ _MAGNET_PATTERN = re.compile(r"(magnet:\?xt=urn:btih:[a-zA-Z0-9]+[^\s\"'<>]*)")
 
 _CONNECT_TIMEOUT = 30.0
 _READ_TIMEOUT = 60.0
+
+
+def _title_from_url(url: str) -> str:
+    """Extract a display title from a FitGirl repack URL slug.
+
+    ``https://fitgirl-repacks.site/elden-ring/``→ ``Elden Ring``
+
+    Args:
+        url: The full URL of a repack page.
+
+    Returns:
+        A human-readable title derived from the URL slug.
+    """
+    slug = url.rstrip("/").rsplit("/", 1)[-1]
+    # Heuristic: if the slug is mostly alphanumeric + hyphens, title-case it
+    if re.fullmatch(r"[a-z0-9][a-z0-9-]*", slug):
+        return slug.replace("-", " ").title()
+    return slug
+
+
+def _parse_sitemap(xml_content: bytes) -> list[dict[str, str]]:
+    """Parse FitGirl sitemap XML into a list of ``{title, url}`` dicts.
+
+    Args:
+        xml_content: Raw XML bytes of the sitemap.
+
+    Returns:
+        List of dicts with ``title`` and ``url`` keys.
+    """
+    root = ET.fromstring(xml_content)
+    # Namespace is typically http://www.sitemaps.org/schemas/sitemap/0.9
+    ns = {"sm": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    results: list[dict[str, str]] = []
+    for url_elem in root.findall("sm:url", ns):
+        loc = url_elem.find("sm:loc", ns)
+        if loc is not None and loc.text:
+            url = loc.text.strip()
+            title = _title_from_url(url)
+            results.append({"title": title, "url": url})
+    return results
 
 
 def _clean_title(raw_title: str) -> str:

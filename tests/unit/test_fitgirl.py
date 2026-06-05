@@ -413,3 +413,25 @@ class TestCleanTitleDashVersion:
         """Version with leading zero after en-dash should be stripped."""
         result = _clean_title("Realm of Ink – v0.18.04")
         assert result == "Realm of Ink"
+
+
+class TestFitGirlSitemap:
+    """FitGirl sitemap.xml indexing."""
+
+    def test_parse_sitemap_extracts_titles(self) -> None:
+        from gamarr.sources.fitgirl import _parse_sitemap
+
+        xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://fitgirl-repacks.site/elden-ring/</loc>
+  </url>
+  <url>
+    <loc>https://fitgirl-repacks.site/baldurs-gate-3/</loc>
+  </url>
+</urlset>"""
+        result = _parse_sitemap(xml)
+        assert len(result) == 2
+        assert result[0]["title"] == "Elden Ring"  # from URL slug
+        assert result[0]["url"] == "https://fitgirl-repacks.site/elden-ring/"
+        assert result[1]["title"] == "Baldurs Gate 3"
