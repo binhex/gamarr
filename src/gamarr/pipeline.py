@@ -195,12 +195,12 @@ def _process_entry(
         browse_cache_ttl_hours=cfg.browse_cache_ttl_hours,
     )
 
-    game_title = mc_result.title if mc_result else entry.title
-    metascore = mc_result.metascore if mc_result else None
-    user_score = mc_result.user_score if mc_result else None
-
     if mc_result is None:
-        return _handle_game_not_found(db, entry, mc_result)
+        return _handle_game_not_found(db, entry)
+
+    game_title = mc_result.title
+    metascore = mc_result.metascore
+    user_score = mc_result.user_score
 
     score_result = _evaluate_scores(mc_result, cfg)
     if score_result == "Failed":
@@ -209,11 +209,9 @@ def _process_entry(
     return _handle_delivery(db, qbt, notifier, entry, game_title, metascore, user_score)
 
 
-def _handle_game_not_found(db: Database, entry: GameEntry, mc_result: Any) -> dict[str, Any]:
+def _handle_game_not_found(db: Database, entry: GameEntry) -> dict[str, Any]:
     """Record that a game was not found on Metacritic."""
     details = "Game not found on Metacritic"
-    if not entry.magnet_url:
-        details += " (no magnet URL)"
     return _record_result(
         db,
         source=entry.source,
@@ -235,7 +233,9 @@ def _handle_score_failure(
     user_score: float | None,
 ) -> dict[str, Any]:
     """Record that a game failed score checks."""
-    details = f"Metascore {metascore}, User score {user_score} below thresholds"
+    ms = f"{metascore}" if metascore is not None else "TBD"
+    us = f"{user_score}" if user_score is not None else "TBD"
+    details = f"Metascore {ms}, User score {us} below thresholds"
     notifier.send_failure_notification(title=game_title, reason=details)
     return _record_result(
         db,

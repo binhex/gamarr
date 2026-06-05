@@ -510,3 +510,31 @@ class TestEvaluateScoresTbdBug:
             user_review_count=None,
         )
         assert _evaluate_scores(mc_result, cfg) == "Failed"
+
+
+class TestEvaluateScoresCoverage:
+    """Additional _evaluate_scores coverage."""
+
+    def test_user_score_below_threshold_metascore_good_fails(self) -> None:
+        """When user_score is below threshold but metascore is good, should fail."""
+        import types
+
+        from gamarr.pipeline import _evaluate_scores
+
+        cfg = type(
+            "Cfg",
+            (),
+            {
+                "min_metascore": 75,
+                "min_metascore_reviews": 5,
+                "min_user_score": 7.5,
+                "min_user_reviews": 10,
+            },
+        )()
+        mc_result = types.SimpleNamespace(
+            metascore=85.0,
+            metascore_review_count=50,
+            user_score=5.0,
+            user_review_count=200,
+        )
+        assert _evaluate_scores(mc_result, cfg) == "Failed"

@@ -325,7 +325,6 @@ class MetacriticClient:
         cache_ttl_days: int,
     ) -> ScoreResult | None:
         normalized_title = _normalise_for_compare(title)
-        page_number = 1
 
         for page_number in range(1, 11):
             logger.debug("Scanning browse page {} for '{}'", page_number, title)

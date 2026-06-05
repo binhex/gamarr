@@ -30,7 +30,7 @@ class Notifier:
             apobj = apprise.Apprise()
             for url in self._urls:
                 apobj.add(url)
-            return apobj  # type: ignore[no-any-return]
+            return apobj  # type: ignore
         except Exception as exc:
             logger.warning("Failed to initialise Apprise: {}", exc)
             return None
