@@ -139,7 +139,7 @@ def run_acquisition(
             if match:
                 db.record_processed(
                     source=entry.source,
-                    source_title=entry.source_url,
+                    source_title=entry.source_title,
                     source_url=entry.source_url,
                     game_title=entry.title,
                     platform=entry.platform,

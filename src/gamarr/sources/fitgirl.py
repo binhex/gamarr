@@ -20,7 +20,7 @@ _USER_AGENT = (
 )
 
 _TECH_PAREN_PATTERN = re.compile(r"\s*\(.*?(?:v?\d[\d.]*|MULTi|Selective|Repack).*?\)", re.IGNORECASE)
-_REPACK_TAG_PATTERN = re.compile(r"\s*\[Repack\]", re.IGNORECASE)
+_REPACK_TAG_PATTERN = re.compile(r"\s*\[(?:FitGirl\s+)?Repack\]", re.IGNORECASE)
 
 # Strip edition suffixes after en-dash, colon, or comma
 _EDITION_PATTERN = re.compile(
@@ -28,7 +28,8 @@ _EDITION_PATTERN = re.compile(
     r"Complete\s+Edition|Enhanced\s+Edition|Game\s+of\s+the\s+Year\s+Edition|"
     r"Gold\s+Edition|Platinum\s+Edition|Ultimate\s+Edition|Premium\s+Edition|"
     r"Collectors?(?:'s)?\s+Edition|Limited\s+Edition|Special\s+Edition|"
-    r"Standard\s+Edition|Phantom\s+Liberty\s+Edition)"
+    r"Standard\s+Edition|Phantom\s+Liberty\s+Edition|"
+    r"GOTY(?:\s+Edition)?|Game\s+of\s+the\s+Year(?:\s+Edition)?)"
     r"\b(?=\s*[,\d]|\s*$)",
     re.IGNORECASE,
 )
@@ -211,6 +212,8 @@ class FitGirlSource:
         if isinstance(category, str):
             return category not in _NON_GAME_CATEGORIES
         if isinstance(category, list):
+            if not category:
+                return True
             return not all(c in _NON_GAME_CATEGORIES for c in category)
         return True
 
