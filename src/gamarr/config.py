@@ -104,6 +104,13 @@ class DatabaseConfig(BaseModel):
     processed_expiry_days: int = 365
 
 
+class LibraryConfig(BaseModel):
+    """Game library scanning settings."""
+
+    enabled: bool = True
+    paths: list[str] = Field(default_factory=list)
+
+
 class Config(BaseModel):
     """Root configuration model that aggregates all sub-configs."""
 
@@ -114,6 +121,7 @@ class Config(BaseModel):
     torrent_client: TorrentClientConfig = Field(default_factory=TorrentClientConfig)
     notification: NotificationConfig = Field(default_factory=NotificationConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
+    library: LibraryConfig = Field(default_factory=LibraryConfig)
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
