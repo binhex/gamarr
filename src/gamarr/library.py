@@ -44,7 +44,7 @@ _EDITION_SUFFIX_PATTERN = re.compile(
     r"|Premium\s+Edition"
     r"|Limited\s+Edition"
     r"|Special\s+Edition"
-    r"|Collectors?\s+(?:'s\s+)?Edition"
+    r"|Collectors?(?:'s)?\s+Edition"
     r"|Standard\s+Edition"
     r"|Phantom\s+Liberty\s+Edition"
     r"|GOTY(?:\s+Edition)?"
