@@ -157,9 +157,7 @@ def _resolve_sitemap(
                 resp.raise_for_status()
                 results.extend(_parse_sitemap(resp.content))
             except Exception as exc:
-                logger.warning(
-                    "Failed to fetch child sitemap '{}': {}", child_url, exc
-                )
+                logger.warning("Failed to fetch child sitemap '{}': {}", child_url, exc)
         return results
 
     return []
@@ -368,7 +366,10 @@ class FitGirlSource:
         try:
             resp = requests.get(url, timeout=30)
             resp.raise_for_status()
-            titles = _resolve_sitemap(resp.content, fetcher=requests.get)
+            titles = _resolve_sitemap(
+                resp.content,
+                fetcher=lambda url: requests.get(url, timeout=30),
+            )
             db.rebuild_source_titles("fitgirl", titles)
             logger.info("FitGirl sitemap indexed {} titles", len(titles))
         except requests.RequestException as exc:

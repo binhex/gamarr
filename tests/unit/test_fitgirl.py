@@ -486,6 +486,7 @@ class TestFitGirlSitemap:
         mock_db = MagicMock()
 
         with patch("gamarr.sources.fitgirl.requests.get") as mock_get:
+
             def side_effect(url: str, **kwargs: object) -> MagicMock:
                 resp = MagicMock()
                 resp.raise_for_status = MagicMock()
@@ -494,6 +495,7 @@ class TestFitGirlSitemap:
                 else:
                     resp.content = index_xml
                 return resp
+
             mock_get.side_effect = side_effect
 
             source.fetch_sitemap(mock_db)
