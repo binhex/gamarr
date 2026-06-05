@@ -148,7 +148,8 @@ def run_acquisition(
                     result="Already owned",
                     result_details=f"Found in library: {match.matched_path}",
                 )
-                logger.info("Already in library, skipping: '{}'", entry.title)
+                logger.info("Already in library, skipping: '{}' (matched: '{}' at {})",
+                            entry.title, match.matched_name, match.matched_path)
                 results.append(
                     {
                         "result": "Already owned",
