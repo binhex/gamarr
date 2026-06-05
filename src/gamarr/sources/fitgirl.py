@@ -27,7 +27,7 @@ _EDITION_PATTERN = re.compile(
     r"(?:\s*[-–]\s*|\s*:\s*|,\s*)(?:(?:Digital\s+)?Deluxe\s+Edition|"
     r"Complete\s+Edition|Enhanced\s+Edition|Game\s+of\s+the\s+Year\s+Edition|"
     r"Gold\s+Edition|Platinum\s+Edition|Ultimate\s+Edition|Premium\s+Edition|"
-    r"Collectors?\s+Edition|Limited\s+Edition|Special\s+Edition|"
+    r"Collectors?(?:'s)?\s+Edition|Limited\s+Edition|Special\s+Edition|"
     r"Standard\s+Edition|Phantom\s+Liberty\s+Edition)"
     r"\b(?=\s*[,\d]|\s*$)",
     re.IGNORECASE,

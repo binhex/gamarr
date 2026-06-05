@@ -69,6 +69,21 @@ class TestTitleCleaningRegression:
         result = _clean_title("Assassin\x27s Creed Valhalla – Complete Edition, v1.7 + DLC [Repack]")
         assert result == "Assassin\x27s Creed Valhalla"
 
+    def test_clean_title_enhanced_edition(self) -> None:
+        """Strip Enhanced Edition suffix."""
+        result = _clean_title("Game – Enhanced Edition, v1.0 + DLC [Repack]")
+        assert result == "Game"
+
+    def test_clean_title_collectors_edition(self) -> None:
+        """Strip Collector\x27s Edition with apostrophe."""
+        result = _clean_title("Game – Collector\x27s Edition, v1.0 + DLCs [Repack]")
+        assert result == "Game"
+
+    def test_clean_title_non_hv_hyphen(self) -> None:
+        """Strip Non-HV (hyphen variant)."""
+        result = _clean_title("Game, v1.0 Non-HV [Repack]")
+        assert result == "Game"
+
     def test_clean_title_bare_version_after_edition(self) -> None:
         """Strip bare version after edition (no trailing keywords)."""
         result = _clean_title("Game – Deluxe Edition, v1.0")
