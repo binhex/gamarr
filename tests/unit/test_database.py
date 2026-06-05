@@ -77,6 +77,74 @@ class TestDatabase:
         db.close()
 
 
+class TestPendingGame:
+    """PendingGame CRUD operations."""
+
+    def test_insert_and_retrieve(self, tmp_path: Path) -> None:
+        db = Database(str(tmp_path / "test.db"))
+        db.record_pending(
+            slug="elden-ring",
+            game_title="Elden Ring",
+            platform="pc",
+            metascore=96.0,
+            metascore_reviews=120,
+            user_score=8.5,
+            user_reviews=5000,
+            genres=["Action", "RPG"],
+            release_date="2022-02-25",
+            expires_at="2026-07-05T00:00:00",
+        )
+        pending = db.get_pending(platform="pc")
+        assert len(pending) == 1
+        assert pending[0].slug == "elden-ring"
+        assert pending[0].game_title == "Elden Ring"
+        db.close()
+
+    def test_remove_pending(self, tmp_path: Path) -> None:
+        db = Database(str(tmp_path / "test.db"))
+        db.record_pending(
+            slug="test-game",
+            game_title="Test Game",
+            platform="pc",
+            expires_at="2026-07-05T00:00:00",
+        )
+        db.remove_pending("test-game")
+        pending = db.get_pending(platform="pc")
+        assert len(pending) == 0
+        db.close()
+
+    def test_is_pending_returns_true_for_existing(self, tmp_path: Path) -> None:
+        db = Database(str(tmp_path / "test.db"))
+        db.record_pending(
+            slug="test-game",
+            game_title="Test Game",
+            platform="pc",
+            expires_at="2026-07-05T00:00:00",
+        )
+        assert db.is_pending("test-game") is True
+        assert db.is_pending("unknown-game") is False
+        db.close()
+
+
+class TestSourceTitle:
+    """SourceTitle operations."""
+
+    def test_rebuild_and_query(self, tmp_path: Path) -> None:
+        db = Database(str(tmp_path / "test.db"))
+        titles = [
+            {
+                "source": "fitgirl",
+                "title": "Elden Ring",
+                "url": "https://fitgirl-repacks.site/elden-ring/",
+            },
+        ]
+        db.rebuild_source_titles("fitgirl", titles)
+        results = db.match_source_title("fitgirl", "elden ring")
+        assert len(results) == 1
+        assert "Elden Ring" in results[0]["title"]
+        db.close()
+
+
 class TestDatabaseAlreadyOwned:
     """Already owned stats tracking."""
 

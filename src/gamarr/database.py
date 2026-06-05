@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,35 @@ class HistoryRow(Base):
     processed_at = Column(String, nullable=False)
 
 
+class PendingGame(Base):
+    """ORM mapping for the ``pending_games`` table."""
+
+    __tablename__ = "pending_games"
+
+    slug = Column(String, primary_key=True)
+    game_title = Column(String, nullable=False)
+    platform = Column(String, nullable=False)
+    metascore = Column(Float, nullable=True)
+    metascore_reviews = Column(Integer, nullable=True)
+    user_score = Column(Float, nullable=True)
+    user_reviews = Column(Integer, nullable=True)
+    genres = Column(String, nullable=True)
+    release_date = Column(String, nullable=True)
+    discovered_at = Column(String, nullable=False)
+    expires_at = Column(String, nullable=False)
+    last_checked_at = Column(String, nullable=True)
+
+
+class SourceTitle(Base):
+    """ORM mapping for the ``source_titles`` table."""
+
+    __tablename__ = "source_titles"
+
+    source = Column(String, primary_key=True)
+    title = Column(String, nullable=False)
+    url = Column(String, primary_key=True)
+
+
 class Database:
     """SQLite history database for tracking processed titles."""
 
@@ -59,6 +89,106 @@ class Database:
 
     def _session(self) -> Session:
         return self._session_factory()
+
+    def record_pending(
+        self,
+        *,
+        slug: str,
+        game_title: str,
+        platform: str,
+        metascore: float | None = None,
+        metascore_reviews: int | None = None,
+        user_score: float | None = None,
+        user_reviews: int | None = None,
+        genres: list[str] | None = None,
+        release_date: str | None = None,
+        expires_at: str | None = None,
+    ) -> None:
+        now = datetime.datetime.now(tz=datetime.UTC).isoformat()
+        with self._session() as session:
+            existing = session.get(PendingGame, slug)
+            if existing is not None:
+                return  # Already pending
+            row = PendingGame(
+                slug=slug,
+                game_title=game_title,
+                platform=platform,
+                metascore=metascore,
+                metascore_reviews=metascore_reviews,
+                user_score=user_score,
+                user_reviews=user_reviews,
+                genres=json.dumps(genres) if genres else None,
+                release_date=release_date,
+                discovered_at=now,
+                expires_at=expires_at or now,
+                last_checked_at=None,
+            )
+            session.add(row)
+            session.commit()
+
+    def get_pending(self, *, platform: str | None = None) -> list[PendingGame]:
+        now = datetime.datetime.now(tz=datetime.UTC).isoformat()
+        with self._session() as session:
+            query = session.query(PendingGame).filter(PendingGame.expires_at > now)
+            if platform is not None:
+                query = query.filter(PendingGame.platform == platform)
+            rows = query.all()
+            for row in rows:
+                if row.genres:
+                    try:
+                        row.genres = json.loads(str(row.genres))
+                    except (json.JSONDecodeError, TypeError):
+                        row.genres = None  # type: ignore[assignment]
+            return list(rows)
+
+    def get_expired_pending(self) -> list[PendingGame]:
+        now = datetime.datetime.now(tz=datetime.UTC).isoformat()
+        with self._session() as session:
+            rows = session.query(PendingGame).filter(PendingGame.expires_at <= now).all()
+            return list(rows)
+
+    def touch_pending(self, slug: str) -> None:
+        now = datetime.datetime.now(tz=datetime.UTC).isoformat()
+        with self._session() as session:
+            row = session.get(PendingGame, slug)
+            if row is not None:
+                row.last_checked_at = now  # type: ignore[assignment]
+                session.commit()
+
+    def remove_pending(self, slug: str) -> None:
+        with self._session() as session:
+            row = session.get(PendingGame, slug)
+            if row is not None:
+                session.delete(row)
+                session.commit()
+
+    def is_pending(self, slug: str) -> bool:
+        with self._session() as session:
+            return session.get(PendingGame, slug) is not None
+
+    def rebuild_source_titles(self, source: str, titles: list[dict[str, str]]) -> None:
+        with self._session() as session:
+            session.query(SourceTitle).filter(SourceTitle.source == source).delete()
+            for entry in titles:
+                session.add(
+                    SourceTitle(
+                        source=source,
+                        title=entry["title"],
+                        url=entry["url"],
+                    )
+                )
+            session.commit()
+
+    def match_source_title(self, source: str, normalized_title: str) -> list[dict[str, str]]:
+        from gamarr.metacritic import _normalise_for_compare
+
+        with self._session() as session:
+            rows = session.query(SourceTitle).filter(SourceTitle.source == source).all()
+        results = []
+        for row in rows:
+            if _normalise_for_compare(str(row.title)) == normalized_title:
+                results.append({"title": str(row.title), "url": str(row.url)})
+        return results
 
     def is_processed(self, source: str, source_url: str) -> bool:
         with self._session() as session:
