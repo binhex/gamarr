@@ -14,6 +14,7 @@ import requests
 from loguru import logger
 from xmltodict import parse as parse_xml
 
+from gamarr.database import Database
 from gamarr.models import GameEntry
 
 _USER_AGENT = (
@@ -292,6 +293,18 @@ class FitGirlSource:
             logger.warning("Failed to fetch FitGirl article page '{}': {}", link, exc)
 
         return None
+
+    def fetch_sitemap(self, db: Database) -> None:
+        """Fetch the FitGirl sitemap and rebuild the source_titles index."""
+        url = "https://fitgirl-repacks.site/sitemap.xml"
+        try:
+            resp = requests.get(url, timeout=30)
+            resp.raise_for_status()
+            titles = _parse_sitemap(resp.content)
+            db.rebuild_source_titles("fitgirl", titles)
+            logger.info("FitGirl sitemap indexed {} titles", len(titles))
+        except requests.RequestException as exc:
+            logger.warning("Failed to fetch FitGirl sitemap: {}", exc)
 
     def close(self) -> None:
         """Close the underlying database connection."""

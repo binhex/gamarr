@@ -80,6 +80,8 @@ class AcquisitionConfig:
     days_since_release: int
     cache_ttl_days: int = 7
     browse_cache_ttl_hours: int = 4
+    browse_enabled: bool = True
+    pending_days: int = 30
 
 
 def _score_check(value: float | None, threshold: float) -> bool:
@@ -130,6 +132,8 @@ def run_acquisition(
     days_since_release: int = 90,
     cache_ttl_days: int = 7,
     browse_cache_ttl_hours: int = 4,
+    browse_enabled: bool = True,
+    pending_days: int = 30,
     apprise_urls: list[str] | None = None,
     notify_on_download: bool = True,
     notify_on_failure: bool = False,
@@ -145,6 +149,8 @@ def run_acquisition(
         days_since_release=days_since_release,
         cache_ttl_days=cache_ttl_days,
         browse_cache_ttl_hours=browse_cache_ttl_hours,
+        browse_enabled=browse_enabled,
+        pending_days=pending_days,
     )
 
     logger.info("Starting acquisition cycle (platform='{}')", platform)
@@ -182,6 +188,35 @@ def run_acquisition(
     library = LibraryScanner(library_paths)
 
     try:
+        # ── Phase 1: Build FitGirl source index ──
+        source.fetch_sitemap(db)
+
+        # ── Phase 2: Metacritic browse — discover new games ──
+        if cfg.browse_enabled:
+            browse_games = mc.scan_recent_games(
+                platform,
+                max_pages=10,
+                browse_cache_ttl_hours=cfg.browse_cache_ttl_hours,
+            )
+            if browse_games:
+                thresholds = {
+                    "min_metascore": cfg.min_metascore,
+                    "min_metascore_reviews": cfg.min_metascore_reviews,
+                    "min_user_score": cfg.min_user_score,
+                    "min_user_reviews": cfg.min_user_reviews,
+                }
+                new_pending = _process_browse_games(
+                    browse_games, platform, db, thresholds,
+                    pending_days=cfg.pending_days,
+                )
+                if new_pending:
+                    logger.info("Browse added {} new pending games", new_pending)
+
+        # ── Phase 3: Match pending games against sources ──
+        matched = _match_pending_games(db, qbt=qbt, notifier=notifier)
+        if matched:
+            logger.info("Matched {} pending games to sources", len(matched))
+
         entries = source.fetch_new()
         if not entries:
             logger.info("No new entries found.")

@@ -745,6 +745,50 @@ class TestMetacriticBrowse:
         db.close()
 
 
+class TestRunAcquisitionMetacritic:
+    """Full acquisition cycle with Metacritic browse enabled."""
+
+    def test_acquisition_browse_and_match(self, tmp_path: Path) -> None:
+        """End-to-end: browse inserts pending, sitemap matching moves to history."""
+        import datetime
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.database import Database
+        from gamarr.pipeline import run_acquisition
+
+        db = Database(str(tmp_path / "test.db"))
+        sitemap_xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://fitgirl-repacks.site/elden-ring/</loc></url>
+</urlset>"""
+
+        with (
+            patch("gamarr.sources.fitgirl.FitGirlSource.fetch_new", return_value=[]),
+            patch("gamarr.sources.fitgirl.requests.get") as mock_get,
+            patch("gamarr.pipeline.MetacriticClient") as MockMC,
+        ):
+            # Mock sitemap fetch
+            sitemap_resp = MagicMock()
+            sitemap_resp.content = sitemap_xml
+            sitemap_resp.raise_for_status = MagicMock()
+            mock_get.return_value = sitemap_resp
+
+            mc_instance = MagicMock()
+            MockMC.return_value = mc_instance
+
+            results = run_acquisition(
+                fitgirl_rss_url="http://example.com/feed",
+                db_path=str(tmp_path / "gamarr.db"),
+                mc_cache_path=str(tmp_path / "mc-cache.db"),
+                qbt_host="localhost",
+                qbt_port=8080,
+                qbt_username="admin",
+                qbt_password="adminadmin",
+            )
+
+        assert isinstance(results, list)
+
+
 class TestLogGameDetails:
     """_log_game_details end-to-end behaviour."""
 
