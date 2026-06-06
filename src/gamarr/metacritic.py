@@ -7,6 +7,7 @@ page scanning.
 
 from __future__ import annotations
 
+import datetime
 import json
 import re
 import string
@@ -401,6 +402,24 @@ def _resolve_browse_nuxt_data(soup: Any) -> tuple[list[Any], list[int]] | None:
     return None
 
 
+def _resolve_release_date(nuxt_data: list[Any], game: dict[str, Any]) -> str | None:
+    """Resolve the release date from a browse-page Nuxt game item.
+
+    The Nuxt ``releaseDate`` may be an index reference, a date string, or
+    ``None``.  Returns a ``YYYY-MM-DD`` string if the value is valid,
+    or ``None`` for missing, unparseable, or non-string values.
+    """
+    raw = _nuxt_val(nuxt_data, game.get("releaseDate"))
+    if not isinstance(raw, str):
+        return None
+    # Validate the date format before returning
+    try:
+        datetime.datetime.strptime(raw, "%Y-%m-%d")
+        return raw
+    except (ValueError, TypeError):
+        return None
+
+
 def _resolve_browse_game_list(nuxt_data: list[Any], game_items: list[int]) -> list[dict[str, Any]]:
     """Resolve game dicts from Nuxt data by following item indices."""
     resolved: list[dict[str, Any]] = []
@@ -417,6 +436,7 @@ def _resolve_browse_game_list(nuxt_data: list[Any], game_items: list[int]) -> li
                     "critic_review_count": cs.get("reviewCount") if isinstance(cs, dict) else None,
                     "user_rating": us.get("score") if isinstance(us, dict) else None,
                     "user_review_count": us.get("reviewCount") if isinstance(us, dict) else None,
+                    "release_date": _resolve_release_date(nuxt_data, game),
                 }
             )
         except (TypeError, KeyError, IndexError):

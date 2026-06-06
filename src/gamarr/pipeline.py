@@ -76,9 +76,10 @@ def _is_older_than(release_date: str | None, days: int) -> bool:
     """Check if a release date string is older than *days* from today.
 
     Returns ``False`` when *release_date* is ``None`` (unknown age
-    — assume recent).  Malformed dates are treated as recent.
+    — assume recent), *days* is zero or negative (no filter), or the
+    date string is malformed.
     """
-    if release_date is None:
+    if release_date is None or days <= 0:
         return False
     try:
         released = datetime.datetime.strptime(release_date.strip(), "%Y-%m-%d").date()
@@ -117,20 +118,27 @@ def _evaluate_scores(
     mc_result: Any,
     cfg: AcquisitionConfig,
 ) -> str:
+    """Evaluate a game's scores against thresholds.
+
+    Returns:
+        ``"Passed"`` if all checks pass, or a specific failure reason:
+        ``"no_scores"``, ``"metascore_too_low"``, ``"metascore_reviews_too_few"``,
+        ``"user_score_too_low"``, ``"user_reviews_too_few"``, ``"release_date_too_old"``.
+    """
     if mc_result.metascore is None or mc_result.user_score is None:
-        return "Failed"
+        return "no_scores"
 
     if _score_check(mc_result.metascore, cfg.min_metascore):
-        return "Failed"
+        return "metascore_too_low"
     if _score_check(mc_result.metascore_review_count, cfg.min_metascore_reviews):
-        return "Failed"
+        return "metascore_reviews_too_few"
     if _score_check(mc_result.user_score, cfg.min_user_score):
-        return "Failed"
+        return "user_score_too_low"
     if _score_check(mc_result.user_review_count, cfg.min_user_reviews):
-        return "Failed"
+        return "user_reviews_too_few"
 
     if _is_older_than(getattr(mc_result, "release_date", None), cfg.days_since_release):
-        return "Failed"
+        return "release_date_too_old"
 
     return "Passed"
 
@@ -258,6 +266,7 @@ def run_acquisition(
                     db,
                     thresholds,
                     pending_days=cfg.pending_days,
+                    days_since_release=cfg.days_since_release,
                 )
                 if new_pending:
                     logger.info("Browse added {} new pending games", new_pending)
@@ -335,6 +344,7 @@ def _process_browse_games(
     thresholds: dict[str, Any],
     *,
     pending_days: int = 30,
+    days_since_release: int = 0,
 ) -> int:
     """Evaluate browse-page games and insert qualifying ones into the pending queue.
 
@@ -350,6 +360,7 @@ def _process_browse_games(
         db: Database instance.
         thresholds: Dict with ``min_metascore`` keys.
         pending_days: How many days to keep the game pending before expiry.
+        days_since_release: Max age in days. Games older than this are skipped.
 
     Returns:
         Number of new pending games added.
@@ -367,6 +378,16 @@ def _process_browse_games(
         if not _game_passes_thresholds(game, thresholds):
             continue
 
+        # Skip games older than days_since_release (pre-filter before insert)
+        if _is_older_than(game.get("release_date"), days_since_release):
+            logger.debug(
+                "Skipping '{}' ({}): older than {} days",
+                title,
+                game.get("release_date"),
+                days_since_release,
+            )
+            continue
+
         expires_at = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=pending_days)).isoformat()
 
         db.record_pending(
@@ -377,6 +398,7 @@ def _process_browse_games(
             metascore_reviews=game.get("critic_review_count"),
             user_score=float(game.get("user_rating", 0)),
             user_reviews=game.get("user_review_count"),
+            release_date=game.get("release_date"),
             expires_at=expires_at,
         )
         new_count += 1
@@ -553,15 +575,19 @@ def _process_one_sitemap_entry(
     _log_game_details(mc_result)
 
     score_result = _evaluate_scores(mc_result, cfg)
-    if score_result == "Failed":
+    if score_result != "Passed":
         logger.warning(
-            "Sitemap '{}' failed score check: Metascore {}, User {}",
+            "Sitemap '{}' failed check '{}': Metascore {}, User {}, Released {}",
             mc_result.title,
+            score_result,
             mc_result.metascore,
             mc_result.user_score,
+            getattr(mc_result, "release_date", "unknown"),
         )
-        details = f"Score check failed: Metascore {mc_result.metascore}, User {mc_result.user_score}"
-        notifier.send_failure_notification(title=mc_result.title, reason=details)
+        notifier.send_failure_notification(
+            title=mc_result.title,
+            reason=f"{score_result}: Metascore {mc_result.metascore}, User {mc_result.user_score}",
+        )
         db.record_processed(
             source=source_name,
             source_title=entry_title,
@@ -571,9 +597,9 @@ def _process_one_sitemap_entry(
             metascore=mc_result.metascore,
             user_score=mc_result.user_score,
             result="Failed",
-            result_details="Score below thresholds",
+            result_details=f"Failed: {score_result}",
         )
-        return {"result": "Failed", "game_title": mc_result.title, "result_details": "Score below thresholds"}
+        return {"result": "Failed", "game_title": mc_result.title, "result_details": f"Failed: {score_result}"}
 
     magnet = magnet_fetcher(entry_url)
     if not magnet:
@@ -791,8 +817,8 @@ def _process_entry(
     user_score = mc_result.user_score
 
     score_result = _evaluate_scores(mc_result, cfg)
-    if score_result == "Failed":
-        return _handle_score_failure(db, notifier, entry, game_title, metascore, user_score)
+    if score_result != "Passed":
+        return _handle_score_failure(db, notifier, entry, game_title, metascore, user_score, score_result)
 
     return _handle_delivery(db, qbt, notifier, entry, game_title, metascore, user_score)
 
@@ -819,11 +845,12 @@ def _handle_score_failure(
     game_title: str,
     metascore: float | None,
     user_score: float | None,
+    score_result: str = "Score below thresholds",
 ) -> dict[str, Any]:
-    """Record that a game failed score checks."""
+    """Record that a game failed score/release-date checks."""
     ms = f"{metascore}" if metascore is not None else "TBD"
     us = f"{user_score}" if user_score is not None else "TBD"
-    details = f"Metascore {ms}, User score {us} below thresholds"
+    details = f"{score_result}: Metascore {ms}, User {us}"
     notifier.send_failure_notification(title=game_title, reason=details)
     return _record_result(
         db,
@@ -835,7 +862,7 @@ def _handle_score_failure(
         metascore=metascore,
         user_score=user_score,
         result="Failed",
-        result_details="Score below thresholds",
+        result_details=f"Failed: {score_result}",
     )
 
 

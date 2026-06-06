@@ -223,6 +223,43 @@ class TestParseBrowsePage:
         assert len(result) == 1
         assert result[0]["title"] == "Test Game"
 
+    def test_browse_game_list_includes_release_date(self) -> None:
+        """_resolve_browse_game_list should include release_date from Nuxt data."""
+        from gamarr.metacritic import _resolve_browse_game_list
+
+        nuxt_data = [
+            {"items": 1},
+            [2],
+            {
+                "title": "Test Game",
+                "slug": "test-game",
+                "releaseDate": "2025-06-01",
+                "criticScoreSummary": {"score": 85, "reviewCount": 50},
+                "userScore": {"score": 8.0, "reviewCount": 200},
+            },
+        ]
+        result = _resolve_browse_game_list(nuxt_data, [2])
+        assert len(result) == 1
+        assert result[0]["release_date"] == "2025-06-01"
+
+    def test_browse_game_list_missing_release_date(self) -> None:
+        """When Nuxt data has no releaseDate, release_date should be None."""
+        from gamarr.metacritic import _resolve_browse_game_list
+
+        nuxt_data = [
+            {"items": 1},
+            [2],
+            {
+                "title": "Test Game",
+                "slug": "test-game",
+                "criticScoreSummary": {"score": 85, "reviewCount": 50},
+                "userScore": {"score": 8.0, "reviewCount": 200},
+            },
+        ]
+        result = _resolve_browse_game_list(nuxt_data, [2])
+        assert len(result) == 1
+        assert result[0].get("release_date") is None
+
     def test_parse_browse_page_empty_html(self) -> None:
         from gamarr.metacritic import _parse_browse_page
 

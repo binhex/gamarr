@@ -245,7 +245,7 @@ class TestEvaluateScores:
             },
         )()
         mc_result = types.SimpleNamespace(metascore=None, user_score=None)
-        assert _evaluate_scores(mc_result, cfg) == "Failed"
+        assert _evaluate_scores(mc_result, cfg) == "no_scores"
 
     def test_high_metascore_low_reviews_fails(self) -> None:
         import types
@@ -268,7 +268,7 @@ class TestEvaluateScores:
             user_score=8.0,
             user_review_count=100,
         )
-        assert _evaluate_scores(mc_result, cfg) == "Failed"
+        assert _evaluate_scores(mc_result, cfg) == "metascore_reviews_too_few"
 
     def test_good_metascore_low_user_reviews_fails(self) -> None:
         import types
@@ -291,7 +291,7 @@ class TestEvaluateScores:
             user_score=8.0,
             user_review_count=3,
         )
-        assert _evaluate_scores(mc_result, cfg) == "Failed"
+        assert _evaluate_scores(mc_result, cfg) == "user_reviews_too_few"
 
     def test_old_game_fails_days_since_release(self) -> None:
         """A game older than days_since_release should fail."""
@@ -317,7 +317,7 @@ class TestEvaluateScores:
             user_review_count=100,
             release_date="2020-01-01",
         )
-        assert _evaluate_scores(mc_result, cfg) == "Failed"
+        assert _evaluate_scores(mc_result, cfg) == "release_date_too_old"
 
     def test_recent_game_passes_days_since_release(self) -> None:
         """A game within days_since_release should pass (if scores are fine)."""
@@ -609,7 +609,7 @@ class TestEvaluateScoresTbdBug:
             user_score=8.5,
             user_review_count=200,
         )
-        assert _evaluate_scores(mc_result, cfg) == "Failed"
+        assert _evaluate_scores(mc_result, cfg) == "no_scores"
 
     def test_missing_user_score_with_good_metascore_fails(self) -> None:
         """When user_score is None (TBD) but metascore is good, game should fail."""
@@ -633,7 +633,7 @@ class TestEvaluateScoresTbdBug:
             user_score=None,
             user_review_count=None,
         )
-        assert _evaluate_scores(mc_result, cfg) == "Failed"
+        assert _evaluate_scores(mc_result, cfg) == "no_scores"
 
 
 class TestEvaluateScoresCoverage:
@@ -661,7 +661,7 @@ class TestEvaluateScoresCoverage:
             user_score=5.0,
             user_review_count=200,
         )
-        assert _evaluate_scores(mc_result, cfg) == "Failed"
+        assert _evaluate_scores(mc_result, cfg) == "user_score_too_low"
 
 
 class TestPipelineLibraryCheck:
@@ -738,7 +738,7 @@ class TestEvaluateScoresNoneReviews:
             user_score=8.4,
             user_review_count=200,
         )
-        assert _evaluate_scores(mc_result, cfg) == "Failed"
+        assert _evaluate_scores(mc_result, cfg) == "metascore_reviews_too_few"
 
     def test_none_user_reviews_fails(self) -> None:
         """When user_review_count is None, game should fail."""
@@ -762,7 +762,7 @@ class TestEvaluateScoresNoneReviews:
             user_score=8.4,
             user_review_count=None,
         )
-        assert _evaluate_scores(mc_result, cfg) == "Failed"
+        assert _evaluate_scores(mc_result, cfg) == "user_reviews_too_few"
 
 
 class TestEscapeMarkup:
@@ -901,6 +901,51 @@ class TestMetacriticBrowse:
         assert new_count == 0
         pending = db.get_pending()
         assert len(pending) == 0
+        db.close()
+
+    def test_browse_skips_old_games_by_days_since_release(self, tmp_path: Path) -> None:
+        """Browse games with release_date older than days_since_release should be skipped."""
+        import datetime
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _process_browse_games
+
+        db = Database(str(tmp_path / "test.db"))
+        old_date = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=365)).strftime("%Y-%m-%d")
+        recent_date = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=30)).strftime("%Y-%m-%d")
+
+        games = [
+            {
+                "title": "Old Game",
+                "slug": "old-game",
+                "score": 90,
+                "critic_review_count": 50,
+                "user_rating": 8.0,
+                "user_review_count": 200,
+                "release_date": old_date,
+            },
+            {
+                "title": "Recent Game",
+                "slug": "recent-game",
+                "score": 85,
+                "critic_review_count": 40,
+                "user_rating": 7.5,
+                "user_review_count": 100,
+                "release_date": recent_date,
+            },
+        ]
+        thresholds = {
+            "min_metascore": 0,
+            "min_metascore_reviews": 0,
+            "min_user_score": 0.0,
+            "min_user_reviews": 0,
+        }
+        new_count = _process_browse_games(games, "pc", db, thresholds, pending_days=30, days_since_release=90)
+        # Only the recent game (30d old) should pass; old game (365d) should be filtered
+        assert new_count == 1, f"Expected 1 pending game, got {new_count}"
+        pending = db.get_pending()
+        assert len(pending) == 1
+        assert pending[0].slug == "recent-game"
         db.close()
 
 
@@ -1652,5 +1697,78 @@ class TestSitemapDiscovery:
         assert len(results) == 2, f"Expected 2 results, got {len(results)}"
         assert all(r["result"] == "Passed" for r in results)
         assert mock_mc.lookup_game.call_count == 2
+
+        db.close()
+
+    def test_process_sitemap_entry_with_library_owned(self, tmp_path: Path) -> None:
+        """Entry already in library should be skipped as Already owned."""
+        import datetime
+        import types
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.database import Database
+        from gamarr.library import LibraryScanner
+        from gamarr.pipeline import AcquisitionConfig, _process_sitemap_entries
+
+        db = Database(str(tmp_path / "gamarr.db"))
+        db.rebuild_source_titles(
+            "fitgirl",
+            [{"title": "Owned Game", "url": "https://fitgirl-repacks.site/owned-game/"}],
+        )
+
+        cfg = AcquisitionConfig(
+            min_metascore=75,
+            min_metascore_reviews=5,
+            min_user_score=7.5,
+            min_user_reviews=10,
+            days_since_release=9999,
+        )
+
+        recent_date = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=30)).strftime("%Y-%m-%d")
+
+        mock_mc = MagicMock()
+        mock_mc.lookup_game.return_value = types.SimpleNamespace(
+            title="Owned Game",
+            slug="owned-game",
+            metascore=90.0,
+            metascore_review_count=50,
+            user_score=8.0,
+            user_review_count=200,
+            genres=["Action"],
+            must_play=False,
+            release_date=recent_date,
+            description=None,
+        )
+
+        mock_qbt = MagicMock()
+        mock_notifier = MagicMock()
+        magnet_fetcher = MagicMock()
+
+        with patch("gamarr.library.os.path.isdir", return_value=True), patch("gamarr.library.os.walk") as mock_walk:
+            mock_walk.return_value = [
+                ("/games", ["Owned Game"], []),
+                ("/games/Owned Game", [], ["game.exe"]),
+            ]
+            library = LibraryScanner(["/games"])
+
+            results = _process_sitemap_entries(
+                source_name="fitgirl",
+                platform="pc",
+                library=library,
+                mc=mock_mc,
+                db=db,
+                cfg=cfg,
+                qbt=mock_qbt,
+                notifier=mock_notifier,
+                max_entries=10,
+                magnet_fetcher=magnet_fetcher,
+            )
+
+        assert len(results) == 1
+        assert results[0]["result"] == "Already owned"
+        assert "library" in results[0]["result_details"].lower()
+        mock_mc.lookup_game.assert_not_called()
+        mock_qbt.add_torrent.assert_not_called()
+        magnet_fetcher.assert_not_called()
 
         db.close()
