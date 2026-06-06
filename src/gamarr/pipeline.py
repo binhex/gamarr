@@ -294,12 +294,20 @@ def run_acquisition(
         # only touched when there is something to look up.
         if db.get_pending():
             source.fetch_sitemap(db)
+        match_thresholds = {
+            "min_metascore": cfg.min_metascore,
+            "min_metascore_reviews": cfg.min_metascore_reviews,
+            "min_user_score": cfg.min_user_score,
+            "min_user_reviews": cfg.min_user_reviews,
+        }
         matched = _match_pending_games(
             db,
             qbt=qbt,
             magnet_fetcher=_default_magnet_fetcher,
             notifier=notifier,
             library=library,
+            mc=mc,
+            thresholds=match_thresholds,
         )
         if matched:
             logger.info("Matched {} pending games to sources", len(matched))
@@ -416,6 +424,16 @@ def _process_browse_games(
     return new_count
 
 
+def _log_verify_progress(verified: int, max_verify: int, total: int) -> None:
+    """Log periodic progress during score verification."""
+    if verified > 0 and verified % 10 == 0:
+        logger.info(
+            "Verified {} / {} pending games...",
+            verified,
+            min(max_verify, total),
+        )
+
+
 def _scores_present(
     result: Any,
 ) -> bool:
@@ -477,8 +495,9 @@ def _verify_pending_scores(
     thresholds: dict[str, Any],
     *,
     cache_ttl_days: int = 7,
+    max_verify: int = 50,
 ) -> int:
-    """Re-verify every pending game's scores against the real Metacritic detail page.
+    """Re-verify pending games' scores against the real Metacritic detail page.
 
     Browse-page Nuxt data does NOT carry standard 0\u2013100 metascores or
     0\u201310 user scores — the \"score\" fields are internal browse-only
@@ -488,10 +507,40 @@ def _verify_pending_scores(
     Games that pass the real-score check have their pending record updated
     with the correct scores from the detail page.
 
+    Only the first *max_verify* games are checked per call; the rest
+    remain pending for the next cycle.  This prevents a large pending
+    queue (e.g. 2773 games) from generating thousands of sequential
+    HTTP requests in a single cycle.
+
+    Args:
+        db: Database instance.
+        mc: MetacriticClient instance.
+        platform: Platform identifier (e.g. ``"pc"``).
+        thresholds: Dict with score threshold keys.
+        cache_ttl_days: TTL for the detail-page cache.
+        max_verify: Maximum number of games to verify per cycle.
+            Set to 0 to skip verification entirely.
+
     Returns the number of games removed.
     """
+    if max_verify <= 0:
+        return 0
+
     removed = 0
-    for game in db.get_pending(platform=platform):
+    verified = 0
+    pending = db.get_pending(platform=platform)
+    total_pending = len(pending)
+    for game in pending:
+        if verified >= max_verify:
+            logger.info(
+                "Verify limit reached ({} games) — {} pending games remain for next cycle",
+                max_verify,
+                total_pending - verified,
+            )
+            break
+
+        _log_verify_progress(verified, max_verify, total_pending)
+
         result = mc.lookup_game(
             str(game.game_title),
             platform=platform,
@@ -499,6 +548,8 @@ def _verify_pending_scores(
             cache_ttl_days=cache_ttl_days,
             direct_only=True,
         )
+        verified += 1
+
         if result is None:
             db.remove_pending(str(game.slug))
             removed += 1
@@ -510,7 +561,7 @@ def _verify_pending_scores(
 
         # Check real scores against thresholds.
         # If the detail page has no valid scores (all None/0), the game
-        # hasn't been reviewed yet — remove from pending.
+        # hasn't been reviewed yet \u2014 remove from pending.
         if not (_scores_present(result) and _real_scores_pass_thresholds(result, thresholds)):
             db.remove_pending(str(game.slug))
             removed += 1
@@ -540,6 +591,116 @@ def _verify_pending_scores(
     return removed
 
 
+def _jit_verify_and_update(
+    db: Database,
+    mc: Any,
+    thresholds: dict[str, Any] | None,
+    game_title: str,
+    game_slug: str,
+    game_platform: str,
+) -> Any:
+    """Just-in-time verify a matched game's scores before delivery.
+
+    Calls the Metacritic detail page and checks real scores against
+    thresholds.  If verification passes, the pending record is updated
+    with the real scores.  If it fails, the game is removed from pending.
+
+    Returns a tuple of real scores on success, or ``None`` when the
+    game was removed (missing or failing scores).  When *mc* or
+    *thresholds* is not provided, returns an empty tuple ``()``
+    signalling "use original scores, skip verification".
+    """
+    if mc is None or thresholds is None:
+        return ()
+    jit_result = mc.lookup_game(
+        game_title,
+        platform=game_platform,
+        slug=game_slug,
+        direct_only=True,
+    )
+    if jit_result is None or not (_scores_present(jit_result) and _real_scores_pass_thresholds(jit_result, thresholds)):
+        db.remove_pending(game_slug)
+        logger.debug(
+            "Skipped delivery for '{}' \u2014 real scores missing or fail thresholds",
+            game_title,
+        )
+        return None
+    # Update pending record with real detail-page scores
+    db.update_pending_scores(
+        slug=game_slug,
+        metascore=jit_result.metascore,
+        metascore_reviews=jit_result.metascore_review_count,
+        user_score=jit_result.user_score,
+        user_reviews=jit_result.user_review_count,
+    )
+    return (
+        jit_result.metascore,
+        jit_result.user_score,
+        jit_result.metascore_review_count,
+        jit_result.user_review_count,
+    )
+
+
+def _deliver_with_jit_verify(
+    db: Database,
+    mc: Any,
+    thresholds: dict[str, Any] | None,
+    game_title: str,
+    game_slug: str,
+    game_platform: str,
+    game_metascore: float | None,
+    game_user_score: float | None,
+    game_metascore_reviews: int | None,
+    game_user_reviews: int | None,
+    game_release_date: str | None,
+    *,
+    qbt: Any,
+    magnet_fetcher: Callable[[str], str | None],
+    notifier: Any,
+    best: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Verify scores just-in-time, then deliver the match.
+
+    If *mc* and *thresholds* are provided, looks up the real Metacritic
+    detail-page scores before delivering.  Games with wrong browse-only
+    metrics (e.g. 1478.0) are skipped and removed from pending.
+
+    Returns the result dict on successful delivery, or ``None`` if the
+    game was removed due to missing/failing scores.
+    """
+    jit_scores = _jit_verify_and_update(
+        db,
+        mc,
+        thresholds,
+        game_title,
+        game_slug,
+        game_platform,
+    )
+    # ``None`` → verification failed, skip delivery
+    # ``()`` → no mc/thresholds, use original scores
+    if jit_scores is None:
+        return None
+    if jit_scores:
+        game_metascore, game_user_score = jit_scores[0], jit_scores[1]
+        game_metascore_reviews, game_user_reviews = jit_scores[2], jit_scores[3]
+
+    return _deliver_match(
+        db,
+        qbt=qbt,
+        magnet_fetcher=magnet_fetcher,
+        notifier=notifier,
+        best=best,
+        game_slug=game_slug,
+        game_title=game_title,
+        game_platform=game_platform,
+        game_metascore=game_metascore,
+        game_user_score=game_user_score,
+        game_metascore_reviews=game_metascore_reviews,
+        game_user_reviews=game_user_reviews,
+        game_release_date=game_release_date,
+    )
+
+
 def _match_pending_games(
     db: Database,
     *,
@@ -547,14 +708,17 @@ def _match_pending_games(
     magnet_fetcher: Callable[[str], str | None] | None = None,
     notifier: Any = None,
     library: Any = None,
+    mc: Any = None,
+    thresholds: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Match pending games against torrent source indices.
 
     For each non-expired pending game:
       1. Normalize its title
       2. Search ``source_titles`` for a match (currently FitGirl only)
-      3. On match: skip if already in library, otherwise fetch the magnet
-         link and deliver to qBittorrent (and emit notifications)
+      3. On match: skip if already in library, otherwise verify the
+         game's scores via *mc* before delivering (prevents games with
+         wrong browse-only metrics from being downloaded)
       4. If no match: update ``last_checked_at``
       5. On expiry: move to history with ``result="Expired"``
 
@@ -562,11 +726,18 @@ def _match_pending_games(
     delivered to qBittorrent.  Without them, only a history record
     is written (no download).
 
+    Args:
+        mc: MetacriticClient instance for just-in-time score verification.
+        thresholds: Score thresholds for verification. Required when *mc*
+            is provided.
+
     Returns a list of result dicts.
     """
     from gamarr.metacritic import _normalise_for_compare
 
     results: list[dict[str, Any]] = []
+
+    can_deliver = bool(qbt) + bool(magnet_fetcher) == 2
 
     # Match non-expired pending games
     pending = db.get_pending()
@@ -619,23 +790,26 @@ def _match_pending_games(
                     continue
 
             # If qbt and magnet_fetcher are provided, deliver the torrent
-            if qbt is not None and magnet_fetcher is not None:
-                result_dict = _deliver_match(
+            if can_deliver:
+                result_dict = _deliver_with_jit_verify(
                     db,
+                    mc,
+                    thresholds,
+                    game_title,
+                    game_slug,
+                    game_platform,
+                    game_metascore,
+                    game_user_score,
+                    game_metascore_reviews,
+                    game_user_reviews,
+                    game_release_date,
                     qbt=qbt,
-                    magnet_fetcher=magnet_fetcher,
+                    magnet_fetcher=magnet_fetcher,  # type: ignore[arg-type]
                     notifier=notifier,
                     best=best,
-                    game_slug=game_slug,
-                    game_title=game_title,
-                    game_platform=game_platform,
-                    game_metascore=game_metascore,
-                    game_user_score=game_user_score,
-                    game_metascore_reviews=game_metascore_reviews,
-                    game_user_reviews=game_user_reviews,
-                    game_release_date=game_release_date,
                 )
-                results.append(result_dict)
+                if result_dict is not None:
+                    results.append(result_dict)
                 continue
 
             # No qbt/magnet_fetcher — record match without delivery

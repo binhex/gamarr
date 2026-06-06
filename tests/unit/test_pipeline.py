@@ -966,6 +966,186 @@ class TestMetacriticBrowse:
         assert pending_list[0].user_score == 8.0
         db.close()
 
+    def test_verify_pending_respects_max_verify_limit(self, tmp_path: Path) -> None:
+        """_verify_pending_scores must cap lookups at max_verify to prevent 2773 HTTP requests."""
+        import datetime
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _verify_pending_scores
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        # Create 20 pending games with zero-padded slugs for predictable sort order
+        for i in range(20):
+            db.record_pending(
+                slug=f"game-{i:02d}",
+                game_title=f"Game {i:02d}",
+                platform="pc",
+                metascore=1288.0,
+                user_score=1288.0,
+                expires_at=expires,
+            )
+
+        mock_mc = MagicMock()
+        import types
+
+        mock_mc.lookup_game.return_value = types.SimpleNamespace(
+            metascore=85.0,
+            metascore_review_count=20,
+            user_score=8.0,
+            user_review_count=100,
+            genres=["Action"],
+            must_play=False,
+            release_date="2026-06-01",
+        )
+
+        # Call with max_verify=5 — only 5 should be looked up
+        removed = _verify_pending_scores(
+            db,
+            mock_mc,
+            "pc",
+            {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10},
+            max_verify=5,
+        )
+        assert mock_mc.lookup_game.call_count == 5, f"Expected 5 lookups, got {mock_mc.lookup_game.call_count}"
+        # Removed should be 0 (all passing scores)
+        assert removed == 0, "All games pass thresholds, none removed"
+        # All 20 games still pending: first 5 verified (scores updated), last 15 untouched
+        remaining = db.get_pending()
+        assert len(remaining) == 20, f"All 20 must remain: {len(remaining)}"
+        # First 5 (game-00 to game-04) should have updated metascore (85.0),
+        # last 15 (game-05 to game-19) should still have browse score (1288.0)
+        for g in remaining:
+            idx = int(g.slug.split("-")[1])
+            if idx < 5:
+                assert g.metascore == 85.0, f"{g.slug} should be verified, got {g.metascore}"
+            else:
+                assert g.metascore == 1288.0, f"{g.slug} should be unverified (browse score), got {g.metascore}"
+        db.close()
+
+    def test_match_pending_skips_unverified_game_with_browse_scores(self, tmp_path: Path) -> None:
+        """A matched pending game with unverified browse scores must NOT be delivered.
+
+        This test reproduces the bug where games with browse scores (1478.0)
+        are delivered to qBittorrent because _match_pending_games doesn't
+        verify scores before delivery.
+        """
+        import datetime
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _match_pending_games
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="unverified-game",
+            game_title="Unverified Game",
+            platform="pc",
+            metascore=1478.0,  # WRONG browse score (not 0-100)
+            user_score=1478.0,
+            expires_at=expires,
+        )
+        db.rebuild_source_titles(
+            "fitgirl",
+            [{"title": "Unverified Game", "url": "https://example.com/game"}],
+        )
+
+        mock_qbt = MagicMock()
+        mock_qbt.add_torrent.return_value = "gamarr-tag"
+        mock_mc = MagicMock()
+        # Mock lookup returns None — no detail page scores available
+        mock_mc.lookup_game.return_value = None
+        magnet_fetcher = MagicMock(return_value="magnet:?xt=urn:btih:test")
+
+        thresholds = {
+            "min_metascore": 75,
+            "min_metascore_reviews": 5,
+            "min_user_score": 7.5,
+            "min_user_reviews": 10,
+        }
+
+        matched = _match_pending_games(
+            db,
+            qbt=mock_qbt,
+            magnet_fetcher=magnet_fetcher,
+            mc=mock_mc,
+            thresholds=thresholds,
+        )
+
+        # No matches should be returned — game has unverified browse scores
+        assert len(matched) == 0, "Unverified game should NOT be delivered"
+        # qBittorrent should NOT be called
+        mock_qbt.add_torrent.assert_not_called()
+        # Game should be removed from pending (verification failed)
+        assert not db.is_pending("unverified-game"), \
+            "Game with failing scores should be removed from pending"
+        db.close()
+
+    def test_match_pending_delivers_verified_game(self, tmp_path: Path) -> None:
+        """A matched pending game with verified real scores should be delivered."""
+        import datetime
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _match_pending_games
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="verified-game",
+            game_title="Verified Game",
+            platform="pc",
+            metascore=85.0,  # REAL score (0-100 range)
+            metascore_reviews=20,
+            user_score=8.0,
+            user_reviews=100,
+            release_date="2026-06-01",
+            expires_at=expires,
+        )
+        db.rebuild_source_titles(
+            "fitgirl",
+            [{"title": "Verified Game", "url": "https://example.com/game"}],
+        )
+
+        mock_qbt = MagicMock()
+        mock_qbt.add_torrent.return_value = "gamarr-tag"
+        mock_mc = MagicMock()
+        import types
+
+        mock_mc.lookup_game.return_value = types.SimpleNamespace(
+            metascore=85.0,
+            metascore_review_count=20,
+            user_score=8.0,
+            user_review_count=100,
+            genres=["Action"],
+            must_play=False,
+            release_date="2026-06-01",
+        )
+        magnet_fetcher = MagicMock(return_value="magnet:?xt=urn:btih:test")
+
+        thresholds = {
+            "min_metascore": 75,
+            "min_metascore_reviews": 5,
+            "min_user_score": 7.5,
+            "min_user_reviews": 10,
+        }
+
+        matched = _match_pending_games(
+            db,
+            qbt=mock_qbt,
+            magnet_fetcher=magnet_fetcher,
+            mc=mock_mc,
+            thresholds=thresholds,
+        )
+
+        # Game should be delivered
+        assert len(matched) == 1
+        assert matched[0]["result"] == "Passed"
+        mock_qbt.add_torrent.assert_called_once()
+        db.close()
+
     def test_browse_qualifying_games_inserts_pending(self, tmp_path: Path) -> None:
         from gamarr.database import Database
         from gamarr.pipeline import _process_browse_games
