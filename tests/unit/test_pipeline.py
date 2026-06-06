@@ -225,6 +225,41 @@ class TestRunAcquisition:
             )
             assert results == []
 
+    def test_acquisition_does_not_call_sitemap_discovery(self) -> None:
+        """run_acquisition should NOT call _process_sitemap_entries.
+
+        The Metacritic-first architecture means games should be discovered
+        through Metacritic browse pages, not by iterating the FitGirl
+        sitemap and looking up each entry on Metacritic.
+        """
+        with (
+            patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
+            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+            patch("gamarr.pipeline._process_sitemap_entries") as mock_sitemap,
+        ):
+            mock_source = MagicMock()
+            mock_source.fetch_new.return_value = []
+            mock_source_cls.return_value = mock_source
+
+            mock_mc = MagicMock()
+            mock_mc.scan_recent_games.return_value = []
+            mock_mc_cls.return_value = mock_mc
+
+            mock_qbt = MagicMock()
+            mock_qbt.is_connected.return_value = True
+            mock_qbt_cls.return_value = mock_qbt
+
+            run_acquisition(
+                fitgirl_rss_url="http://example.com/feed",
+                platform="pc",
+                qbt_host="localhost",
+                qbt_port=8080,
+            )
+
+            # The sitemap-iterative path should NOT be called
+            mock_sitemap.assert_not_called()
+
 
 class TestEvaluateScores:
     """_evaluate_scores function edge cases."""
@@ -850,6 +885,44 @@ class TestMetacriticBrowse:
         matched = _match_pending_games(db)
         assert len(matched) == 1
         assert matched[0]["slug"] == "elden-ring"
+        assert db.is_pending("elden-ring") is False
+        db.close()
+
+    def test_match_pending_delivers_magnet(self, tmp_path: Path) -> None:
+        """When qbt and magnet_fetcher are provided, matched games should be delivered."""
+        import datetime
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _match_pending_games
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="elden-ring",
+            game_title="Elden Ring",
+            platform="pc",
+            metascore=96.0,
+            user_score=8.5,
+            expires_at=expires,
+        )
+        db.rebuild_source_titles(
+            "fitgirl",
+            [{"title": "Elden Ring", "url": "https://fitgirl-repacks.site/elden-ring/"}],
+        )
+
+        mock_qbt = MagicMock()
+        mock_qbt.add_torrent.return_value = "gamarr-tag"
+        magnet_fetcher = MagicMock(return_value="magnet:?xt=urn:btih:test")
+
+        matched = _match_pending_games(db, qbt=mock_qbt, magnet_fetcher=magnet_fetcher)
+
+        # Game should be matched and delivered
+        assert len(matched) == 1
+        assert matched[0]["result"] == "Passed"
+        # Magnet should have been fetched and torrent should have been added
+        magnet_fetcher.assert_called_once_with("https://fitgirl-repacks.site/elden-ring/")
+        mock_qbt.add_torrent.assert_called_once_with(magnet_url="magnet:?xt=urn:btih:test", title="Elden Ring")
         assert db.is_pending("elden-ring") is False
         db.close()
 

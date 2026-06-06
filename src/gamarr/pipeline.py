@@ -232,20 +232,9 @@ def run_acquisition(
         """
         source.fetch_sitemap(db)
 
-        # Process sitemap entries directly — each entry gets checked against
-        # Metacritic scores and delivered to qBittorrent if it qualifies.
-        # This is the primary discovery path; browse-based discovery below
-        # is a secondary fallback.
-        sitemap_results = _process_sitemap_entries(
-            source_name="fitgirl",
-            platform=platform,
-            library=library,
-            mc=mc,
-            db=db,
-            cfg=cfg,
-            qbt=qbt,
-            notifier=notifier,
-        )
+        # Metacritic-first discovery: browse Metacritic for games that pass
+        # score thresholds and age filter, then match against sitemap titles.
+        # The sitemap is only used for matching, NOT for iterating lookups.
 
         if cfg.browse_enabled:
             browse_games = mc.scan_recent_games(
@@ -270,21 +259,25 @@ def run_acquisition(
                 )
                 if new_pending:
                     logger.info("Browse added {} new pending games", new_pending)
-        matched = _match_pending_games(db)
+        matched = _match_pending_games(
+            db,
+            qbt=qbt,
+            magnet_fetcher=_default_magnet_fetcher,
+        )
         if matched:
             logger.info("Matched {} pending games to sources", len(matched))
 
-        return sitemap_results
+        return matched
 
     try:
-        sitemap_results = _run_discovery_phases(source, mc, db, cfg, platform, qbt, notifier)
+        discovery_results = _run_discovery_phases(source, mc, db, cfg, platform, qbt, notifier)
 
         entries = source.fetch_new()
         if not entries:
             logger.info("No new entries found.")
-            return sitemap_results
+            return discovery_results
 
-        results: list[dict[str, Any]] = list(sitemap_results)
+        results: list[dict[str, Any]] = list(discovery_results)
         for entry in entries:
             match = library.check_game(entry.title)
             if match:
@@ -414,15 +407,22 @@ def _process_browse_games(
 
 def _match_pending_games(
     db: Database,
+    *,
+    qbt: Any = None,
+    magnet_fetcher: Callable[[str], str | None] | None = None,
 ) -> list[dict[str, Any]]:
     """Match pending games against torrent source indices.
 
     For each non-expired pending game:
       1. Normalize its title
       2. Search ``source_titles`` for a match (currently FitGirl only)
-      3. On match: record in history, remove from pending
+      3. On match: fetch magnet from source URL, deliver to qBittorrent
       4. If no match: update ``last_checked_at``
       5. On expiry: move to history with ``result="Expired"``
+
+    When *qbt* and *magnet_fetcher* are provided, matched games are
+    delivered to qBittorrent.  Without them, only a history record
+    is written (no download).
 
     Returns a list of result dicts.
     """
@@ -451,6 +451,66 @@ def _match_pending_games(
                 best["url"],
             )
 
+            # If qbt and magnet_fetcher are provided, deliver the torrent
+            if qbt is not None and magnet_fetcher is not None:
+                source_url: str = str(best["url"])
+                magnet = magnet_fetcher(source_url)
+                if magnet:
+                    tag = qbt.add_torrent(magnet_url=magnet, title=game_title)
+                    if tag:
+                        logger.info(
+                            "\u2713 Sent matched '{}' to qBittorrent (tag: {})",
+                            game_title,
+                            tag,
+                        )
+                        record_result = _record_result(
+                            db,
+                            source="metacritic",
+                            source_title=game_title,
+                            source_url=f"mc:{game_slug}",
+                            game_title=game_title,
+                            platform=game_platform,
+                            metascore=game_metascore,
+                            user_score=game_user_score,
+                            result="Passed",
+                            result_details=f"Downloaded from {best['url']}",
+                            magnet_url=magnet,
+                            torrent_tag=str(tag),
+                        )
+                        record_result["slug"] = game_slug
+                        db.remove_pending(game_slug)
+                        results.append(record_result)
+                        continue
+                    # qBittorrent failed
+                    logger.warning(
+                        "Failed to add matched '{}' to qBittorrent",
+                        game_title,
+                    )
+                else:
+                    logger.warning(
+                        "No magnet found for matched '{}' at {}",
+                        game_title,
+                        source_url,
+                    )
+                # Magnet fetch or qBittorrent failed — record as Error
+                record_result = _record_result(
+                    db,
+                    source="metacritic",
+                    source_title=game_title,
+                    source_url=f"mc:{game_slug}",
+                    game_title=game_title,
+                    platform=game_platform,
+                    metascore=game_metascore,
+                    user_score=game_user_score,
+                    result="Error",
+                    result_details=f"Match found at {best['url']} but delivery failed",
+                )
+                record_result["slug"] = game_slug
+                db.remove_pending(game_slug)
+                results.append(record_result)
+                continue
+
+            # No qbt/magnet_fetcher — record match without delivery
             record_result = _record_result(
                 db,
                 source="metacritic",
