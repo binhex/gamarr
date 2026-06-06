@@ -273,15 +273,25 @@ def _check_user_review_item(page_data: list[Any], item: Any, slug: str) -> tuple
     Returns ``(review_count, user_score)`` if the item matches, or
     ``None`` if it doesn't.
     """
-    if not isinstance(item, dict) or "score" not in item or "reviewCount" not in item:
+    if not isinstance(item, dict):
+        return None
+    if "score" not in item:
+        return None
+    if "reviewCount" not in item:
         return None
     sv = _nuxt_val(page_data, item["score"])
     if not isinstance(sv, (int, float)):
         return None
-    if slug not in str(_nuxt_val(page_data, item.get("url")) or "").split("/"):
+    if not _is_user_review_url(page_data, item, slug):
         return None
     count = _nuxt_val(page_data, item["reviewCount"])
     return int(count) if isinstance(count, (int, float)) else None, float(sv)
+
+
+def _is_user_review_url(page_data: list[Any], item: dict[str, Any], slug: str) -> bool:
+    """Check if the item's URL is a user review page for *slug*."""
+    url_str = str(_nuxt_val(page_data, item.get("url")) or "")
+    return "/user-reviews/" in url_str and slug in url_str.split("/")
 
 
 def _resolve_user_review_summary(page_data: list[Any], slug: str) -> tuple[int | None, float | None]:

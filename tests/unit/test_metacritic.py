@@ -663,3 +663,48 @@ class TestScanRecentGames:
         with patch.object(client, "_fetch_browse_page", return_value=None):
             result = client.scan_recent_games("pc", max_pages=1)
         assert result == []
+
+
+class TestCheckUserReviewItem:
+    """_check_user_review_item must require /user-reviews/ in URL."""
+
+    def test_returns_none_for_critic_review_urls(self) -> None:
+        """Critic review summary items (with /critic-reviews/ URL) must not match."""
+        from gamarr.metacritic import _check_user_review_item
+
+        page_data: list[dict[str, object]] = []
+        item = {
+            "score": 78,
+            "reviewCount": 24,
+            "url": "/game/people-of-note/critic-reviews/?platform=pc",
+        }
+        result = _check_user_review_item(page_data, item, "people-of-note")
+        assert result is None, f"Critic review item should not match: {result}"
+
+    def test_returns_scores_for_user_review_urls(self) -> None:
+        """User review summary items (with /user-reviews/ URL) must match."""
+        from gamarr.metacritic import _check_user_review_item
+
+        page_data: list[dict[str, object]] = []
+        item = {
+            "score": 6.8,
+            "reviewCount": 35,
+            "url": "/game/people-of-note/user-reviews/?platform=pc",
+        }
+        result = _check_user_review_item(page_data, item, "people-of-note")
+        assert result is not None
+        assert result[0] == 35, f"Expected 35 reviews, got {result[0]}"
+        assert result[1] == 6.8, f"Expected user score 6.8, got {result[1]}"
+
+    def test_returns_none_for_different_slug(self) -> None:
+        """Items with a different slug must not match."""
+        from gamarr.metacritic import _check_user_review_item
+
+        page_data: list[dict[str, object]] = []
+        item = {
+            "score": 7.5,
+            "reviewCount": 10,
+            "url": "/game/other-game/user-reviews/?platform=pc",
+        }
+        result = _check_user_review_item(page_data, item, "people-of-note")
+        assert result is None, f"Different slug should not match: {result}"

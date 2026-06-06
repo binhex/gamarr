@@ -1079,8 +1079,7 @@ class TestMetacriticBrowse:
         # qBittorrent should NOT be called
         mock_qbt.add_torrent.assert_not_called()
         # Game should be removed from pending (verification failed)
-        assert not db.is_pending("unverified-game"), \
-            "Game with failing scores should be removed from pending"
+        assert not db.is_pending("unverified-game"), "Game with failing scores should be removed from pending"
         db.close()
 
     def test_match_pending_delivers_verified_game(self, tmp_path: Path) -> None:
