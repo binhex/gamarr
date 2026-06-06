@@ -263,7 +263,8 @@ def run_acquisition(
         # \u2014 the \"score\" fields are internal browse-only metrics.
         # Games whose detail-page scores fail the configured thresholds
         # are removed from pending.
-        if db.get_pending():
+        pending_games = db.get_pending(platform=platform)
+        if pending_games:
             thresholds = {
                 "min_metascore": cfg.min_metascore,
                 "min_metascore_reviews": cfg.min_metascore_reviews,
@@ -276,6 +277,7 @@ def run_acquisition(
                 platform,
                 thresholds,
                 cache_ttl_days=cfg.cache_ttl_days,
+                max_verify=min(len(pending_games), 200),
             )
             if removed:
                 logger.info(

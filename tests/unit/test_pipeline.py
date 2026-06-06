@@ -165,6 +165,94 @@ class TestRunAcquisition:
             # Sitemap is NOT fetched when there are no pending games to match
             mock_source.fetch_sitemap.assert_not_called()
 
+    def test_run_acquisition_skips_sitemap_for_games_below_threshold(self, tmp_path: Path) -> None:
+        """Games below score thresholds must NOT trigger sitemap fetch.
+
+        When 52 pending games all have inflated browse-page scores that
+        fail real Metacritic verification, ALL must be verified and
+        removed BEFORE the sitemap is fetched.  With the buggy cap at
+        ``max_verify=50``, only 50 games get checked; 2 survive and
+        wastefully trigger the sitemap fetch (an HTTP request for 7759
+        titles).  The fix removes the cap so all pending games are
+        verified before the sitemap step.
+        """
+        import datetime
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.database import Database
+
+        db_path = str(tmp_path / "test.db")
+
+        # Pre-populate 52 pending games, all with inflated browse-page scores
+        db = Database(db_path)
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        for i in range(52):
+            db.record_pending(
+                slug=f"game-{i:02d}",
+                game_title=f"Game {i:02d}",
+                platform="pc",
+                metascore=1478.0,  # WRONG browse score, not 0-100
+                metascore_reviews=999,
+                user_score=2007.0,  # WRONG browse score, not 0-10
+                user_reviews=None,
+                release_date="2026-06-03",
+                expires_at=expires,
+            )
+        db.close()
+
+        with (
+            patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
+            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+        ):
+            import types
+
+            mock_source = MagicMock()
+            mock_source_cls.return_value = mock_source
+
+            mock_mc = MagicMock()
+            # Browse returns no new games
+            mock_mc.scan_recent_games.return_value = []
+            # All detail-page lookups return failing scores
+            mock_mc.lookup_game.return_value = types.SimpleNamespace(
+                metascore=62.0,
+                metascore_review_count=5,
+                user_score=None,
+                user_review_count=0,
+                genres=[],
+                must_play=False,
+                release_date="2026-06-03",
+            )
+            mock_mc_cls.return_value = mock_mc
+
+            mock_qbt = MagicMock()
+            mock_qbt.is_connected.return_value = True
+            mock_qbt_cls.return_value = mock_qbt
+
+            results = run_acquisition(
+                fitgirl_rss_url="http://example.com/feed",
+                platform="pc",
+                db_path=db_path,
+                qbt_host="localhost",
+                qbt_port=8080,
+                min_metascore=75,
+                min_user_score=7.5,
+                min_user_reviews=10,
+                min_metascore_reviews=5,
+            )
+
+            # ALL 52 games must be verified and removed BEFORE the sitemap
+            # is fetched.  With max_verify=50 cap, 2 would survive and
+            # trigger fetch_sitemap — the test FAILS before the fix.
+            mock_source.fetch_sitemap.assert_not_called()
+            assert results == []
+
+            # Confirm ALL games were removed
+            verify_db = Database(db_path)
+            remaining = verify_db.get_pending(platform="pc")
+            assert len(remaining) == 0, f"{len(remaining)} games remain unverified"
+            verify_db.close()
+
 
 class TestEvaluateScores:
     """_evaluate_scores function edge cases."""
