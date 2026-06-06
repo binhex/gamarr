@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 from gamarr.sources.fitgirl import FitGirlSource, _clean_title
 
 
@@ -121,40 +119,6 @@ class TestExtractMagnetFromHtml:
         assert result is None
 
 
-class TestGetRssItems:
-    """RSS item extraction from parsed XML dict."""
-
-    def test_get_rss_items_multiple(self) -> None:
-        from gamarr.sources.fitgirl import _get_rss_items
-
-        feed = {"rss": {"channel": {"item": [{"title": "Game 1"}, {"title": "Game 2"}]}}}
-        items = _get_rss_items(feed)
-        assert items is not None
-        assert len(items) == 2
-
-    def test_get_rss_items_single_as_dict(self) -> None:
-        from gamarr.sources.fitgirl import _get_rss_items
-
-        feed = {"rss": {"channel": {"item": {"title": "Single Game"}}}}
-        items = _get_rss_items(feed)
-        assert items is not None
-        assert len(items) == 1
-
-    def test_get_rss_items_no_items(self) -> None:
-        from gamarr.sources.fitgirl import _get_rss_items
-
-        feed: dict = {"rss": {"channel": {}}}
-        items = _get_rss_items(feed)
-        assert items is None
-
-    def test_get_rss_items_malformed(self) -> None:
-        from gamarr.sources.fitgirl import _get_rss_items
-
-        feed = {"rss": "not-a-dict"}
-        items = _get_rss_items(feed)
-        assert items is None
-
-
 class TestFitGirlSource:
     """FitGirlSource construction and protocol conformance."""
 
@@ -172,114 +136,6 @@ class TestFitGirlSource:
         source = FitGirlSource("http://example.com/feed.xml", platform="pc", db_path=":memory:")
         assert source.platform == "pc"
 
-    def test_fetch_new_returns_list(self) -> None:
-        source = FitGirlSource("http://example.com/feed.xml", db_path=":memory:")
-        entries = source.fetch_new()
-        assert isinstance(entries, list)
-
-    def test_fetch_new_http_error(self) -> None:
-        """When requests.get raises, fetch_new returns empty list."""
-        from unittest.mock import patch
-
-        import requests
-
-        source = FitGirlSource("http://example.com/feed.xml", db_path=":memory:")
-        with patch(
-            "gamarr.sources.fitgirl.requests.get", side_effect=requests.exceptions.ConnectionError("mock error")
-        ):
-            entries = source.fetch_new()
-        assert entries == []
-
-    def test_fetch_new_with_valid_rss(self) -> None:
-        """Mock a valid RSS feed response and verify parsing."""
-        from unittest.mock import MagicMock, patch
-
-        rss_xml = (
-            '<?xml version="1.0" encoding="UTF-8"?>'
-            '<rss version="2.0"><channel>'
-            "<item><title>Elden Ring (v1.12 + DLC, MULTi13) [Repack]</title>"
-            "<link>https://fitgirl-repacks.site/elden-ring/</link>"
-            "<description>magnet:?xt=urn:btih:abc123</description>"
-            "</item>"
-            "<item><title>Hades II [Repack]</title>"
-            "<link>https://fitgirl-repacks.site/hades-ii/</link>"
-            "<description>No magnet here</description>"
-            "</item>"
-            "</channel></rss>"
-        )
-
-        mock_resp = MagicMock()
-        mock_resp.text = rss_xml
-        mock_resp.raise_for_status.return_value = None
-
-        source = FitGirlSource("http://example.com/feed.xml", db_path=":memory:")
-        with patch("gamarr.sources.fitgirl.requests.get", return_value=mock_resp):
-            entries = source.fetch_new()
-        assert len(entries) == 2
-        assert entries[0].title == "Elden Ring"
-        assert entries[0].source == "fitgirl"
-        assert entries[0].magnet_url == "magnet:?xt=urn:btih:abc123"
-        assert entries[1].title == "Hades II"
-
-    def test_fetch_new_bad_xml(self) -> None:
-        """When RSS returns invalid XML, fetch_new returns empty list."""
-        from unittest.mock import MagicMock, patch
-
-        mock_resp = MagicMock()
-        mock_resp.text = "not valid xml"
-        mock_resp.raise_for_status.return_value = None
-
-        source = FitGirlSource("http://example.com/feed.xml", db_path=":memory:")
-        with patch("gamarr.sources.fitgirl.requests.get", return_value=mock_resp):
-            entries = source.fetch_new()
-        assert entries == []
-
-    def test_fetch_new_empty_channel(self) -> None:
-        """When RSS has no items, fetch_new returns empty list."""
-        from unittest.mock import MagicMock, patch
-
-        rss_xml = '<?xml version="1.0"?><rss version="2.0"><channel></channel></rss>'
-        mock_resp = MagicMock()
-        mock_resp.text = rss_xml
-        mock_resp.raise_for_status.return_value = None
-
-        source = FitGirlSource("http://example.com/feed.xml", db_path=":memory:")
-        with patch("gamarr.sources.fitgirl.requests.get", return_value=mock_resp):
-            entries = source.fetch_new()
-        assert entries == []
-
-    def test_extract_magnet_fallback_failure(self) -> None:
-        """When RSS description has no magnet and article fetch fails, magnet is empty."""
-        from unittest.mock import MagicMock, patch
-
-        import requests
-
-        # RSS with no magnet in description
-        rss_xml = (
-            '<?xml version="1.0" encoding="UTF-8"?>'
-            '<rss version="2.0"><channel>'
-            "<item><title>No Magnet Game [Repack]</title>"
-            "<link>https://fitgirl-repacks.site/no-magnet/</link>"
-            "<description>No magnet here at all</description>"
-            "</item>"
-            "</channel></rss>"
-        )
-
-        # First call (RSS fetch) succeeds, second call (article fetch) fails
-        mock_rss_resp = MagicMock()
-        mock_rss_resp.text = rss_xml
-        mock_rss_resp.raise_for_status.return_value = None
-
-        source = FitGirlSource("http://example.com/feed.xml", db_path=":memory:")
-        mock_get = MagicMock()
-        mock_get.side_effect = [mock_rss_resp, requests.exceptions.ConnectionError("mock fail")]
-
-        with patch("gamarr.sources.fitgirl.requests.get", mock_get):
-            entries = source.fetch_new()
-        assert len(entries) == 1
-        assert entries[0].title == "No Magnet Game"
-        assert entries[0].magnet_url == ""
-
 
 class TestMagnetExtractionEdgeCases:
     """Magnet extraction edge cases."""
@@ -290,105 +146,6 @@ class TestMagnetExtractionEdgeCases:
 
         result = _extract_magnet_from_html("<html>no magnet</html>")
         assert result is None
-
-
-class TestFetchNewProccessing:
-    """Additional fetch_new edge cases."""
-
-    def test_fetch_new_skips_processed(self) -> None:
-        """Entry already processed should be skipped."""
-        from unittest.mock import MagicMock, patch
-
-        # Create source, then simulate that the link is already in the DB
-        source = FitGirlSource("http://example.com/feed.xml", db_path=":memory:")
-        source._db.record_processed(
-            source="fitgirl",
-            source_title="http://fitgirl-repacks.site/elden-ring/",
-            source_url="http://fitgirl-repacks.site/elden-ring/",
-            game_title="Elden Ring",
-            result="Passed",
-        )
-
-        rss_xml = (
-            '<?xml version="1.0" encoding="UTF-8"?>'
-            '<rss version="2.0"><channel>'
-            "<item><title>Elden Ring (v1.12 + DLC) [Repack]</title>"
-            "<link>http://fitgirl-repacks.site/elden-ring/</link>"
-            "<description>magnet:?xt=urn:btih:abc</description>"
-            "</item>"
-            "</channel></rss>"
-        )
-        mock_resp = MagicMock()
-        mock_resp.text = rss_xml
-        mock_resp.raise_for_status.return_value = None
-
-        with patch("gamarr.sources.fitgirl.requests.get", return_value=mock_resp):
-            entries = source.fetch_new()
-        # The entry should be skipped since it's already in the DB
-        assert len(entries) == 0
-        source.close()
-
-
-class TestBuildEntriesCategoryFilter:
-    """RSS category-based filtering in _build_entries."""
-
-    def test_build_entries_skips_news_posts(self) -> None:
-        """Items with non-game categories like 'Updates Digest' should be skipped."""
-        source = FitGirlSource("http://example.com/feed.xml", db_path=":memory:")
-        items: list[dict[str, Any]] = [
-            {
-                "title": "Updates Digest for June 4",
-                "link": "http://example.com/updates-digest",
-                "category": "Updates Digest",
-            },
-            {
-                "title": "Game Name [Repack]",
-                "link": "http://example.com/game",
-                "category": ["Lossless Repack", "3D"],
-            },
-        ]
-        entries = source._build_entries(items)
-        assert len(entries) == 1
-        assert entries[0].title == "Game Name"
-
-    def test_build_entries_skips_uncategorized(self) -> None:
-        """Items with Uncategorized category should be skipped."""
-        source = FitGirlSource("http://example.com/feed.xml", db_path=":memory:")
-        items = [
-            {
-                "title": "Upcoming Repacks",
-                "link": "http://example.com/upcoming",
-                "category": "Uncategorized",
-            },
-            {
-                "title": "Real Game [Repack]",
-                "link": "http://example.com/real-game",
-                "category": "Lossless Repack",
-            },
-        ]
-        entries = source._build_entries(items)
-        assert len(entries) == 1
-        assert entries[0].title == "Real Game"
-
-    def test_build_entries_no_category_still_included(self) -> None:
-        """Items without a category should still be included (backward compat)."""
-        source = FitGirlSource("http://example.com/feed.xml", db_path=":memory:")
-        items = [
-            {"title": "Some Game", "link": "http://example.com/game"},
-        ]
-        entries = source._build_entries(items)
-        assert len(entries) == 1
-        assert entries[0].title == "Some Game"
-
-    def test_build_entries_all_news_only(self) -> None:
-        """When all items are news posts, return empty list."""
-        source = FitGirlSource("http://example.com/feed.xml", db_path=":memory:")
-        items = [
-            {"title": "Updates Digest", "link": "http://example.com/upd", "category": "Updates Digest"},
-            {"title": "Upcoming Repacks", "link": "http://example.com/upcoming", "category": "Uncategorized"},
-        ]
-        entries = source._build_entries(items)
-        assert len(entries) == 0
 
 
 class TestCleanTitleDashVersion:

@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
-
-if TYPE_CHECKING:
-    from gamarr.models import GameEntry
+from typing import Protocol, runtime_checkable
 
 
 @runtime_checkable
@@ -15,4 +12,4 @@ class BaseSource(Protocol):
     @property
     def source_name(self) -> str: ...
 
-    def fetch_new(self) -> list[GameEntry]: ...
+    def fetch_sitemap(self, db: object) -> None: ...

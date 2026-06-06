@@ -18,8 +18,6 @@ from gamarr.sources.fitgirl import _USER_AGENT, FitGirlSource, _extract_magnet_f
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from gamarr.models import GameEntry
-
 
 def _escape_markup(value: object) -> str:
     """Escape Loguru markup angle brackets in user-provided values.
@@ -102,6 +100,7 @@ class AcquisitionConfig:
     browse_cache_ttl_hours: int = 4
     browse_enabled: bool = True
     pending_days: int = 30
+    browse_max_pages: int = 200
 
 
 def _score_check(value: float | None, threshold: float) -> bool:
@@ -164,6 +163,7 @@ def run_acquisition(
     browse_cache_ttl_hours: int = 4,
     browse_enabled: bool = True,
     pending_days: int = 30,
+    browse_max_pages: int = 200,
     apprise_urls: list[str] | None = None,
     notify_on_download: bool = True,
     notify_on_failure: bool = False,
@@ -181,6 +181,7 @@ def run_acquisition(
         browse_cache_ttl_hours=browse_cache_ttl_hours,
         browse_enabled=browse_enabled,
         pending_days=pending_days,
+        browse_max_pages=browse_max_pages,
     )
 
     logger.info("Starting acquisition cycle (platform='{}')", platform)
@@ -213,10 +214,6 @@ def run_acquisition(
         db.close()
         return []
 
-    from gamarr.library import LibraryScanner
-
-    library = LibraryScanner(library_paths)
-
     def _run_discovery_phases(
         source: Any,
         mc: Any,
@@ -226,20 +223,21 @@ def run_acquisition(
         qbt: Any,
         notifier: Any,
     ) -> list[dict[str, Any]]:
-        """Run sitemap indexing, Metacritic browse, and pending matching.
+        """Run Metacritic browse, sitemap fetch (if needed), and pending matching.
 
-        Returns combined results from sitemap discovery and pending-game matching.
+        Returns combined results from pending-game matching.
+
+        Metacritic-first: browse Metacritic first; only fetch the FitGirl
+        sitemap if Metacritic produced at least one game to match.
         """
-        source.fetch_sitemap(db)
-
         # Metacritic-first discovery: browse Metacritic for games that pass
-        # score thresholds and age filter, then match against sitemap titles.
-        # The sitemap is only used for matching, NOT for iterating lookups.
-
+        # score thresholds and age filter. The FitGirl sitemap is fetched
+        # only if Metacritic produced games to match against.
+        browse_games: list[dict[str, Any]] = []
         if cfg.browse_enabled:
             browse_games = mc.scan_recent_games(
                 platform,
-                max_pages=10,
+                max_pages=cfg.browse_max_pages,
                 browse_cache_ttl_hours=cfg.browse_cache_ttl_hours,
             )
             if browse_games:
@@ -259,10 +257,49 @@ def run_acquisition(
                 )
                 if new_pending:
                     logger.info("Browse added {} new pending games", new_pending)
+        # After the browse step, re-verify every pending game against
+        # the real Metacritic detail page.  Browse-page Nuxt data does
+        # NOT carry standard 0\u2013100 metascores or 0\u201310 user scores
+        # \u2014 the \"score\" fields are internal browse-only metrics.
+        # Games whose detail-page scores fail the configured thresholds
+        # are removed from pending.
+        if db.get_pending():
+            thresholds = {
+                "min_metascore": cfg.min_metascore,
+                "min_metascore_reviews": cfg.min_metascore_reviews,
+                "min_user_score": cfg.min_user_score,
+                "min_user_reviews": cfg.min_user_reviews,
+            }
+            removed = _verify_pending_scores(
+                db,
+                mc,
+                platform,
+                thresholds,
+                cache_ttl_days=cfg.cache_ttl_days,
+            )
+            if removed:
+                logger.info(
+                    "Removed {} pending games that failed real-score check",
+                    removed,
+                )
+
+        library: Any = None
+        if library_paths:
+            from gamarr.library import LibraryScanner
+
+            library = LibraryScanner(library_paths)
+        # Only fetch the FitGirl sitemap if there are pending games to
+        # match against it. This is the Metacritic-first ordering the
+        # user wants: Metacritic browse happens first, and FitGirl is
+        # only touched when there is something to look up.
+        if db.get_pending():
+            source.fetch_sitemap(db)
         matched = _match_pending_games(
             db,
             qbt=qbt,
             magnet_fetcher=_default_magnet_fetcher,
+            notifier=notifier,
+            library=library,
         )
         if matched:
             logger.info("Matched {} pending games to sources", len(matched))
@@ -270,44 +307,10 @@ def run_acquisition(
         return matched
 
     try:
-        discovery_results = _run_discovery_phases(source, mc, db, cfg, platform, qbt, notifier)
-
-        entries = source.fetch_new()
-        if not entries:
-            logger.info("No new entries found.")
-            return discovery_results
-
-        results: list[dict[str, Any]] = list(discovery_results)
-        for entry in entries:
-            match = library.check_game(entry.title)
-            if match:
-                db.record_processed(
-                    source=entry.source,
-                    source_title=entry.source_title,
-                    source_url=entry.source_url,
-                    game_title=entry.title,
-                    platform=entry.platform,
-                    result="Already owned",
-                    result_details=f"Found in library: {match.matched_path}",
-                )
-                logger.info(
-                    "Already in library, skipping: '{}' (matched: '{}' at {})",
-                    entry.title,
-                    match.matched_name,
-                    match.matched_path,
-                )
-                results.append(
-                    {
-                        "result": "Already owned",
-                        "game_title": entry.title,
-                        "result_details": f"Found in library: {match.matched_path}",
-                    }
-                )
-                continue
-
-            result = _process_entry(entry, cfg, mc, qbt, db, notifier)
-            results.append(result)
-        return results
+        # Metacritic-first acquisition: discover games via Metacritic browse,
+        # match against the FitGirl sitemap, and only then deliver to qBittorrent.
+        # FitGirl RSS entries must NOT drive per-entry Metacritic lookups.
+        return _run_discovery_phases(source, mc, db, cfg, platform, qbt, notifier)
     finally:
         source.close()
         mc.close()
@@ -320,12 +323,20 @@ def _game_passes_thresholds(game: dict[str, Any], thresholds: dict[str, Any]) ->
     user_score = game.get("user_rating")
     if metascore is None or user_score is None:
         return False
+    # ``critic_review_count`` and ``user_review_count`` are not always
+    # available in the Metacritic browse page Nuxt data (the browse
+    # listing only carries ``criticScoreSummary.score`` and
+    # ``userScore.score``).  When the field is missing we skip that
+    # specific check rather than treating it as 0, which would silently
+    # drop every browse-page game.
+    critic_reviews = game.get("critic_review_count")
+    user_reviews = game.get("user_review_count")
     return all(
         [
             metascore >= thresholds["min_metascore"],
-            (game.get("critic_review_count") or 0) >= thresholds["min_metascore_reviews"],
+            critic_reviews is None or critic_reviews >= thresholds["min_metascore_reviews"],
             user_score >= thresholds["min_user_score"],
-            (game.get("user_review_count") or 0) >= thresholds["min_user_reviews"],
+            user_reviews is None or user_reviews >= thresholds["min_user_reviews"],
         ]
     )
 
@@ -395,7 +406,7 @@ def _process_browse_games(
             expires_at=expires_at,
         )
         new_count += 1
-        logger.info(
+        logger.debug(
             "Added pending game: '{}' (slug: {}, expires {})",
             title,
             slug,
@@ -405,18 +416,145 @@ def _process_browse_games(
     return new_count
 
 
+def _scores_present(
+    result: Any,
+) -> bool:
+    """Return True if the ScoreResult has at least one valid score (> 0)."""
+    return result is not None and (
+        (result.metascore is not None and result.metascore > 0.0)
+        or (result.user_score is not None and result.user_score > 0.0)
+    )
+
+
+def _check_score_threshold(
+    value: Any,
+    threshold: Any,
+) -> bool | None:
+    """Compare a score value against a threshold if the value is meaningful (> 0).
+
+    Returns True/False when the value passes/fails, or None when the
+    value is absent or zero (no review data to check).
+    """
+    if value is None:
+        return None
+    if isinstance(value, (int, float)) and value <= 0:
+        return None
+    return value >= threshold  # type: ignore[no-any-return]
+
+
+def _real_scores_pass_thresholds(
+    result: Any,
+    thresholds: dict[str, Any],
+) -> bool:
+    """Check a ScoreResult (from the detail page) against configured thresholds.
+
+    When a score value is None or 0.0 (unreviewed game), that specific
+    check is skipped rather than treated as a failure.
+
+    Returns True when the existing checks all pass.
+    """
+    if result is None:
+        return False
+    checks: list[bool] = [
+        c
+        for c in [
+            _check_score_threshold(result.metascore, thresholds["min_metascore"]),
+            _check_score_threshold(result.metascore_review_count, thresholds["min_metascore_reviews"]),
+            _check_score_threshold(result.user_score, thresholds["min_user_score"]),
+            _check_score_threshold(result.user_review_count, thresholds["min_user_reviews"]),
+        ]
+        if c is not None
+    ]
+    if not checks:
+        return False  # No review data — can't verify
+    return all(checks)
+
+
+def _verify_pending_scores(
+    db: Database,
+    mc: MetacriticClient,
+    platform: str,
+    thresholds: dict[str, Any],
+    *,
+    cache_ttl_days: int = 7,
+) -> int:
+    """Re-verify every pending game's scores against the real Metacritic detail page.
+
+    Browse-page Nuxt data does NOT carry standard 0\u2013100 metascores or
+    0\u201310 user scores — the \"score\" fields are internal browse-only
+    metrics.  Games whose detail-page scores fail the configured thresholds
+    (or cannot be found at all on the detail page) are removed from pending.
+
+    Games that pass the real-score check have their pending record updated
+    with the correct scores from the detail page.
+
+    Returns the number of games removed.
+    """
+    removed = 0
+    for game in db.get_pending(platform=platform):
+        result = mc.lookup_game(
+            str(game.game_title),
+            platform=platform,
+            slug=str(game.slug),
+            cache_ttl_days=cache_ttl_days,
+            direct_only=True,
+        )
+        if result is None:
+            db.remove_pending(str(game.slug))
+            removed += 1
+            logger.debug(
+                "Removed pending '{}' \u2014 not found on Metacritic detail page",
+                game.game_title,
+            )
+            continue
+
+        # Check real scores against thresholds.
+        # If the detail page has no valid scores (all None/0), the game
+        # hasn't been reviewed yet — remove from pending.
+        if not (_scores_present(result) and _real_scores_pass_thresholds(result, thresholds)):
+            db.remove_pending(str(game.slug))
+            removed += 1
+            if _scores_present(result):
+                logger.debug(
+                    "Removed pending '{}' \u2014 real scores ({}, {}) fail thresholds",
+                    game.game_title,
+                    result.metascore,
+                    result.user_score,
+                )
+            else:
+                logger.debug(
+                    "Removed pending '{}' \u2014 no Metacritic scores yet",
+                    game.game_title,
+                )
+            continue
+
+        # Real scores pass \u2014 update pending record with correct values.
+        db.update_pending_scores(
+            slug=str(game.slug),
+            metascore=result.metascore,
+            metascore_reviews=result.metascore_review_count,
+            user_score=result.user_score,
+            user_reviews=result.user_review_count,
+        )
+
+    return removed
+
+
 def _match_pending_games(
     db: Database,
     *,
     qbt: Any = None,
     magnet_fetcher: Callable[[str], str | None] | None = None,
+    notifier: Any = None,
+    library: Any = None,
 ) -> list[dict[str, Any]]:
     """Match pending games against torrent source indices.
 
     For each non-expired pending game:
       1. Normalize its title
       2. Search ``source_titles`` for a match (currently FitGirl only)
-      3. On match: fetch magnet from source URL, deliver to qBittorrent
+      3. On match: skip if already in library, otherwise fetch the magnet
+         link and deliver to qBittorrent (and emit notifications)
       4. If no match: update ``last_checked_at``
       5. On expiry: move to history with ``result="Expired"``
 
@@ -437,7 +575,10 @@ def _match_pending_games(
         game_slug: str = str(game.slug)
         game_platform: str = str(game.platform)
         game_metascore: float | None = game.metascore  # type: ignore[assignment]
+        game_metascore_reviews: int | None = game.metascore_reviews  # type: ignore[assignment]
         game_user_score: float | None = game.user_score  # type: ignore[assignment]
+        game_user_reviews: int | None = game.user_reviews  # type: ignore[assignment]
+        game_release_date: str | None = game.release_date  # type: ignore[assignment]
 
         normalized = _normalise_for_compare(game_title)
         matches = db.match_source_title("fitgirl", normalized)
@@ -451,63 +592,50 @@ def _match_pending_games(
                 best["url"],
             )
 
+            # Check library first — skip if already owned
+            if library is not None:
+                lib_match = library.check_game(game_title)
+                if lib_match is not None:
+                    record_result = _record_result(
+                        db,
+                        source="metacritic",
+                        source_title=game_title,
+                        source_url=f"mc:{game_slug}",
+                        game_title=game_title,
+                        platform=game_platform,
+                        metascore=game_metascore,
+                        user_score=game_user_score,
+                        result="Already owned",
+                        result_details=f"Found in library: {lib_match.matched_path}",
+                    )
+                    record_result["slug"] = game_slug
+                    db.remove_pending(game_slug)
+                    results.append(record_result)
+                    logger.info(
+                        "Pending game '{}' already in library ({}); skipping",
+                        game_title,
+                        lib_match.matched_path,
+                    )
+                    continue
+
             # If qbt and magnet_fetcher are provided, deliver the torrent
             if qbt is not None and magnet_fetcher is not None:
-                source_url: str = str(best["url"])
-                magnet = magnet_fetcher(source_url)
-                if magnet:
-                    tag = qbt.add_torrent(magnet_url=magnet, title=game_title)
-                    if tag:
-                        logger.info(
-                            "\u2713 Sent matched '{}' to qBittorrent (tag: {})",
-                            game_title,
-                            tag,
-                        )
-                        record_result = _record_result(
-                            db,
-                            source="metacritic",
-                            source_title=game_title,
-                            source_url=f"mc:{game_slug}",
-                            game_title=game_title,
-                            platform=game_platform,
-                            metascore=game_metascore,
-                            user_score=game_user_score,
-                            result="Passed",
-                            result_details=f"Downloaded from {best['url']}",
-                            magnet_url=magnet,
-                            torrent_tag=str(tag),
-                        )
-                        record_result["slug"] = game_slug
-                        db.remove_pending(game_slug)
-                        results.append(record_result)
-                        continue
-                    # qBittorrent failed
-                    logger.warning(
-                        "Failed to add matched '{}' to qBittorrent",
-                        game_title,
-                    )
-                else:
-                    logger.warning(
-                        "No magnet found for matched '{}' at {}",
-                        game_title,
-                        source_url,
-                    )
-                # Magnet fetch or qBittorrent failed — record as Error
-                record_result = _record_result(
+                result_dict = _deliver_match(
                     db,
-                    source="metacritic",
-                    source_title=game_title,
-                    source_url=f"mc:{game_slug}",
+                    qbt=qbt,
+                    magnet_fetcher=magnet_fetcher,
+                    notifier=notifier,
+                    best=best,
+                    game_slug=game_slug,
                     game_title=game_title,
-                    platform=game_platform,
-                    metascore=game_metascore,
-                    user_score=game_user_score,
-                    result="Error",
-                    result_details=f"Match found at {best['url']} but delivery failed",
+                    game_platform=game_platform,
+                    game_metascore=game_metascore,
+                    game_user_score=game_user_score,
+                    game_metascore_reviews=game_metascore_reviews,
+                    game_user_reviews=game_user_reviews,
+                    game_release_date=game_release_date,
                 )
-                record_result["slug"] = game_slug
-                db.remove_pending(game_slug)
-                results.append(record_result)
+                results.append(result_dict)
                 continue
 
             # No qbt/magnet_fetcher — record match without delivery
@@ -555,260 +683,168 @@ def _match_pending_games(
     return results
 
 
-_SITEMAP_TIMEOUT = 30.0
-
-
-def _default_magnet_fetcher(url: str) -> str | None:
-    """Fetch a FitGirl page and extract its magnet link."""
-    try:
-        resp = requests.get(
-            url,
-            headers={"User-Agent": _USER_AGENT},
-            timeout=_SITEMAP_TIMEOUT,
-        )
-        resp.raise_for_status()
-        return _extract_magnet_from_html(resp.text)
-    except Exception as exc:
-        logger.warning("Failed to fetch magnet from '{}': {}", url, exc)
-        return None
-
-
-def _process_one_sitemap_entry(
-    *,
-    source_name: str,
-    entry_title: str,
-    entry_url: str,
-    platform: str,
-    library: Any,
-    mc: MetacriticClient,
+def _deliver_match(
     db: Database,
-    cfg: AcquisitionConfig,
-    qbt: QBittorrentClient,
-    notifier: Notifier,
+    *,
+    qbt: Any,
     magnet_fetcher: Callable[[str], str | None],
+    notifier: Any,
+    best: dict[str, Any],
+    game_slug: str,
+    game_title: str,
+    game_platform: str,
+    game_metascore: float | None,
+    game_user_score: float | None,
+    game_metascore_reviews: int | None = None,
+    game_user_reviews: int | None = None,
+    game_release_date: str | None = None,
 ) -> dict[str, Any]:
-    """Look up a single sitemap entry on Metacritic, evaluate, and deliver.
+    """Deliver a matched pending game to qBittorrent and emit notifications.
 
-    Returns a result dict with keys ``result``, ``game_title``, etc.
+    Fetches the magnet link from the source URL, adds the torrent to
+    qBittorrent, and sends a download notification on success or a
+    failure notification on error.  Always returns a result dict and
+    removes the pending row.
+
+    Returns:
+        A result dict with ``result`` set to ``"Passed"`` on successful
+        delivery, or ``"Error`` on magnet-fetch / qBittorrent failure.
     """
-    logger.info("Sitemap discovery: checking '{}'", entry_title)
+    source_url: str = str(best["url"])
+    magnet = magnet_fetcher(source_url)
+    if not magnet:
+        logger.warning("No magnet found for matched '{}' at {}", game_title, source_url)
+        record_result = _record_delivery_error(
+            db,
+            game_slug=game_slug,
+            game_title=game_title,
+            game_platform=game_platform,
+            game_metascore=game_metascore,
+            game_user_score=game_user_score,
+            best=best,
+        )
+        _safe_notify(
+            notifier,
+            "send_failure_notification",
+            title=game_title,
+            reason=f"No magnet found at {source_url}",
+        )
+        return record_result
 
-    # Check library first — skip if already owned
-    if library is not None:
-        match = library.check_game(entry_title)
-        if match:
-            db.record_processed(
-                source=source_name,
-                source_title=entry_title,
-                source_url=entry_url,
-                game_title=entry_title,
-                platform=platform,
-                result="Already owned",
-                result_details=f"Found in library: {match.matched_path}",
-            )
-            logger.info("Already in library, skipping: '{}'", entry_title)
-            return {
-                "result": "Already owned",
-                "game_title": entry_title,
-                "result_details": f"Found in library: {match.matched_path}",
-            }
+    tag = qbt.add_torrent(magnet_url=magnet, title=game_title)
+    if not tag:
+        logger.warning("Failed to add matched '{}' to qBittorrent", game_title)
+        record_result = _record_delivery_error(
+            db,
+            game_slug=game_slug,
+            game_title=game_title,
+            game_platform=game_platform,
+            game_metascore=game_metascore,
+            game_user_score=game_user_score,
+            best=best,
+        )
+        _safe_notify(
+            notifier,
+            "send_failure_notification",
+            title=game_title,
+            reason=f"qBittorrent rejected: source={best['url']}",
+        )
+        return record_result
 
-    mc_result = mc.lookup_game(
-        title=entry_title,
-        platform=platform,
-        cache_ttl_days=cfg.cache_ttl_days,
-        browse_cache_ttl_hours=cfg.browse_cache_ttl_hours,
+    # Log game details (metascore, user score, release date) before
+    # the delivery confirmation so the user can see what passed.
+    title = _escape_markup(game_title)
+    ms = _escape_or(game_metascore, "TBD")
+    ms_r = _escape_or(game_metascore_reviews, "?")
+    us = _escape_or(game_user_score, "TBD")
+    us_r = _escape_or(game_user_reviews, "?")
+    release = _escape_or(game_release_date, "N/A")
+    sep = " <dim>|</dim> "
+    logger.opt(colors=True).info(
+        f"<cyan><bold>{title}</bold></cyan>"
+        f"{sep}<green>Metascore: <bold>{ms}</bold></green> <dim>({ms_r} reviews)</dim>"
+        f"{sep}<yellow>User: <bold>{us}</bold></yellow> <dim>({us_r} reviews)</dim>"
+        f"{sep}Released: <dim>{release}</dim>"
     )
 
-    if mc_result is None:
-        db.record_processed(
-            source=source_name,
-            source_title=entry_title,
-            source_url=entry_url,
-            game_title=entry_title,
-            platform=platform,
-            result="Failed",
-            result_details="Game not found on Metacritic",
-        )
-        return {"result": "Failed", "game_title": entry_title, "result_details": "Game not found on Metacritic"}
-
-    _log_game_details(mc_result)
-
-    score_result = _evaluate_scores(mc_result, cfg)
-    if score_result != "Passed":
-        logger.warning(
-            "Sitemap '{}' failed check '{}': Metascore {}, User {}, Released {}",
-            mc_result.title,
-            score_result,
-            mc_result.metascore,
-            mc_result.user_score,
-            getattr(mc_result, "release_date", "unknown"),
-        )
-        notifier.send_failure_notification(
-            title=mc_result.title,
-            reason=f"{score_result}: Metascore {mc_result.metascore}, User {mc_result.user_score}",
-        )
-        db.record_processed(
-            source=source_name,
-            source_title=entry_title,
-            source_url=entry_url,
-            game_title=mc_result.title,
-            platform=platform,
-            metascore=mc_result.metascore,
-            user_score=mc_result.user_score,
-            result="Failed",
-            result_details=f"Failed: {score_result}",
-        )
-        return {"result": "Failed", "game_title": mc_result.title, "result_details": f"Failed: {score_result}"}
-
-    magnet = magnet_fetcher(entry_url)
-    if not magnet:
-        db.record_processed(
-            source=source_name,
-            source_title=entry_title,
-            source_url=entry_url,
-            game_title=mc_result.title,
-            platform=platform,
-            metascore=mc_result.metascore,
-            user_score=mc_result.user_score,
-            result="Failed",
-            result_details="No magnet URL available from source page",
-        )
-        return {"result": "Failed", "game_title": mc_result.title, "result_details": "No magnet URL available"}
-
-    tag = qbt.add_torrent(magnet_url=magnet, title=mc_result.title)
-    if not tag:
-        db.record_processed(
-            source=source_name,
-            source_title=entry_title,
-            source_url=entry_url,
-            game_title=mc_result.title,
-            platform=platform,
-            metascore=mc_result.metascore,
-            user_score=mc_result.user_score,
-            result="Error",
-            result_details="Failed to add torrent to qBittorrent",
-        )
-        return {"result": "Error", "game_title": mc_result.title, "result_details": "Failed to add torrent"}
-
-    # Record success in DB BEFORE sending the notification, so that even if
-    # the notification raises, the entry is recorded and won't be duplicated.
-    result = {
-        "result": "Passed",
-        "game_title": mc_result.title,
-        "metascore": mc_result.metascore,
-        "user_score": mc_result.user_score,
-        "result_details": f"Metascore {mc_result.metascore}, User score {mc_result.user_score}",
-        "torrent_tag": str(tag),
-    }
-    db.record_processed(
-        source=source_name,
-        source_title=entry_title,
-        source_url=entry_url,
-        game_title=mc_result.title,
-        platform=platform,
-        metascore=mc_result.metascore,
-        user_score=mc_result.user_score,
+    logger.info("\u2713 Sent matched '{}' to qBittorrent (tag: {})", title, tag)
+    record_result = _record_result(
+        db,
+        source="metacritic",
+        source_title=game_title,
+        source_url=f"mc:{game_slug}",
+        game_title=game_title,
+        platform=game_platform,
+        metascore=game_metascore,
+        user_score=game_user_score,
         result="Passed",
-        result_details=f"Metascore {mc_result.metascore}, User score {mc_result.user_score}",
+        result_details=f"Downloaded from {best['url']}",
         magnet_url=magnet,
         torrent_tag=str(tag),
     )
-    logger.info("\u2713 Sent '{}' to qBittorrent (tag: {})", mc_result.title, tag)
-    notifier.send_download_notification(
-        title=mc_result.title,
-        platform=platform,
-        metascore=mc_result.metascore,
-        user_score=mc_result.user_score,
+    record_result["slug"] = game_slug
+    db.remove_pending(game_slug)
+    # See comment above re: notification ordering.
+    _safe_notify(
+        notifier,
+        "send_download_notification",
+        title=game_title,
+        platform=game_platform,
+        metascore=game_metascore,
+        user_score=game_user_score,
         magnet_url=magnet,
     )
-    return result
+    return record_result
 
 
-def _process_sitemap_entries(
-    source_name: str,
-    platform: str = "pc",
-    library: Any = None,
-    mc: MetacriticClient = None,  # type: ignore[assignment]
-    db: Database = None,  # type: ignore[assignment]
-    cfg: AcquisitionConfig = None,  # type: ignore[assignment]
-    qbt: QBittorrentClient = None,  # type: ignore[assignment]
-    notifier: Notifier = None,  # type: ignore[assignment]
+def _record_delivery_error(
+    db: Database,
     *,
-    max_entries: int = 50,
-    magnet_fetcher: Callable[[str], str | None] | None = None,
-) -> list[dict[str, Any]]:
-    """Iterate sitemap entries and process qualifying games through the pipeline.
+    game_slug: str,
+    game_title: str,
+    game_platform: str,
+    game_metascore: float | None,
+    game_user_score: float | None,
+    best: dict[str, Any],
+) -> dict[str, Any]:
+    """Record an error result for a failed delivery and remove the pending row.
 
-    For each unprocessed sitemap entry:
-    1. Look up the game on Metacritic
-    2. Evaluate scores (respecting ``days_since_release``)
-    3. If qualifying, fetch the magnet link and send to qBittorrent
-
-    This replaces the ineffective browse-first discovery which was broken
-    because Metacritic browse pages 1-10 show mostly unreviewed indie games
-    (pages 1-10 of \"newest first\" have ~2 games with scores out of ~240).
-
-    Args:
-        source_name: Source identifier (e.g. "fitgirl").
-        mc: Metacritic client for score lookups.
-        db: Database instance.
-        cfg: Acquisition configuration (thresholds + days_since_release).
-        qbt: qBittorrent client for torrent delivery.
-        notifier: Notification dispatcher.
-        max_entries: Max sitemap entries to process per run.
-        magnet_fetcher: Callable that extracts magnet from a source URL.
-            Defaults to fetching the page and searching for magnet links.
-
-    Returns:
-        List of result dicts for qualifying entries.
+    Returns the result dict with the ``slug`` key set.
     """
-    if magnet_fetcher is None:
-        magnet_fetcher = _default_magnet_fetcher
+    record_result = _record_result(
+        db,
+        source="metacritic",
+        source_title=game_title,
+        source_url=f"mc:{game_slug}",
+        game_title=game_title,
+        platform=game_platform,
+        metascore=game_metascore,
+        user_score=game_user_score,
+        result="Error",
+        result_details=f"Match found at {best['url']} but delivery failed",
+    )
+    record_result["slug"] = game_slug
+    db.remove_pending(game_slug)
+    return record_result
 
-    entries = db.get_all_source_titles(source_name)
-    if not entries:
-        return []
 
-    results: list[dict[str, Any]] = []
-    processed = 0
-    passed_count = 0
+def _safe_notify(
+    notifier: Any,
+    method_name: str,
+    **kwargs: Any,
+) -> None:
+    """Call a notifier method if notifier is not None, swallowing exceptions.
 
-    for entry in entries:
-        if processed >= max_entries:
-            break
-
-        source_url: str = entry["url"]
-        title: str = entry["title"]
-
-        if db.is_processed(source_name, source_url):
-            logger.debug("Sitemap entry already processed: '{}'", title)
-            continue
-
-        processed += 1
-        try:
-            result = _process_one_sitemap_entry(
-                source_name=source_name,
-                entry_title=title,
-                entry_url=source_url,
-                platform=platform,
-                library=library,
-                mc=mc,
-                db=db,
-                cfg=cfg,
-                qbt=qbt,
-                notifier=notifier,
-                magnet_fetcher=magnet_fetcher,
-            )
-        except Exception as exc:
-            logger.error("Sitemap discovery: error processing '{}': {}", title, exc)
-            result = {"result": "Error", "game_title": title, "result_details": str(exc)}
-        results.append(result)
-        if result["result"] == "Passed":
-            passed_count += 1
-
-    logger.info("Sitemap discovery: {} processed, {} passed", processed, passed_count)
-    return results
+    Notifications are dispatched AFTER the DB has been updated, so a
+    notifier failure (e.g. Apprise network blip) cannot leave the
+    pending row in place and trigger a duplicate download next cycle.
+    """
+    if notifier is None:
+        return
+    try:
+        getattr(notifier, method_name)(**kwargs)
+    except Exception as exc:  # noqa: BLE001 — notifier failures must not abort the cycle
+        logger.warning("{} raised: {}", method_name, exc)
 
 
 def _record_result(
@@ -817,16 +853,16 @@ def _record_result(
     source: str,
     source_title: str,
     source_url: str,
-    game_title: str | None,
+    game_title: str,
     platform: str,
     metascore: float | None = None,
     user_score: float | None = None,
-    result: str = "Passed",
+    result: str,
     result_details: str = "",
     magnet_url: str | None = None,
     torrent_tag: str | None = None,
 ) -> dict[str, Any]:
-    """Record a result in the database and return a result dict."""
+    """Persist a result row and return the result dict for the caller."""
     db.record_processed(
         source=source,
         source_title=source_title,
@@ -849,142 +885,19 @@ def _record_result(
     }
 
 
-def _process_entry(
-    entry: GameEntry,
-    cfg: AcquisitionConfig,
-    mc: MetacriticClient,
-    qbt: QBittorrentClient,
-    db: Database,
-    notifier: Notifier,
-) -> dict[str, Any]:
-    """Process a single game entry through the pipeline."""
-    logger.info("Processing entry: '{}'", entry.title)
-
-    mc_result = mc.lookup_game(
-        title=entry.title,
-        platform=entry.platform,
-        cache_ttl_days=cfg.cache_ttl_days,
-        browse_cache_ttl_hours=cfg.browse_cache_ttl_hours,
-    )
-
-    if mc_result is None:
-        return _handle_game_not_found(db, entry)
-
-    _log_game_details(mc_result)
-
-    game_title = mc_result.title
-    metascore = mc_result.metascore
-    user_score = mc_result.user_score
-
-    score_result = _evaluate_scores(mc_result, cfg)
-    if score_result != "Passed":
-        return _handle_score_failure(db, notifier, entry, game_title, metascore, user_score, score_result)
-
-    return _handle_delivery(db, qbt, notifier, entry, game_title, metascore, user_score)
+_SITEMAP_TIMEOUT = 30.0
 
 
-def _handle_game_not_found(db: Database, entry: GameEntry) -> dict[str, Any]:
-    """Record that a game was not found on Metacritic."""
-    details = "Game not found on Metacritic"
-    return _record_result(
-        db,
-        source=entry.source,
-        source_title=entry.source_title,
-        source_url=entry.source_url,
-        game_title=entry.title,
-        platform=entry.platform,
-        result="Failed",
-        result_details=details,
-    )
-
-
-def _handle_score_failure(
-    db: Database,
-    notifier: Notifier,
-    entry: GameEntry,
-    game_title: str,
-    metascore: float | None,
-    user_score: float | None,
-    score_result: str = "Score below thresholds",
-) -> dict[str, Any]:
-    """Record that a game failed score/release-date checks."""
-    ms = f"{metascore}" if metascore is not None else "TBD"
-    us = f"{user_score}" if user_score is not None else "TBD"
-    details = f"{score_result}: Metascore {ms}, User {us}"
-    notifier.send_failure_notification(title=game_title, reason=details)
-    return _record_result(
-        db,
-        source=entry.source,
-        source_title=entry.source_title,
-        source_url=entry.source_url,
-        game_title=game_title,
-        platform=entry.platform,
-        metascore=metascore,
-        user_score=user_score,
-        result="Failed",
-        result_details=f"Failed: {score_result}",
-    )
-
-
-def _handle_delivery(
-    db: Database,
-    qbt: QBittorrentClient,
-    notifier: Notifier,
-    entry: GameEntry,
-    game_title: str,
-    metascore: float | None,
-    user_score: float | None,
-) -> dict[str, Any]:
-    """Handle magnet delivery to qBittorrent or record failure."""
-    magnet_url = entry.magnet_url or ""
-    if not magnet_url:
-        return _record_result(
-            db,
-            source=entry.source,
-            source_title=entry.source_title,
-            source_url=entry.source_url,
-            game_title=game_title,
-            platform=entry.platform,
-            metascore=metascore,
-            user_score=user_score,
-            result="Failed",
-            result_details="No magnet URL available",
+def _default_magnet_fetcher(url: str) -> str | None:
+    """Fetch a FitGirl page and extract its magnet link."""
+    try:
+        resp = requests.get(  # noqa: S310 — URL is sourced from the FitGirl sitemap index.
+            url,
+            headers={"User-Agent": _USER_AGENT},
+            timeout=_SITEMAP_TIMEOUT,
         )
-    tag = qbt.add_torrent(magnet_url=magnet_url, title=game_title)
-    if tag:
-        notifier.send_download_notification(
-            title=game_title,
-            platform=entry.platform,
-            metascore=metascore,
-            user_score=user_score,
-            magnet_url=magnet_url,
-        )
-        logger.info("✓ Sent '{}' to qBittorrent (tag: {})", game_title, tag)
-        result = _record_result(
-            db,
-            source=entry.source,
-            source_title=entry.source_title,
-            source_url=entry.source_url,
-            game_title=game_title,
-            platform=entry.platform,
-            metascore=metascore,
-            user_score=user_score,
-            result="Passed",
-            result_details=f"Metascore {metascore}, User score {user_score}",
-            magnet_url=magnet_url,
-            torrent_tag=str(tag),
-        )
-        result["torrent_tag"] = str(tag)
-        return result
-    return _record_result(
-        db,
-        source=entry.source,
-        source_title=entry.source_title,
-        source_url=entry.source_url,
-        game_title=game_title,
-        platform=entry.platform,
-        metascore=metascore,
-        user_score=user_score,
-        result="Error",
-        result_details="Failed to add torrent to qBittorrent",
-    )
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        logger.warning("Magnet fetch failed for {}: {}", url, exc)
+        return None
+    return _extract_magnet_from_html(resp.text)

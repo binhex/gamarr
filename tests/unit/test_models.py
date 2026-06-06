@@ -40,12 +40,6 @@ class TestGameEntry:
 class TestBaseSource:
     """BaseSource protocol contract."""
 
-    def test_protocol_has_fetch_new(self) -> None:
-        """BaseSource requires a fetch_new method returning list[GameEntry]."""
-        assert hasattr(BaseSource, "fetch_new")
-        method = BaseSource.fetch_new
-        assert callable(method)
-
     def test_protocol_has_source_name(self) -> None:
         """BaseSource requires a source_name property."""
         assert hasattr(BaseSource, "source_name")

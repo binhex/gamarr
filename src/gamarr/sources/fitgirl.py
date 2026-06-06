@@ -12,9 +12,6 @@ from typing import TYPE_CHECKING, Any
 
 import requests
 from loguru import logger
-from xmltodict import parse as parse_xml
-
-from gamarr.models import GameEntry
 
 if TYPE_CHECKING:
     from gamarr.database import Database
@@ -54,8 +51,6 @@ _VERSION_COMMA_PATTERN = re.compile(
 _BARE_VERSION_PATTERN = re.compile(r"(?:,\s*|\s*[–—-]\s*)v?\d[\d.]*.*", re.IGNORECASE)
 
 # RSS categories that indicate a non-game entry (blog/news posts)
-_NON_GAME_CATEGORIES = frozenset({"Uncategorized", "Updates Digest"})
-
 _MAGNET_PATTERN = re.compile(r"(magnet:\?xt=urn:btih:[a-zA-Z0-9]+[^\s\"'<>]*)")
 
 _CONNECT_TIMEOUT = 30.0
@@ -235,34 +230,16 @@ def _extract_magnet_from_html(html_content: str) -> str | None:
     return None
 
 
-def _get_rss_items(feed: dict[str, Any]) -> list[dict[str, Any]] | None:
-    """Extract RSS item list from the parsed XML dictionary.
-
-    Args:
-        feed: Parsed RSS feed as a nested dict (from xmltodict).
-
-    Returns:
-        List of item dicts, or ``None`` if the structure is invalid.
-    """
-    try:
-        channel = feed.get("rss", {}).get("channel", {})
-        items = channel.get("item")
-        if items is None:
-            return None
-        if isinstance(items, dict):
-            return [items]
-        if isinstance(items, list):
-            return items
-    except (AttributeError, TypeError):
-        pass
-    return None
-
-
 class FitGirlSource:
-    """FitGirl RSS source implementation.
+    """FitGirl sitemap source implementation.
+
+    The FitGirl source contributes the *sitemap title index* used by
+    Metacritic-first matching: pending Metacritic games are matched
+    against titles discovered here.  No RSS iteration is performed.
 
     Args:
-        rss_url: URL of the FitGirl RSS feed.
+        rss_url: URL of the FitGirl RSS feed (unused at runtime, retained
+            for backwards-compatible configuration).
         platform: Platform identifier (default ``"pc"``).
         db_path: Path for the deduplication database.
             ``":memory:"`` uses an in-memory SQLite DB.
@@ -289,112 +266,6 @@ class FitGirlSource:
     def platform(self) -> str:
         """Return the platform this source targets."""
         return self._platform
-
-    def fetch_new(self) -> list[GameEntry]:
-        """Fetch the RSS feed and return entries not yet in the history DB.
-
-        Returns:
-            List of new :class:`GameEntry` objects.  Empty when the feed
-            is unreachable or has no new entries.
-        """
-        logger.debug("Fetching FitGirl RSS feed from '{}'", self._rss_url)
-        try:
-            resp = requests.get(
-                self._rss_url,
-                headers={"User-Agent": _USER_AGENT},
-                timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT),
-            )
-            resp.raise_for_status()
-        except requests.RequestException as exc:
-            logger.warning("Failed to fetch FitGirl RSS feed: {}", exc)
-            return []
-
-        try:
-            feed = parse_xml(resp.text)
-        except Exception as exc:
-            logger.warning("Failed to parse FitGirl RSS XML: {}", exc)
-            return []
-
-        items = _get_rss_items(feed)
-        if items is None:
-            logger.warning("No RSS items found in FitGirl feed response.")
-            return []
-
-        entries = self._build_entries(items)
-        logger.info("FitGirl RSS: found {} new entries", len(entries))
-        return entries
-
-    def _build_entries(self, items: list[dict[str, Any]]) -> list[GameEntry]:
-        """Convert RSS items to GameEntries, skipping non-game and already processed."""
-        entries: list[GameEntry] = []
-        for item in items:
-            if not self._is_game_item(item):
-                continue
-            raw_title = item.get("title", "")
-            link = item.get("link", "")
-            if not raw_title or not link:
-                continue
-            if self._db.is_processed(self.source_name, link):
-                logger.debug("Skipping already processed entry: '{}'", raw_title)
-                continue
-            cleaned_title = _clean_title(raw_title)
-            magnet_url = self._extract_magnet(item, link)
-            entries.append(
-                GameEntry(
-                    title=cleaned_title,
-                    source_title=raw_title,
-                    source=self.source_name,
-                    platform=self._platform,
-                    magnet_url=magnet_url or "",
-                    source_url=link,
-                )
-            )
-        return entries
-
-    @staticmethod
-    def _is_game_item(item: dict[str, Any]) -> bool:
-        """Return True if the RSS item represents a game (not a blog/news post)."""
-        category = item.get("category")
-        if category is None:
-            return True
-        if isinstance(category, str):
-            return category not in _NON_GAME_CATEGORIES
-        if isinstance(category, list):
-            if not category:
-                return True
-            return not all(c in _NON_GAME_CATEGORIES for c in category)
-        return True
-
-    def _extract_magnet(self, item: dict[str, Any], link: str) -> str | None:
-        """Attempt to extract a magnet link from the RSS item or its linked page.
-
-        Args:
-            item: The RSS item dictionary.
-            link: The item's link URL.
-
-        Returns:
-            A magnet URI string, or ``None``.
-        """
-        description = item.get("description", "")
-        if isinstance(description, str):
-            magnet = _extract_magnet_from_html(description)
-            if magnet:
-                return magnet
-
-        try:
-            resp = requests.get(
-                link,
-                headers={"User-Agent": _USER_AGENT},
-                timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT),
-            )
-            resp.raise_for_status()
-            magnet = _extract_magnet_from_html(resp.text)
-            if magnet:
-                return magnet
-        except requests.RequestException as exc:
-            logger.warning("Failed to fetch FitGirl article page '{}': {}", link, exc)
-
-        return None
 
     def fetch_sitemap(self, db: Database) -> None:
         """Fetch the FitGirl sitemap and rebuild the source_titles index.

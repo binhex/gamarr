@@ -156,6 +156,30 @@ class Database:
                 session.delete(row)
                 session.commit()
 
+    def update_pending_scores(
+        self,
+        *,
+        slug: str,
+        metascore: float | None = None,
+        metascore_reviews: int | None = None,
+        user_score: float | None = None,
+        user_reviews: int | None = None,
+    ) -> None:
+        """Update the Metacritic scores for a pending game with real detail-page values."""
+        with self._session() as session:
+            row = session.get(PendingGame, slug)
+            if row is None:
+                return
+            if metascore is not None:
+                row.metascore = metascore  # type: ignore[assignment]
+            if metascore_reviews is not None:
+                row.metascore_reviews = metascore_reviews  # type: ignore[assignment]
+            if user_score is not None:
+                row.user_score = user_score  # type: ignore[assignment]
+            if user_reviews is not None:
+                row.user_reviews = user_reviews  # type: ignore[assignment]
+            session.commit()
+
     def is_pending(self, slug: str) -> bool:
         with self._session() as session:
             return session.get(PendingGame, slug) is not None

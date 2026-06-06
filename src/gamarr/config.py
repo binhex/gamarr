@@ -63,6 +63,7 @@ class MetacriticPlatformConfig(BaseModel):
     browse_cache_ttl_hours: int = 4
     pending_days: int = 30
     browse_enabled: bool = True
+    browse_max_pages: int = Field(default=200, gt=0, le=500)
 
 
 class MetacriticConfig(BaseModel):

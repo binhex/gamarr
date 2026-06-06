@@ -50,6 +50,7 @@ class TestConfigModels:
         assert cfg.min_metascore == 75
         assert cfg.min_user_score == 7.5
         assert cfg.days_since_release == 90
+        assert cfg.browse_max_pages == 200
 
     def test_qbittorrent_config_defaults(self) -> None:
         cfg = QbittorrentConfig()

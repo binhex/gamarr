@@ -1,15 +1,16 @@
 # gamarr
 
-Metadata game downloader — monitors FitGirl repacks RSS for new game releases,
-checks them against Metacritic scores, and sends qualifying games to
-qBittorrent.
+Metadata game downloader — browses Metacritic for newly released games that
+pass configured score thresholds, matches them against the FitGirl repacks
+sitemap, and sends qualifying games to qBittorrent.
 
 ## Description
 
 gamarr is an automated daemon that harvests torrent metadata for PC games. It
-checks the FitGirl repacks RSS feed for new releases, looks up each title on
-Metacritic, and automatically adds games that meet the configured score
-thresholds to qBittorrent.
+follows a **Metacritic-first** acquisition flow: it browses Metacritic for
+newly released titles, filters them by critic and user score thresholds, then
+matches surviving games against the FitGirl repacks sitemap. Matched games
+are added to qBittorrent with a `gamarr-*` tag.
 
 The name "gamarr" follows the *arr convention — a focused automation daemon
 for game-related torrent metadata.
@@ -78,25 +79,32 @@ gamarr --daemon
 
 ## How It Works
 
-1. **FitGirl RSS** — Fetches the FitGirl repacks RSS feed for new game releases
-2. **Title cleaning** — Strips repack metadata (versions, language tags) from titles
-3. **Metacritic lookup** — Looks up each game on Metacritic and fetches critic
-   and user scores
-4. **Score filtering** — Passes games that meet both Metascore and User Score
-   thresholds (default: 75 / 7.5)
-5. **qBittorrent** — Adds passing games to qBittorrent with a `gamarr-*` tag
-6. **History** — Records all processed titles in a SQLite database to avoid
-   re-processing
-7. **Notifications** — Optional Apprise notifications on new downloads
+1. **Metacritic browse** — Scans Metacritic's browse pages for newly released
+   games and pulls critic and user scores
+2. **Score filtering** — Keeps games that meet both Metascore and User Score
+   thresholds (default: 75 / 7.5) and the release-date window
+3. **Pending queue** — Surviving games enter a short-lived `pending_games`
+   queue (default expiry: 30 days)
+4. **FitGirl sitemap indexing** — Fetches the FitGirl repacks sitemap into a
+   local index of titles and source URLs (only when there are pending games
+   to match against)
+5. **Source matching** — Pending games are matched against the FitGirl
+   sitemap; the magnet link is fetched from the matched source URL
+6. **qBittorrent** — Matched games are added to qBittorrent with a `gamarr-*`
+   tag
+7. **History** — All processed titles are recorded in a SQLite database to
+   avoid re-processing
+8. **Notifications** — Optional Apprise notifications on new downloads
 
 ## Architecture
 
-The codebase is structured as a pipeline:
+The codebase is structured as a **Metacritic-first** pipeline:
 
-```
-sources/fitgirl.py  →  metacritic.py  →  pipeline.py  →  qbittorrent.py
-       ↓                   ↓                  ↓              ↓
-   RSS fetch         Score lookup       Eval + DB       Add torrent
+```text
+metacritic.py  →  pipeline.py  →  sources/fitgirl.py  →  qbittorrent.py
+       ↓              ↓                   ↓                    ↓
+   Browse new    Score filter +      Sitemap match         Add torrent
+   releases      pending queue       + magnet fetch
 ```
 
 All configuration is driven by a YAML file (`configs/gamarr.yml`) validated
@@ -113,6 +121,7 @@ uv sync --extra dev
 ```
 
 Before committing, run the full lint suite:
+
 ```bash
 pre-commit run --all-files
 ```

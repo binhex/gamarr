@@ -421,7 +421,13 @@ def _resolve_release_date(nuxt_data: list[Any], game: dict[str, Any]) -> str | N
 
 
 def _resolve_browse_game_list(nuxt_data: list[Any], game_items: list[int]) -> list[dict[str, Any]]:
-    """Resolve game dicts from Nuxt data by following item indices."""
+    """Resolve game dicts from Nuxt data by following item indices.
+
+    Note: ``reviewCount`` values in the browse-page Nuxt data are plain
+    integers (not index references), so they are NOT passed through
+    ``_nuxt_val``.  This differs from the detail-page path in
+    ``_extract_critic_from_summary`` where the data layout is different.
+    """
     resolved: list[dict[str, Any]] = []
     for game_idx in game_items:
         try:
@@ -492,24 +498,39 @@ class MetacriticClient:
         platform: str = "pc",
         cache_ttl_days: int = 7,
         browse_cache_ttl_hours: int = 4,
+        direct_only: bool = False,
+        slug: str | None = None,
     ) -> ScoreResult | None:
         """Look up Metacritic scores for a game by title.
 
         Args:
-            title: The game title to search for.
+            title: The game title to search for (used for slug generation
+                when *slug* is ``None``).
             platform: The platform identifier (default ``"pc"``).
             cache_ttl_days: TTL in days for game detail cache.
             browse_cache_ttl_hours: TTL in hours for browse page cache.
+            direct_only: When ``True``, skip the slow browse-page fallback
+                and only check the direct slug.  Use this when the caller
+                already knows the game exists on Metacritic (e.g., from
+                a prior ``scan_recent_games`` call) and only needs the
+                real detail-page scores.
+            slug: Optional explicit Metacritic slug.  When provided,
+                *title* is only used for logging and the slug is used
+                directly for the detail-page lookup.
 
         Returns:
             A :class:`ScoreResult` if found, or ``None`` if the game
             could not be located on Metacritic.
         """
-        slug = _make_slug(title)
+        if slug is None:
+            slug = _make_slug(title)
 
         result = self._try_direct_slug(slug, cache_ttl_days)
         if result is not None:
             return result
+
+        if direct_only:
+            return None
 
         logger.debug("Direct slug '{}' failed for '{}', scanning browse pages...", slug, title)
         result = self._scan_browse_pages(title, platform, browse_cache_ttl_hours, cache_ttl_days)
@@ -585,18 +606,25 @@ class MetacriticClient:
         cache_ttl_days: int,
     ) -> ScoreResult | None:
         normalized_title = _normalise_for_compare(title)
+        scanned = 0
 
         for page_number in range(1, 11):
             logger.debug("Scanning browse page {} for '{}'", page_number, title)
             games = self._fetch_browse_page(platform, page_number, browse_cache_ttl_hours)
             if not games:
                 break
+            scanned += 1
             slug = self._match_game_on_page(games, normalized_title)
             if slug is not None:
                 logger.info("Found matching game on browse page {}", page_number)
                 return self._try_direct_slug(slug, cache_ttl_days)
 
-        logger.info("Game '{}' not found on Metacritic browse pages", title)
+        logger.info(
+            "Game '{}' not on Metacritic detail page (slug resolution failed, scanned {} browse page{})",
+            title,
+            scanned,
+            "s" if scanned != 1 else "",
+        )
         return None
 
     def _fetch_browse_page(self, platform: str, page_number: int, browse_cache_ttl_hours: int) -> list[dict] | None:
