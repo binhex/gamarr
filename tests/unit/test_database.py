@@ -76,6 +76,20 @@ class TestDatabase:
         assert stats["failed"] == 1
         db.close()
 
+    def test_cache_orm_tables_created(self, tmp_path: Path) -> None:
+        """GameDetailCache and BrowsePageCache tables should be created automatically."""
+        from gamarr.database import Database
+
+        db = Database(str(tmp_path / "test.db"))
+        with db._session() as session:
+            from sqlalchemy import text
+            tables = [row[0] for row in session.execute(text(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ))]
+        assert "game_detail_cache" in tables
+        assert "browse_page_cache" in tables
+        db.close()
+
 
 class TestPendingGame:
     """PendingGame CRUD operations."""
@@ -143,6 +157,36 @@ class TestPendingGame:
         pending = db.get_pending()
         assert len(pending) == 1
         assert pending[0].game_title == "Original"  # unchanged
+        db.close()
+
+    def test_directory_based_db_path_creates_file(self, tmp_path: Path) -> None:
+        """When db_path has no suffix, Database should create a subdirectory and gamarr.db."""
+        from pathlib import Path
+
+        from gamarr.database import Database
+
+        db_dir = str(tmp_path / "subdir")
+        db = Database(db_dir)
+        assert Path(str(tmp_path / "subdir" / "gamarr.db")).exists()
+        db.close()
+
+    def test_get_all_source_titles_empty(self, tmp_path: Path) -> None:
+        """get_all_source_titles returns empty list when no titles exist."""
+        from gamarr.database import Database
+
+        db = Database(str(tmp_path / "test.db"))
+        titles = db.get_all_source_titles("fitgirl")
+        assert titles == []
+        db.close()
+
+    def test_update_pending_scores_nonexistent_slug(self, tmp_path: Path) -> None:
+        """update_pending_scores should silently skip rows that don't exist."""
+        from gamarr.database import Database
+
+        db = Database(str(tmp_path / "test.db"))
+        # Should not raise
+        db.update_pending_scores(slug="nonexistent", metascore=85.0)
+        assert not db.is_pending("nonexistent")
         db.close()
 
     def test_get_expired_pending(self, tmp_path: Path) -> None:

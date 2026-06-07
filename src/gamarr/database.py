@@ -67,6 +67,39 @@ class SourceTitle(Base):
     url: Mapped[str] = mapped_column(String, primary_key=True)
 
 
+class GameDetailCache(Base):
+    """ORM mapping for the ``game_detail_cache`` table."""
+
+    __tablename__ = "game_detail_cache"
+
+    slug: Mapped[str] = mapped_column(String, primary_key=True)
+    metascore: Mapped[float | None] = mapped_column(Float, nullable=True)
+    metascore_reviews: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    user_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    user_reviews: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cached_at: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class BrowsePageCache(Base):
+    """ORM mapping for the ``browse_page_cache`` table."""
+
+    __tablename__ = "browse_page_cache"
+
+    platform: Mapped[str] = mapped_column(String, primary_key=True)
+    page_number: Mapped[int] = mapped_column(Integer, primary_key=True)
+    games_json: Mapped[str] = mapped_column(Text, nullable=False)
+    cached_at: Mapped[str] = mapped_column(String, nullable=False)
+
+
+class SitemapCache(Base):
+    """Tracks when each source's sitemap was last fetched."""
+
+    __tablename__ = "sitemap_cache"
+
+    source: Mapped[str] = mapped_column(String, primary_key=True)
+    cached_at: Mapped[str] = mapped_column(String, nullable=False)
+
+
 class Database:
     """SQLite history database for tracking processed titles."""
 
@@ -194,7 +227,8 @@ class Database:
                 row.user_score = user_score
             if user_reviews is not None:
                 row.user_reviews = user_reviews
-            row.score_checks_passed = True
+            if any(x is not None for x in (metascore, metascore_reviews, user_score, user_reviews)):
+                row.score_checks_passed = True
             now = datetime.datetime.now(tz=datetime.UTC).isoformat()
             row.last_checked_at = now
             session.commit()
@@ -243,6 +277,28 @@ class Database:
             if normalise_for_compare(str(row.title)) == normalized_title:
                 results.append({"title": str(row.title), "url": str(row.url)})
         return results
+
+    def get_sitemap_cache(self, source: str, ttl_hours: int) -> bool:
+        """Return True if the sitemap for *source* was cached within *ttl_hours*."""
+        if ttl_hours <= 0:
+            return False
+        cutoff = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(hours=ttl_hours)).isoformat()
+        with self._session() as session:
+            row = session.get(SitemapCache, source)
+            if row is None:
+                return False
+            return row.cached_at > cutoff
+
+    def set_sitemap_cache(self, source: str) -> None:
+        """Update the sitemap cache timestamp for *source* to now."""
+        now = datetime.datetime.now(tz=datetime.UTC).isoformat()
+        with self._session() as session:
+            row = session.get(SitemapCache, source)
+            if row is None:
+                session.add(SitemapCache(source=source, cached_at=now))
+            else:
+                row.cached_at = now
+            session.commit()
 
     def is_processed(self, source: str, source_url: str) -> bool:
         with self._session() as session:
