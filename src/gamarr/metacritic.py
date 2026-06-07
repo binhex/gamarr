@@ -11,13 +11,15 @@ import datetime
 import json
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import requests
 from bs4 import BeautifulSoup
 from loguru import logger
 
-from gamarr.metacritic_cache import MetacriticCache
+if TYPE_CHECKING:
+    from gamarr.metacritic_cache import MetacriticCache
+
 from gamarr.utils import normalise_for_compare
 
 _USER_AGENT = (
@@ -530,20 +532,20 @@ class MetacriticClient:
 
     def __init__(
         self,
-        cache_path: str = "db/gamarr-cache.db",
+        cache: MetacriticCache,
         user_agent: str = _USER_AGENT,
     ) -> None:
         """Initialise the client.
 
         Args:
-            cache_path: Path to the SQLite cache database.
+            cache: A :class:`MetacriticCache` instance backed by the main DB.
             user_agent: User-Agent header to use for HTTP requests.
         """
         self.user_agent = user_agent
-        self._cache = MetacriticCache(cache_path)
+        self._cache = cache
 
     def close(self) -> None:
-        """Close the underlying cache database connection."""
+        """Release cache resources (no-op; DB lifecycle owned by the pipeline)."""
         self._cache.close()
 
     def lookup_game(
@@ -752,11 +754,9 @@ class MetacriticClient:
                 )
                 cutoff_date = None
 
+        effective_max = max_games if max_games > 0 else 999999
         page_number = 1
-        while len(all_games) < max_games or max_games == 0:  # 0 = unlimited
-            if page_number > 500:  # Safety cap for unlimited mode
-                logger.info("Reached 500-page safety limit; stopping browse scan")
-                break
+        while len(all_games) < effective_max and page_number <= 500:
             games = self._fetch_browse_page(platform, page_number, cache_ttl_hours)
             if not games:
                 break
@@ -772,19 +772,18 @@ class MetacriticClient:
                 )
                 break
 
-            # Trim this page and collect
-            limit = max_games - len(all_games) if max_games > 0 else len(games)
-            games = games[:limit]
+            # Trim this page and collect up to effective_max
+            games = games[: effective_max - len(all_games)]
 
             all_games.extend(games)
             page_number += 1
 
-        limit_display = "unlimited" if max_games == 0 else str(max_games)
+        n_pages = max(page_number - 1, 0)
         logger.info(
             "Scanned {} Metacritic page(s) — collected {} games (limit: {})",
-            max(page_number - 1, 0),
+            n_pages,
             len(all_games),
-            limit_display,
+            max_games,
         )
 
         return all_games

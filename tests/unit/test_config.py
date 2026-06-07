@@ -120,6 +120,16 @@ class TestConfigModels:
         assert mc_pc["cutoff_date"] == "2026-06-01"
         assert mc_pc["cache_ttl_hours"] == 12
 
+    def test_migrate_config_handles_exception_gracefully(self) -> None:
+        """_migrate_config should catch exceptions and log a warning."""
+        from gamarr.config import _migrate_config
+
+        # metacritic value is a list instead of dict → .get() fails → AttributeError
+        raw = {
+            "metacritic": ["not-a-dict"],
+        }
+        _migrate_config(raw)  # Should not raise, logs warning
+
     def test_qbittorrent_config_defaults(self) -> None:
         cfg = QbittorrentConfig()
         assert cfg.host == "localhost"
@@ -222,3 +232,10 @@ class TestLoadConfig:
         config_file.write_text("- item1\n- item2\n")
         with pytest.raises(ValueError, match="must be a YAML mapping"):
             load_config(str(config_file))
+
+    def test_next_version_with_bad_part(self) -> None:
+        """_next_version should handle non-numeric version parts gracefully."""
+        from gamarr.config import _next_version
+
+        assert _next_version("bad") == "bad.1.0"
+        assert _next_version("1.bad.0") == "1.1.0"

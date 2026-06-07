@@ -115,6 +115,11 @@ class Database:
             self._db_path = str(path / "gamarr.db")
 
         self._engine = create_engine(f"sqlite:///{self._db_path}", echo=False)
+        # WAL mode + busy_timeout for concurrent readers from thread pool
+        with self._engine.connect() as conn:
+            conn.execute(text("PRAGMA journal_mode=WAL"))
+            conn.execute(text("PRAGMA busy_timeout=5000"))
+            conn.commit()
         Base.metadata.create_all(self._engine)
         self._session_factory = sessionmaker(bind=self._engine)
         self._migrate()

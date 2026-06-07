@@ -122,19 +122,6 @@ class TestBuildKwargs:
         assert kwargs["notify_on_failure"] is False
 
 
-class TestResolveCachePath:
-    def test_cache_path_with_memory(self) -> None:
-        from gamarr.scheduler import _resolve_cache_path
-
-        assert _resolve_cache_path(":memory:") == ":memory:"
-
-    def test_cache_path_with_dir(self) -> None:
-        from gamarr.scheduler import _resolve_cache_path
-
-        result = _resolve_cache_path("/tmp/db")
-        assert result == "/tmp/db/gamarr-cache.db"
-
-
 class TestDaemonMode:
     """Daemon mode scheduling."""
 

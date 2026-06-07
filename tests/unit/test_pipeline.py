@@ -1974,7 +1974,6 @@ class TestRunAcquisitionMetacritic:
             results = run_acquisition(
                 fitgirl_rss_url="http://example.com/feed",
                 db_path=str(tmp_path / "gamarr.db"),
-                mc_cache_path=str(tmp_path / "mc-cache.db"),
                 qbt_host="localhost",
                 qbt_port=8080,
                 qbt_username="admin",
@@ -2223,6 +2222,137 @@ class TestVerifyPendingScoresEdgeCases:
         )
         assert removed == 0
         mock_mc.lookup_game.assert_not_called()
+        db.close()
+
+    def test_verify_pending_scores_concurrently(self, tmp_path: Path) -> None:
+        """Score-checking multiple games should be faster than sequential.
+
+        When multiple pending games need score-checking, the lookup_game
+        calls should run concurrently (ThreadPoolExecutor) rather than
+        sequentially.  This test mocks a slow HTTP response and verifies
+        that N games are checked in less than N × response_time.
+        """
+        import datetime
+        import time
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _verify_pending_scores
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        # Create 10 pending games
+        for i in range(10):
+            db.record_pending(
+                slug=f"game-{i:02d}",
+                game_title=f"Game {i:02d}",
+                platform="pc",
+                metascore=85.0,
+                user_score=8.0,
+                expires_at=expires,
+            )
+
+        mock_mc = MagicMock()
+        # Each lookup takes 0.3 seconds (simulating a slow HTTP response)
+        import types
+
+        def slow_lookup(*args: object, **kwargs: object) -> types.SimpleNamespace:
+            time.sleep(0.3)
+            return types.SimpleNamespace(
+                metascore=85.0,
+                metascore_review_count=20,
+                user_score=8.0,
+                user_review_count=100,
+                genres=["Action"],
+                must_play=False,
+                release_date="2026-06-01",
+            )
+
+        mock_mc.lookup_game.side_effect = slow_lookup
+
+        thresholds = {
+            "min_metascore": 75,
+            "min_metascore_reviews": 5,
+            "min_user_score": 7.5,
+            "min_user_reviews": 10,
+        }
+
+        start = time.time()
+        removed = _verify_pending_scores(
+            db,
+            mock_mc,
+            "pc",
+            thresholds,
+            max_verify=10,
+        )
+        elapsed = time.time() - start
+
+        assert removed == 0  # All pass
+        # Sequential would take ~3 seconds (10 × 0.3s).
+        # With 10 concurrent workers, should take ~0.3-0.6s.
+        # Allow generous margin: should complete in under 2s.
+        assert elapsed < 2.0, f"Score-checking 10 games took {elapsed:.1f}s — expected <2.0s with concurrent lookups"
+        # All 10 lookups should have been called
+        assert mock_mc.lookup_game.call_count == 10
+        db.close()
+
+    def test_verify_pending_pass_emits_log(self, tmp_path: Path) -> None:
+        """A game that passes score-checking should log that it passed.
+
+        Without this log, games that pass all filters but have no FitGirl
+        match are completely invisible in the output.
+        """
+        import datetime
+        import io
+        from unittest.mock import MagicMock
+
+        from loguru import logger
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _verify_pending_scores
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="passing-game",
+            game_title="Passing Game",
+            platform="pc",
+            metascore=85.0,
+            user_score=8.0,
+            expires_at=expires,
+        )
+
+        mock_mc = MagicMock()
+        import types
+
+        mock_mc.lookup_game.return_value = types.SimpleNamespace(
+            metascore=85.0,
+            metascore_review_count=20,
+            user_score=8.0,
+            user_review_count=100,
+            genres=["Action"],
+            must_play=False,
+            release_date="2026-06-01",
+        )
+
+        thresholds = {
+            "min_metascore": 75,
+            "min_metascore_reviews": 5,
+            "min_user_score": 7.5,
+            "min_user_reviews": 10,
+        }
+
+        buf = io.StringIO()
+        logger_id = logger.add(buf, format="{message}", colorize=False, level="DEBUG")
+        try:
+            removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, max_verify=10)
+        finally:
+            logger.remove(logger_id)
+
+        assert removed == 0
+        output = buf.getvalue()
+        assert "Passing Game" in output, "Game that passed score checks should appear in log"
+        assert "score check" in output.lower() or "passed" in output.lower(), "Should mention that score check passed"
         db.close()
 
 

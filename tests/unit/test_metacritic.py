@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from pathlib import Path
 
+from gamarr.database import Database
 from gamarr.metacritic import MetacriticClient, ScoreResult
 from gamarr.metacritic_cache import MetacriticCache
 
@@ -72,14 +73,30 @@ class TestSlugGeneration:
 class TestMetacriticCache:
     """Metacritic cache operations."""
 
+    def test_cache_accepts_database_instance(self) -> None:
+        """MetacriticCache must accept a Database instance (not a cache_path string).
+
+        This proves the cache merge is complete: the cache uses the shared
+        gamarr.db instead of creating a separate gamarr-cache.db.
+        """
+        db = Database(":memory:")
+        cache = MetacriticCache(db)
+        cache.set_game_detail("test-game", 85.0, 10, 7.5, 100)
+        result = cache.get_game_detail("test-game", ttl_days=7)
+        assert result is not None
+        assert result["metascore"] == 85.0
+        assert result["user_score"] == 7.5
+        cache.close()
+        db.close()
+
     def test_cache_miss(self, tmp_path: Path) -> None:
-        cache = MetacriticCache(str(tmp_path / "cache.db"))
+        cache = MetacriticCache(Database(str(tmp_path / "test.db")))
         result = cache.get_game_detail("elden-ring")
         assert result is None
         cache.close()
 
     def test_cache_set_and_get(self, tmp_path: Path) -> None:
-        cache = MetacriticCache(str(tmp_path / "cache.db"))
+        cache = MetacriticCache(Database(str(tmp_path / "test.db")))
         cache.set_game_detail("elden-ring", 96.0, 120, 8.5, 5000)
         result = cache.get_game_detail("elden-ring")
         assert result is not None
@@ -89,7 +106,7 @@ class TestMetacriticCache:
     def test_cache_expiry(self, tmp_path: Path) -> None:
         import datetime
 
-        cache = MetacriticCache(str(tmp_path / "cache.db"))
+        cache = MetacriticCache(Database(str(tmp_path / "test.db")))
         cache.set_game_detail("old-game", 50.0, 10, 5.0, 100)
         cache._set_cached_at("old-game", (datetime.datetime.now() - datetime.timedelta(days=999)).isoformat())
         result = cache.get_game_detail("old-game", ttl_days=7)
@@ -97,7 +114,7 @@ class TestMetacriticCache:
         cache.close()
 
     def test_browse_cache(self, tmp_path: Path) -> None:
-        cache = MetacriticCache(str(tmp_path / "cache.db"))
+        cache = MetacriticCache(Database(str(tmp_path / "test.db")))
         games = [{"title": "Test Game", "slug": "test-game"}]
         cache.set_browse_page("pc", 1, games)
         result = cache.get_browse_page("pc", 1, ttl_hours=4)
@@ -108,16 +125,18 @@ class TestMetacriticCache:
     def test_browse_cache_expired(self, tmp_path: Path) -> None:
         import datetime
 
-        cache = MetacriticCache(str(tmp_path / "cache.db"))
+        cache = MetacriticCache(Database(str(tmp_path / "test.db")))
         games = [{"title": "Old Game", "slug": "old-game"}]
         cache.set_browse_page("pc", 1, games)
         # Set cached_at to be old by using SQL directly
         old_time = (datetime.datetime.now() - datetime.timedelta(hours=999)).isoformat()
-        cache._conn.execute(
-            "UPDATE browse_page_cache SET cached_at = ? WHERE platform = ? AND page_number = ?",
-            (old_time, "pc", 1),
-        )
-        cache._conn.commit()
+        from gamarr.database import BrowsePageCache
+
+        with cache._db._session() as session:
+            row = session.get(BrowsePageCache, ("pc", 1))
+            if row is not None:
+                row.cached_at = old_time
+                session.commit()
         result = cache.get_browse_page("pc", 1, ttl_hours=4)
         assert result is None
         cache.close()
@@ -326,7 +345,7 @@ class TestTryDirectSlug:
     """Direct slug lookup with mocked HTTP."""
 
     def test_try_direct_slug_cache_hit(self) -> None:
-        client = MetacriticClient(cache_path=":memory:")
+        client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
         client._cache.set_game_detail("elden-ring", 96.0, 120, 8.5, 5000)
         result = client._try_direct_slug("elden-ring", cache_ttl_days=7)
         assert result is not None
@@ -335,7 +354,7 @@ class TestTryDirectSlug:
 
     def test_try_direct_slug_cache_miss_no_http(self) -> None:
         """Without cache or network, slug lookup returns None."""
-        client = MetacriticClient(cache_path=":memory:")
+        client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
         result = client._try_direct_slug("nonexistent-game-12345", cache_ttl_days=7)
         assert result is None
 
@@ -345,7 +364,7 @@ class TestTryDirectSlug:
 
         import requests
 
-        client = MetacriticClient(cache_path=":memory:")
+        client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
         with patch("gamarr.metacritic.requests.get", side_effect=requests.exceptions.ConnectionError("mock error")):
             result = client._try_direct_slug("some-game", cache_ttl_days=7)
         assert result is None
@@ -356,7 +375,7 @@ class TestTryDirectSlug:
 
         mock_resp = MagicMock()
         mock_resp.status_code = 404
-        client = MetacriticClient(cache_path=":memory:")
+        client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
         with patch("gamarr.metacritic.requests.get", return_value=mock_resp):
             result = client._try_direct_slug("nonexistent-game", cache_ttl_days=7)
         assert result is None
@@ -366,17 +385,17 @@ class TestMetacriticClient:
     """Metacritic client construction and mocked HTTP lookups."""
 
     def test_client_defaults(self) -> None:
-        client = MetacriticClient(cache_path=":memory:")
+        client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
         assert client.user_agent is not None
 
     def test_score_for_title_returns_none_on_fetch_error(self) -> None:
-        client = MetacriticClient(cache_path=":memory:")
+        client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
         result = client.lookup_game("ThisGameDoesNotExistXYZ123")
         assert result is None
 
     def test_scrape_browse_pages_empty(self) -> None:
         """With no network, browse page scan returns None."""
-        client = MetacriticClient(cache_path=":memory:")
+        client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
         result = client._scan_browse_pages("Nonexistent Game", "pc", 4, 7)
         assert result is None
 
@@ -395,7 +414,7 @@ class TestMetacriticClient:
         mock_resp.status_code = 200
         mock_resp.content = html.encode()
 
-        client = MetacriticClient(cache_path=":memory:")
+        client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
         with patch("gamarr.metacritic.requests.get", return_value=mock_resp):
             result = client.lookup_game("Elden Ring")
         assert result is not None
@@ -405,7 +424,7 @@ class TestMetacriticClient:
 
     def test_scan_browse_pages_with_cache_hit(self) -> None:
         """When browse cache has a matching game, scan returns a ScoreResult."""
-        client = MetacriticClient(cache_path=":memory:")
+        client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
         client._cache.set_browse_page(
             "pc",
             1,
@@ -426,7 +445,7 @@ class TestMetacriticClient:
 
         import requests
 
-        client = MetacriticClient(cache_path=":memory:")
+        client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
         with patch("gamarr.metacritic.requests.get", side_effect=requests.exceptions.ConnectionError("mock")):
             result = client._scan_browse_pages("Some Game", "pc", 4, 7)
         assert result is None
@@ -605,7 +624,7 @@ class TestScanBrowsePagesEdgeCase:
         mock_resp.status_code = 200
         mock_resp.content = html.encode()
 
-        client = MetacriticClient(cache_path=":memory:")
+        client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
         with patch("gamarr.metacritic.requests.get", return_value=mock_resp):
             result = client._scan_browse_pages("Target Game", "pc", 4, 7)
         assert result is None
@@ -616,7 +635,7 @@ class TestScanBrowseCacheHit:
 
     def test_scan_browse_cache_hit_matching_game(self) -> None:
         """When browse cache has a matching game, it returns the score."""
-        client = MetacriticClient(cache_path=":memory:")
+        client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
         client._cache.set_browse_page(
             "pc",
             1,
@@ -704,7 +723,7 @@ class TestScanRecentGames:
 
         from gamarr.metacritic import MetacriticClient
 
-        client = MetacriticClient(cache_path=":memory:")
+        client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
         with patch.object(client, "_fetch_browse_page", return_value=None):
             result = client.scan_recent_games("pc", max_games=1)
         assert result == []
@@ -715,7 +734,7 @@ class TestScanRecentGames:
 
         from gamarr.metacritic import MetacriticClient
 
-        client = MetacriticClient(cache_path=":memory:")
+        client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
         # Return games with release dates all before cutoff
         mock_page = [
             {"title": "Old Game 1", "slug": "old-1", "release_date": "2024-06-01"},
@@ -731,7 +750,7 @@ class TestScanRecentGames:
 
         from gamarr.metacritic import MetacriticClient
 
-        client = MetacriticClient(cache_path=":memory:")
+        client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
         # First page has a mix of new and old
         page1 = [
             {"title": "New Game", "slug": "new-1", "release_date": "2025-06-01"},
@@ -752,7 +771,7 @@ class TestScanRecentGames:
 
         from gamarr.metacritic import MetacriticClient
 
-        client = MetacriticClient(cache_path=":memory:")
+        client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
         mock_page = [
             {"title": "Game", "slug": "game-1", "release_date": "2026-06-01"},
         ]
@@ -771,7 +790,7 @@ class TestScanRecentGames:
 
         from gamarr.metacritic import MetacriticClient
 
-        client = MetacriticClient(cache_path=":memory:")
+        client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
         page1 = [{"title": f"Game {i}", "slug": f"game-{i}"} for i in range(50)]
         page2 = [{"title": f"Game {i + 50}", "slug": f"game-{i + 50}"} for i in range(50)]
         with patch.object(client, "_fetch_browse_page", side_effect=[page1, page2]):

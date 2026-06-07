@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import signal
 from typing import Any
 
@@ -30,13 +29,6 @@ def run(config_path: str = "configs", daemon_mode: str | None = None) -> None:
         _run_daemon(config)
     else:
         run_once(config)
-
-
-def _resolve_cache_path(db_path: str) -> str:
-    """Return the metacritic cache path, handling :memory: databases."""
-    if db_path == ":memory:":
-        return ":memory:"
-    return os.path.join(db_path, "gamarr-cache.db")
 
 
 def _build_kwargs(config: Config) -> dict[str, Any]:
@@ -72,7 +64,6 @@ def _build_kwargs(config: Config) -> dict[str, Any]:
         "notify_on_download": config.notification.on_download,
         "notify_on_failure": config.notification.on_failure,
         "notify_on_error": config.notification.on_error,
-        "mc_cache_path": _resolve_cache_path(config.general.db_path),
         "fitgirl_cache_ttl_hours": config.sources.fitgirl.cache_ttl_hours,
         "fitgirl_exclude_keywords": config.sources.fitgirl.exclude_keywords,
         "library_paths": config.library.paths,

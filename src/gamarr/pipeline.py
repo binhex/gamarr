@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import types
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -12,6 +13,7 @@ from loguru import logger
 
 from gamarr.database import Database
 from gamarr.metacritic import MetacriticClient
+from gamarr.metacritic_cache import MetacriticCache
 from gamarr.notifications import Notifier
 from gamarr.qbittorrent import QBittorrentClient
 from gamarr.sources.fitgirl import _USER_AGENT, FitGirlSource, _extract_magnet_from_html
@@ -152,7 +154,6 @@ def run_acquisition(
     fitgirl_rss_url: str,
     platform: str = "pc",
     db_path: str = ":memory:",
-    mc_cache_path: str = ":memory:",
     qbt_host: str = "localhost",
     qbt_port: int = 8080,
     qbt_username: str = "admin",
@@ -213,7 +214,7 @@ def run_acquisition(
         db=db,
         cache_ttl_hours=fitgirl_cache_ttl_hours,
     )
-    mc = MetacriticClient(cache_path=mc_cache_path)
+    mc = MetacriticClient(cache=MetacriticCache(db))
 
     notifier = Notifier(
         apprise_urls=apprise_urls,
@@ -547,6 +548,55 @@ def _real_scores_pass_thresholds(
     return all(checks)
 
 
+def _process_verify_result(
+    db: Database,
+    game: Any,
+    result: Any,
+    thresholds: dict[str, Any],
+) -> bool:
+    """Process one score-check result. Returns True if the game was removed."""
+    if result is None:
+        db.remove_pending(str(game.slug))
+        logger.debug(
+            "Removed '{}' from queue \u2014 game not found on Metacritic page",
+            game.game_title,
+        )
+        return True
+
+    if not (_scores_present(result) and _real_scores_pass_thresholds(result, thresholds)):
+        db.remove_pending(str(game.slug))
+        if _scores_present(result):
+            logger.debug(
+                "Removed '{}' from queue \u2014 Metacritic scores ({}, {}) below thresholds",
+                game.game_title,
+                result.metascore,
+                result.user_score,
+            )
+        else:
+            logger.debug(
+                "Removed '{}' from queue \u2014 no Metacritic review scores yet",
+                game.game_title,
+            )
+        return True
+
+    db.update_pending_scores(
+        slug=str(game.slug),
+        metascore=result.metascore,
+        metascore_reviews=result.metascore_review_count,
+        user_score=result.user_score,
+        user_reviews=result.user_review_count,
+    )
+    logger.debug(
+        "'{}' passed score check \u2014 ({}, {}) with ({} reviews, {} reviews)",
+        game.game_title,
+        result.metascore,
+        result.user_score,
+        result.metascore_review_count or 0,
+        result.user_review_count or 0,
+    )
+    return False
+
+
 def _verify_pending_scores(
     db: Database,
     mc: MetacriticClient,
@@ -589,64 +639,43 @@ def _verify_pending_scores(
     verified = 0
     pending = db.get_pending(platform=platform)
     total_pending = len(pending)
-    for game in pending:
-        if verified >= max_verify:
-            logger.info(
-                "Score-check limit reached — checked {} of {} (limit: {}) — {} remain for next cycle",
-                verified,
-                total_pending,
-                max_verify,
-                total_pending - verified,
+
+    # Collect the batch of games to check this cycle
+    batch = list(pending[:max_verify])
+
+    if not batch:
+        return 0
+
+    # Submit all Metacritic lookups concurrently (I/O-bound HTTP requests)
+
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        futures = [
+            pool.submit(
+                mc.lookup_game,
+                str(game.game_title),
+                platform=platform,
+                slug=str(game.slug),
+                cache_ttl_days=cache_ttl_days,
+                direct_only=True,
             )
-            break
+            for game in batch
+        ]
 
-        _log_verify_progress(verified, max_verify, total_pending)
+        # Process results in original batch order
+        for verified, (game, fut) in enumerate(zip(batch, futures, strict=True)):
+            _log_verify_progress(verified, max_verify, total_pending)
+            result = fut.result()
+            if _process_verify_result(db, game, result, thresholds):
+                removed += 1
 
-        result = mc.lookup_game(
-            str(game.game_title),
-            platform=platform,
-            slug=str(game.slug),
-            cache_ttl_days=cache_ttl_days,
-            direct_only=True,
-        )
-        verified += 1
-
-        if result is None:
-            db.remove_pending(str(game.slug))
-            removed += 1
-            logger.debug(
-                "Removed '{}' from queue \u2014 game not found on Metacritic page",
-                game.game_title,
-            )
-            continue
-
-        # Check real scores against thresholds.
-        # If the detail page has no valid scores (all None/0), the game
-        # hasn't been reviewed yet \u2014 remove from pending.
-        if not (_scores_present(result) and _real_scores_pass_thresholds(result, thresholds)):
-            db.remove_pending(str(game.slug))
-            removed += 1
-            if _scores_present(result):
-                logger.debug(
-                    "Removed '{}' from queue \u2014 Metacritic scores ({}, {}) below thresholds",
-                    game.game_title,
-                    result.metascore,
-                    result.user_score,
-                )
-            else:
-                logger.debug(
-                    "Removed '{}' from queue \u2014 no Metacritic review scores yet",
-                    game.game_title,
-                )
-            continue
-
-        # Real scores pass \u2014 update pending record with correct values.
-        db.update_pending_scores(
-            slug=str(game.slug),
-            metascore=result.metascore,
-            metascore_reviews=result.metascore_review_count,
-            user_score=result.user_score,
-            user_reviews=result.user_review_count,
+    checked = len(batch)
+    if checked > 0:
+        logger.info(
+            "Score-check limit reached — checked {} of {} (limit: {}) — {} remain for next cycle",
+            checked,
+            total_pending,
+            max_verify,
+            total_pending - checked,
         )
 
     return removed
@@ -985,6 +1014,10 @@ def _process_single_pending_match(
     matches = db.match_source_title("fitgirl", normalized)
     if not matches:
         db.touch_pending(game_slug)
+        logger.debug(
+            "'{}' has no FitGirl match \u2014 staying in queue",
+            game_title,
+        )
         return None
 
     best = matches[0]
