@@ -10,7 +10,6 @@ from __future__ import annotations
 import datetime
 import json
 import re
-import string
 from dataclasses import dataclass
 from typing import Any
 
@@ -19,6 +18,7 @@ from bs4 import BeautifulSoup
 from loguru import logger
 
 from gamarr.metacritic_cache import MetacriticCache
+from gamarr.utils import normalise_for_compare
 
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -430,6 +430,35 @@ def _resolve_release_date(nuxt_data: list[Any], game: dict[str, Any]) -> str | N
         return None
 
 
+def _is_before_date(release_date: str | None, cutoff: str) -> bool:
+    """Return True if *release_date* is before *cutoff*.
+
+    Both dates can be in ISO format ``YYYY-MM-DD`` or UK/EU format
+    ``DD-MM-YYYY``.  Returns False when either value is None or
+    unparseable (unknown age \u2014 assume recent).
+    """
+    if release_date is None or cutoff is None:
+        return False
+    try:
+        parsed_release = _parse_date_flexible(release_date)
+        parsed_cutoff = _parse_date_flexible(cutoff)
+        if parsed_release is None or parsed_cutoff is None:
+            return False
+        return parsed_release < parsed_cutoff
+    except (ValueError, TypeError):
+        return False
+
+
+def _parse_date_flexible(date_str: str) -> datetime.date | None:
+    """Try to parse an ISO (``YYYY-MM-DD``) or UK (``DD-MM-YYYY``) date string."""
+    for fmt in ("%Y-%m-%d", "%d-%m-%Y"):
+        try:
+            return datetime.datetime.strptime(date_str.strip(), fmt).date()
+        except (ValueError, TypeError):
+            continue
+    return None
+
+
 def _resolve_browse_game_list(nuxt_data: list[Any], game_items: list[int]) -> list[dict[str, Any]]:
     """Resolve game dicts from Nuxt data by following item indices.
 
@@ -507,7 +536,7 @@ class MetacriticClient:
         title: str,
         platform: str = "pc",
         cache_ttl_days: int = 7,
-        browse_cache_ttl_hours: int = 4,
+        metacritic_cache_ttl_hours: int = 4,
         direct_only: bool = False,
         slug: str | None = None,
     ) -> ScoreResult | None:
@@ -518,7 +547,7 @@ class MetacriticClient:
                 when *slug* is ``None``).
             platform: The platform identifier (default ``"pc"``).
             cache_ttl_days: TTL in days for game detail cache.
-            browse_cache_ttl_hours: TTL in hours for browse page cache.
+            metacritic_cache_ttl_hours: TTL in hours for browse page cache.
             direct_only: When ``True``, skip the slow browse-page fallback
                 and only check the direct slug.  Use this when the caller
                 already knows the game exists on Metacritic (e.g., from
@@ -535,7 +564,7 @@ class MetacriticClient:
         if slug is None:
             slug = _make_slug(title)
 
-        result = self._try_direct_slug(slug, cache_ttl_days)
+        result = self._try_direct_slug(slug, cache_ttl_days, original_title=title)
         if result is not None:
             return result
 
@@ -543,15 +572,15 @@ class MetacriticClient:
             return None
 
         logger.debug("Direct slug '{}' failed for '{}', scanning browse pages...", slug, title)
-        result = self._scan_browse_pages(title, platform, browse_cache_ttl_hours, cache_ttl_days)
+        result = self._scan_browse_pages(title, platform, metacritic_cache_ttl_hours, cache_ttl_days)
         return result
 
-    def _try_direct_slug(self, slug: str, cache_ttl_days: int) -> ScoreResult | None:
+    def _try_direct_slug(self, slug: str, cache_ttl_days: int, original_title: str | None = None) -> ScoreResult | None:
         cached = self._cache.get_game_detail(slug, ttl_days=cache_ttl_days)
         if cached is not None:
             logger.debug("Cache hit for slug '{}'", slug)
             return ScoreResult(
-                title=slug.replace("-", " ").title(),
+                title=original_title or slug.replace("-", " ").title(),
                 slug=slug,
                 metascore=cached["metascore"],
                 metascore_review_count=cached["metascore_reviews"],
@@ -591,7 +620,7 @@ class MetacriticClient:
             )
 
             return ScoreResult(
-                title=slug.replace("-", " ").title(),
+                title=original_title or slug.replace("-", " ").title(),
                 slug=slug,
                 metascore=parsed.get("metascore"),
                 metascore_review_count=parsed.get("metascore_reviews"),
@@ -612,22 +641,22 @@ class MetacriticClient:
         self,
         title: str,
         platform: str,
-        browse_cache_ttl_hours: int,
+        metacritic_cache_ttl_hours: int,
         cache_ttl_days: int,
     ) -> ScoreResult | None:
-        normalized_title = _normalise_for_compare(title)
+        normalized_title = normalise_for_compare(title)
         scanned = 0
 
         for page_number in range(1, 11):
             logger.debug("Scanning browse page {} for '{}'", page_number, title)
-            games = self._fetch_browse_page(platform, page_number, browse_cache_ttl_hours)
+            games = self._fetch_browse_page(platform, page_number, metacritic_cache_ttl_hours)
             if not games:
                 break
             scanned += 1
             slug = self._match_game_on_page(games, normalized_title)
             if slug is not None:
                 logger.info("Found matching game on browse page {}", page_number)
-                return self._try_direct_slug(slug, cache_ttl_days)
+                return self._try_direct_slug(slug, cache_ttl_days, original_title=None)
 
         logger.info(
             "Game '{}' not on Metacritic detail page (slug resolution failed, scanned {} browse page{})",
@@ -637,9 +666,9 @@ class MetacriticClient:
         )
         return None
 
-    def _fetch_browse_page(self, platform: str, page_number: int, browse_cache_ttl_hours: int) -> list[dict] | None:
+    def _fetch_browse_page(self, platform: str, page_number: int, metacritic_cache_ttl_hours: int) -> list[dict] | None:
         """Return game listings for a browse page from cache or HTTP."""
-        cached = self._cache.get_browse_page(platform, page_number, ttl_hours=browse_cache_ttl_hours)
+        cached = self._cache.get_browse_page(platform, page_number, ttl_hours=metacritic_cache_ttl_hours)
         if cached is not None:
             return cached
         url = (
@@ -668,35 +697,84 @@ class MetacriticClient:
         """Search browse page for matching title, returning slug or None."""
         for game in games:
             game_title = game.get("title")
-            if game_title and _normalise_for_compare(str(game_title)) == normalized_title:
+            if game_title and normalise_for_compare(str(game_title)) == normalized_title:
                 return str(game.get("slug", ""))
         return None
 
     def scan_recent_games(
-        self, platform: str, *, max_pages: int = 10, browse_cache_ttl_hours: int = 4
+        self,
+        platform: str,
+        *,
+        max_games: int = 1000,
+        metacritic_cache_ttl_hours: int = 4,
+        cutoff_date: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Return all games from Metacritic browse pages.
+        """Return up to *max_games* from Metacritic browse pages.
 
-        Stops early when a page returns fewer items than expected
-        (signalling the end of the catalog).
+        Fetches browse pages (newest-first) and collects games until
+        *max_games* is reached or pages run out.  When *cutoff_date*
+        is set and every game on a page is older than the cutoff,
+        fetching stops early to save HTTP requests.
+
+        Args:
+            max_games: Maximum number of game entries to collect.
+            cutoff_date: ISO date string ("YYYY-MM-DD").  Pages whose
+                games are all older than this date are skipped.
 
         Returns a list of game dicts with keys ``title``, ``slug``,
         ``score``, ``critic_review_count``, ``user_rating``,
-        ``user_review_count``.
+        ``user_review_count``, ``release_date``.
         """
         all_games: list[dict[str, Any]] = []
-        for page_number in range(1, max_pages + 1):
-            games = self._fetch_browse_page(platform, page_number, browse_cache_ttl_hours)
+
+        # Validate cutoff_date format once at the start
+        if cutoff_date is not None and _parse_date_flexible(cutoff_date) is None:
+            logger.warning(
+                "cutoff_date '{}' is not a valid date — expected YYYY-MM-DD "
+                "(e.g. 2025-01-01) or DD-MM-YYYY. Ignoring cutoff.",
+                cutoff_date,
+            )
+            cutoff_date = None  # Disable cutoff rather than silently ignoring
+
+        page_number = 1
+        while len(all_games) < max_games:
+            games = self._fetch_browse_page(platform, page_number, metacritic_cache_ttl_hours)
             if not games:
                 break
+
+            # Date-based early stop: if every game on this page has a
+            # release_date older than the cutoff, stop fetching more
+            # pages (they will be even older).
+            if cutoff_date is not None:
+                all_before_cutoff = all(
+                    _is_before_date(g.get("release_date"), cutoff_date)
+                    for g in games
+                    if g.get("release_date") is not None
+                )
+                dates_found = any(g.get("release_date") is not None for g in games)
+                if dates_found and all_before_cutoff:
+                    logger.info(
+                        "Metacritic page {} has no games newer than {}; stopping scan",
+                        page_number,
+                        cutoff_date,
+                    )
+                    break
+
+            # Trim this page to only take what we need to reach max_games
+            needed = max_games - len(all_games)
+            if len(games) > needed:
+                games = games[:needed]
+
             all_games.extend(games)
+            page_number += 1
+
+        if page_number > 1:
+            logger.info(
+                "Scanned {} Metacritic page{} — collected {} games (limit: {})",
+                page_number - 1,
+                "s" if page_number > 2 else "",
+                len(all_games),
+                max_games,
+            )
+
         return all_games
-
-
-def _normalise_for_compare(text: str) -> str:
-    text = text.lower().strip()
-    # Remove both ASCII punctuation and Unicode dashes that can appear
-    # in FitGirl titles (e.g. en-dash U+2013, em-dash U+2014).
-    remove_chars = string.punctuation + "\u2013\u2014"
-    text = text.translate(str.maketrans("", "", remove_chars))
-    return re.sub(r"\s+", " ", text).strip()

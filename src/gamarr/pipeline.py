@@ -97,13 +97,14 @@ class AcquisitionConfig:
     min_user_reviews: int
     days_since_release: int
     cache_ttl_days: int = 7
-    browse_cache_ttl_hours: int = 4
-    browse_enabled: bool = True
+    metacritic_cache_ttl_hours: int = 4
+    metacritic_enabled: bool = True
     pending_days: int = 30
-    browse_max_pages: int = 200
+    metacritic_max_games: int = 1000
+    metacritic_cutoff_date: str | None = None
 
 
-def _score_check(value: float | None, threshold: float) -> bool:
+def _is_below_threshold(value: float | None, threshold: float) -> bool:
     """Return True if value is below threshold (or None — missing data fails).
 
     When value is None the check fails (no data to verify against).
@@ -127,13 +128,13 @@ def _evaluate_scores(
     if mc_result.metascore is None or mc_result.user_score is None:
         return "no_scores"
 
-    if _score_check(mc_result.metascore, cfg.min_metascore):
+    if _is_below_threshold(mc_result.metascore, cfg.min_metascore):
         return "metascore_too_low"
-    if _score_check(mc_result.metascore_review_count, cfg.min_metascore_reviews):
+    if _is_below_threshold(mc_result.metascore_review_count, cfg.min_metascore_reviews):
         return "metascore_reviews_too_few"
-    if _score_check(mc_result.user_score, cfg.min_user_score):
+    if _is_below_threshold(mc_result.user_score, cfg.min_user_score):
         return "user_score_too_low"
-    if _score_check(mc_result.user_review_count, cfg.min_user_reviews):
+    if _is_below_threshold(mc_result.user_review_count, cfg.min_user_reviews):
         return "user_reviews_too_few"
 
     if _is_older_than(getattr(mc_result, "release_date", None), cfg.days_since_release):
@@ -160,17 +161,25 @@ def run_acquisition(
     min_user_reviews: int = 10,
     days_since_release: int = 90,
     cache_ttl_days: int = 7,
-    browse_cache_ttl_hours: int = 4,
-    browse_enabled: bool = True,
+    metacritic_cache_ttl_hours: int = 4,
+    metacritic_enabled: bool = True,
     pending_days: int = 30,
-    browse_max_pages: int = 200,
+    metacritic_max_games: int = 1000,
+    metacritic_cutoff_date: str | None = None,
     apprise_urls: list[str] | None = None,
     notify_on_download: bool = True,
     notify_on_failure: bool = False,
     notify_on_error: bool = False,
     library_paths: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Execute one acquisition cycle."""
+    """Execute one acquisition cycle.
+
+    Discovers games by browsing Metacritic (newest-first, up to
+    ``metacritic_max_games`` entries), verifies each game's real
+    Metacritic detail-page scores against the configured thresholds,
+    then matches survivors against the FitGirl sitemap and delivers
+    to qBittorrent.
+    """
     cfg = AcquisitionConfig(
         min_metascore=min_metascore,
         min_metascore_reviews=min_metascore_reviews,
@@ -178,10 +187,11 @@ def run_acquisition(
         min_user_reviews=min_user_reviews,
         days_since_release=days_since_release,
         cache_ttl_days=cache_ttl_days,
-        browse_cache_ttl_hours=browse_cache_ttl_hours,
-        browse_enabled=browse_enabled,
+        metacritic_cache_ttl_hours=metacritic_cache_ttl_hours,
+        metacritic_enabled=metacritic_enabled,
         pending_days=pending_days,
-        browse_max_pages=browse_max_pages,
+        metacritic_max_games=metacritic_max_games,
+        metacritic_cutoff_date=metacritic_cutoff_date,
     )
 
     logger.info("Starting acquisition cycle (platform='{}')", platform)
@@ -234,11 +244,12 @@ def run_acquisition(
         # score thresholds and age filter. The FitGirl sitemap is fetched
         # only if Metacritic produced games to match against.
         browse_games: list[dict[str, Any]] = []
-        if cfg.browse_enabled:
+        if cfg.metacritic_enabled:
             browse_games = mc.scan_recent_games(
                 platform,
-                max_pages=cfg.browse_max_pages,
-                browse_cache_ttl_hours=cfg.browse_cache_ttl_hours,
+                max_games=cfg.metacritic_max_games,
+                metacritic_cache_ttl_hours=cfg.metacritic_cache_ttl_hours,
+                cutoff_date=cfg.metacritic_cutoff_date,
             )
             if browse_games:
                 thresholds = {
@@ -256,7 +267,10 @@ def run_acquisition(
                     days_since_release=cfg.days_since_release,
                 )
                 if new_pending:
-                    logger.info("Browse added {} new pending games", new_pending)
+                    logger.info(
+                        "Found {} new games on Metacritic — added to score-check queue",
+                        new_pending,
+                    )
         # After the browse step, re-verify every pending game against
         # the real Metacritic detail page.  Browse-page Nuxt data does
         # NOT carry standard 0\u2013100 metascores or 0\u201310 user scores
@@ -281,7 +295,7 @@ def run_acquisition(
             )
             if removed:
                 logger.info(
-                    "Removed {} pending games that failed real-score check",
+                    "Removed {} games from queue — Metacritic scores below thresholds",
                     removed,
                 )
 
@@ -290,11 +304,11 @@ def run_acquisition(
             from gamarr.library import LibraryScanner
 
             library = LibraryScanner(library_paths)
-        # Only fetch the FitGirl sitemap if there are pending games to
-        # match against it. This is the Metacritic-first ordering the
-        # user wants: Metacritic browse happens first, and FitGirl is
-        # only touched when there is something to look up.
-        if db.get_pending():
+        # Only fetch the FitGirl sitemap if there are score-checked games
+        # to match against it. Games whose real Metacritic scores haven't
+        # been checked yet wait for the next cycle and do NOT trigger the
+        # FitGirl sitemap fetch.
+        if db.has_verified_pending(platform=platform):
             source.fetch_sitemap(db)
         match_thresholds = {
             "min_metascore": cfg.min_metascore,
@@ -312,7 +326,7 @@ def run_acquisition(
             thresholds=match_thresholds,
         )
         if matched:
-            logger.info("Matched {} pending games to sources", len(matched))
+            logger.info("{} queued games found on FitGirl", len(matched))
 
         return matched
 
@@ -430,9 +444,9 @@ def _log_verify_progress(verified: int, max_verify: int, total: int) -> None:
     """Log periodic progress during score verification."""
     if verified > 0 and verified % 10 == 0:
         logger.info(
-            "Verified {} / {} pending games...",
+            "Score-checked {} of {} queued games...",
             verified,
-            min(max_verify, total),
+            total,
         )
 
 
@@ -447,8 +461,8 @@ def _scores_present(
 
 
 def _check_score_threshold(
-    value: Any,
-    threshold: Any,
+    value: float | None,
+    threshold: float,
 ) -> bool | None:
     """Compare a score value against a threshold if the value is meaningful (> 0).
 
@@ -459,7 +473,7 @@ def _check_score_threshold(
         return None
     if isinstance(value, (int, float)) and value <= 0:
         return None
-    return value >= threshold  # type: ignore[no-any-return]
+    return value >= threshold
 
 
 def _real_scores_pass_thresholds(
@@ -535,8 +549,9 @@ def _verify_pending_scores(
     for game in pending:
         if verified >= max_verify:
             logger.info(
-                "Verify limit reached ({} games) — {} pending games remain for next cycle",
+                "Score-check limit reached ({} of {}) — {} games will be checked next cycle",
                 max_verify,
+                total_pending,
                 total_pending - verified,
             )
             break
@@ -556,7 +571,7 @@ def _verify_pending_scores(
             db.remove_pending(str(game.slug))
             removed += 1
             logger.debug(
-                "Removed pending '{}' \u2014 not found on Metacritic detail page",
+                "Removed '{}' from queue \u2014 game not found on Metacritic page",
                 game.game_title,
             )
             continue
@@ -569,14 +584,14 @@ def _verify_pending_scores(
             removed += 1
             if _scores_present(result):
                 logger.debug(
-                    "Removed pending '{}' \u2014 real scores ({}, {}) fail thresholds",
+                    "Removed '{}' from queue \u2014 Metacritic scores ({}, {}) below thresholds",
                     game.game_title,
                     result.metascore,
                     result.user_score,
                 )
             else:
                 logger.debug(
-                    "Removed pending '{}' \u2014 no Metacritic scores yet",
+                    "Removed '{}' from queue \u2014 no Metacritic review scores yet",
                     game.game_title,
                 )
             continue
@@ -623,7 +638,7 @@ def _jit_verify_and_update(
     if jit_result is None or not (_scores_present(jit_result) and _real_scores_pass_thresholds(jit_result, thresholds)):
         db.remove_pending(game_slug)
         logger.debug(
-            "Skipped delivery for '{}' \u2014 real scores missing or fail thresholds",
+            "Skipped '{}' \u2014 scores missing or below thresholds",
             game_title,
         )
         return None
@@ -735,31 +750,39 @@ def _match_pending_games(
 
     Returns a list of result dicts.
     """
-    from gamarr.metacritic import _normalise_for_compare
+    from gamarr.utils import normalise_for_compare
 
     results: list[dict[str, Any]] = []
 
-    can_deliver = bool(qbt) + bool(magnet_fetcher) == 2
+    can_deliver = qbt is not None and magnet_fetcher is not None
 
-    # Match non-expired pending games
+    # Match non-expired pending games whose scores have been checked
+    # against the real Metacritic detail page.
     pending = db.get_pending()
     for game in pending:
+        # ── Score-check gate ──
+        # Games whose scores haven't been verified against the real
+        # Metacritic detail page (score_checks_passed=False/None) stay
+        # in the queue until the next cycle's score-check phase.
+        if not game.score_checks_passed:
+            continue
+
         game_title: str = str(game.game_title)
         game_slug: str = str(game.slug)
         game_platform: str = str(game.platform)
-        game_metascore: float | None = game.metascore  # type: ignore[assignment]
-        game_metascore_reviews: int | None = game.metascore_reviews  # type: ignore[assignment]
-        game_user_score: float | None = game.user_score  # type: ignore[assignment]
-        game_user_reviews: int | None = game.user_reviews  # type: ignore[assignment]
-        game_release_date: str | None = game.release_date  # type: ignore[assignment]
+        game_metascore: float | None = game.metascore
+        game_metascore_reviews: int | None = game.metascore_reviews
+        game_user_score: float | None = game.user_score
+        game_user_reviews: int | None = game.user_reviews
+        game_release_date: str | None = game.release_date
 
-        normalized = _normalise_for_compare(game_title)
+        normalized = normalise_for_compare(game_title)
         matches = db.match_source_title("fitgirl", normalized)
 
         if matches:
             best = matches[0]
             logger.info(
-                "Pending game '{}' matched to '{}' at {}",
+                "FitGirl match: '{}' \u2192 '{}' ({})",
                 game_title,
                 best["title"],
                 best["url"],
@@ -785,7 +808,7 @@ def _match_pending_games(
                     db.remove_pending(game_slug)
                     results.append(record_result)
                     logger.info(
-                        "Pending game '{}' already in library ({}); skipping",
+                        "Already owned: '{}' found in library at {}; skipping",
                         game_title,
                         lib_match.matched_path,
                     )
@@ -793,6 +816,7 @@ def _match_pending_games(
 
             # If qbt and magnet_fetcher are provided, deliver the torrent
             if can_deliver:
+                assert qbt is not None and magnet_fetcher is not None
                 result_dict = _deliver_with_jit_verify(
                     db,
                     mc,
@@ -806,7 +830,7 @@ def _match_pending_games(
                     game_user_reviews,
                     game_release_date,
                     qbt=qbt,
-                    magnet_fetcher=magnet_fetcher,  # type: ignore[arg-type]
+                    magnet_fetcher=magnet_fetcher,
                     notifier=notifier,
                     best=best,
                 )
@@ -830,7 +854,7 @@ def _match_pending_games(
             record_result["slug"] = game_slug
             db.remove_pending(game_slug)
             results.append(record_result)
-            logger.info("\u2713 Matched '{}' \u2014 recorded to history", game_title)
+            logger.info("\u2713 '{}' matched to FitGirl \u2014 logged (no downloader configured)", game_title)
         else:
             db.touch_pending(game_slug)
 
@@ -846,15 +870,15 @@ def _match_pending_games(
             source_url=f"mc:{game_slug}",
             game_title=game_title,
             platform=str(game.platform),
-            metascore=game.metascore,  # type: ignore[arg-type]
-            user_score=game.user_score,  # type: ignore[arg-type]
+            metascore=game.metascore,
+            user_score=game.user_score,
             result="Expired",
             result_details="Not available on any source within pending window",
         )
         record_result["slug"] = game_slug
         db.remove_pending(game_slug)
         results.append(record_result)
-        logger.info("Pending game '{}' expired \u2014 recorded to history", game_title)
+        logger.info("'{}' expired \u2014 queued too long, no FitGirl match found", game_title)
 
     return results
 
@@ -927,23 +951,23 @@ def _deliver_match(
         )
         return record_result
 
-    # Log game details (metascore, user score, release date) before
-    # the delivery confirmation so the user can see what passed.
-    title = _escape_markup(game_title)
-    ms = _escape_or(game_metascore, "TBD")
-    ms_r = _escape_or(game_metascore_reviews, "?")
-    us = _escape_or(game_user_score, "TBD")
-    us_r = _escape_or(game_user_reviews, "?")
-    release = _escape_or(game_release_date, "N/A")
-    sep = " <dim>|</dim> "
-    logger.opt(colors=True).info(
-        f"<cyan><bold>{title}</bold></cyan>"
-        f"{sep}<green>Metascore: <bold>{ms}</bold></green> <dim>({ms_r} reviews)</dim>"
-        f"{sep}<yellow>User: <bold>{us}</bold></yellow> <dim>({us_r} reviews)</dim>"
-        f"{sep}Released: <dim>{release}</dim>"
+    # Log game details before the delivery confirmation.
+    import types
+
+    _log_game_details(
+        types.SimpleNamespace(
+            title=game_title,
+            metascore=game_metascore,
+            metascore_review_count=game_metascore_reviews,
+            user_score=game_user_score,
+            user_review_count=game_user_reviews,
+            genres=None,
+            must_play=None,
+            release_date=game_release_date,
+        )
     )
 
-    logger.info("\u2713 Sent matched '{}' to qBittorrent (tag: {})", title, tag)
+    logger.info("\u2713 Sent matched '{}' to qBittorrent (tag: {})", _escape_markup(game_title), tag)
     record_result = _record_result(
         db,
         source="metacritic",
@@ -1019,7 +1043,7 @@ def _safe_notify(
         return
     try:
         getattr(notifier, method_name)(**kwargs)
-    except Exception as exc:  # noqa: BLE001 — notifier failures must not abort the cycle
+    except Exception as exc:  # Notifier failures must not abort the pipeline
         logger.warning("{} raised: {}", method_name, exc)
 
 
@@ -1067,7 +1091,10 @@ _SITEMAP_TIMEOUT = 30.0
 def _default_magnet_fetcher(url: str) -> str | None:
     """Fetch a FitGirl page and extract its magnet link."""
     try:
-        resp = requests.get(  # noqa: S310 — URL is sourced from the FitGirl sitemap index.
+        if not url.startswith("https://"):
+            logger.warning("Skipping non-HTTPS magnet source: {}", url)
+            return None
+        resp = requests.get(
             url,
             headers={"User-Agent": _USER_AGENT},
             timeout=_SITEMAP_TIMEOUT,

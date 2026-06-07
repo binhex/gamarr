@@ -159,7 +159,7 @@ class TestDaemonMode:
                 config.metacritic.platform_overrides["pc"].min_user_reviews = 10
                 config.metacritic.platform_overrides["pc"].days_since_release = 90
                 config.metacritic.platform_overrides["pc"].cache_ttl_days = 7
-                config.metacritic.platform_overrides["pc"].browse_cache_ttl_hours = 4
+                config.metacritic.platform_overrides["pc"].metacritic_cache_ttl_hours = 4
                 config.sources.fitgirl.rss_url = "http://example.com/feed"
                 config.sources.fitgirl.platform = "pc"
                 config.general.db_path = ":memory:"
@@ -205,7 +205,7 @@ class TestDaemonMode:
             config.metacritic.platform_overrides["pc"].min_user_reviews = 10
             config.metacritic.platform_overrides["pc"].days_since_release = 90
             config.metacritic.platform_overrides["pc"].cache_ttl_days = 7
-            config.metacritic.platform_overrides["pc"].browse_cache_ttl_hours = 4
+            config.metacritic.platform_overrides["pc"].metacritic_cache_ttl_hours = 4
             config.sources.fitgirl.rss_url = "http://example.com/feed"
             config.sources.fitgirl.platform = "pc"
             config.general.db_path = ":memory:"

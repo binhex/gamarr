@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from loguru import logger
 from pydantic import BaseModel, Field
 
 _CONFIG_VERSION = "1.0.0"
@@ -60,10 +61,11 @@ class MetacriticPlatformConfig(BaseModel):
     min_user_reviews: int = 10
     days_since_release: int = 90
     cache_ttl_days: int = 7
-    browse_cache_ttl_hours: int = 4
+    metacritic_cache_ttl_hours: int = 4
     pending_days: int = 30
-    browse_enabled: bool = True
-    browse_max_pages: int = Field(default=200, gt=0, le=500)
+    metacritic_enabled: bool = True
+    metacritic_max_games: int = Field(default=1000, gt=0, le=20000)
+    metacritic_cutoff_date: str | None = None
 
 
 class MetacriticConfig(BaseModel):
@@ -129,6 +131,63 @@ class Config(BaseModel):
     library: LibraryConfig = Field(default_factory=LibraryConfig)
 
 
+def _normalize_date_values(d: Any) -> Any:
+    """Recursively convert datetime.date objects to ISO strings in dicts/lists.
+
+    PyYAML parses ``2025-01-01`` as a ``datetime.date``, but the config
+    model expects ``str``.  This catches that conversion at load time.
+    """
+    import datetime
+
+    if isinstance(d, datetime.date):
+        return d.isoformat()
+    if isinstance(d, dict):
+        return {k: _normalize_date_values(v) for k, v in d.items()}
+    if isinstance(d, list):
+        return [_normalize_date_values(v) for v in d]
+    return d
+
+
+def _migrate_config(raw: dict[str, Any]) -> None:
+    """Migrate renamed config keys in-place for all platforms.
+
+    Handles:
+    - ``browse_max_pages`` → ``metacritic_max_games``
+    - ``browse_enabled`` → ``metacritic_enabled``
+    - ``browse_cutoff_date`` → ``metacritic_cutoff_date``
+    - ``browse_cache_ttl_hours`` → ``metacritic_cache_ttl_hours``
+    """
+    try:
+        overrides = raw.get("metacritic", {}).get("platform_overrides", {})
+        for platform_key, mc_pc in overrides.items():
+            if not isinstance(mc_pc, dict):
+                continue
+
+            if "browse_max_pages" in mc_pc:
+                del mc_pc["browse_max_pages"]
+                logger.info("Config: removed old key 'browse_max_pages' for platform '{}'", platform_key)
+
+            if "browse_enabled" in mc_pc:
+                mc_pc["metacritic_enabled"] = mc_pc.pop("browse_enabled")
+                logger.info("Config: migrated 'browse_enabled'→'metacritic_enabled' for platform '{}'", platform_key)
+
+            if "browse_cutoff_date" in mc_pc:
+                mc_pc["metacritic_cutoff_date"] = mc_pc.pop("browse_cutoff_date")
+                logger.info(
+                    "Config: migrated 'browse_cutoff_date'→'metacritic_cutoff_date' for platform '{}'", platform_key
+                )
+
+            if "browse_cache_ttl_hours" in mc_pc:
+                mc_pc["metacritic_cache_ttl_hours"] = mc_pc.pop("browse_cache_ttl_hours")
+                logger.info(
+                    "Config: migrated 'browse_cache_ttl_hours'→'metacritic_cache_ttl_hours' for platform '{}'",
+                    platform_key,
+                )
+
+    except Exception as exc:
+        logger.warning("Config migration failed: {}", exc)
+
+
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     """Recursively merge *override* into *base* (shallow copy of base)."""
     result = dict(base)
@@ -140,6 +199,34 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
         else:
             result[key] = value
     return result
+
+
+def _config_keys(d: dict[str, Any], prefix: str = "") -> set[str]:
+    """Return the full dotted key path set for a nested dict."""
+    keys: set[str] = set()
+    for k, v in d.items():
+        full = f"{prefix}.{k}" if prefix else k
+        keys.add(full)
+        if isinstance(v, dict):
+            keys |= _config_keys(v, full)
+    return keys
+
+
+def _needs_config_update(raw: dict[str, Any]) -> bool:
+    """Return True if *raw* is missing any keys present in the current defaults."""
+    raw_keys = _config_keys(raw)
+    default_keys = _config_keys(_default_config_dict())
+    return bool(default_keys - raw_keys)
+
+
+def _next_version(current: str) -> str:
+    """Bump the minor version component (e.g. 1.0.0 \u2192 1.1.0)."""
+    parts = current.split(".")
+    try:
+        minor = int(parts[1]) + 1 if len(parts) >= 2 else 1
+    except ValueError:
+        minor = 1
+    return f"{parts[0]}.{minor}.0"
 
 
 def _default_config_dict() -> dict[str, Any]:
@@ -190,5 +277,27 @@ def load_config(config_path: str | Path) -> Config:
     else:
         raw = loaded
 
+    # Migrate renamed fields
+    _migrate_config(raw)
+
     merged = _deep_merge(_default_config_dict(), raw)
+
+    # If the user's config file is missing any keys that the current
+    # model defines, write the merged config back to the file and bump
+    # the config version.  This keeps existing configs up-to-date
+    # automatically when new fields are added to the model.
+    if raw and _needs_config_update(raw):
+        old_version = raw.get("general", {}).get("config_version", _CONFIG_VERSION)
+        merged["general"]["config_version"] = _next_version(old_version)
+        with path.open("w", encoding="utf-8") as fh:
+            yaml.dump(merged, fh, default_flow_style=False, sort_keys=False)
+        logger.info(
+            "Config updated to version {} — added {} new fields",
+            merged["general"]["config_version"],
+            len(_config_keys(merged) - _config_keys(raw)),
+        )
+
+    # Convert any datetime.date objects back to ISO strings
+    # (PyYAML parses ``2025-01-01`` as a date, but the model expects str)
+    merged = _normalize_date_values(merged)
     return Config.model_validate(merged)

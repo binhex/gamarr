@@ -730,6 +730,13 @@ class TestMetacriticBrowse:
             release_date="2026-06-01",
             expires_at=expires,
         )
+        db.update_pending_scores(
+            slug="elden-ring",
+            metascore=96.0,
+            metascore_reviews=120,
+            user_score=8.5,
+            user_reviews=5000,
+        )
         db.rebuild_source_titles(
             "fitgirl",
             [{"title": "Elden Ring", "url": "https://fitgirl-repacks.site/elden-ring/"}],
@@ -781,6 +788,13 @@ class TestMetacriticBrowse:
             user_reviews=100,
             release_date="2026-06-01",
             expires_at=expires,
+        )
+        db.update_pending_scores(
+            slug="game-with-angle",
+            metascore=80.0,
+            metascore_reviews=10,
+            user_score=7.5,
+            user_reviews=100,
         )
         db.rebuild_source_titles(
             "fitgirl",
@@ -1166,8 +1180,12 @@ class TestMetacriticBrowse:
         assert len(matched) == 0, "Unverified game should NOT be delivered"
         # qBittorrent should NOT be called
         mock_qbt.add_torrent.assert_not_called()
-        # Game should be removed from pending (verification failed)
-        assert not db.is_pending("unverified-game"), "Game with failing scores should be removed from pending"
+        # MC should NOT be called (no JIT verification for unverified games)
+        mock_mc.lookup_game.assert_not_called()
+        # Magnet should NOT be fetched
+        magnet_fetcher.assert_not_called()
+        # Game should remain in queue until next score-check cycle
+        assert db.is_pending("unverified-game"), "Unverified game should stay pending until score-checked"
         db.close()
 
     def test_match_pending_delivers_verified_game(self, tmp_path: Path) -> None:
@@ -1194,6 +1212,16 @@ class TestMetacriticBrowse:
         db.rebuild_source_titles(
             "fitgirl",
             [{"title": "Verified Game", "url": "https://example.com/game"}],
+        )
+
+        mock_qbt = MagicMock()
+        # Mark the game as score-checked so it passes the gate in _match_pending_games
+        db.update_pending_scores(
+            slug="verified-game",
+            metascore=85.0,
+            metascore_reviews=20,
+            user_score=8.0,
+            user_reviews=100,
         )
 
         mock_qbt = MagicMock()
@@ -1277,6 +1305,11 @@ class TestMetacriticBrowse:
             user_score=8.5,
             expires_at=expires,
         )
+        db.update_pending_scores(
+            slug="elden-ring",
+            metascore=96.0,
+            user_score=8.5,
+        )
 
         db.rebuild_source_titles(
             "fitgirl",
@@ -1308,6 +1341,11 @@ class TestMetacriticBrowse:
             metascore=96.0,
             user_score=8.5,
             expires_at=expires,
+        )
+        db.update_pending_scores(
+            slug="elden-ring",
+            metascore=96.0,
+            user_score=8.5,
         )
         db.rebuild_source_titles(
             "fitgirl",
@@ -1347,6 +1385,11 @@ class TestMetacriticBrowse:
             user_score=8.5,
             expires_at=expires,
         )
+        db.update_pending_scores(
+            slug="elden-ring",
+            metascore=96.0,
+            user_score=8.5,
+        )
         db.rebuild_source_titles(
             "fitgirl",
             [{"title": "Elden Ring", "url": "https://fitgirl-repacks.site/elden-ring/"}],
@@ -1382,6 +1425,11 @@ class TestMetacriticBrowse:
             metascore=96.0,
             user_score=8.5,
             expires_at=expires,
+        )
+        db.update_pending_scores(
+            slug="elden-ring",
+            metascore=96.0,
+            user_score=8.5,
         )
         db.rebuild_source_titles(
             "fitgirl",
@@ -1442,6 +1490,11 @@ class TestMetacriticBrowse:
             user_score=8.5,
             expires_at=expires,
         )
+        db.update_pending_scores(
+            slug="elden-ring",
+            metascore=96.0,
+            user_score=8.5,
+        )
         db.rebuild_source_titles(
             "fitgirl",
             [{"title": "Elden Ring", "url": "https://fitgirl-repacks.site/elden-ring/"}],
@@ -1485,6 +1538,11 @@ class TestMetacriticBrowse:
             metascore=96.0,
             user_score=8.5,
             expires_at=expires,
+        )
+        db.update_pending_scores(
+            slug="elden-ring",
+            metascore=96.0,
+            user_score=8.5,
         )
         db.rebuild_source_titles(
             "fitgirl",
@@ -1532,6 +1590,12 @@ class TestMetacriticBrowse:
             [{"title": "Elden Ring", "url": "https://fitgirl-repacks.site/elden-ring/"}],
         )
 
+        db.update_pending_scores(
+            slug="elden-ring",
+            metascore=96.0,
+            user_score=8.5,
+        )
+
         mock_qbt = MagicMock()
         mock_notifier = MagicMock()
         # Magnet fetcher returns None (failure)
@@ -1573,6 +1637,11 @@ class TestMetacriticBrowse:
             metascore=96.0,
             user_score=8.5,
             expires_at=expires,
+        )
+        db.update_pending_scores(
+            slug="elden-ring",
+            metascore=96.0,
+            user_score=8.5,
         )
         db.rebuild_source_titles(
             "fitgirl",
@@ -1619,6 +1688,11 @@ class TestMetacriticBrowse:
             metascore=96.0,
             user_score=8.5,
             expires_at=expires,
+        )
+        db.update_pending_scores(
+            slug="elden-ring",
+            metascore=96.0,
+            user_score=8.5,
         )
         db.rebuild_source_titles(
             "fitgirl",

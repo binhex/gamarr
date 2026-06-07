@@ -278,25 +278,25 @@ class TestNormaliseForCompare:
     """Title normalisation for fuzzy matching."""
 
     def test_normalise_simple(self) -> None:
-        from gamarr.metacritic import _normalise_for_compare
+        from gamarr.utils import normalise_for_compare
 
-        assert _normalise_for_compare("Elden Ring") == "elden ring"
+        assert normalise_for_compare("Elden Ring") == "elden ring"
 
     def test_normalise_punctuation(self) -> None:
-        from gamarr.metacritic import _normalise_for_compare
+        from gamarr.utils import normalise_for_compare
 
-        assert _normalise_for_compare("Baldur's Gate 3!") == "baldurs gate 3"
+        assert normalise_for_compare("Baldur's Gate 3!") == "baldurs gate 3"
 
     def test_normalise_whitespace(self) -> None:
-        from gamarr.metacritic import _normalise_for_compare
+        from gamarr.utils import normalise_for_compare
 
-        assert _normalise_for_compare("  Game   Name  ") == "game name"
+        assert normalise_for_compare("  Game   Name  ") == "game name"
 
     def test_normalise_en_dash(self) -> None:
         """Strip en-dash (U+2013) like other punctuation."""
-        from gamarr.metacritic import _normalise_for_compare
+        from gamarr.utils import normalise_for_compare
 
-        result = _normalise_for_compare("Magin: The Rat Project Stories \u2013 Essence Edition")
+        result = normalise_for_compare("Magin: The Rat Project Stories \u2013 Essence Edition")
         assert result == "magin the rat project stories essence edition"
 
 
@@ -661,7 +661,7 @@ class TestScanRecentGames:
 
         client = MetacriticClient(cache_path=":memory:")
         with patch.object(client, "_fetch_browse_page", return_value=None):
-            result = client.scan_recent_games("pc", max_pages=1)
+            result = client.scan_recent_games("pc", max_games=1)
         assert result == []
 
 

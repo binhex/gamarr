@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from loguru import logger
 
 
@@ -21,7 +23,7 @@ class Notifier:
         self._on_error = on_error
         self._apprise = self._init_apprise()
 
-    def _init_apprise(self) -> object | None:
+    def _init_apprise(self) -> Any:
         if not self._urls:
             return None
         try:
@@ -30,7 +32,7 @@ class Notifier:
             apobj = apprise.Apprise()
             for url in self._urls:
                 apobj.add(url)
-            return apobj  # type: ignore
+            return apobj
         except Exception as exc:
             logger.warning("Failed to initialise Apprise: {}", exc)
             return None
@@ -69,6 +71,6 @@ class Notifier:
         if not self._apprise:
             return
         try:
-            self._apprise.notify(title=title, body=body)  # type: ignore[attr-defined]
+            self._apprise.notify(title=title, body=body)
         except Exception as exc:
             logger.warning("Failed to send notification '{}': {}", title, exc)

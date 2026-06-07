@@ -8,8 +8,9 @@ from pathlib import Path
 from typing import Any
 
 from loguru import logger
-from sqlalchemy import Column, Float, Integer, String, Text, create_engine
-from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy import Boolean, Float, Integer, String, Text, create_engine, text
+from sqlalchemy import inspect as sa_inspect
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 
 class Base(DeclarativeBase):
@@ -21,19 +22,19 @@ class HistoryRow(Base):
 
     __tablename__ = "history"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    source = Column(String, nullable=False, index=True)
-    source_title = Column(String, nullable=False)
-    source_url = Column(String, nullable=True)
-    game_title = Column(String, nullable=True)
-    platform = Column(String, nullable=False)
-    metascore = Column(Float, nullable=True)
-    user_score = Column(Float, nullable=True)
-    result = Column(String, nullable=False)
-    result_details = Column(Text, nullable=True)
-    magnet_url = Column(String, nullable=True)
-    torrent_tag = Column(String, nullable=True)
-    processed_at = Column(String, nullable=False)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    source_title: Mapped[str] = mapped_column(String, nullable=False)
+    source_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    game_title: Mapped[str | None] = mapped_column(String, nullable=True)
+    platform: Mapped[str] = mapped_column(String, nullable=False)
+    metascore: Mapped[float | None] = mapped_column(Float, nullable=True)
+    user_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    result: Mapped[str] = mapped_column(String, nullable=False)
+    result_details: Mapped[str | None] = mapped_column(Text, nullable=True)
+    magnet_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    torrent_tag: Mapped[str | None] = mapped_column(String, nullable=True)
+    processed_at: Mapped[str] = mapped_column(String, nullable=False)
 
 
 class PendingGame(Base):
@@ -41,18 +42,19 @@ class PendingGame(Base):
 
     __tablename__ = "pending_games"
 
-    slug = Column(String, primary_key=True)
-    game_title = Column(String, nullable=False)
-    platform = Column(String, nullable=False)
-    metascore = Column(Float, nullable=True)
-    metascore_reviews = Column(Integer, nullable=True)
-    user_score = Column(Float, nullable=True)
-    user_reviews = Column(Integer, nullable=True)
-    genres = Column(String, nullable=True)
-    release_date = Column(String, nullable=True)
-    discovered_at = Column(String, nullable=False)
-    expires_at = Column(String, nullable=False)
-    last_checked_at = Column(String, nullable=True)
+    slug: Mapped[str] = mapped_column(String, primary_key=True)
+    game_title: Mapped[str] = mapped_column(String, nullable=False)
+    platform: Mapped[str] = mapped_column(String, nullable=False)
+    metascore: Mapped[float | None] = mapped_column(Float, nullable=True)
+    metascore_reviews: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    user_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    user_reviews: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    genres: Mapped[str | None] = mapped_column(String, nullable=True)
+    release_date: Mapped[str | None] = mapped_column(String, nullable=True)
+    discovered_at: Mapped[str] = mapped_column(String, nullable=False)
+    expires_at: Mapped[str] = mapped_column(String, nullable=False)
+    last_checked_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    score_checks_passed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
 
 class SourceTitle(Base):
@@ -60,9 +62,9 @@ class SourceTitle(Base):
 
     __tablename__ = "source_titles"
 
-    source = Column(String, primary_key=True)
-    title = Column(String, nullable=False)
-    url = Column(String, primary_key=True)
+    source: Mapped[str] = mapped_column(String, primary_key=True)
+    title: Mapped[str] = mapped_column(String, nullable=False)
+    url: Mapped[str] = mapped_column(String, primary_key=True)
 
 
 class Database:
@@ -82,7 +84,21 @@ class Database:
         self._engine = create_engine(f"sqlite:///{self._db_path}", echo=False)
         Base.metadata.create_all(self._engine)
         self._session_factory = sessionmaker(bind=self._engine)
+        self._migrate()
         logger.debug("Database opened at '{}'", self._db_path)
+
+    def _migrate(self) -> None:
+        """Add columns added in newer versions of gamarr."""
+        try:
+            inspector = sa_inspect(self._engine)
+            columns = [c["name"] for c in inspector.get_columns("pending_games")]
+            if "score_checks_passed" not in columns:
+                with self._session() as session:
+                    session.execute(text("ALTER TABLE pending_games ADD COLUMN score_checks_passed INTEGER"))
+                    session.commit()
+                logger.debug("Added score_checks_passed column to pending_games")
+        except Exception:
+            pass  # Migration best-effort
 
     def close(self) -> None:
         self._engine.dispose()
@@ -146,7 +162,7 @@ class Database:
         with self._session() as session:
             row = session.get(PendingGame, slug)
             if row is not None:
-                row.last_checked_at = now  # type: ignore[assignment]
+                row.last_checked_at = now
                 session.commit()
 
     def remove_pending(self, slug: str) -> None:
@@ -171,18 +187,32 @@ class Database:
             if row is None:
                 return
             if metascore is not None:
-                row.metascore = metascore  # type: ignore[assignment]
+                row.metascore = metascore
             if metascore_reviews is not None:
-                row.metascore_reviews = metascore_reviews  # type: ignore[assignment]
+                row.metascore_reviews = metascore_reviews
             if user_score is not None:
-                row.user_score = user_score  # type: ignore[assignment]
+                row.user_score = user_score
             if user_reviews is not None:
-                row.user_reviews = user_reviews  # type: ignore[assignment]
+                row.user_reviews = user_reviews
+            row.score_checks_passed = True
+            now = datetime.datetime.now(tz=datetime.UTC).isoformat()
+            row.last_checked_at = now
             session.commit()
 
     def is_pending(self, slug: str) -> bool:
         with self._session() as session:
             return session.get(PendingGame, slug) is not None
+
+    def has_verified_pending(self, *, platform: str | None = None) -> bool:
+        """Return True if any score-checked games are waiting in the queue."""
+        with self._session() as session:
+            query = session.query(PendingGame).filter(
+                PendingGame.score_checks_passed == True,  # noqa: E712
+                PendingGame.expires_at > datetime.datetime.now(tz=datetime.UTC).isoformat(),
+            )
+            if platform is not None:
+                query = query.filter(PendingGame.platform == platform)
+            return query.first() is not None
 
     def rebuild_source_titles(self, source: str, titles: list[dict[str, str]]) -> None:
         with self._session() as session:
@@ -204,13 +234,13 @@ class Database:
         return [{"title": str(row.title), "url": str(row.url)} for row in rows]
 
     def match_source_title(self, source: str, normalized_title: str) -> list[dict[str, str]]:
-        from gamarr.metacritic import _normalise_for_compare
+        from gamarr.utils import normalise_for_compare
 
         with self._session() as session:
             rows = session.query(SourceTitle).filter(SourceTitle.source == source).all()
         results = []
         for row in rows:
-            if _normalise_for_compare(str(row.title)) == normalized_title:
+            if normalise_for_compare(str(row.title)) == normalized_title:
                 results.append({"title": str(row.title), "url": str(row.url)})
         return results
 
@@ -265,9 +295,13 @@ class Database:
             passed = session.query(HistoryRow).filter(HistoryRow.result == "Passed").count()
             failed = session.query(HistoryRow).filter(HistoryRow.result == "Failed").count()
             already_owned = session.query(HistoryRow).filter(HistoryRow.result == "Already owned").count()
+            error = session.query(HistoryRow).filter(HistoryRow.result == "Error").count()
+            expired = session.query(HistoryRow).filter(HistoryRow.result == "Expired").count()
             return {
                 "total": total,
                 "passed": passed,
                 "failed": failed,
                 "already_owned": already_owned,
+                "error": error,
+                "expired": expired,
             }

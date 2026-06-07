@@ -59,7 +59,7 @@ class MetacriticCache:
             A dict with keys ``metascore``, ``metascore_reviews``,
             ``user_score``, ``user_reviews``, or ``None`` if not found or expired.
         """
-        cutoff = (datetime.datetime.now() - datetime.timedelta(days=ttl_days)).isoformat()
+        cutoff = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=ttl_days)).isoformat()
         row = self._conn.execute(
             "SELECT * FROM game_detail_cache WHERE slug = ? AND cached_at > ?",
             (slug, cutoff),
@@ -94,7 +94,14 @@ class MetacriticCache:
             """INSERT OR REPLACE INTO game_detail_cache
                (slug, metascore, metascore_reviews, user_score, user_reviews, cached_at)
                VALUES (?, ?, ?, ?, ?, ?)""",
-            (slug, metascore, metascore_reviews, user_score, user_reviews, datetime.datetime.now().isoformat()),
+            (
+                slug,
+                metascore,
+                metascore_reviews,
+                user_score,
+                user_reviews,
+                datetime.datetime.now(tz=datetime.UTC).isoformat(),
+            ),
         )
         self._conn.commit()
 
@@ -122,7 +129,7 @@ class MetacriticCache:
         Returns:
             A list of game dicts, or ``None`` if not found or expired.
         """
-        cutoff = (datetime.datetime.now() - datetime.timedelta(hours=ttl_hours)).isoformat()
+        cutoff = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(hours=ttl_hours)).isoformat()
         row = self._conn.execute(
             "SELECT games_json FROM browse_page_cache WHERE platform = ? AND page_number = ? AND cached_at > ?",
             (platform, page_number, cutoff),
@@ -142,6 +149,6 @@ class MetacriticCache:
         self._conn.execute(
             """INSERT OR REPLACE INTO browse_page_cache (platform, page_number, games_json, cached_at)
                VALUES (?, ?, ?, ?)""",
-            (platform, page_number, json.dumps(games), datetime.datetime.now().isoformat()),
+            (platform, page_number, json.dumps(games), datetime.datetime.now(tz=datetime.UTC).isoformat()),
         )
         self._conn.commit()
