@@ -83,11 +83,112 @@ class TestDatabase:
         db = Database(str(tmp_path / "test.db"))
         with db._session() as session:
             from sqlalchemy import text
-            tables = [row[0] for row in session.execute(text(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            ))]
+
+            tables = [row[0] for row in session.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))]
         assert "game_detail_cache" in tables
         assert "browse_page_cache" in tables
+        assert "sitemap_cache" in tables
+        db.close()
+
+    def test_get_game_detail_cache_miss(self, tmp_path: Path) -> None:
+        """Fresh cache should return None."""
+        from gamarr.database import Database
+
+        db = Database(str(tmp_path / "test.db"))
+        assert db.get_game_detail_cache("elden-ring", ttl_days=7) is None
+        db.close()
+
+    def test_get_game_detail_cache_hit(self, tmp_path: Path) -> None:
+        """After setting, cache should return the stored values."""
+        from gamarr.database import Database
+
+        db = Database(str(tmp_path / "test.db"))
+        db.set_game_detail_cache("elden-ring", metascore=96.0, metascore_reviews=120, user_score=8.5, user_reviews=5000)
+        result = db.get_game_detail_cache("elden-ring", ttl_days=7)
+        assert result is not None
+        assert result["metascore"] == 96.0
+        assert result["metascore_reviews"] == 120
+        assert result["user_score"] == 8.5
+        assert result["user_reviews"] == 5000
+        db.close()
+
+    def test_get_game_detail_cache_expired(self, tmp_path: Path) -> None:
+        """An expired cache entry should return None."""
+        import datetime
+
+        from gamarr.database import Database, GameDetailCache
+
+        db = Database(str(tmp_path / "test.db"))
+        db.set_game_detail_cache("old-game", metascore=50.0, user_score=5.0)
+        past = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=14)).isoformat()
+        with db._session() as session:
+            row = session.get(GameDetailCache, "old-game")
+            assert row is not None
+            row.cached_at = past
+            session.commit()
+        assert db.get_game_detail_cache("old-game", ttl_days=7) is None
+        db.close()
+
+    def test_get_browse_page_cache_miss(self, tmp_path: Path) -> None:
+        """Fresh browse page cache should return None."""
+        from gamarr.database import Database
+
+        db = Database(str(tmp_path / "test.db"))
+        assert db.get_browse_page_cache("pc", 1, ttl_hours=4) is None
+        db.close()
+
+    def test_get_browse_page_cache_hit(self, tmp_path: Path) -> None:
+        """After setting, browse cache should return games list."""
+        from gamarr.database import Database
+
+        db = Database(str(tmp_path / "test.db"))
+        games = [{"title": "Game", "slug": "game"}]
+        db.set_browse_page_cache("pc", 1, games)
+        result = db.get_browse_page_cache("pc", 1, ttl_hours=4)
+        assert result is not None
+        assert result[0]["slug"] == "game"
+        db.close()
+
+    def test_get_sitemap_cache_zero_ttl(self, tmp_path: Path) -> None:
+        """With ttl_hours <= 0, get_sitemap_cache should return False."""
+        from gamarr.database import Database
+
+        db = Database(str(tmp_path / "test.db"))
+        assert db.get_sitemap_cache("fitgirl", ttl_hours=0) is False
+        db.close()
+
+    def test_get_sitemap_cache_miss(self, tmp_path: Path) -> None:
+        """Before setting, sitemap cache should miss."""
+        from gamarr.database import Database
+
+        db = Database(str(tmp_path / "test.db"))
+        assert db.get_sitemap_cache("fitgirl", ttl_hours=6) is False
+        db.close()
+
+    def test_get_sitemap_cache_hit(self, tmp_path: Path) -> None:
+        """After setting, sitemap cache should hit."""
+        from gamarr.database import Database
+
+        db = Database(str(tmp_path / "test.db"))
+        db.set_sitemap_cache("fitgirl")
+        assert db.get_sitemap_cache("fitgirl", ttl_hours=6) is True
+        db.close()
+
+    def test_get_sitemap_cache_expired(self, tmp_path: Path) -> None:
+        """An expired sitemap cache should miss."""
+        import datetime
+
+        from gamarr.database import Database, SitemapCache
+
+        db = Database(str(tmp_path / "test.db"))
+        db.set_sitemap_cache("fitgirl")
+        past = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(hours=12)).isoformat()
+        with db._session() as session:
+            row = session.get(SitemapCache, "fitgirl")
+            assert row is not None
+            row.cached_at = past
+            session.commit()
+        assert db.get_sitemap_cache("fitgirl", ttl_hours=6) is False
         db.close()
 
 

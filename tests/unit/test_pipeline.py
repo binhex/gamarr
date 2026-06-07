@@ -306,6 +306,24 @@ class TestEvaluateScores:
         }
         assert _game_passes_thresholds(game, thresholds) is False
 
+    def test_browse_game_fails_when_metascore_missing(self) -> None:
+        """A game with no metascore should fail the threshold check."""
+        from gamarr.pipeline import _game_passes_thresholds
+
+        game = {
+            "title": "No Metascore Game",
+            "slug": "no-ms",
+            "score": None,
+            "user_rating": 8.0,
+        }
+        thresholds = {
+            "min_metascore": 75,
+            "min_metascore_reviews": 5,
+            "min_user_score": 7.5,
+            "min_user_reviews": 10,
+        }
+        assert _game_passes_thresholds(game, thresholds) is False
+
     def test_browse_game_passes_thresholds_without_critic_review_count(self) -> None:
         """Browse-page games without critic_review_count should pass if score is high."""
         from gamarr.pipeline import _game_passes_thresholds
@@ -1261,6 +1279,48 @@ class TestMetacriticBrowse:
         mock_qbt.add_torrent.assert_called_once()
         db.close()
 
+    def test_match_pending_skips_fitgirl_excluded_keyword(self, tmp_path: Path) -> None:
+        """A matched game should be skipped when its FitGirl title contains an excluded keyword."""
+        import datetime
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _match_pending_games
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="007-first-light",
+            game_title="007 First Light",
+            platform="pc",
+            metascore=85.0,
+            user_score=8.0,
+            expires_at=expires,
+        )
+        db.update_pending_scores(slug="007-first-light", metascore=85.0, user_score=8.0)
+        # FitGirl title contains "HV"
+        db.rebuild_source_titles(
+            "fitgirl",
+            [{"title": "007 First Light [FitGirl HV Repack]", "url": "https://example.com/007"}],
+        )
+
+        mock_qbt = MagicMock()
+        mock_qbt.add_torrent.return_value = "gamarr-tag"
+        magnet_fetcher = MagicMock(return_value="magnet:?xt=urn:btih:test")
+
+        matched = _match_pending_games(
+            db,
+            qbt=mock_qbt,
+            magnet_fetcher=magnet_fetcher,
+            exclude_keywords=["HV"],
+        )
+        # Game should NOT be delivered — FitGirl title was excluded by keyword
+        assert len(matched) == 0
+        mock_qbt.add_torrent.assert_not_called()
+        # Game should still be pending (not removed, not expired)
+        assert db.is_pending("007-first-light"), "Game should remain pending when match is skipped"
+        db.close()
+
     def test_browse_qualifying_games_inserts_pending(self, tmp_path: Path) -> None:
         from gamarr.database import Database
         from gamarr.pipeline import _process_browse_games
@@ -1831,6 +1891,57 @@ class TestMetacriticBrowse:
         assert pending[0].slug == "recent-game"
         db.close()
 
+    def test_browse_skips_keyword_excluded_games(self, tmp_path: Path) -> None:
+        """Games with titles matching exclude_keywords should not be added."""
+        from gamarr.database import Database
+        from gamarr.pipeline import _process_browse_games
+
+        db = Database(str(tmp_path / "test.db"))
+        games = [
+            {
+                "title": "Real Game",
+                "slug": "real-game",
+                "score": 85,
+                "user_rating": 8.0,
+            },
+            {
+                "title": "Real Game DLC",
+                "slug": "real-game-dlc",
+                "score": 85,
+                "user_rating": 8.0,
+            },
+            {
+                "title": "Game Soundtrack",
+                "slug": "game-soundtrack",
+                "score": 85,
+                "user_rating": 8.0,
+            },
+            {
+                "title": "Bundle of Games",
+                "slug": "bundle-of-games",
+                "score": 85,
+                "user_rating": 8.0,
+            },
+        ]
+        thresholds = {
+            "min_metascore": 0,
+            "min_metascore_reviews": 0,
+            "min_user_score": 0.0,
+            "min_user_reviews": 0,
+        }
+        new_count = _process_browse_games(
+            games,
+            "pc",
+            db,
+            thresholds,
+            pending_days=30,
+            exclude_keywords=["DLC", "Soundtrack", "Bundle"],
+        )
+        assert new_count == 1, "Only the non-excluded game should be added"
+        pending = db.get_pending()
+        assert pending[0].slug == "real-game"
+        db.close()
+
 
 class TestRunAcquisitionMetacritic:
     """Full acquisition cycle with Metacritic browse enabled."""
@@ -2001,6 +2112,118 @@ class TestRunAcquisitionMetacritic:
         )
         # Belt-and-suspenders: sitemap should be called exactly once.
         mock_source.fetch_sitemap.assert_called_once()
+
+
+class TestVerifyPendingScoresEdgeCases:
+    """_verify_pending_scores edge cases."""
+
+    def test_scores_present_with_no_valid_scores(self) -> None:
+        """_scores_present returns False when all scores are None/0."""
+        import types
+
+        from gamarr.pipeline import _scores_present
+
+        result = types.SimpleNamespace(
+            metascore=0.0,
+            metascore_review_count=None,
+            user_score=0.0,
+            user_review_count=0,
+            genres=None,
+            must_play=False,
+            release_date=None,
+        )
+        assert _scores_present(result) is False
+        assert _scores_present(None) is False
+
+    def test_scores_present_with_valid_user_score(self) -> None:
+        """_scores_present returns True when user_score is valid."""
+        import types
+
+        from gamarr.pipeline import _scores_present
+
+        result = types.SimpleNamespace(
+            metascore=0.0,
+            metascore_review_count=None,
+            user_score=8.0,
+            user_review_count=100,
+            genres=None,
+            must_play=False,
+            release_date=None,
+        )
+        assert _scores_present(result) is True
+
+    def test_match_pending_jit_removes_game_with_failing_scores(self, tmp_path: Path) -> None:
+        """When JIT verification reveals failing scores, the game should be removed."""
+        import datetime
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _match_pending_games
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="failing-jit",
+            game_title="Failing JIT Game",
+            platform="pc",
+            metascore=85.0,
+            user_score=8.0,
+            expires_at=expires,
+        )
+        # Mark as score-checked so it passes the gate
+        db.update_pending_scores(slug="failing-jit", metascore=85.0, user_score=8.0)
+        db.rebuild_source_titles(
+            "fitgirl",
+            [{"title": "Failing JIT Game", "url": "https://example.com/failing-jit"}],
+        )
+
+        mock_qbt = MagicMock()
+        mock_qbt.add_torrent.return_value = "gamarr-tag"
+        mock_mc = MagicMock()
+        mock_mc.lookup_game.return_value = None  # Detail page not found
+        magnet_fetcher = MagicMock(return_value="magnet:?xt=urn:btih:test")
+
+        thresholds = {
+            "min_metascore": 75,
+            "min_metascore_reviews": 5,
+            "min_user_score": 7.5,
+            "min_user_reviews": 10,
+        }
+
+        matched = _match_pending_games(
+            db,
+            qbt=mock_qbt,
+            magnet_fetcher=magnet_fetcher,
+            mc=mock_mc,
+            thresholds=thresholds,
+        )
+        # Game should be removed (JIT verification failed) — no results
+        assert len(matched) == 0
+        assert not db.is_pending("failing-jit"), "Game should be removed from pending"
+        # qBittorrent should NOT be called
+        mock_qbt.add_torrent.assert_not_called()
+        db.close()
+
+    def test_verify_pending_max_verify_zero_returns_early(self, tmp_path: Path) -> None:
+        """With max_verify=0, _verify_pending_scores should return 0 without any lookups."""
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _verify_pending_scores
+
+        db = Database(str(tmp_path / "test.db"))
+        mock_mc = MagicMock()
+
+        removed = _verify_pending_scores(
+            db,
+            mock_mc,
+            "pc",
+            {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10},
+            max_verify=0,
+        )
+        assert removed == 0
+        mock_mc.lookup_game.assert_not_called()
+        db.close()
 
 
 class TestLogGameDetails:

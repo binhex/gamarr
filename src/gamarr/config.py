@@ -44,6 +44,8 @@ class FitGirlSourceConfig(BaseModel):
     enabled: bool = True
     rss_url: str = "https://fitgirl-repacks.site/feed/"
     platform: str = "pc"
+    cache_ttl_hours: int = Field(default=6, gt=0, le=168)
+    exclude_keywords: list[str] = Field(default_factory=list)
 
 
 class SourcesConfig(BaseModel):
@@ -61,11 +63,13 @@ class MetacriticPlatformConfig(BaseModel):
     min_user_reviews: int = 10
     days_since_release: int = 90
     cache_ttl_days: int = 7
-    metacritic_cache_ttl_hours: int = 4
+    cache_ttl_hours: int = 4
     pending_days: int = 30
-    metacritic_enabled: bool = True
-    metacritic_max_games: int = Field(default=1000, gt=0, le=20000)
-    metacritic_cutoff_date: str | None = None
+    enabled: bool = True
+    max_games: int = Field(default=1000, ge=0, le=20000)
+    max_score_checks: int = Field(default=200, gt=0, le=10000)
+    cutoff_date: str | None = None
+    exclude_keywords: list[str] = Field(default_factory=list)
 
 
 class MetacriticConfig(BaseModel):
@@ -148,41 +152,33 @@ def _normalize_date_values(d: Any) -> Any:
     return d
 
 
-def _migrate_config(raw: dict[str, Any]) -> None:
-    """Migrate renamed config keys in-place for all platforms.
+def _rename_config_key(mc_pc: dict[str, Any], old_key: str, new_key: str | None, platform_key: str) -> None:
+    """Rename *old_key* to *new_key* in *mc_pc* if it exists, logging the migration."""
+    if old_key in mc_pc:
+        if new_key is None:
+            del mc_pc[old_key]
+            logger.info("Config: removed old key '{}' for platform '{}'", old_key, platform_key)
+        else:
+            mc_pc[new_key] = mc_pc.pop(old_key)
+            logger.info("Config: migrated '{}'\u2192'{}' for platform '{}'", old_key, new_key, platform_key)
 
-    Handles:
-    - ``browse_max_pages`` → ``metacritic_max_games``
-    - ``browse_enabled`` → ``metacritic_enabled``
-    - ``browse_cutoff_date`` → ``metacritic_cutoff_date``
-    - ``browse_cache_ttl_hours`` → ``metacritic_cache_ttl_hours``
-    """
+
+def _migrate_config(raw: dict[str, Any]) -> None:
+    """Migrate renamed config keys in-place for all platforms."""
     try:
         overrides = raw.get("metacritic", {}).get("platform_overrides", {})
         for platform_key, mc_pc in overrides.items():
             if not isinstance(mc_pc, dict):
                 continue
 
-            if "browse_max_pages" in mc_pc:
-                del mc_pc["browse_max_pages"]
-                logger.info("Config: removed old key 'browse_max_pages' for platform '{}'", platform_key)
-
-            if "browse_enabled" in mc_pc:
-                mc_pc["metacritic_enabled"] = mc_pc.pop("browse_enabled")
-                logger.info("Config: migrated 'browse_enabled'→'metacritic_enabled' for platform '{}'", platform_key)
-
-            if "browse_cutoff_date" in mc_pc:
-                mc_pc["metacritic_cutoff_date"] = mc_pc.pop("browse_cutoff_date")
-                logger.info(
-                    "Config: migrated 'browse_cutoff_date'→'metacritic_cutoff_date' for platform '{}'", platform_key
-                )
-
-            if "browse_cache_ttl_hours" in mc_pc:
-                mc_pc["metacritic_cache_ttl_hours"] = mc_pc.pop("browse_cache_ttl_hours")
-                logger.info(
-                    "Config: migrated 'browse_cache_ttl_hours'→'metacritic_cache_ttl_hours' for platform '{}'",
-                    platform_key,
-                )
+            _rename_config_key(mc_pc, "browse_max_pages", None, platform_key)
+            _rename_config_key(mc_pc, "browse_enabled", "enabled", platform_key)
+            _rename_config_key(mc_pc, "browse_cutoff_date", "cutoff_date", platform_key)
+            _rename_config_key(mc_pc, "browse_cache_ttl_hours", "cache_ttl_hours", platform_key)
+            _rename_config_key(mc_pc, "metacritic_enabled", "enabled", platform_key)
+            _rename_config_key(mc_pc, "metacritic_max_games", "max_games", platform_key)
+            _rename_config_key(mc_pc, "metacritic_cutoff_date", "cutoff_date", platform_key)
+            _rename_config_key(mc_pc, "metacritic_cache_ttl_hours", "cache_ttl_hours", platform_key)
 
     except Exception as exc:
         logger.warning("Config migration failed: {}", exc)

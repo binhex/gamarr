@@ -50,7 +50,75 @@ class TestConfigModels:
         assert cfg.min_metascore == 75
         assert cfg.min_user_score == 7.5
         assert cfg.days_since_release == 90
-        assert cfg.metacritic_max_games == 1000
+        assert cfg.max_games == 1000
+        assert cfg.max_score_checks == 200
+
+    def test_migrate_config_renames_browse_keys(self) -> None:
+        """_migrate_config should rename old browse_* keys to metacritic_*."""
+        from gamarr.config import _migrate_config
+
+        raw = {
+            "metacritic": {
+                "platform_overrides": {
+                    "pc": {
+                        "browse_max_pages": 200,
+                        "browse_enabled": True,
+                        "browse_cutoff_date": "2025-01-01",
+                        "browse_cache_ttl_hours": 4,
+                    }
+                }
+            }
+        }
+        _migrate_config(raw)
+        mc_pc = raw["metacritic"]["platform_overrides"]["pc"]
+        assert "browse_max_pages" not in mc_pc
+        assert "browse_enabled" not in mc_pc
+        assert "browse_cutoff_date" not in mc_pc
+        assert "browse_cache_ttl_hours" not in mc_pc
+        assert mc_pc["enabled"] is True
+        assert mc_pc["cutoff_date"] == "2025-01-01"
+        assert mc_pc["cache_ttl_hours"] == 4
+
+    def test_migrate_config_ignores_non_dict_overrides(self) -> None:
+        """_migrate_config should skip platform overrides that are not dicts."""
+        from gamarr.config import _migrate_config
+
+        raw = {
+            "metacritic": {
+                "platform_overrides": {
+                    "pc": "not-a-dict",
+                }
+            }
+        }
+        _migrate_config(raw)  # Should not raise
+        assert raw["metacritic"]["platform_overrides"]["pc"] == "not-a-dict"
+
+    def test_migrate_config_renames_metacritic_keys(self) -> None:
+        """_migrate_config should rename metacritic_* keys to bare names."""
+        from gamarr.config import _migrate_config
+
+        raw = {
+            "metacritic": {
+                "platform_overrides": {
+                    "pc": {
+                        "metacritic_enabled": False,
+                        "metacritic_max_games": 500,
+                        "metacritic_cutoff_date": "2026-06-01",
+                        "metacritic_cache_ttl_hours": 12,
+                    }
+                }
+            }
+        }
+        _migrate_config(raw)
+        mc_pc = raw["metacritic"]["platform_overrides"]["pc"]
+        assert "metacritic_enabled" not in mc_pc
+        assert "metacritic_max_games" not in mc_pc
+        assert "metacritic_cutoff_date" not in mc_pc
+        assert "metacritic_cache_ttl_hours" not in mc_pc
+        assert mc_pc["enabled"] is False
+        assert mc_pc["max_games"] == 500
+        assert mc_pc["cutoff_date"] == "2026-06-01"
+        assert mc_pc["cache_ttl_hours"] == 12
 
     def test_qbittorrent_config_defaults(self) -> None:
         cfg = QbittorrentConfig()

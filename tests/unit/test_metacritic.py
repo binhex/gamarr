@@ -650,6 +650,51 @@ class TestScanBrowseCacheHit:
         assert "great game" in result["description"]
 
 
+class TestDateParsing:
+    """_is_before_date and _parse_date_flexible helpers."""
+
+    def test_parse_date_flexible_iso(self) -> None:
+        from gamarr.metacritic import _parse_date_flexible
+
+        d = _parse_date_flexible("2025-01-01")
+        assert d is not None
+        assert d.year == 2025 and d.month == 1 and d.day == 1
+
+    def test_parse_date_flexible_uk_format(self) -> None:
+        from gamarr.metacritic import _parse_date_flexible
+
+        d = _parse_date_flexible("01-01-2025")
+        assert d is not None
+        assert d.year == 2025 and d.month == 1 and d.day == 1
+
+    def test_parse_date_flexible_invalid(self) -> None:
+        from gamarr.metacritic import _parse_date_flexible
+
+        assert _parse_date_flexible("not-a-date") is None
+        assert _parse_date_flexible("") is None
+
+    def test_is_before_date_iso_cutoff(self) -> None:
+        from gamarr.metacritic import _is_before_date
+
+        assert _is_before_date("2024-12-31", "2025-01-01") is True
+        assert _is_before_date("2025-01-01", "2025-01-01") is False
+        assert _is_before_date("2025-01-02", "2025-01-01") is False
+
+    def test_is_before_date_uk_format_cutoff(self) -> None:
+        from gamarr.metacritic import _is_before_date
+
+        assert _is_before_date("31-12-2024", "01-01-2025") is True
+        assert _is_before_date("2024-12-31", "01-01-2025") is True
+        assert _is_before_date("01-01-2025", "2024-12-31") is False
+
+    def test_is_before_date_edge_cases(self) -> None:
+        from gamarr.metacritic import _is_before_date
+
+        assert _is_before_date(None, "2025-01-01") is False
+        assert _is_before_date("2025-01-01", None) is False
+        assert _is_before_date("bad-date", "2025-01-01") is False
+
+
 class TestScanRecentGames:
     """Metacritic browse-page scanning for discovery."""
 
@@ -663,6 +708,77 @@ class TestScanRecentGames:
         with patch.object(client, "_fetch_browse_page", return_value=None):
             result = client.scan_recent_games("pc", max_games=1)
         assert result == []
+
+    def test_scan_recent_games_cutoff_date_skips_old(self) -> None:
+        """With cutoff_date set, pages whose games are all older should be skipped."""
+        from unittest.mock import patch
+
+        from gamarr.metacritic import MetacriticClient
+
+        client = MetacriticClient(cache_path=":memory:")
+        # Return games with release dates all before cutoff
+        mock_page = [
+            {"title": "Old Game 1", "slug": "old-1", "release_date": "2024-06-01"},
+            {"title": "Old Game 2", "slug": "old-2", "release_date": "2024-05-01"},
+        ]
+        with patch.object(client, "_fetch_browse_page", return_value=mock_page):
+            result = client.scan_recent_games("pc", max_games=100, cutoff_date="2025-01-01")
+        assert result == [], "All games before cutoff should be excluded"
+
+    def test_scan_recent_games_cutoff_date_includes_new(self) -> None:
+        """With cutoff_date set, pages with at least one new game should be included."""
+        from unittest.mock import patch
+
+        from gamarr.metacritic import MetacriticClient
+
+        client = MetacriticClient(cache_path=":memory:")
+        # First page has a mix of new and old
+        page1 = [
+            {"title": "New Game", "slug": "new-1", "release_date": "2025-06-01"},
+            {"title": "Old Game", "slug": "old-1", "release_date": "2024-06-01"},
+        ]
+        # Second page has only old games → should stop
+        page2 = [
+            {"title": "Old Game 2", "slug": "old-2", "release_date": "2024-05-01"},
+        ]
+        with patch.object(client, "_fetch_browse_page", side_effect=[page1, page2]):
+            result = client.scan_recent_games("pc", max_games=100, cutoff_date="2025-01-01")
+        assert len(result) == 2, "Only page1 games should be included"
+        assert result[0]["slug"] == "new-1"
+
+    def test_scan_recent_games_cutoff_date_invalid_logs_warning(self) -> None:
+        """An invalid cutoff_date should log a warning and fall back to no cutoff."""
+        from unittest.mock import patch
+
+        from gamarr.metacritic import MetacriticClient
+
+        client = MetacriticClient(cache_path=":memory:")
+        mock_page = [
+            {"title": "Game", "slug": "game-1", "release_date": "2026-06-01"},
+        ]
+        with patch.object(client, "_fetch_browse_page", return_value=mock_page):
+            # Should not crash — invalid date fallback to no cutoff
+            # The cutoff is disabled, so it collects up to max_games.
+            # Each fetch returns 1 game, so 10 fetches = 10 games for max_games=10.
+            result = client.scan_recent_games("pc", max_games=10, cutoff_date="bad-date")
+        assert len(result) == 10
+        # All games should be included despite the bad cutoff
+        assert result[0]["slug"] == "game-1"
+
+    def test_scan_recent_games_respects_max_games_limit(self) -> None:
+        """scan_recent_games should collect at most max_games games."""
+        from unittest.mock import patch
+
+        from gamarr.metacritic import MetacriticClient
+
+        client = MetacriticClient(cache_path=":memory:")
+        page1 = [{"title": f"Game {i}", "slug": f"game-{i}"} for i in range(50)]
+        page2 = [{"title": f"Game {i + 50}", "slug": f"game-{i + 50}"} for i in range(50)]
+        with patch.object(client, "_fetch_browse_page", side_effect=[page1, page2]):
+            result = client.scan_recent_games("pc", max_games=75)
+        assert len(result) == 75, "Should collect exactly max_games games"
+        assert result[0]["slug"] == "game-0"
+        assert result[74]["slug"] == "game-74"
 
 
 class TestCheckUserReviewItem:

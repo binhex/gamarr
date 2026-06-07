@@ -136,6 +136,28 @@ class TestFitGirlSource:
         source = FitGirlSource("http://example.com/feed.xml", platform="pc", db_path=":memory:")
         assert source.platform == "pc"
 
+    def test_accepts_shared_database(self) -> None:
+        """FitGirlSource must accept a pre-existing Database instance.
+
+        When run_acquisition creates its own Database('db') and then
+        FitGirlSource creates another, two engines contend for the same
+        SQLite file.  FitGirlSource should accept a shared Database
+        instance so only one engine exists per database file.
+        """
+        from gamarr.database import Database
+        from gamarr.sources.fitgirl import FitGirlSource
+
+        shared_db = Database(":memory:")
+        source = FitGirlSource(
+            rss_url="http://example.com/feed.xml",
+            platform="pc",
+            db=shared_db,
+        )
+        # The source should use the provided instance, not create its own
+        assert source._db is shared_db
+        source.close()
+        shared_db.close()
+
 
 class TestMagnetExtractionEdgeCases:
     """Magnet extraction edge cases."""
@@ -241,6 +263,7 @@ class TestFitGirlSitemap:
         source = FitGirlSource(db_path=":memory:", rss_url="http://example.com/feed")
         # Manually create a mock DB that stores what gets indexed
         mock_db = MagicMock()
+        mock_db.get_sitemap_cache.return_value = False  # Force cache miss
 
         with patch("gamarr.sources.fitgirl.requests.get") as mock_get:
 

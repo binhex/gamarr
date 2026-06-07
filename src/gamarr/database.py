@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from loguru import logger
 from sqlalchemy import Boolean, Float, Integer, String, Text, create_engine, text
@@ -297,6 +297,83 @@ class Database:
             if row is None:
                 session.add(SitemapCache(source=source, cached_at=now))
             else:
+                row.cached_at = now
+            session.commit()
+
+    def get_game_detail_cache(self, slug: str, ttl_days: int) -> dict[str, Any] | None:
+        """Return cached game detail dict or None if expired/missing."""
+        if ttl_days <= 0:
+            return None
+        cutoff = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=ttl_days)).isoformat()
+        with self._session() as session:
+            row = session.get(GameDetailCache, slug)
+            if row is None or row.cached_at <= cutoff:
+                return None
+            return {
+                "metascore": row.metascore,
+                "metascore_reviews": row.metascore_reviews,
+                "user_score": row.user_score,
+                "user_reviews": row.user_reviews,
+            }
+
+    def set_game_detail_cache(
+        self,
+        slug: str,
+        metascore: float | None = None,
+        metascore_reviews: int | None = None,
+        user_score: float | None = None,
+        user_reviews: int | None = None,
+    ) -> None:
+        """Insert or update a game detail cache entry."""
+        now = datetime.datetime.now(tz=datetime.UTC).isoformat()
+        with self._session() as session:
+            row = session.get(GameDetailCache, slug)
+            if row is None:
+                session.add(
+                    GameDetailCache(
+                        slug=slug,
+                        metascore=metascore,
+                        metascore_reviews=metascore_reviews,
+                        user_score=user_score,
+                        user_reviews=user_reviews,
+                        cached_at=now,
+                    )
+                )
+            else:
+                row.metascore = metascore
+                row.metascore_reviews = metascore_reviews
+                row.user_score = user_score
+                row.user_reviews = user_reviews
+                row.cached_at = now
+            session.commit()
+
+    def get_browse_page_cache(self, platform: str, page_number: int, ttl_hours: int) -> list[dict[str, Any]] | None:
+        """Return cached browse page games list or None if expired/missing."""
+        if ttl_hours <= 0:
+            return None
+        cutoff = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(hours=ttl_hours)).isoformat()
+        with self._session() as session:
+            row = session.get(BrowsePageCache, (platform, page_number))
+            if row is None or row.cached_at <= cutoff:
+                return None
+            return cast("list[dict[str, Any]]", json.loads(row.games_json))
+
+    def set_browse_page_cache(self, platform: str, page_number: int, games: list[dict[str, Any]]) -> None:
+        """Insert or replace a browse page cache entry."""
+        now = datetime.datetime.now(tz=datetime.UTC).isoformat()
+        with self._session() as session:
+            row = session.get(BrowsePageCache, (platform, page_number))
+            if row is None:
+                session.add(
+                    BrowsePageCache(
+                        platform=platform,
+                        page_number=page_number,
+                        games_json=json.dumps(games),
+                        cached_at=now,
+                    )
+                )
+            else:
+                row.games_json = json.dumps(games)
                 row.cached_at = now
             session.commit()
 

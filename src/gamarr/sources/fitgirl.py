@@ -250,12 +250,18 @@ class FitGirlSource:
         rss_url: str,
         platform: str = "pc",
         db_path: str = ":memory:",
+        db: Database | None = None,
+        cache_ttl_hours: int = 6,
     ) -> None:
         self._rss_url = rss_url
         self._platform = platform
+        self._cache_ttl_hours = cache_ttl_hours
         from gamarr.database import Database
 
-        self._db = Database(db_path)
+        if db is not None:
+            self._db = db
+        else:
+            self._db = Database(db_path)
 
     @property
     def source_name(self) -> str:
@@ -271,7 +277,15 @@ class FitGirlSource:
         """Fetch the FitGirl sitemap and rebuild the source_titles index.
 
         Handles both ``<urlset>`` and ``<sitemapindex>`` sitemap formats.
+        Results are cached in ``sitemap_cache`` for ``cache_ttl_hours``.
         """
+        if self._cache_ttl_hours > 0 and db.get_sitemap_cache("fitgirl", self._cache_ttl_hours):
+            logger.info(
+                "FitGirl sitemap cache is fresh (TTL: {} hours) — skipping fetch",
+                self._cache_ttl_hours,
+            )
+            return
+
         url = "https://fitgirl-repacks.site/sitemap.xml"
         try:
             resp = requests.get(url, timeout=30, headers={"User-Agent": _USER_AGENT})
@@ -282,6 +296,7 @@ class FitGirlSource:
             )
             titles = _filter_game_urls(titles)
             db.rebuild_source_titles("fitgirl", titles)
+            db.set_sitemap_cache("fitgirl")
             logger.info("FitGirl sitemap indexed {} game titles", len(titles))
         except requests.RequestException as exc:
             logger.warning("Failed to fetch FitGirl sitemap: {}", exc)
