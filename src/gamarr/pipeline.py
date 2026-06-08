@@ -428,7 +428,6 @@ def _is_game_eligible(
     thresholds: dict[str, Any],
     days_since_release: int,
     exclude_keywords: list[str] | None,
-    reject_title: list[str] | None = None,  # ← new
 ) -> bool:
     """Return True if *game* passes all filters and should be added to pending."""
     slug = game.get("slug", "")
@@ -437,9 +436,6 @@ def _is_game_eligible(
         return False
     if _title_contains_keywords(title, exclude_keywords):
         logger.debug("Skipping '{}' — matches exclude keyword", title)
-        return False
-    if _title_matches_reject(title, reject_title):  # ← new
-        logger.debug("Skipping '{}' — matches reject_title", title)
         return False
     if db.is_processed("metacritic", f"mc:{slug}") or db.is_pending(slug):
         return False
@@ -490,7 +486,10 @@ def _process_browse_games(
     """
     new_count = 0
     for game in browse_games:
-        if not _is_game_eligible(game, db, thresholds, days_since_release, exclude_keywords, reject_title=reject_title):
+        if not _is_game_eligible(game, db, thresholds, days_since_release, exclude_keywords):
+            continue
+        if _title_matches_reject(game.get("title", ""), reject_title):
+            logger.debug("Skipping '{}' — matches reject_title", game.get("title", ""))
             continue
 
         g_slug = game.get("slug", "")
