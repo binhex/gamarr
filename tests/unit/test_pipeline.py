@@ -3244,7 +3244,10 @@ class TestRejectTitle:
             "min_user_reviews": 10,
         }
         added = _process_browse_games(
-            browse_games, "pc", db, thresholds,
+            browse_games,
+            "pc",
+            db,
+            thresholds,
             reject_title=["Remake"],
         )
         assert added == 0, "Game with matching title should not be added"
@@ -3273,6 +3276,7 @@ class TestRejectTitle:
 
         mock_mc = MagicMock()
         import types
+
         mock_mc.lookup_game.return_value = types.SimpleNamespace(
             metascore=85.0,
             metascore_review_count=20,
@@ -3319,7 +3323,10 @@ class TestRejectTitle:
             "min_user_reviews": 10,
         }
         added = _process_browse_games(
-            browse_games, "pc", db, thresholds,
+            browse_games,
+            "pc",
+            db,
+            thresholds,
             reject_title=["Remake"],
         )
         assert added == 1, "Non-matching game should be added"
@@ -3349,7 +3356,10 @@ class TestRejectTitle:
             "min_user_reviews": 10,
         }
         added = _process_browse_games(
-            browse_games, "pc", db, thresholds,
+            browse_games,
+            "pc",
+            db,
+            thresholds,
             reject_title=[],
         )
         assert added == 1, "Empty reject_title should not filter anything"
@@ -3378,7 +3388,10 @@ class TestRejectTitle:
             "min_user_reviews": 10,
         }
         added = _process_browse_games(
-            browse_games, "pc", db, thresholds,
+            browse_games,
+            "pc",
+            db,
+            thresholds,
             reject_title=["remake"],  # lowercase, title has "Remake"
         )
         assert added == 0, "reject_title should match case-insensitively"
@@ -3407,7 +3420,10 @@ class TestRejectTitle:
             "min_user_reviews": 10,
         }
         added = _process_browse_games(
-            browse_games, "pc", db, thresholds,
+            browse_games,
+            "pc",
+            db,
+            thresholds,
             reject_title=["Classic"],
         )
         assert added == 0, "reject_title should match on substrings"

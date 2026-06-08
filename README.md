@@ -134,6 +134,7 @@ on first run. The file is divided into the sections below.
 | `cutoff_weeks` | Look-back window in weeks from today. Games released before this are skipped. `null` or `0` = no cutoff. | `null` |
 | `exclude_keywords` | Reject games whose browse-page title contains any of these keywords (case-insensitive). | `[]` |
 | `reject_genre` | Reject games whose Metacritic genre contains any of these substrings (case-insensitive). E.g. `["RPG"]` matches "Action RPG", "JRPG", "Western RPG". | `[]` |
+| `reject_title` | Reject games whose title contains any of these substrings (case-insensitive). E.g. `["Remake"]` matches "Resident Evil 4 Remake", "Remake Collection". | `[]` |
 
 ### `torrent_client`
 
