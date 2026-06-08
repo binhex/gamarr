@@ -2203,25 +2203,71 @@ class TestVerifyPendingScoresEdgeCases:
         mock_qbt.add_torrent.assert_not_called()
         db.close()
 
-    def test_verify_pending_max_verify_zero_returns_early(self, tmp_path: Path) -> None:
-        """With max_verify=0, _verify_pending_scores should return 0 without any lookups."""
+    def test_config_allows_zero_score_checks(self) -> None:
+        """max_score_checks=0 must be accepted by the config model.
+
+        A value of 0 means "unlimited" — score-check all pending games.
+        """
+        from gamarr.config import MetacriticPlatformConfig
+
+        cfg = MetacriticPlatformConfig(max_score_checks=0)
+        assert cfg.max_score_checks == 0
+
+    def test_verify_pending_max_checks_zero_passes_all_games(self, tmp_path: Path) -> None:
+        """When max_score_checks=0, _verify_pending_scores should check ALL games.
+
+        The pipeline passes len(pending_games) as max_verify when max_score_checks=0.
+        """
+        import datetime
         from unittest.mock import MagicMock
 
         from gamarr.database import Database
         from gamarr.pipeline import _verify_pending_scores
 
         db = Database(str(tmp_path / "test.db"))
-        mock_mc = MagicMock()
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        # Create 3 pending games
+        for i in range(3):
+            db.record_pending(
+                slug=f"game-{i:02d}",
+                game_title=f"Game {i:02d}",
+                platform="pc",
+                metascore=85.0,
+                user_score=8.0,
+                expires_at=expires,
+            )
 
+        mock_mc = MagicMock()
+        import types
+
+        mock_mc.lookup_game.return_value = types.SimpleNamespace(
+            metascore=85.0,
+            metascore_review_count=20,
+            user_score=8.0,
+            user_review_count=100,
+            genres=["Action"],
+            must_play=False,
+            release_date="2026-06-01",
+        )
+
+        thresholds = {
+            "min_metascore": 75,
+            "min_metascore_reviews": 5,
+            "min_user_score": 7.5,
+            "min_user_reviews": 10,
+        }
+
+        # max_verify=len(pending_games) simulates what the pipeline does
+        # when max_score_checks=0 (unlimited)
         removed = _verify_pending_scores(
             db,
             mock_mc,
             "pc",
-            {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10},
-            max_verify=0,
+            thresholds,
+            max_verify=len(db.get_pending()),
         )
-        assert removed == 0
-        mock_mc.lookup_game.assert_not_called()
+        assert removed == 0  # All passed
+        assert mock_mc.lookup_game.call_count == 3  # All 3 checked
         db.close()
 
     def test_verify_pending_scores_concurrently(self, tmp_path: Path) -> None:

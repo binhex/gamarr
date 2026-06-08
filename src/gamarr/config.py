@@ -67,7 +67,7 @@ class MetacriticPlatformConfig(BaseModel):
     pending_days: int = 30
     enabled: bool = True
     max_games: int = Field(default=1000, ge=0, le=20000)
-    max_score_checks: int = Field(default=200, gt=0, le=10000)
+    max_score_checks: int = Field(default=200, ge=0, le=10000)
     cutoff_date: str | None = None
     exclude_keywords: list[str] = Field(default_factory=list)
 

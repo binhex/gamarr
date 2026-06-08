@@ -309,7 +309,9 @@ def run_acquisition(
                 platform,
                 thresholds,
                 cache_ttl_days=cfg.cache_ttl_days,
-                max_verify=min(len(pending_games), cfg.max_score_checks),
+                max_verify=len(pending_games)
+                if cfg.max_score_checks == 0
+                else min(len(pending_games), cfg.max_score_checks),
             )
             if removed:
                 logger.info(
@@ -927,7 +929,6 @@ def _deliver_match(
 
     tag = qbt.add_torrent(magnet_url=magnet, title=game_title)
     if not tag:
-        logger.warning("Failed to add matched '{}' to qBittorrent", game_title)
         record_result = _record_delivery_error(
             db,
             game_slug=game_slug,
