@@ -783,7 +783,10 @@ def _verify_pending_scores(
             _log_verify_progress(verified, max_verify, total_pending)
             result = fut.result()
             if _process_verify_result(
-                db, game, result, thresholds,
+                db,
+                game,
+                result,
+                thresholds,
                 max_verify_attempts=max_verify_attempts,
                 reject_genre=reject_genre,
             ):
