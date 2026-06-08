@@ -68,7 +68,7 @@ class MetacriticPlatformConfig(BaseModel):
     enabled: bool = True
     max_games: int = Field(default=1000, ge=0, le=20000)
     max_score_checks: int = Field(default=200, ge=0, le=10000)
-    cutoff_date: str | None = None
+    cutoff_weeks: int | None = None
     exclude_keywords: list[str] = Field(default_factory=list)
 
 
@@ -173,11 +173,20 @@ def _migrate_config(raw: dict[str, Any]) -> None:
 
             _rename_config_key(mc_pc, "browse_max_pages", None, platform_key)
             _rename_config_key(mc_pc, "browse_enabled", "enabled", platform_key)
-            _rename_config_key(mc_pc, "browse_cutoff_date", "cutoff_date", platform_key)
             _rename_config_key(mc_pc, "browse_cache_ttl_hours", "cache_ttl_hours", platform_key)
             _rename_config_key(mc_pc, "metacritic_enabled", "enabled", platform_key)
             _rename_config_key(mc_pc, "metacritic_max_games", "max_games", platform_key)
-            _rename_config_key(mc_pc, "metacritic_cutoff_date", "cutoff_date", platform_key)
+            # Deprecated: cutoff_date — warn and drop
+            for old_key in ("browse_cutoff_date", "metacritic_cutoff_date", "cutoff_date"):
+                if old_key in mc_pc:
+                    logger.warning(
+                        "Config: '{}' is deprecated for platform '{}'; "
+                        "set 'cutoff_weeks' instead (e.g. cutoff_weeks: 52 for ~1 year). "
+                        "Ignoring value.",
+                        old_key,
+                        platform_key,
+                    )
+                    mc_pc.pop(old_key)
             _rename_config_key(mc_pc, "metacritic_cache_ttl_hours", "cache_ttl_hours", platform_key)
 
     except Exception as exc:

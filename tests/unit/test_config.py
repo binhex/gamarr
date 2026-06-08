@@ -54,7 +54,7 @@ class TestConfigModels:
         assert cfg.max_score_checks == 200
 
     def test_migrate_config_renames_browse_keys(self) -> None:
-        """_migrate_config should rename old browse_* keys to metacritic_*."""
+        """_migrate_config should rename old browse_* keys and drop deprecated cutoff_date."""
         from gamarr.config import _migrate_config
 
         raw = {
@@ -75,8 +75,8 @@ class TestConfigModels:
         assert "browse_enabled" not in mc_pc
         assert "browse_cutoff_date" not in mc_pc
         assert "browse_cache_ttl_hours" not in mc_pc
+        assert "cutoff_date" not in mc_pc
         assert mc_pc["enabled"] is True
-        assert mc_pc["cutoff_date"] == "2025-01-01"
         assert mc_pc["cache_ttl_hours"] == 4
 
     def test_migrate_config_ignores_non_dict_overrides(self) -> None:
@@ -94,7 +94,7 @@ class TestConfigModels:
         assert raw["metacritic"]["platform_overrides"]["pc"] == "not-a-dict"
 
     def test_migrate_config_renames_metacritic_keys(self) -> None:
-        """_migrate_config should rename metacritic_* keys to bare names."""
+        """_migrate_config should rename metacritic_* keys and drop deprecated cutoff_date."""
         from gamarr.config import _migrate_config
 
         raw = {
@@ -115,9 +115,9 @@ class TestConfigModels:
         assert "metacritic_max_games" not in mc_pc
         assert "metacritic_cutoff_date" not in mc_pc
         assert "metacritic_cache_ttl_hours" not in mc_pc
+        assert "cutoff_date" not in mc_pc
         assert mc_pc["enabled"] is False
         assert mc_pc["max_games"] == 500
-        assert mc_pc["cutoff_date"] == "2026-06-01"
         assert mc_pc["cache_ttl_hours"] == 12
 
     def test_migrate_config_handles_exception_gracefully(self) -> None:
