@@ -69,11 +69,11 @@ class TestCli:
         assert result.exit_code == 0
         assert "Configuration loaded successfully" in result.output
 
-    def test_daemon_flag_accepted(self) -> None:
-        """--daemon should be accepted."""
-        with patch("gamarr.cli.open"), patch("gamarr.scheduler.run"):
-            result = self.runner.invoke(cli, ["--daemon", "--config-path", "/tmp"])
-        assert result.exit_code == 0
+    def test_daemon_flag_removed(self) -> None:
+        """--daemon should no longer be a valid CLI flag."""
+        result = self.runner.invoke(cli, ["--daemon"])
+        assert result.exit_code != 0
+        assert "no such option" in result.output.lower()
 
     def test_config_path_option_accepted(self) -> None:
         """--config-path should be accepted."""

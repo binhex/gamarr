@@ -12,20 +12,19 @@ from gamarr.config import Config, load_config
 from gamarr.pipeline import run_acquisition
 
 
-def run(config_path: str = "configs", daemon_mode: str | None = None) -> None:
-    """Start the acquisition scheduler in daemon or foreground mode.
+def run(config_path: str = "configs") -> None:
+    """Run an acquisition cycle, either as scheduled daemon or single pass.
+
+    When ``schedule.acquisition.enabled`` is ``true`` in the config, runs
+    in continuous scheduled mode using APScheduler. Otherwise runs a
+    single acquisition pass and exits.
 
     Args:
         config_path: Path to the config directory or file.
-        daemon_mode: Override the daemon mode from config. Pass "background"
-            to run in daemon mode without modifying the config file on disk.
     """
     config = load_config(config_path)
 
-    if daemon_mode:
-        config.general.daemon_mode = daemon_mode
-
-    if config.general.daemon_mode == "background":
+    if config.schedule.acquisition.enabled:
         _run_daemon(config)
     else:
         run_once(config)

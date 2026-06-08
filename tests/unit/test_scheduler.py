@@ -20,13 +20,31 @@ class TestSchedulerForeground:
 
     def test_run_foreground_calls_run_once(self) -> None:
         with patch("gamarr.scheduler.run_once") as mock_run_once:
-            config = _make_config(daemon_mode="foreground")
+            config = _make_config(acquisition_enabled=False)
             with patch("gamarr.scheduler.load_config", return_value=config):
                 run(config_path="/tmp")
                 mock_run_once.assert_called_once()
 
+    def test_run_calls_daemon_when_schedule_enabled(self) -> None:
+        """When schedule.acquisition.enabled=True, run() should call _run_daemon."""
+        config = _make_config(acquisition_enabled=True)
+        with patch("gamarr.scheduler._run_daemon") as mock_daemon, patch("gamarr.scheduler.run_once") as mock_once:
+            with patch("gamarr.scheduler.load_config", return_value=config):
+                run(config_path="/tmp")
+                mock_daemon.assert_called_once()
+                mock_once.assert_not_called()
 
-def _make_config(daemon_mode: str = "foreground") -> Config:
+    def test_run_calls_run_once_when_schedule_disabled(self) -> None:
+        """When schedule.acquisition.enabled=False, run() should call run_once."""
+        config = _make_config(acquisition_enabled=False)
+        with patch("gamarr.scheduler._run_daemon") as mock_daemon, patch("gamarr.scheduler.run_once") as mock_once:
+            with patch("gamarr.scheduler.load_config", return_value=config):
+                run(config_path="/tmp")
+                mock_once.assert_called_once()
+                mock_daemon.assert_not_called()
+
+
+def _make_config(daemon_mode: str = "foreground", acquisition_enabled: bool = True) -> Config:
     """Build a minimal Config for testing."""
     from gamarr.config import (
         DatabaseConfig,
@@ -45,7 +63,7 @@ def _make_config(daemon_mode: str = "foreground") -> Config:
     return Config(
         general=GeneralConfig(daemon_mode=daemon_mode, log_path="", db_path=":memory:"),
         schedule=ScheduleConfig(
-            acquisition=ScheduleTaskConfig(enabled=True, schedule_time_mins=60, run_on_start=True),
+            acquisition=ScheduleTaskConfig(enabled=acquisition_enabled, schedule_time_mins=60, run_on_start=True),
         ),
         sources=SourcesConfig(
             fitgirl=FitGirlSourceConfig(enabled=True, rss_url="http://example.com/feed", platform="pc"),

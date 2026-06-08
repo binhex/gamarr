@@ -50,12 +50,6 @@ _DEFAULT_LOGS_PATH = f"{_PROJECT_ROOT}/logs/gamarr.log"
     help="Override the log file path from config.",
 )
 @click.option(
-    "--daemon",
-    is_flag=True,
-    default=False,
-    help="Run in continuous scheduling mode (use systemd or Docker for daemonization).",
-)
-@click.option(
     "--test",
     is_flag=True,
     default=False,
@@ -66,7 +60,6 @@ def cli(
     config_path: str,
     log_level: str | None,
     log_path: str | None,
-    daemon: bool,
     test: bool,
 ) -> None:
     """gamarr — Metadata game downloader.
@@ -75,9 +68,8 @@ def cli(
     them against Metacritic scores, and adds qualifying games to
     qBittorrent.
 
-    All runtime configuration lives in the YAML config file inside
-    --config-path. Use --log-level to override the console log level
-    at runtime without editing the config.
+    Runs in scheduled mode when ``schedule.acquisition.enabled`` is
+    ``true`` in the config file, or as a single pass otherwise.
     """
     log_format = "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>"
     effective_log_path = log_path or _DEFAULT_LOGS_PATH
@@ -97,7 +89,7 @@ def cli(
         click.echo("Configuration loaded successfully. Test mode \u2014 exiting.")
         return
 
-    run(config_path=config_path, daemon_mode="background" if daemon else None)
+    run(config_path=config_path)
 
 
 if __name__ == "__main__":
