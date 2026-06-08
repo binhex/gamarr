@@ -109,6 +109,7 @@ class AcquisitionConfig:
     cutoff_weeks: int | None = None
     exclude_keywords: list[str] | None = None
     reject_genre: list[str] | None = None
+    fitgirl_pending_days: int = 60
 
 
 def _is_below_threshold(value: float | None, threshold: float) -> bool:
@@ -170,6 +171,7 @@ def run_acquisition(
     cache_ttl_hours: int = 4,
     enabled: bool = True,
     pending_days: int = 30,
+    fitgirl_pending_days: int = 60,
     max_games: int = 1000,
     max_verify_attempts: int = 6,
     cutoff_weeks: int | None = None,
@@ -201,6 +203,7 @@ def run_acquisition(
         cache_ttl_hours=cache_ttl_hours,
         enabled=enabled,
         pending_days=pending_days,
+        fitgirl_pending_days=fitgirl_pending_days,
         max_games=max_games,
         max_verify_attempts=max_verify_attempts,
         cutoff_weeks=cutoff_weeks,
