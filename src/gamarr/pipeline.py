@@ -163,7 +163,7 @@ def run_acquisition(
     qbt_category: str = "games-gamarr",
     qbt_add_paused: bool = False,
     min_metascore: int = 75,
-    min_metascore_reviews: int = 5,
+    min_metascore_reviews: int = 10,
     min_user_score: float = 7.5,
     min_user_reviews: int = 10,
     days_since_release: int = 90,

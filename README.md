@@ -121,7 +121,7 @@ on first run. The file is divided into the sections below.
 | Key | Description | Default |
 | --- | ----------- | ------- |
 | `min_metascore` | Minimum Metacritic critic score (0–100). | `75` |
-| `min_metascore_reviews` | Minimum number of critic reviews required. | `5` |
+| `min_metascore_reviews` | Minimum number of critic reviews required. | `10` |
 | `min_user_score` | Minimum Metacritic user score (0–10). | `7.5` |
 | `min_user_reviews` | Minimum number of user reviews required. | `10` |
 | `days_since_release` | Maximum age in days since release. Games older are rejected. | `90` |
