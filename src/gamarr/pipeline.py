@@ -261,11 +261,19 @@ def run_acquisition(
         # only if Metacritic produced games to match against.
         browse_games: list[dict[str, Any]] = []
         if cfg.enabled:
+            # Compute absolute cutoff date from cutoff_weeks (if set and > 0)
+            cutoff_date: str | None = None
+            if cfg.cutoff_weeks is not None and cfg.cutoff_weeks > 0:
+                cutoff_date = (
+                    datetime.datetime.now(tz=datetime.UTC).date()
+                    - datetime.timedelta(weeks=cfg.cutoff_weeks)
+                ).isoformat()
+
             browse_games = mc.scan_recent_games(
                 platform,
                 max_games=cfg.max_games,
                 cache_ttl_hours=cfg.cache_ttl_hours,
-                cutoff_date=cfg.cutoff_weeks,
+                cutoff_date=cutoff_date,
             )
             if browse_games:
                 thresholds = {
