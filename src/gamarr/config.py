@@ -165,72 +165,81 @@ def _rename_config_key(mc_pc: dict[str, Any], old_key: str, new_key: str | None,
             logger.info("Config: migrated '{}'\u2192'{}' for platform '{}'", old_key, new_key, platform_key)
 
 
+def _migrate_platform_overrides(raw: dict[str, Any]) -> None:
+    """Migrate renamed/deprecated keys in metacritic.platform_overrides."""
+    overrides = raw.get("metacritic", {}).get("platform_overrides", {})
+    for platform_key, mc_pc in overrides.items():
+        if not isinstance(mc_pc, dict):
+            continue
+        _rename_config_key(mc_pc, "browse_enabled", "enabled", platform_key)
+        _rename_config_key(mc_pc, "browse_cache_ttl_hours", "cache_ttl_hours", platform_key)
+        _rename_config_key(mc_pc, "metacritic_enabled", "enabled", platform_key)
+        _rename_config_key(mc_pc, "metacritic_max_games", "max_games", platform_key)
+        for old_key in ("browse_max_pages", "max_score_checks"):
+            if old_key in mc_pc:
+                logger.warning(
+                    "Config: '{}' is deprecated for platform '{}'; use 'max_games' instead. Ignoring value.",
+                    old_key,
+                    platform_key,
+                )
+                mc_pc.pop(old_key)
+        for old_key in ("browse_cutoff_date", "metacritic_cutoff_date", "cutoff_date"):
+            if old_key in mc_pc:
+                logger.warning(
+                    "Config: '{}' is deprecated for platform '{}'; "
+                    "set 'cutoff_weeks' instead (e.g. cutoff_weeks: 52 for ~1 year). Ignoring value.",
+                    old_key,
+                    platform_key,
+                )
+                mc_pc.pop(old_key)
+        _rename_config_key(mc_pc, "metacritic_cache_ttl_hours", "cache_ttl_hours", platform_key)
+
+
+def _migrate_fitgirl_exclude_keywords(raw: dict[str, Any]) -> None:
+    """Rename sources.fitgirl.exclude_keywords to reject_keywords."""
+    fg = raw.get("sources", {}).get("fitgirl", {})
+    if not isinstance(fg, dict) or "exclude_keywords" not in fg:
+        return
+    if "reject_keywords" not in fg:
+        fg["reject_keywords"] = fg.pop("exclude_keywords")
+        logger.info("Config: migrated 'sources.fitgirl.exclude_keywords' to 'sources.fitgirl.reject_keywords'")
+    else:
+        del fg["exclude_keywords"]
+
+
+def _migrate_metacritic_exclude_keywords(raw: dict[str, Any]) -> None:
+    """Remove deprecated exclude_keywords from metacritic.platform_overrides."""
+    overrides = raw.get("metacritic", {}).get("platform_overrides", {})
+    for platform_key, mc_pc in overrides.items():
+        if isinstance(mc_pc, dict) and "exclude_keywords" in mc_pc:
+            logger.info(
+                "Config: removing deprecated 'exclude_keywords' for platform '{}' — use reject_title instead",
+                platform_key,
+            )
+            del mc_pc["exclude_keywords"]
+
+
+def _migrate_daemon_mode(raw: dict[str, Any]) -> None:
+    """Migrate deprecated general.daemon_mode to schedule.acquisition.enabled."""
+    general = raw.get("general", {})
+    if general.get("daemon_mode") != "background":
+        return
+    schedule = raw.setdefault("schedule", {})
+    acquisition = schedule.setdefault("acquisition", {})
+    if "enabled" not in acquisition:
+        acquisition["enabled"] = True
+        logger.info(
+            "Config: migrated deprecated 'general.daemon_mode: background' to 'schedule.acquisition.enabled: true'"
+        )
+
+
 def _migrate_config(raw: dict[str, Any]) -> None:
     """Migrate renamed config keys in-place for all platforms."""
     try:
-        overrides = raw.get("metacritic", {}).get("platform_overrides", {})
-        for platform_key, mc_pc in overrides.items():
-            if not isinstance(mc_pc, dict):
-                continue
-
-            _rename_config_key(mc_pc, "browse_enabled", "enabled", platform_key)
-            _rename_config_key(mc_pc, "browse_cache_ttl_hours", "cache_ttl_hours", platform_key)
-            _rename_config_key(mc_pc, "metacritic_enabled", "enabled", platform_key)
-            _rename_config_key(mc_pc, "metacritic_max_games", "max_games", platform_key)
-            # Deprecated: browse_max_pages, max_score_checks — warn and drop
-            for old_key in ("browse_max_pages", "max_score_checks"):
-                if old_key in mc_pc:
-                    logger.warning(
-                        "Config: '{}' is deprecated for platform '{}'; use 'max_games' instead. Ignoring value.",
-                        old_key,
-                        platform_key,
-                    )
-                    mc_pc.pop(old_key)
-            # Deprecated: cutoff_date — warn and drop
-            for old_key in ("browse_cutoff_date", "metacritic_cutoff_date", "cutoff_date"):
-                if old_key in mc_pc:
-                    logger.warning(
-                        "Config: '{}' is deprecated for platform '{}'; "
-                        "set 'cutoff_weeks' instead (e.g. cutoff_weeks: 52 for ~1 year). "
-                        "Ignoring value.",
-                        old_key,
-                        platform_key,
-                    )
-                    mc_pc.pop(old_key)
-            _rename_config_key(mc_pc, "metacritic_cache_ttl_hours", "cache_ttl_hours", platform_key)
-
-        # Migrate deprecated exclude_keywords → reject_keywords on FitGirlSourceConfig
-        sources = raw.get("sources", {})
-        fg = sources.get("fitgirl", {})
-        if isinstance(fg, dict) and "exclude_keywords" in fg:
-            if "reject_keywords" not in fg:
-                fg["reject_keywords"] = fg.pop("exclude_keywords")
-                logger.info("Config: migrated 'sources.fitgirl.exclude_keywords' to 'sources.fitgirl.reject_keywords'")
-            else:
-                del fg["exclude_keywords"]
-
-        # Remove deprecated metacritic.exclude_keywords (redundant with reject_title)
-        for platform_key, mc_pc in overrides.items():
-            if isinstance(mc_pc, dict) and "exclude_keywords" in mc_pc:
-                logger.info(
-                    "Config: removing deprecated 'exclude_keywords' for platform '{}' — use reject_title instead",
-                    platform_key,
-                )
-                del mc_pc["exclude_keywords"]
-
-        # Migrate deprecated general.daemon_mode → schedule.acquisition.enabled
-        general = raw.get("general", {})
-        dm = general.get("daemon_mode")
-        if dm == "background":
-            schedule = raw.setdefault("schedule", {})
-            acquisition = schedule.setdefault("acquisition", {})
-            if "enabled" not in acquisition:
-                acquisition["enabled"] = True
-                logger.info(
-                    "Config: migrated deprecated 'general.daemon_mode: background' "
-                    "to 'schedule.acquisition.enabled: true'"
-                )
-
+        _migrate_platform_overrides(raw)
+        _migrate_fitgirl_exclude_keywords(raw)
+        _migrate_metacritic_exclude_keywords(raw)
+        _migrate_daemon_mode(raw)
     except Exception as exc:
         logger.warning("Config migration failed: {}", exc)
 

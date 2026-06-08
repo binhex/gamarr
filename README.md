@@ -110,7 +110,7 @@ on first run. The file is divided into the sections below.
 | `fitgirl.rss_url` | FitGirl repacks RSS feed URL. | `https://fitgirl-repacks.site/feed/` |
 | `fitgirl.platform` | Target platform for matching. | `pc` |
 | `fitgirl.cache_ttl_hours` | How long to cache the FitGirl sitemap before re-fetching. | `6` |
-| `fitgirl.exclude_keywords` | Reject FitGirl repack titles containing any of these keywords (case-insensitive). | `[]` |
+| `fitgirl.reject_keywords` | Reject FitGirl repack titles containing any of these keywords (case-insensitive). | `[]` |
 | `fitgirl.pending_days` | How many days a game stays in the pending queue *after* its scores are verified (the FitGirl-matching phase). `0` = indefinite pending (no expiry). | `60` |
 
 ### `metacritic`
@@ -131,7 +131,6 @@ on first run. The file is divided into the sections below.
 | `cache_ttl_days` | Days to cache Metacritic detail-page results. | `7` |
 | `cache_ttl_hours` | Hours to cache Metacritic browse-page results. | `4` |
 | `cutoff_weeks` | Look-back window in weeks from today. Games released before this are skipped. `null` or `0` = no cutoff. | `null` |
-| `exclude_keywords` | Reject games whose browse-page title contains any of these keywords (case-insensitive). | `[]` |
 | `reject_genre` | Reject games whose Metacritic genre contains any of these substrings (case-insensitive). E.g. `["RPG"]` matches "Action RPG", "JRPG", "Western RPG". | `[]` |
 | `reject_title` | Reject games whose title contains any of these substrings (case-insensitive). E.g. `["Remake"]` matches "Resident Evil 4 Remake", "Remake Collection". | `[]` |
 
@@ -217,8 +216,8 @@ flowchart TD
    0–10 user scores. These rough scores are used only to build a candidate
    pool — the real filtering happens in step 4. Up to `max_games` entries
    are collected.
-2. **Browse-page filtering** — Games whose titles contain `exclude_keywords`
-   or `reject_title` are skipped. Games outside the `cutoff_weeks` window
+2. **Browse-page filtering** — Games whose titles match `reject_title` are
+   skipped. Games outside the `cutoff_weeks` window
    are skipped. **Note:** browse scores are on a different scale and always
    exceed the configured thresholds — score filtering effectively starts
    at the verification step (phase 4), not here.
