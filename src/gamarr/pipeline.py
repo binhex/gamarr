@@ -662,6 +662,11 @@ def _reject_by_genre(
     return None
 
 
+def _scores_fail_check(result: Any, thresholds: dict[str, Any]) -> bool:
+    """Return True when scores are missing or fail the configured thresholds."""
+    return not _scores_present(result) or not _real_scores_pass_thresholds(result, thresholds)
+
+
 def _process_verify_result(
     db: Database,
     game: Any,
@@ -703,7 +708,7 @@ def _process_verify_result(
         )
         return False
 
-    if not (_scores_present(result) and _real_scores_pass_thresholds(result, thresholds)):
+    if _scores_fail_check(result, thresholds):
         attempts = db.increment_verify_attempts(str(game.slug))
         if attempts >= max_verify_attempts:
             _fail_game_after_max_attempts(db, game, result, attempts)

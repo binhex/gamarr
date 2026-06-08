@@ -363,3 +363,51 @@ class TestDatabaseAlreadyOwned:
         assert stats["passed"] == 1
         assert stats["already_owned"] == 2
         db.close()
+
+
+class TestMigration:
+    """Database schema migration tests."""
+
+    def test_migrate_adds_missing_columns(self, tmp_path: Path) -> None:
+        """_migrate() should add score_checks_passed and verify_attempts columns."""
+        from sqlalchemy import Column, Integer, MetaData, String, Table, Text, create_engine
+        from sqlalchemy import inspect as sa_inspect
+
+        # Create a database with the pre-migration schema (missing migration columns)
+        db_path = str(tmp_path / "pre_migrate.db")
+        engine = create_engine(f"sqlite:///{db_path}")
+        metadata = MetaData()
+        Table(
+            "pending_games",
+            metadata,
+            Column("slug", String, primary_key=True),
+            Column("game_title", Text, nullable=False),
+            Column("platform", String, nullable=False),
+            Column("metascore", Integer),
+            Column("user_score", Integer),
+            Column("release_date", String),
+            Column("expires_at", String),
+            Column("created_at", String),
+            Column("last_checked_at", String),
+        )
+        metadata.create_all(engine)
+        engine.dispose()
+
+        # Now open with Database — _migrate() should add the missing columns
+        db = Database(db_path)
+        inspector = sa_inspect(db._engine)
+        columns = [c["name"] for c in inspector.get_columns("pending_games")]
+        assert "score_checks_passed" in columns, "Migration should add score_checks_passed column"
+        assert "verify_attempts" in columns, "Migration should add verify_attempts column"
+        db.close()
+
+    def test_migrate_already_has_columns(self, tmp_path: Path) -> None:
+        """_migrate() should not error when columns already exist."""
+        db = Database(str(tmp_path / "already_migrated.db"))
+        from sqlalchemy import inspect as sa_inspect
+
+        inspector = sa_inspect(db._engine)
+        columns = [c["name"] for c in inspector.get_columns("pending_games")]
+        assert "score_checks_passed" in columns
+        assert "verify_attempts" in columns
+        db.close()
