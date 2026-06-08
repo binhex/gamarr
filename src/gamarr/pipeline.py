@@ -556,6 +556,81 @@ def _real_scores_pass_thresholds(
     return all(checks)
 
 
+def _log_keep_pending(game: Any, result: Any, attempts: int, max_verify_attempts: int) -> None:
+    """Log that a game is being kept in the queue for re-verification."""
+    if _scores_present(result):
+        logger.debug(
+            "Keeping '{}' in queue \u2014 Metacritic scores ({}, {}) below thresholds (attempt {}/{})",
+            game.game_title,
+            result.metascore,
+            result.user_score,
+            attempts,
+            max_verify_attempts,
+        )
+    else:
+        logger.debug(
+            "Keeping '{}' in queue \u2014 no Metacritic review scores yet (attempt {}/{})",
+            game.game_title,
+            attempts,
+            max_verify_attempts,
+        )
+
+
+def _fail_game_after_max_attempts(
+    db: Database,
+    game: Any,
+    result: Any | None,
+    attempts: int,
+) -> None:
+    """Record a game as permanently failed and remove from pending queue."""
+    game_slug = str(game.slug)
+    if result is None:
+        db.record_processed(
+            source="metacritic",
+            source_title=str(game.game_title),
+            source_url=f"mc:{game_slug}",
+            game_title=str(game.game_title),
+            platform=str(game.platform),
+            metascore=None,
+            user_score=None,
+            result="Failed",
+            result_details="Game not found on Metacritic detail page after multiple attempts",
+        )
+        logger.debug(
+            "Removed '{}' from queue \u2014 game not found on Metacritic page after {} attempts",
+            game.game_title,
+            attempts,
+        )
+    else:
+        score_info = f"({result.metascore}, {result.user_score})" if _scores_present(result) else "(no scores)"
+        db.record_processed(
+            source="metacritic",
+            source_title=str(game.game_title),
+            source_url=f"mc:{game_slug}",
+            game_title=str(game.game_title),
+            platform=str(game.platform),
+            metascore=result.metascore,
+            user_score=result.user_score,
+            result="Failed",
+            result_details=f"Scores {score_info} below thresholds after {attempts} attempts",
+        )
+        if _scores_present(result):
+            logger.debug(
+                "Removed '{}' from queue \u2014 Metacritic scores ({}, {}) below thresholds after {} attempts",
+                game.game_title,
+                result.metascore,
+                result.user_score,
+                attempts,
+            )
+        else:
+            logger.debug(
+                "Removed '{}' from queue \u2014 no Metacritic review scores yet after {} attempts",
+                game.game_title,
+                attempts,
+            )
+    db.remove_pending(str(game.slug))
+
+
 def _process_verify_result(
     db: Database,
     game: Any,
@@ -574,22 +649,7 @@ def _process_verify_result(
     if result is None:
         attempts = db.increment_verify_attempts(str(game.slug))
         if attempts >= max_verify_attempts:
-            db.record_processed(
-                source="metacritic",
-                source_title=str(game.game_title),
-                game_title=str(game.game_title),
-                platform=str(game.platform),
-                metascore=None,
-                user_score=None,
-                result="Failed",
-                result_details="Game not found on Metacritic detail page after multiple attempts",
-            )
-            db.remove_pending(str(game.slug))
-            logger.debug(
-                "Removed '{}' from queue \u2014 game not found on Metacritic page after {} attempts",
-                game.game_title,
-                attempts,
-            )
+            _fail_game_after_max_attempts(db, game, result, attempts)
             return True
         logger.debug(
             "Keeping '{}' in queue \u2014 game not found on Metacritic page (attempt {}/{})",
@@ -600,51 +660,11 @@ def _process_verify_result(
         return False
 
     if not (_scores_present(result) and _real_scores_pass_thresholds(result, thresholds)):
-        attempts: int = db.increment_verify_attempts(str(game.slug))  # type: ignore[no-redef]
+        attempts = db.increment_verify_attempts(str(game.slug))
         if attempts >= max_verify_attempts:
-            score_info = f"({result.metascore}, {result.user_score})" if _scores_present(result) else "(no scores)"
-            db.record_processed(
-                source="metacritic",
-                source_title=str(game.game_title),
-                game_title=str(game.game_title),
-                platform=str(game.platform),
-                metascore=result.metascore,
-                user_score=result.user_score,
-                result="Failed",
-                result_details=f"Scores {score_info} below thresholds after {attempts} attempts",
-            )
-            db.remove_pending(str(game.slug))
-            if _scores_present(result):
-                logger.debug(
-                    "Removed '{}' from queue \u2014 Metacritic scores ({}, {}) below thresholds after {} attempts",
-                    game.game_title,
-                    result.metascore,
-                    result.user_score,
-                    attempts,
-                )
-            else:
-                logger.debug(
-                    "Removed '{}' from queue \u2014 no Metacritic review scores yet after {} attempts",
-                    game.game_title,
-                    attempts,
-                )
+            _fail_game_after_max_attempts(db, game, result, attempts)
             return True
-        if _scores_present(result):
-            logger.debug(
-                "Keeping '{}' in queue \u2014 Metacritic scores ({}, {}) below thresholds (attempt {}/{})",
-                game.game_title,
-                result.metascore,
-                result.user_score,
-                attempts,
-                max_verify_attempts,
-            )
-        else:
-            logger.debug(
-                "Keeping '{}' in queue \u2014 no Metacritic review scores yet (attempt {}/{})",
-                game.game_title,
-                attempts,
-                max_verify_attempts,
-            )
+        _log_keep_pending(game, result, attempts, max_verify_attempts)
         return False
 
     db.update_pending_scores(
@@ -747,11 +767,10 @@ def _verify_pending_scores(
     checked = len(batch)
     if checked > 0:
         logger.info(
-            "Score-check limit reached — checked {} of {} (limit: {}) — {} remain for next cycle",
+            "Score-checked {} of {} queued games (limit: {})",
             checked,
             total_pending,
             max_verify,
-            total_pending - checked,
         )
 
     return removed

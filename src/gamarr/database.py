@@ -136,6 +136,11 @@ class Database:
                     session.execute(text("ALTER TABLE pending_games ADD COLUMN score_checks_passed INTEGER"))
                     session.commit()
                 logger.debug("Added score_checks_passed column to pending_games")
+            if "verify_attempts" not in columns:
+                with self._session() as session:
+                    session.execute(text("ALTER TABLE pending_games ADD COLUMN verify_attempts INTEGER DEFAULT 0"))
+                    session.commit()
+                logger.debug("Added verify_attempts column to pending_games")
         except Exception:
             pass  # Migration best-effort
 

@@ -2409,6 +2409,149 @@ class TestVerifyPendingScoresEdgeCases:
         assert "score check" in output.lower() or "passed" in output.lower(), "Should mention that score check passed"
         db.close()
 
+    def test_verify_pending_removes_game_after_max_attempts_with_failing_scores(self, tmp_path: Path) -> None:
+        """When max_verify_attempts is exceeded, a game with failing scores should be removed."""
+        import datetime
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _verify_pending_scores
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="failing-game",
+            game_title="Failing Game",
+            platform="pc",
+            metascore=1998.0,
+            user_score=2007.0,
+            expires_at=expires,
+        )
+
+        # Pre-set verify_attempts to just below the limit
+        for _ in range(5):
+            db.increment_verify_attempts("failing-game")
+
+        mock_mc = MagicMock()
+        import types
+
+        mock_mc.lookup_game.return_value = types.SimpleNamespace(
+            metascore=62.0,
+            metascore_review_count=25,
+            user_score=3.3,
+            user_review_count=100,
+            genres=["Action"],
+            must_play=False,
+            release_date="2026-06-01",
+        )
+
+        thresholds = {
+            "min_metascore": 75,
+            "min_metascore_reviews": 10,
+            "min_user_score": 7.5,
+            "min_user_reviews": 10,
+        }
+
+        assert db.is_pending("failing-game") is True
+        # 5 attempts already + 1 more = 6 = max_verify_attempts default
+        removed = _verify_pending_scores(db, mock_mc, "pc", thresholds)
+        assert removed == 1, "Game should be removed after exceeding max_verify_attempts"
+        assert db.is_pending("failing-game") is False, "Game should no longer be pending"
+        db.close()
+
+    def test_verify_pending_removes_game_after_max_attempts_with_none_lookup(self, tmp_path: Path) -> None:
+        """When max_verify_attempts is exceeded, a game with None lookup should be removed."""
+        import datetime
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _verify_pending_scores
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="ghost-game",
+            game_title="Ghost Game",
+            platform="pc",
+            metascore=1288.0,
+            user_score=1288.0,
+            expires_at=expires,
+        )
+
+        # Pre-set verify_attempts to just below the limit
+        for _ in range(5):
+            db.increment_verify_attempts("ghost-game")
+
+        mock_mc = MagicMock()
+        mock_mc.lookup_game.return_value = None
+
+        assert db.is_pending("ghost-game") is True
+        removed = _verify_pending_scores(
+            db,
+            mock_mc,
+            "pc",
+            {
+                "min_metascore": 75,
+                "min_metascore_reviews": 5,
+                "min_user_score": 7.5,
+                "min_user_reviews": 10,
+            },
+        )
+        assert removed == 1, "Game with None lookup should be removed after max_verify_attempts"
+        assert db.is_pending("ghost-game") is False
+        db.close()
+
+    def test_verify_pending_max_attempts_zero_removes_immediately(self, tmp_path: Path) -> None:
+        """With max_verify_attempts=0, games should be removed on first fail (old behavior)."""
+        import datetime
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _verify_pending_scores
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="remove-now",
+            game_title="Remove Now",
+            platform="pc",
+            metascore=1998.0,
+            user_score=2007.0,
+            expires_at=expires,
+        )
+
+        mock_mc = MagicMock()
+        import types
+
+        mock_mc.lookup_game.return_value = types.SimpleNamespace(
+            metascore=62.0,
+            metascore_review_count=25,
+            user_score=3.3,
+            user_review_count=100,
+            genres=["Action"],
+            must_play=False,
+            release_date="2026-06-01",
+        )
+
+        thresholds = {
+            "min_metascore": 75,
+            "min_metascore_reviews": 10,
+            "min_user_score": 7.5,
+            "min_user_reviews": 10,
+        }
+
+        assert db.is_pending("remove-now") is True
+        removed = _verify_pending_scores(
+            db,
+            mock_mc,
+            "pc",
+            thresholds,
+            max_verify_attempts=0,
+        )
+        assert removed == 1, "Game should be removed immediately with max_verify_attempts=0"
+        assert db.is_pending("remove-now") is False
+        db.close()
+
 
 class TestLogGameDetails:
     """_log_game_details end-to-end behaviour."""
