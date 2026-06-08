@@ -70,6 +70,7 @@ class MetacriticPlatformConfig(BaseModel):
     max_verify_attempts: int = Field(default=6, ge=0)
     cutoff_weeks: int | None = None
     exclude_keywords: list[str] = Field(default_factory=list)
+    reject_genre: list[str] = Field(default_factory=list)
 
 
 class MetacriticConfig(BaseModel):
