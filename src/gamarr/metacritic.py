@@ -604,10 +604,10 @@ class MetacriticClient:
                 user_score=cached["user_score"],
                 user_review_count=cached["user_reviews"],
                 passed=False,
-                genres=None,
-                must_play=None,
-                release_date=None,
-                description=None,
+                genres=cached.get("genres"),
+                must_play=cached.get("must_play"),
+                release_date=cached.get("release_date"),
+                description=cached.get("description"),
             )
 
         url = f"https://www.metacritic.com/game/{slug}/"
@@ -634,6 +634,10 @@ class MetacriticClient:
                 metascore_reviews=parsed.get("metascore_reviews"),
                 user_score=parsed.get("user_score"),
                 user_reviews=parsed.get("user_reviews"),
+                genres=parsed.get("genres"),
+                must_play=parsed.get("must_play"),
+                release_date=parsed.get("release_date"),
+                description=parsed.get("description"),
             )
 
             return ScoreResult(

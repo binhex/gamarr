@@ -78,6 +78,10 @@ class GameDetailCache(Base):
     metascore_reviews: Mapped[int | None] = mapped_column(Integer, nullable=True)
     user_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     user_reviews: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    genres: Mapped[str | None] = mapped_column(String, nullable=True)
+    must_play: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    release_date: Mapped[str | None] = mapped_column(String, nullable=True)
+    description: Mapped[str | None] = mapped_column(String, nullable=True)
     cached_at: Mapped[str] = mapped_column(String, nullable=False)
 
 
@@ -141,6 +145,20 @@ class Database:
                     session.execute(text("ALTER TABLE pending_games ADD COLUMN verify_attempts INTEGER DEFAULT 0"))
                     session.commit()
                 logger.debug("Added verify_attempts column to pending_games")
+
+            # Migrate game_detail_cache — add metadata columns
+            detail_columns = [c["name"] for c in inspector.get_columns("game_detail_cache")]
+            for col, col_type in [
+                ("genres", "TEXT"),
+                ("must_play", "INTEGER"),
+                ("release_date", "TEXT"),
+                ("description", "TEXT"),
+            ]:
+                if col not in detail_columns:
+                    with self._session() as session:
+                        session.execute(text(f"ALTER TABLE game_detail_cache ADD COLUMN {col} {col_type}"))
+                        session.commit()
+                    logger.debug("Added '{}' column to game_detail_cache", col)
         except Exception:
             pass  # Migration best-effort
 
@@ -355,11 +373,21 @@ class Database:
             row = session.get(GameDetailCache, slug)
             if row is None or row.cached_at <= cutoff:
                 return None
+            genres: list[str] | None = None
+            if row.genres is not None:
+                try:
+                    genres = json.loads(row.genres)
+                except (json.JSONDecodeError, TypeError):
+                    pass
             return {
                 "metascore": row.metascore,
                 "metascore_reviews": row.metascore_reviews,
                 "user_score": row.user_score,
                 "user_reviews": row.user_reviews,
+                "genres": genres,
+                "must_play": row.must_play,
+                "release_date": row.release_date,
+                "description": row.description,
             }
 
     def set_game_detail_cache(
@@ -369,9 +397,14 @@ class Database:
         metascore_reviews: int | None = None,
         user_score: float | None = None,
         user_reviews: int | None = None,
+        genres: list[str] | None = None,
+        must_play: bool | None = None,
+        release_date: str | None = None,
+        description: str | None = None,
     ) -> None:
         """Insert or update a game detail cache entry."""
         now = datetime.datetime.now(tz=datetime.UTC).isoformat()
+        genres_json: str | None = json.dumps(genres) if genres is not None else None
         with self._session() as session:
             row = session.get(GameDetailCache, slug)
             if row is None:
@@ -382,6 +415,10 @@ class Database:
                         metascore_reviews=metascore_reviews,
                         user_score=user_score,
                         user_reviews=user_reviews,
+                        genres=genres_json,
+                        must_play=must_play,
+                        release_date=release_date,
+                        description=description,
                         cached_at=now,
                     )
                 )
@@ -390,6 +427,10 @@ class Database:
                 row.metascore_reviews = metascore_reviews
                 row.user_score = user_score
                 row.user_reviews = user_reviews
+                row.genres = genres_json
+                row.must_play = must_play
+                row.release_date = release_date
+                row.description = description
                 row.cached_at = now
             session.commit()
 

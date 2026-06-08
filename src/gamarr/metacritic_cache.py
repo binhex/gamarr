@@ -36,9 +36,23 @@ class MetacriticCache:
         metascore_reviews: int | None,
         user_score: float | None,
         user_reviews: int | None,
+        genres: list[str] | None = None,
+        must_play: bool | None = None,
+        release_date: str | None = None,
+        description: str | None = None,
     ) -> None:
         """Insert or update a cached game detail entry."""
-        self._db.set_game_detail_cache(slug, metascore, metascore_reviews, user_score, user_reviews)
+        self._db.set_game_detail_cache(
+            slug,
+            metascore,
+            metascore_reviews,
+            user_score,
+            user_reviews,
+            genres=genres,
+            must_play=must_play,
+            release_date=release_date,
+            description=description,
+        )
 
     def _set_cached_at(self, slug: str, cached_at: str) -> None:
         """Override the cached_at timestamp for testing."""

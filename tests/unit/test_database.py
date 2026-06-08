@@ -400,6 +400,128 @@ class TestDatabaseAlreadyOwned:
         db.close()
 
 
+class TestGameDetailCacheMetadata:
+    """Game detail cache should store and return metadata (genres, etc.)."""
+
+    def test_get_game_detail_cache_with_genres(self, tmp_path: Path) -> None:
+        """set_game_detail_cache should store genres and get_game_detail_cache should return them.
+
+        Reproduces the bug where the cache only stores score fields, so
+        games served from cache have genres=None, must_play=None, etc.
+        """
+        from gamarr.database import Database
+
+        db = Database(str(tmp_path / "test.db"))
+        db.set_game_detail_cache(
+            "opus-prism-peak",
+            metascore=86.0,
+            metascore_reviews=32,
+            user_score=8.3,
+            user_reviews=38,
+            genres=["Adventure", "Third-Person"],
+            must_play=True,
+            release_date="2026-04-16",
+        )
+        result = db.get_game_detail_cache("opus-prism-peak", ttl_days=7)
+        assert result is not None
+        assert result["metascore"] == 86.0
+        assert result["metascore_reviews"] == 32
+        assert result["user_score"] == 8.3
+        assert result["user_reviews"] == 38
+        assert result["genres"] == ["Adventure", "Third-Person"]
+        assert result["must_play"] is True
+        assert result["release_date"] == "2026-04-16"
+        db.close()
+
+    def test_get_game_detail_cache_updates_metadata(self, tmp_path: Path) -> None:
+        """Updating an existing cache entry should replace metadata."""
+        from gamarr.database import Database
+
+        db = Database(str(tmp_path / "test.db"))
+        # First insert
+        db.set_game_detail_cache(
+            "test-game",
+            metascore=80.0,
+            metascore_reviews=10,
+            user_score=7.5,
+            user_reviews=50,
+            genres=["Action"],
+        )
+        # Update with different metadata
+        db.set_game_detail_cache(
+            "test-game",
+            metascore=85.0,
+            metascore_reviews=20,
+            user_score=8.0,
+            user_reviews=100,
+            genres=["Action", "RPG"],
+            must_play=True,
+            release_date="2026-01-01",
+        )
+        result = db.get_game_detail_cache("test-game", ttl_days=7)
+        assert result is not None
+        assert result["metascore"] == 85.0
+        assert result["genres"] == ["Action", "RPG"]
+        assert result["must_play"] is True
+        assert result["release_date"] == "2026-01-01"
+        db.close()
+
+    def test_get_game_detail_cache_genres_none_on_bad_json(self, tmp_path: Path) -> None:
+        """Corrupt genres JSON in cache should return None for genres, not crash."""
+        from gamarr.database import Database, GameDetailCache
+
+        db = Database(str(tmp_path / "test.db"))
+        db.set_game_detail_cache(
+            "bad-genres-game",
+            metascore=85.0,
+            user_score=8.0,
+            genres=["Action"],
+        )
+        # Manually corrupt the genres JSON
+        with db._session() as session:
+            row = session.get(GameDetailCache, "bad-genres-game")
+            assert row is not None
+            row.genres = "not-valid-json{"
+            session.commit()
+        result = db.get_game_detail_cache("bad-genres-game", ttl_days=7)
+        assert result is not None
+        assert result["metascore"] == 85.0
+        assert result["genres"] is None  # Should gracefully degrade
+        db.close()
+
+    def test_game_detail_cache_migration_adds_metadata_columns(self, tmp_path: Path) -> None:
+        """_migrate() should add genres, must_play, release_date, description columns."""
+        from sqlalchemy import Column, Float, Integer, MetaData, String, Table, Text, create_engine
+        from sqlalchemy import inspect as sa_inspect
+
+        # Create a database with the pre-migration schema (missing metadata columns)
+        db_path = str(tmp_path / "pre_migrate.db")
+        engine = create_engine(f"sqlite:///{db_path}")
+        metadata = MetaData()
+        Table(
+            "game_detail_cache",
+            metadata,
+            Column("slug", String, primary_key=True),
+            Column("metascore", Float),
+            Column("metascore_reviews", Integer),
+            Column("user_score", Float),
+            Column("user_reviews", Integer),
+            Column("cached_at", String),
+        )
+        metadata.create_all(engine)
+        engine.dispose()
+
+        # Now open with Database — _migrate() should add the missing columns
+        db = Database(db_path)
+        inspector = sa_inspect(db._engine)
+        columns = [c["name"] for c in inspector.get_columns("game_detail_cache")]
+        assert "genres" in columns, "Migration should add genres column"
+        assert "must_play" in columns, "Migration should add must_play column"
+        assert "release_date" in columns, "Migration should add release_date column"
+        assert "description" in columns, "Migration should add description column"
+        db.close()
+
+
 class TestMigration:
     """Database schema migration tests."""
 
