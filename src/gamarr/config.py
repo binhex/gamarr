@@ -180,14 +180,10 @@ def _migrate_platform_overrides(raw: dict[str, Any]) -> bool:
     for platform_key, mc_pc in overrides.items():
         if not isinstance(mc_pc, dict):
             continue
-        if _rename_config_key(mc_pc, "browse_enabled", "enabled", platform_key):
-            changed = True
-        if _rename_config_key(mc_pc, "browse_cache_ttl_hours", "cache_ttl_hours", platform_key):
-            changed = True
-        if _rename_config_key(mc_pc, "metacritic_enabled", "enabled", platform_key):
-            changed = True
-        if _rename_config_key(mc_pc, "metacritic_max_games", "max_games", platform_key):
-            changed = True
+        changed |= _rename_config_key(mc_pc, "browse_enabled", "enabled", platform_key)
+        changed |= _rename_config_key(mc_pc, "browse_cache_ttl_hours", "cache_ttl_hours", platform_key)
+        changed |= _rename_config_key(mc_pc, "metacritic_enabled", "enabled", platform_key)
+        changed |= _rename_config_key(mc_pc, "metacritic_max_games", "max_games", platform_key)
         for old_key in ("browse_max_pages", "max_score_checks"):
             if old_key in mc_pc:
                 logger.warning(
@@ -196,7 +192,7 @@ def _migrate_platform_overrides(raw: dict[str, Any]) -> bool:
                     platform_key,
                 )
                 mc_pc.pop(old_key)
-                changed = True
+                changed |= True
         for old_key in ("browse_cutoff_date", "metacritic_cutoff_date", "cutoff_date"):
             if old_key in mc_pc:
                 logger.warning(
@@ -206,9 +202,8 @@ def _migrate_platform_overrides(raw: dict[str, Any]) -> bool:
                     platform_key,
                 )
                 mc_pc.pop(old_key)
-                changed = True
-        if _rename_config_key(mc_pc, "metacritic_cache_ttl_hours", "cache_ttl_hours", platform_key):
-            changed = True
+                changed |= True
+        changed |= _rename_config_key(mc_pc, "metacritic_cache_ttl_hours", "cache_ttl_hours", platform_key)
     return changed
 
 
@@ -219,7 +214,7 @@ def _migrate_fitgirl_exclude_keywords(raw: dict[str, Any]) -> bool:
     """
     fg = raw.get("sources", {}).get("fitgirl", {})
     if not isinstance(fg, dict) or "exclude_keywords" not in fg:
-        return
+        return False
     if "reject_keywords" not in fg:
         fg["reject_keywords"] = fg.pop("exclude_keywords")
         logger.info("Config: migrated 'sources.fitgirl.exclude_keywords' to 'sources.fitgirl.reject_keywords'")

@@ -219,9 +219,11 @@ class TestLoadConfig:
 
     def test_migrate_config_returns_true_on_change(self) -> None:
         """_migrate_config should return True when it makes changes."""
+        from typing import Any
+
         from gamarr.config import _migrate_config
 
-        raw = {
+        raw: dict[str, Any] = {
             "sources": {"fitgirl": {"exclude_keywords": ["hv"]}},
             "metacritic": {"platform_overrides": {"pc": {"exclude_keywords": ["DLC"]}}},
         }
@@ -232,9 +234,11 @@ class TestLoadConfig:
 
     def test_migrate_config_returns_false_on_no_change(self) -> None:
         """_migrate_config should return False when nothing to migrate."""
+        from typing import Any
+
         from gamarr.config import _migrate_config
 
-        raw = {
+        raw: dict[str, Any] = {
             "sources": {"fitgirl": {"reject_keywords": ["hv"]}},
             "metacritic": {"platform_overrides": {"pc": {}}},
         }
