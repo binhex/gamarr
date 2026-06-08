@@ -2203,20 +2203,20 @@ class TestVerifyPendingScoresEdgeCases:
         mock_qbt.add_torrent.assert_not_called()
         db.close()
 
-    def test_config_allows_zero_score_checks(self) -> None:
-        """max_score_checks=0 must be accepted by the config model.
+    def test_config_allows_zero_max_games(self) -> None:
+        """max_games=0 must be accepted by the config model.
 
         A value of 0 means "unlimited" — score-check all pending games.
         """
         from gamarr.config import MetacriticPlatformConfig
 
-        cfg = MetacriticPlatformConfig(max_score_checks=0)
-        assert cfg.max_score_checks == 0
+        cfg = MetacriticPlatformConfig(max_games=0)
+        assert cfg.max_games == 0
 
     def test_verify_pending_max_checks_zero_passes_all_games(self, tmp_path: Path) -> None:
-        """When max_score_checks=0, _verify_pending_scores should check ALL games.
+        """When max_games=0, _verify_pending_scores should check ALL games.
 
-        The pipeline passes len(pending_games) as max_verify when max_score_checks=0.
+        The pipeline passes len(pending_games) as max_verify when max_games=0.
         """
         import datetime
         from unittest.mock import MagicMock

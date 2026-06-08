@@ -105,7 +105,6 @@ class AcquisitionConfig:
     enabled: bool = True
     pending_days: int = 30
     max_games: int = 1000
-    max_score_checks: int = 200
     cutoff_weeks: int | None = None
     exclude_keywords: list[str] | None = None
 
@@ -170,7 +169,6 @@ def run_acquisition(
     enabled: bool = True,
     pending_days: int = 30,
     max_games: int = 1000,
-    max_score_checks: int = 200,
     cutoff_weeks: int | None = None,
     exclude_keywords: list[str] | None = None,
     apprise_urls: list[str] | None = None,
@@ -200,7 +198,6 @@ def run_acquisition(
         enabled=enabled,
         pending_days=pending_days,
         max_games=max_games,
-        max_score_checks=max_score_checks,
         cutoff_weeks=cutoff_weeks,
         exclude_keywords=exclude_keywords,
     )
@@ -316,9 +313,7 @@ def run_acquisition(
                 platform,
                 thresholds,
                 cache_ttl_days=cfg.cache_ttl_days,
-                max_verify=len(pending_games)
-                if cfg.max_score_checks == 0
-                else min(len(pending_games), cfg.max_score_checks),
+                max_verify=len(pending_games) if cfg.max_games == 0 else min(len(pending_games), cfg.max_games),
             )
             if removed:
                 logger.info(
