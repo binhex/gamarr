@@ -6,9 +6,11 @@ sitemap, and sends qualifying games to qBittorrent.
 
 ## Features
 
-- **Metacritic-first acquisition** — browses Metacritic browse pages for newly
-  released titles, filters by critic and user score thresholds, then matches
-  survivors against the FitGirl repacks sitemap.
+- **Two-phase score verification** — browse pages use internal Metacritic
+  metrics (not real 0–100 scores) to build a candidate pool quickly. Each
+  candidate is then checked against its real Metacritic detail page before
+  being matched against FitGirl. This avoids hundreds of slow HTTP requests
+  while keeping score accuracy.
 - **Genre-based rejection** — exclude games by genre using case-insensitive
   substring matching (e.g. `["RPG"]` rejects "Action RPG", "JRPG", etc.).
 - **Keyword-based title filtering** — reject games whose titles contain
@@ -209,19 +211,23 @@ flowchart TD
 ### Detailed phases
 
 1. **Metacritic browse** — Scans Metacritic browse pages (newest-first) for
-   games matching the target platform. Extracts critic and user scores,
-   release dates, and titles up to `max_games` entries.
+   games matching the target platform. **Important:** browse pages show
+   *internal browse-only metrics*, not the real 0–100 critic scores or
+   0–10 user scores. These rough scores are used only to build a candidate
+   pool — the real filtering happens in step 4. Up to `max_games` entries
+   are collected.
 2. **Browse-page filtering** — Games whose titles contain `exclude_keywords`
-   are skipped. Games below the configured score thresholds on the browse
-   page are skipped. Games outside the `cutoff_weeks` window are skipped.
+   or `reject_title` are skipped. Games below the configured score
+   thresholds on the browse page are skipped. Games outside the
+   `cutoff_weeks` window are skipped.
 3. **Pending queue** — Surviving games enter a `pending_games` queue with a
    configurable expiry (`metacritic.platform_overrides.*.pending_days`,
    default 30, or `0` for indefinite). They wait for a detail-page
    verification pass.
 4. **Score verification** — Each pending game's real Metacritic detail page
-   is fetched. The real critic and user scores are compared against
-   configured thresholds. Games whose real scores fail are kept for
-   re-verification (up to `max_verify_attempts` tries).
+   is fetched. The real 0–100 critic score and 0–10 user score are compared
+   against configured thresholds. Games whose real scores fail the checks
+   are kept for re-verification (up to `max_verify_attempts` tries).
    **When scores pass**, the game's expiry is recalculated to
    `now + sources.fitgirl.pending_days` (default 60, or `0` for
    indefinite), giving it a fresh window for the FitGirl-matching phase.
