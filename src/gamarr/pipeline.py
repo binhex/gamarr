@@ -106,7 +106,7 @@ class AcquisitionConfig:
     pending_days: int = 30
     max_games: int = 1000
     max_score_checks: int = 200
-    cutoff_date: str | None = None
+    cutoff_weeks: int | None = None
     exclude_keywords: list[str] | None = None
 
 
@@ -171,7 +171,7 @@ def run_acquisition(
     pending_days: int = 30,
     max_games: int = 1000,
     max_score_checks: int = 200,
-    cutoff_date: str | None = None,
+    cutoff_weeks: int | None = None,
     exclude_keywords: list[str] | None = None,
     apprise_urls: list[str] | None = None,
     notify_on_download: bool = True,
@@ -201,7 +201,7 @@ def run_acquisition(
         pending_days=pending_days,
         max_games=max_games,
         max_score_checks=max_score_checks,
-        cutoff_date=cutoff_date,
+        cutoff_weeks=cutoff_weeks,
         exclude_keywords=exclude_keywords,
     )
 
@@ -265,7 +265,7 @@ def run_acquisition(
                 platform,
                 max_games=cfg.max_games,
                 cache_ttl_hours=cfg.cache_ttl_hours,
-                cutoff_date=cfg.cutoff_date,
+                cutoff_date=cfg.cutoff_weeks,
             )
             if browse_games:
                 thresholds = {

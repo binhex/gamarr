@@ -57,7 +57,7 @@ def _build_kwargs(config: Config) -> dict[str, Any]:
         "enabled": mc_cfg.enabled,
         "max_games": mc_cfg.max_games,
         "max_score_checks": mc_cfg.max_score_checks,
-        "cutoff_date": mc_cfg.cutoff_date,
+        "cutoff_weeks": mc_cfg.cutoff_weeks,
         "exclude_keywords": mc_cfg.exclude_keywords,
         "pending_days": mc_cfg.pending_days,
         "apprise_urls": config.notification.apprise_urls,
