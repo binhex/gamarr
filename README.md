@@ -7,10 +7,11 @@ sitemap, and sends qualifying games to qBittorrent.
 ## Features
 
 - **Two-phase score verification** — browse pages use internal Metacritic
-  metrics (not real 0–100 scores) to build a candidate pool quickly. Each
-  candidate is then checked against its real Metacritic detail page before
-  being matched against FitGirl. This avoids hundreds of slow HTTP requests
-  while keeping score accuracy.
+  metrics (not real 0–100 scores) to build a candidate pool quickly.
+  Browse scores are on a completely different scale (e.g. 1478, 1931) and
+  **always pass** the configured thresholds — the real 0–100 score
+  filtering only happens during the detail-page verification step.
+  This avoids hundreds of slow HTTP requests while keeping score accuracy.
 - **Genre-based rejection** — exclude games by genre using case-insensitive
   substring matching (e.g. `["RPG"]` rejects "Action RPG", "JRPG", etc.).
 - **Keyword-based title filtering** — reject games whose titles contain
@@ -217,9 +218,10 @@ flowchart TD
    pool — the real filtering happens in step 4. Up to `max_games` entries
    are collected.
 2. **Browse-page filtering** — Games whose titles contain `exclude_keywords`
-   or `reject_title` are skipped. Games below the configured score
-   thresholds on the browse page are skipped. Games outside the
-   `cutoff_weeks` window are skipped.
+   or `reject_title` are skipped. Games outside the `cutoff_weeks` window
+   are skipped. **Note:** browse scores are on a different scale and always
+   exceed the configured thresholds — score filtering effectively starts
+   at the verification step (phase 4), not here.
 3. **Pending queue** — Surviving games enter a `pending_games` queue with a
    configurable expiry (`metacritic.platform_overrides.*.pending_days`,
    default 30, or `0` for indefinite). They wait for a detail-page
