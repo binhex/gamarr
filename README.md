@@ -18,8 +18,10 @@ sitemap, and sends qualifying games to qBittorrent.
 - **Re-verification with retry limit** — games whose real Metacritic detail
   page scores don't match the browse page scores are kept in a pending queue
   for re-verification, up to a configurable maximum number of attempts.
-- **Pending queue with expiry** — games awaiting verification or matching
-  expire from the queue after a configurable number of days.
+- **Two-phase pending expiry** — games awaiting score review expire after
+  `pending_days` (under metacritic thresholds). Once scores pass, a fresh
+  expiry window (`sources.fitgirl.pending_days`) starts for the
+  FitGirl-matching phase.
 - **FitGirl sitemap matching** — fetches the FitGirl repacks sitemap only
   when there are verified games to match against.
 - **Database deduplication** — every processed game is recorded in SQLite;
@@ -110,6 +112,7 @@ on first run. The file is divided into the sections below.
 | `fitgirl.platform` | Target platform for matching. | `pc` |
 | `fitgirl.cache_ttl_hours` | How long to cache the FitGirl sitemap before re-fetching. | `6` |
 | `fitgirl.exclude_keywords` | Reject FitGirl repack titles containing any of these keywords (case-insensitive). | `[]` |
+| `fitgirl.pending_days` | How many days a game stays in the pending queue *after* its scores are verified (the FitGirl-matching phase). Separate from the score-waiting expiry under metacritic. | `60` |
 
 ### `metacritic`
 
@@ -215,12 +218,15 @@ flowchart TD
    are skipped. Games below the configured score thresholds on the browse
    page are skipped. Games outside the `cutoff_weeks` window are skipped.
 3. **Pending queue** — Surviving games enter a `pending_games` queue with a
-   configurable expiry (`pending_days`). They wait for a detail-page
-   verification pass.
+   configurable expiry (`metacritic.platform_overrides.*.pending_days`,
+   default 30). They wait for a detail-page verification pass.
 4. **Score verification** — Each pending game's real Metacritic detail page
    is fetched. The real critic and user scores are compared against
    configured thresholds. Games whose real scores fail are kept for
    re-verification (up to `max_verify_attempts` tries).
+   **When scores pass**, the game's expiry is recalculated to
+   `now + sources.fitgirl.pending_days` (default 60), giving it a fresh
+   window for the FitGirl-matching phase.
 5. **Genre rejection** — Before score verification, the game's genres
    (extracted from the detail page) are checked against `reject_genre`.
    Matching games are removed from pending immediately — no score
