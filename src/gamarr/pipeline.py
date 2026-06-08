@@ -619,6 +619,7 @@ def _fail_game_after_max_attempts(
     """
     game_slug = str(game.slug)
     if result is None:
+        details = result_details or "Game not found on Metacritic detail page after multiple attempts"
         db.record_processed(
             source="metacritic",
             source_title=str(game.game_title),
@@ -628,12 +629,12 @@ def _fail_game_after_max_attempts(
             metascore=None,
             user_score=None,
             result="Failed",
-            result_details="Game not found on Metacritic detail page after multiple attempts",
+            result_details=details,
         )
         logger.debug(
-            "Removed '{}' from queue \u2014 game not found on Metacritic page after {} attempts",
+            "Removed '{}' from queue \u2014 {} ",
             game.game_title,
-            attempts,
+            details,
         )
     else:
         if result_details is None:
