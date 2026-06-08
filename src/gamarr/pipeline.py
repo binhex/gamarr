@@ -585,8 +585,13 @@ def _fail_game_after_max_attempts(
     game: Any,
     result: Any | None,
     attempts: int,
+    result_details: str | None = None,
 ) -> None:
-    """Record a game as permanently failed and remove from pending queue."""
+    """Record a game as permanently failed and remove from pending queue.
+
+    When *result_details* is provided it overrides the auto-generated
+    "below thresholds" message (e.g. for genre-rejected games).
+    """
     game_slug = str(game.slug)
     if result is None:
         db.record_processed(
@@ -606,7 +611,9 @@ def _fail_game_after_max_attempts(
             attempts,
         )
     else:
-        score_info = f"({result.metascore}, {result.user_score})" if _scores_present(result) else "(no scores)"
+        if result_details is None:
+            score_info = f"({result.metascore}, {result.user_score})" if _scores_present(result) else "(no scores)"
+            result_details = f"Scores {score_info} below thresholds after {attempts} attempts"
         db.record_processed(
             source="metacritic",
             source_title=str(game.game_title),
@@ -616,7 +623,7 @@ def _fail_game_after_max_attempts(
             metascore=result.metascore,
             user_score=result.user_score,
             result="Failed",
-            result_details=f"Scores {score_info} below thresholds after {attempts} attempts",
+            result_details=result_details,
         )
         if _scores_present(result):
             logger.debug(
@@ -641,7 +648,7 @@ def _reject_by_genre(
     reject_genre: list[str] | None,
 ) -> bool:
     """Return True if *result* has a genre in *reject_genre* (case-insensitive)."""
-    if not (result is not None and reject_genre and result.genres):
+    if not (result is not None and reject_genre and getattr(result, 'genres', None)):
         return False
     reject_lower = [g.lower() for g in reject_genre]
     for genre in result.genres:
@@ -672,7 +679,11 @@ def _process_verify_result(
     from pending and recorded in the history with result="Failed".
     """
     if _reject_by_genre(game, result, reject_genre):
-        _fail_game_after_max_attempts(db, game, result, attempts=1)
+        game_title = str(game.game_title)
+        _fail_game_after_max_attempts(
+            db, game, result, attempts=1,
+            result_details=f"Genre '{game_title}' is in reject_genre list",
+        )
         return True
 
     if result is None:
