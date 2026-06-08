@@ -72,6 +72,7 @@ class MetacriticPlatformConfig(BaseModel):
     cutoff_weeks: int | None = None
     exclude_keywords: list[str] = Field(default_factory=list)
     reject_genre: list[str] = Field(default_factory=list)
+    reject_title: list[str] = Field(default_factory=list)  # case-insensitive substrings
 
 
 class MetacriticConfig(BaseModel):
