@@ -385,6 +385,14 @@ def _title_contains_keywords(title: str, keywords: list[str] | None) -> bool:
     return any(kw.lower() in title_lower for kw in keywords)
 
 
+def _title_matches_reject(title: str, reject_title: list[str] | None) -> bool:
+    """Return True if *title* case-insensitively matches any reject_title entry."""
+    if not reject_title:
+        return False
+    title_lower = title.lower()
+    return any(term.lower() in title_lower for term in reject_title)
+
+
 def _game_passes_thresholds(game: dict[str, Any], thresholds: dict[str, Any]) -> bool:
     """Check if a browse-page game dict passes all score thresholds."""
     metascore = game.get("score")
@@ -675,6 +683,30 @@ def _reject_by_genre(
                     term,
                 )
                 return str(result.genres[i])
+    return None
+
+
+def _reject_by_title(
+    game: Any,
+    reject_title: list[str] | None,
+) -> str | None:
+    """Return the first reject_title entry that matched the game title, or None.
+
+    Case-insensitive substring match means ``reject_title=["Remake"]`` matches
+    ``"Resident Evil 4 Remake"``, ``"Remake Collection"``, etc.
+    """
+    if not (reject_title and game and game.game_title):
+        return None
+    title_lower = str(game.game_title).lower()
+    for term in reject_title:
+        term_lower = term.lower()
+        if term_lower in title_lower:
+            logger.info(
+                "Removing '{}' — title matches reject_title '{}'",
+                game.game_title,
+                term,
+            )
+            return str(term)
     return None
 
 
