@@ -51,7 +51,6 @@ class TestConfigModels:
         assert cfg.min_user_score == 7.5
         assert cfg.days_since_release == 90
         assert cfg.max_games == 1000
-        assert cfg.max_score_checks == 200
 
     def test_migrate_config_renames_browse_keys(self) -> None:
         """_migrate_config should rename old browse_* keys and drop deprecated cutoff_date."""
