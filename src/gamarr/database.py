@@ -133,6 +133,11 @@ class Database:
 
     def _migrate(self) -> None:
         """Add columns added in newer versions of gamarr."""
+        self._migrate_pending_games()
+        self._migrate_game_detail_cache()
+
+    def _migrate_pending_games(self) -> None:
+        """Add columns to pending_games that were added in newer versions."""
         try:
             inspector = sa_inspect(self._engine)
             columns = [c["name"] for c in inspector.get_columns("pending_games")]
@@ -146,15 +151,20 @@ class Database:
                     session.execute(text("ALTER TABLE pending_games ADD COLUMN verify_attempts INTEGER DEFAULT 0"))
                     session.commit()
                 logger.debug("Added verify_attempts column to pending_games")
+        except Exception:
+            pass  # Migration best-effort
 
-            # Migrate game_detail_cache — add metadata columns
+    def _migrate_game_detail_cache(self) -> None:
+        """Add metadata columns to game_detail_cache that were added in newer versions."""
+        try:
+            inspector = sa_inspect(self._engine)
             detail_columns = [c["name"] for c in inspector.get_columns("game_detail_cache")]
-            for col, col_type in [
+            for col, col_type in (
                 ("genres", "TEXT"),
                 ("must_play", "INTEGER"),
                 ("release_date", "TEXT"),
                 ("description", "TEXT"),
-            ]:
+            ):
                 if col not in detail_columns:
                     with self._session() as session:
                         session.execute(text(f"ALTER TABLE game_detail_cache ADD COLUMN {col} {col_type}"))
