@@ -46,6 +46,18 @@ class TestConfigModels:
         assert cfg.rss_url == "https://fitgirl-repacks.site/feed/"
         assert cfg.platform == "pc"
         assert cfg.pending_days == 60
+        assert cfg.reject_keywords == []
+
+    def test_fitgirl_reject_keywords_replaces_exclude_keywords(self) -> None:
+        """FitGirlSourceConfig should have reject_keywords, not exclude_keywords."""
+        cfg = FitGirlSourceConfig(reject_keywords=["hv"])
+        assert cfg.reject_keywords == ["hv"]
+        assert not hasattr(cfg, "exclude_keywords")
+
+    def test_metacritic_exclude_keywords_removed(self) -> None:
+        """MetacriticPlatformConfig should NOT have exclude_keywords (redundant with reject_title)."""
+        cfg = MetacriticPlatformConfig()
+        assert not hasattr(cfg, "exclude_keywords")
 
     def test_fitgirl_pending_days_ge_zero(self) -> None:
         """pending_days must be >= 0 (0 disables expiry extension)."""

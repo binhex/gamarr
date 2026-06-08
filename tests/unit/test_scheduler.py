@@ -106,6 +106,16 @@ class TestShutdownEvent:
 class TestBuildKwargs:
     """_build_kwargs config extraction."""
 
+    def test_build_kwargs_includes_fitgirl_reject_keywords(self) -> None:
+        """_build_kwargs should include fitgirl_reject_keywords, not fitgirl_exclude_keywords."""
+        from gamarr.scheduler import _build_kwargs
+
+        config = _make_config()
+        kwargs = _build_kwargs(config)
+        assert "fitgirl_reject_keywords" in kwargs
+        assert "fitgirl_exclude_keywords" not in kwargs
+        assert "exclude_keywords" not in kwargs
+
     def test_build_kwargs_includes_notify_on_error(self) -> None:
         from gamarr.config import (
             Config,

@@ -1320,7 +1320,7 @@ class TestMetacriticBrowse:
             db,
             qbt=mock_qbt,
             magnet_fetcher=magnet_fetcher,
-            exclude_keywords=["HV"],
+            reject_keywords=["HV"],
         )
         # Game should NOT be delivered — FitGirl title was excluded by keyword
         assert len(matched) == 0
@@ -1900,7 +1900,7 @@ class TestMetacriticBrowse:
         db.close()
 
     def test_browse_skips_keyword_excluded_games(self, tmp_path: Path) -> None:
-        """Games with titles matching exclude_keywords should not be added."""
+        """Games with titles matching reject_title should not be added."""
         from gamarr.database import Database
         from gamarr.pipeline import _process_browse_games
 
@@ -1943,7 +1943,7 @@ class TestMetacriticBrowse:
             db,
             thresholds,
             pending_days=30,
-            exclude_keywords=["DLC", "Soundtrack", "Bundle"],
+            reject_title=["DLC", "Soundtrack", "Bundle"],
         )
         assert new_count == 1, "Only the non-excluded game should be added"
         pending = db.get_pending()

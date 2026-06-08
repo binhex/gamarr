@@ -57,7 +57,6 @@ def _build_kwargs(config: Config) -> dict[str, Any]:
         "max_games": mc_cfg.max_games,
         "max_verify_attempts": mc_cfg.max_verify_attempts,
         "cutoff_weeks": mc_cfg.cutoff_weeks,
-        "exclude_keywords": mc_cfg.exclude_keywords,
         "reject_genre": mc_cfg.reject_genre,
         "reject_title": mc_cfg.reject_title,
         "pending_days": mc_cfg.pending_days,
@@ -66,7 +65,7 @@ def _build_kwargs(config: Config) -> dict[str, Any]:
         "notify_on_failure": config.notification.on_failure,
         "notify_on_error": config.notification.on_error,
         "fitgirl_cache_ttl_hours": config.sources.fitgirl.cache_ttl_hours,
-        "fitgirl_exclude_keywords": config.sources.fitgirl.exclude_keywords,
+        "fitgirl_reject_keywords": config.sources.fitgirl.reject_keywords,
         "fitgirl_pending_days": config.sources.fitgirl.pending_days,
         "library_paths": config.library.paths,
     }

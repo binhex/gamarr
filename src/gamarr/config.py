@@ -45,7 +45,7 @@ class FitGirlSourceConfig(BaseModel):
     rss_url: str = "https://fitgirl-repacks.site/feed/"
     platform: str = "pc"
     cache_ttl_hours: int = Field(default=6, gt=0, le=168)
-    exclude_keywords: list[str] = Field(default_factory=list)
+    reject_keywords: list[str] = Field(default_factory=list)
     pending_days: int = Field(default=60, ge=0)
 
 
@@ -70,7 +70,6 @@ class MetacriticPlatformConfig(BaseModel):
     max_games: int = Field(default=1000, ge=0, le=20000)
     max_verify_attempts: int = Field(default=6, ge=0)
     cutoff_weeks: int | None = None
-    exclude_keywords: list[str] = Field(default_factory=list)
     reject_genre: list[str] = Field(default_factory=list)
     reject_title: list[str] = Field(default_factory=list)  # case-insensitive substrings
 
@@ -199,6 +198,25 @@ def _migrate_config(raw: dict[str, Any]) -> None:
                     )
                     mc_pc.pop(old_key)
             _rename_config_key(mc_pc, "metacritic_cache_ttl_hours", "cache_ttl_hours", platform_key)
+
+        # Migrate deprecated exclude_keywords → reject_keywords on FitGirlSourceConfig
+        sources = raw.get("sources", {})
+        fg = sources.get("fitgirl", {})
+        if isinstance(fg, dict) and "exclude_keywords" in fg:
+            if "reject_keywords" not in fg:
+                fg["reject_keywords"] = fg.pop("exclude_keywords")
+                logger.info("Config: migrated 'sources.fitgirl.exclude_keywords' to 'sources.fitgirl.reject_keywords'")
+            else:
+                del fg["exclude_keywords"]
+
+        # Remove deprecated metacritic.exclude_keywords (redundant with reject_title)
+        for platform_key, mc_pc in overrides.items():
+            if isinstance(mc_pc, dict) and "exclude_keywords" in mc_pc:
+                logger.info(
+                    "Config: removing deprecated 'exclude_keywords' for platform '{}' — use reject_title instead",
+                    platform_key,
+                )
+                del mc_pc["exclude_keywords"]
 
         # Migrate deprecated general.daemon_mode → schedule.acquisition.enabled
         general = raw.get("general", {})

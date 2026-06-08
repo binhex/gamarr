@@ -107,7 +107,6 @@ class AcquisitionConfig:
     max_games: int = 1000
     max_verify_attempts: int = 6
     cutoff_weeks: int | None = None
-    exclude_keywords: list[str] | None = None
     reject_genre: list[str] | None = None
     reject_title: list[str] | None = None  # ← new
     fitgirl_pending_days: int = 60
@@ -176,7 +175,6 @@ def run_acquisition(
     max_games: int = 1000,
     max_verify_attempts: int = 6,
     cutoff_weeks: int | None = None,
-    exclude_keywords: list[str] | None = None,
     reject_genre: list[str] | None = None,
     reject_title: list[str] | None = None,  # ← new
     apprise_urls: list[str] | None = None,
@@ -185,7 +183,7 @@ def run_acquisition(
     notify_on_error: bool = False,
     library_paths: list[str] | None = None,
     fitgirl_cache_ttl_hours: int = 6,
-    fitgirl_exclude_keywords: list[str] | None = None,
+    fitgirl_reject_keywords: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Execute one scan cycle.
 
@@ -209,7 +207,6 @@ def run_acquisition(
         max_games=max_games,
         max_verify_attempts=max_verify_attempts,
         cutoff_weeks=cutoff_weeks,
-        exclude_keywords=exclude_keywords,
         reject_genre=reject_genre,
         reject_title=reject_title,  # ← new
     )
@@ -297,7 +294,6 @@ def run_acquisition(
                     thresholds,
                     pending_days=cfg.pending_days,
                     days_since_release=cfg.days_since_release,
-                    exclude_keywords=cfg.exclude_keywords or None,
                     reject_title=cfg.reject_title,  # ← new
                 )
                 if new_pending:
@@ -363,7 +359,7 @@ def run_acquisition(
             library=library,
             mc=mc,
             thresholds=match_thresholds,
-            exclude_keywords=fitgirl_exclude_keywords or None,
+            reject_keywords=fitgirl_reject_keywords or None,
         )
         if matched:
             logger.info("{} queued games found on FitGirl", len(matched))
@@ -427,15 +423,11 @@ def _is_game_eligible(
     db: Database,
     thresholds: dict[str, Any],
     days_since_release: int,
-    exclude_keywords: list[str] | None,
 ) -> bool:
     """Return True if *game* passes all filters and should be added to pending."""
     slug = game.get("slug", "")
     title = game.get("title", "")
     if not slug or not title:
-        return False
-    if _title_contains_keywords(title, exclude_keywords):
-        logger.debug("Skipping '{}' — matches exclude keyword", title)
         return False
     if db.is_processed("metacritic", f"mc:{slug}") or db.is_pending(slug):
         return False
@@ -460,7 +452,6 @@ def _process_browse_games(
     *,
     pending_days: int = 30,
     days_since_release: int = 0,
-    exclude_keywords: list[str] | None = None,
     reject_title: list[str] | None = None,  # ← new
 ) -> int:
     """Evaluate browse-page games and insert qualifying ones into the pending queue.
@@ -478,7 +469,6 @@ def _process_browse_games(
         thresholds: Dict with ``min_metascore`` keys.
         pending_days: How many days to keep the game pending before expiry.
         days_since_release: Max age in days. Games older than this are skipped.
-        exclude_keywords: Titles containing any of these are skipped.
         reject_title: Titles matching any of these are skipped.
 
     Returns:
@@ -486,7 +476,7 @@ def _process_browse_games(
     """
     new_count = 0
     for game in browse_games:
-        if not _is_game_eligible(game, db, thresholds, days_since_release, exclude_keywords):
+        if not _is_game_eligible(game, db, thresholds, days_since_release):
             continue
         if _title_matches_reject(game.get("title", ""), reject_title):
             logger.debug("Skipping '{}' — matches reject_title", game.get("title", ""))
@@ -1060,7 +1050,7 @@ def _match_pending_games(
     library: Any = None,
     mc: Any = None,
     thresholds: dict[str, Any] | None = None,
-    exclude_keywords: list[str] | None = None,
+    reject_keywords: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Match pending games against torrent source indices.
 
@@ -1126,7 +1116,7 @@ def _match_pending_games(
             game_user_score=game_user_score,
             game_user_reviews=game_user_reviews,
             game_release_date=game_release_date,
-            exclude_keywords=exclude_keywords,
+            reject_keywords=reject_keywords,
         )
         if result is not None:
             results.append(result)
@@ -1266,7 +1256,7 @@ def _process_single_pending_match(
     game_user_score: float | None,
     game_user_reviews: int | None,
     game_release_date: str | None,
-    exclude_keywords: list[str] | None = None,
+    reject_keywords: list[str] | None = None,
 ) -> dict[str, Any] | None:
     """Match one pending game against FitGirl sitemap and either deliver or touch."""
     normalized = normalise_for_compare(game_title)
@@ -1288,7 +1278,7 @@ def _process_single_pending_match(
     )
 
     # Skip matches whose FitGirl title contains excluded keywords
-    if _title_contains_keywords(best["title"], exclude_keywords):
+    if _title_contains_keywords(best["title"], reject_keywords):
         logger.info(
             "Skipping match for '{}' \u2014 FitGirl title '{}' contains excluded keyword",
             game_title,
