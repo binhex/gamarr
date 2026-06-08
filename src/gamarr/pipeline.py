@@ -109,6 +109,7 @@ class AcquisitionConfig:
     cutoff_weeks: int | None = None
     exclude_keywords: list[str] | None = None
     reject_genre: list[str] | None = None
+    reject_title: list[str] | None = None  # ← new
     fitgirl_pending_days: int = 60
 
 
@@ -177,6 +178,7 @@ def run_acquisition(
     cutoff_weeks: int | None = None,
     exclude_keywords: list[str] | None = None,
     reject_genre: list[str] | None = None,
+    reject_title: list[str] | None = None,  # ← new
     apprise_urls: list[str] | None = None,
     notify_on_download: bool = True,
     notify_on_failure: bool = False,
@@ -209,6 +211,7 @@ def run_acquisition(
         cutoff_weeks=cutoff_weeks,
         exclude_keywords=exclude_keywords,
         reject_genre=reject_genre,
+        reject_title=reject_title,  # ← new
     )
 
     logger.info("Starting acquisition cycle (platform='{}')", platform)
@@ -295,6 +298,7 @@ def run_acquisition(
                     pending_days=cfg.pending_days,
                     days_since_release=cfg.days_since_release,
                     exclude_keywords=cfg.exclude_keywords or None,
+                    reject_title=cfg.reject_title,  # ← new
                 )
                 if new_pending:
                     logger.info(
@@ -325,6 +329,7 @@ def run_acquisition(
                 max_verify=len(pending_games) if cfg.max_games == 0 else min(len(pending_games), cfg.max_games),
                 max_verify_attempts=cfg.max_verify_attempts,
                 reject_genre=cfg.reject_genre,
+                reject_title=cfg.reject_title,  # ← new
                 fitgirl_pending_days=cfg.fitgirl_pending_days,  # ← new
             )
             if removed:
@@ -423,6 +428,7 @@ def _is_game_eligible(
     thresholds: dict[str, Any],
     days_since_release: int,
     exclude_keywords: list[str] | None,
+    reject_title: list[str] | None = None,  # ← new
 ) -> bool:
     """Return True if *game* passes all filters and should be added to pending."""
     slug = game.get("slug", "")
@@ -431,6 +437,9 @@ def _is_game_eligible(
         return False
     if _title_contains_keywords(title, exclude_keywords):
         logger.debug("Skipping '{}' — matches exclude keyword", title)
+        return False
+    if _title_matches_reject(title, reject_title):  # ← new
+        logger.debug("Skipping '{}' — matches reject_title", title)
         return False
     if db.is_processed("metacritic", f"mc:{slug}") or db.is_pending(slug):
         return False
@@ -456,6 +465,7 @@ def _process_browse_games(
     pending_days: int = 30,
     days_since_release: int = 0,
     exclude_keywords: list[str] | None = None,
+    reject_title: list[str] | None = None,  # ← new
 ) -> int:
     """Evaluate browse-page games and insert qualifying ones into the pending queue.
 
@@ -473,13 +483,14 @@ def _process_browse_games(
         pending_days: How many days to keep the game pending before expiry.
         days_since_release: Max age in days. Games older than this are skipped.
         exclude_keywords: Titles containing any of these are skipped.
+        reject_title: Titles matching any of these are skipped.
 
     Returns:
         Number of new pending games added.
     """
     new_count = 0
     for game in browse_games:
-        if not _is_game_eligible(game, db, thresholds, days_since_release, exclude_keywords):
+        if not _is_game_eligible(game, db, thresholds, days_since_release, exclude_keywords, reject_title=reject_title):
             continue
 
         g_slug = game.get("slug", "")
@@ -743,6 +754,7 @@ def _process_verify_result(
     *,
     max_verify_attempts: int = 6,
     reject_genre: list[str] | None = None,
+    reject_title: list[str] | None = None,  # ← new
     fitgirl_pending_days: int = 60,  # ← new
 ) -> bool:
     """Process one score-check result. Returns True if the game was removed.
@@ -765,6 +777,18 @@ def _process_verify_result(
             result,
             attempts=attempts,
             result_details=f"Game '{game.game_title}' — genre '{matched_genre}' is in reject_genre list",
+        )
+        return True
+
+    matched_title = _reject_by_title(game, reject_title)
+    if matched_title is not None:
+        attempts = db.increment_verify_attempts(str(game.slug))
+        _fail_game_after_max_attempts(
+            db,
+            game,
+            result,
+            attempts=attempts,
+            result_details=f"Game '{game.game_title}' — title matches reject_title '{matched_title}'",
         )
         return True
 
@@ -817,6 +841,7 @@ def _verify_pending_scores(
     max_verify: int = 50,
     max_verify_attempts: int = 6,
     reject_genre: list[str] | None = None,
+    reject_title: list[str] | None = None,  # ← new
     fitgirl_pending_days: int = 60,  # ← new
 ) -> int:
     """Re-verify pending games' scores against the real Metacritic detail page.
@@ -851,6 +876,8 @@ def _verify_pending_scores(
         reject_genre: List of genre substrings to reject (case-insensitive).
             Games whose genre contains any entry are removed immediately.
             E.g. ``["RPG"]`` matches ``"Action RPG"``, ``"JRPG"``, etc.
+        reject_title: List of title substrings to reject (case-insensitive).
+            Games whose title contains any entry are removed immediately.
         fitgirl_pending_days: Passed through to _process_verify_result for
             expiry recalculation when scores pass.
 
@@ -896,6 +923,7 @@ def _verify_pending_scores(
                 thresholds,
                 max_verify_attempts=max_verify_attempts,
                 reject_genre=reject_genre,
+                reject_title=reject_title,  # ← new
                 fitgirl_pending_days=fitgirl_pending_days,  # ← new
             ):
                 removed += 1
