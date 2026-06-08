@@ -1277,10 +1277,10 @@ def _process_single_pending_match(
         best["url"],
     )
 
-    # Skip matches whose FitGirl title contains excluded keywords
+    # Skip matches whose FitGirl title contains rejected keywords
     if _title_contains_keywords(best["title"], reject_keywords):
         logger.info(
-            "Skipping match for '{}' \u2014 FitGirl title '{}' contains excluded keyword",
+            "Skipping match for '{}' \u2014 FitGirl title '{}' contains rejected keyword",
             game_title,
             best["title"],
         )
