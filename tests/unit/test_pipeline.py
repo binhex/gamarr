@@ -3051,3 +3051,166 @@ class TestLogGameDetails:
         assert "?" in msg
         assert "N/A" in msg
         assert "No" in msg
+
+
+class TestFitgirlPendingExpiry:
+    """Tests for fitgirl_pending_days expiry recalculation."""
+
+    def test_fitgirl_pending_days_updates_expiry(self, tmp_path: Path) -> None:
+        """Game with passing scores should have expires_at recalculated to now + fitgirl_pending_days."""
+        import datetime
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _verify_pending_scores
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="passing-game",
+            game_title="Passing Game",
+            platform="pc",
+            metascore=1288.0,
+            user_score=1288.0,
+            release_date="2026-06-01",
+            expires_at=expires,
+        )
+        original_expiry = expires  # Capture before verification
+
+        mock_mc = MagicMock()
+        import types
+        mock_result = types.SimpleNamespace(
+            metascore=88.0,
+            metascore_review_count=50,
+            user_score=8.0,
+            user_review_count=100,
+            genres=["Action"],
+            must_play=True,
+            release_date="2026-06-01",
+        )
+        mock_mc.lookup_game.return_value = mock_result
+
+        thresholds = {
+            "min_metascore": 75,
+            "min_metascore_reviews": 5,
+            "min_user_score": 7.5,
+            "min_user_reviews": 10,
+        }
+
+        _verify_pending_scores(db, mock_mc, "pc", thresholds, fitgirl_pending_days=60)
+
+        # Game should still be pending
+        pending = db.get_pending(platform="pc")
+        assert len(pending) == 1
+        row = pending[0]
+        # Expiry should be recalculated to now + 60 days (not the original +30)
+        new_expiry = datetime.datetime.fromisoformat(row.expires_at)
+        expected_min = datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=59)
+        expected_max = datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=61)
+        assert expected_min < new_expiry < expected_max, (
+            f"Expiry should be near now+60d, got {new_expiry}"
+        )
+        # Verify it's different from the original
+        assert row.expires_at != original_expiry, "Expiry should have been updated"
+        db.close()
+
+    def test_fitgirl_pending_days_zero_disabled(self, tmp_path: Path) -> None:
+        """fitgirl_pending_days=0 should NOT update expiry."""
+        import datetime
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _verify_pending_scores
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="zero-days-game",
+            game_title="Zero Days Game",
+            platform="pc",
+            metascore=1288.0,
+            user_score=1288.0,
+            release_date="2026-06-01",
+            expires_at=expires,
+        )
+
+        mock_mc = MagicMock()
+        import types
+        mock_result = types.SimpleNamespace(
+            metascore=88.0,
+            metascore_review_count=50,
+            user_score=8.0,
+            user_review_count=100,
+            genres=["Action"],
+            must_play=True,
+            release_date="2026-06-01",
+        )
+        mock_mc.lookup_game.return_value = mock_result
+
+        thresholds = {
+            "min_metascore": 75,
+            "min_metascore_reviews": 5,
+            "min_user_score": 7.5,
+            "min_user_reviews": 10,
+        }
+
+        _verify_pending_scores(db, mock_mc, "pc", thresholds, fitgirl_pending_days=0)
+
+        pending = db.get_pending(platform="pc")
+        assert len(pending) == 1
+        # Expiry should be unchanged
+        assert pending[0].expires_at == expires, (
+            f"Expiry should still be {expires}, got {pending[0].expires_at}"
+        )
+        db.close()
+
+    def test_fitgirl_pending_days_does_not_affect_failure(self, tmp_path: Path) -> None:
+        """Game with failing scores should NOT have its expiry updated."""
+        import datetime
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _verify_pending_scores
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="failing-game",
+            game_title="Failing Game",
+            platform="pc",
+            metascore=62.0,
+            user_score=3.3,
+            release_date="2026-06-01",
+            expires_at=expires,
+        )
+
+        mock_mc = MagicMock()
+        import types
+        mock_result = types.SimpleNamespace(
+            metascore=62.0,
+            metascore_review_count=25,
+            user_score=3.3,
+            user_review_count=100,
+            genres=["Action"],
+            must_play=False,
+            release_date="2026-06-01",
+        )
+        mock_mc.lookup_game.return_value = mock_result
+
+        thresholds = {
+            "min_metascore": 75,
+            "min_metascore_reviews": 5,
+            "min_user_score": 7.5,
+            "min_user_reviews": 10,
+        }
+
+        _verify_pending_scores(db, mock_mc, "pc", thresholds, fitgirl_pending_days=60)
+
+        # Game should still be pending (re-check)
+        pending = db.get_pending(platform="pc")
+        assert len(pending) == 1
+        # Expiry must NOT be updated (still original +30d)
+        assert pending[0].expires_at == expires, (
+            f"Expiry should be unchanged ({expires}), got {pending[0].expires_at}"
+        )
+        db.close()
