@@ -646,10 +646,10 @@ def _reject_by_genre(
     game: Any,
     result: Any,
     reject_genre: list[str] | None,
-) -> bool:
-    """Return True if *result* has a genre in *reject_genre* (case-insensitive)."""
+) -> str | None:
+    """Return the first genre that matched *reject_genre*, or *None*."""
     if not (result is not None and reject_genre and getattr(result, 'genres', None)):
-        return False
+        return None
     reject_lower = [g.lower() for g in reject_genre]
     for genre in result.genres:
         if genre.lower() in reject_lower:
@@ -658,8 +658,8 @@ def _reject_by_genre(
                 game.game_title,
                 genre,
             )
-            return True
-    return False
+            return genre
+    return None
 
 
 def _process_verify_result(
@@ -678,11 +678,12 @@ def _process_verify_result(
     times).  Once the attempt limit is reached, the game is removed
     from pending and recorded in the history with result="Failed".
     """
-    if _reject_by_genre(game, result, reject_genre):
-        game_title = str(game.game_title)
+    matched_genre = _reject_by_genre(game, result, reject_genre)
+    if matched_genre is not None:
+        attempts = db.increment_verify_attempts(str(game.slug))
         _fail_game_after_max_attempts(
-            db, game, result, attempts=1,
-            result_details=f"Genre '{game_title}' is in reject_genre list",
+            db, game, result, attempts=attempts,
+            result_details=f"Game '{game.game_title}' — genre '{matched_genre}' is in reject_genre list",
         )
         return True
 
