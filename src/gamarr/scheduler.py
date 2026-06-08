@@ -60,6 +60,7 @@ def _build_kwargs(config: Config) -> dict[str, Any]:
         "cutoff_weeks": mc_cfg.cutoff_weeks,
         "exclude_keywords": mc_cfg.exclude_keywords,
         "reject_genre": mc_cfg.reject_genre,
+        "reject_title": mc_cfg.reject_title,
         "pending_days": mc_cfg.pending_days,
         "apprise_urls": config.notification.apprise_urls,
         "notify_on_download": config.notification.on_download,
