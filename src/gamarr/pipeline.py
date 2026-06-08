@@ -321,6 +321,7 @@ def run_acquisition(
                 cache_ttl_days=cfg.cache_ttl_days,
                 max_verify=len(pending_games) if cfg.max_games == 0 else min(len(pending_games), cfg.max_games),
                 max_verify_attempts=cfg.max_verify_attempts,
+                reject_genre=cfg.reject_genre,
             )
             if removed:
                 logger.info(
@@ -641,6 +642,7 @@ def _process_verify_result(
     thresholds: dict[str, Any],
     *,
     max_verify_attempts: int = 6,
+    reject_genre: list[str] | None = None,
 ) -> bool:
     """Process one score-check result. Returns True if the game was removed.
 
@@ -649,6 +651,19 @@ def _process_verify_result(
     times).  Once the attempt limit is reached, the game is removed
     from pending and recorded in the history with result="Failed".
     """
+    # Check if the game's genre matches a rejected genre (case-insensitive exact match)
+    if result is not None and reject_genre and result.genres:
+        reject_lower = [g.lower() for g in reject_genre]
+        for genre in result.genres:
+            if genre.lower() in reject_lower:
+                logger.info(
+                    "Removing '{}' — genre '{}' is in reject_genre list",
+                    game.game_title,
+                    genre,
+                )
+                _fail_game_after_max_attempts(db, game, result, attempts=1)
+                return True
+
     if result is None:
         attempts = db.increment_verify_attempts(str(game.slug))
         if attempts >= max_verify_attempts:
@@ -698,6 +713,7 @@ def _verify_pending_scores(
     cache_ttl_days: int = 7,
     max_verify: int = 50,
     max_verify_attempts: int = 6,
+    reject_genre: list[str] | None = None,
 ) -> int:
     """Re-verify pending games' scores against the real Metacritic detail page.
 
@@ -728,6 +744,8 @@ def _verify_pending_scores(
             Set to 0 to skip verification entirely.
         max_verify_attempts: Max times to re-check a failing game before
             giving up.  Set to 0 to remove immediately (old behavior).
+        reject_genre: List of genres to reject (case-insensitive). Games
+            matching any genre in this list are removed immediately.
 
     Returns the number of games removed.
     """
@@ -764,7 +782,11 @@ def _verify_pending_scores(
         for verified, (game, fut) in enumerate(zip(batch, futures, strict=True)):
             _log_verify_progress(verified, max_verify, total_pending)
             result = fut.result()
-            if _process_verify_result(db, game, result, thresholds, max_verify_attempts=max_verify_attempts):
+            if _process_verify_result(
+                db, game, result, thresholds,
+                max_verify_attempts=max_verify_attempts,
+                reject_genre=reject_genre,
+            ):
                 removed += 1
 
     checked = len(batch)
