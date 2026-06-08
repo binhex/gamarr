@@ -108,6 +108,7 @@ class AcquisitionConfig:
     max_verify_attempts: int = 6
     cutoff_weeks: int | None = None
     exclude_keywords: list[str] | None = None
+    reject_genre: list[str] | None = None
 
 
 def _is_below_threshold(value: float | None, threshold: float) -> bool:
@@ -173,6 +174,7 @@ def run_acquisition(
     max_verify_attempts: int = 6,
     cutoff_weeks: int | None = None,
     exclude_keywords: list[str] | None = None,
+    reject_genre: list[str] | None = None,
     apprise_urls: list[str] | None = None,
     notify_on_download: bool = True,
     notify_on_failure: bool = False,
@@ -203,6 +205,7 @@ def run_acquisition(
         max_verify_attempts=max_verify_attempts,
         cutoff_weeks=cutoff_weeks,
         exclude_keywords=exclude_keywords,
+        reject_genre=reject_genre,
     )
 
     logger.info("Starting acquisition cycle (platform='{}')", platform)
