@@ -3079,6 +3079,7 @@ class TestFitgirlPendingExpiry:
 
         mock_mc = MagicMock()
         import types
+
         mock_result = types.SimpleNamespace(
             metascore=88.0,
             metascore_review_count=50,
@@ -3107,9 +3108,7 @@ class TestFitgirlPendingExpiry:
         new_expiry = datetime.datetime.fromisoformat(row.expires_at)
         expected_min = datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=59)
         expected_max = datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=61)
-        assert expected_min < new_expiry < expected_max, (
-            f"Expiry should be near now+60d, got {new_expiry}"
-        )
+        assert expected_min < new_expiry < expected_max, f"Expiry should be near now+60d, got {new_expiry}"
         # Verify it's different from the original
         assert row.expires_at != original_expiry, "Expiry should have been updated"
         db.close()
@@ -3136,6 +3135,7 @@ class TestFitgirlPendingExpiry:
 
         mock_mc = MagicMock()
         import types
+
         mock_result = types.SimpleNamespace(
             metascore=88.0,
             metascore_review_count=50,
@@ -3159,9 +3159,7 @@ class TestFitgirlPendingExpiry:
         pending = db.get_pending(platform="pc")
         assert len(pending) == 1
         # Expiry should be unchanged
-        assert pending[0].expires_at == expires, (
-            f"Expiry should still be {expires}, got {pending[0].expires_at}"
-        )
+        assert pending[0].expires_at == expires, f"Expiry should still be {expires}, got {pending[0].expires_at}"
         db.close()
 
     def test_fitgirl_pending_days_does_not_affect_failure(self, tmp_path: Path) -> None:
@@ -3186,6 +3184,7 @@ class TestFitgirlPendingExpiry:
 
         mock_mc = MagicMock()
         import types
+
         mock_result = types.SimpleNamespace(
             metascore=62.0,
             metascore_review_count=25,
@@ -3210,7 +3209,5 @@ class TestFitgirlPendingExpiry:
         pending = db.get_pending(platform="pc")
         assert len(pending) == 1
         # Expiry must NOT be updated (still original +30d)
-        assert pending[0].expires_at == expires, (
-            f"Expiry should be unchanged ({expires}), got {pending[0].expires_at}"
-        )
+        assert pending[0].expires_at == expires, f"Expiry should be unchanged ({expires}), got {pending[0].expires_at}"
         db.close()
