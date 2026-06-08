@@ -36,7 +36,7 @@ class TestConfigModels:
 
     def test_schedule_task_config_defaults(self) -> None:
         cfg = ScheduleTaskConfig()
-        assert cfg.enabled is True
+        assert cfg.enabled is False
         assert cfg.schedule_time_mins == 60
         assert cfg.run_on_start is True
 

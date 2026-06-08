@@ -27,7 +27,7 @@ class GeneralConfig(BaseModel):
 class ScheduleTaskConfig(BaseModel):
     """Settings for a single scheduled task (acquisition, scoring, etc.)."""
 
-    enabled: bool = True
+    enabled: bool = False
     schedule_time_mins: int = Field(default=60, gt=0)
     run_on_start: bool = True
 
@@ -199,6 +199,19 @@ def _migrate_config(raw: dict[str, Any]) -> None:
                     )
                     mc_pc.pop(old_key)
             _rename_config_key(mc_pc, "metacritic_cache_ttl_hours", "cache_ttl_hours", platform_key)
+
+        # Migrate deprecated general.daemon_mode → schedule.acquisition.enabled
+        general = raw.get("general", {})
+        dm = general.get("daemon_mode")
+        if dm == "background":
+            schedule = raw.setdefault("schedule", {})
+            acquisition = schedule.setdefault("acquisition", {})
+            if "enabled" not in acquisition:
+                acquisition["enabled"] = True
+                logger.info(
+                    "Config: migrated deprecated 'general.daemon_mode: background' "
+                    "to 'schedule.acquisition.enabled: true'"
+                )
 
     except Exception as exc:
         logger.warning("Config migration failed: {}", exc)

@@ -14,7 +14,7 @@ class TestSchedulerForeground:
     def test_run_once_calls_acquisition(self) -> None:
         with patch("gamarr.scheduler.run_acquisition") as mock_acq:
             mock_acq.return_value = []
-            config = _make_config(daemon_mode="foreground")
+            config = _make_config(acquisition_enabled=False)
             run_once(config)
             mock_acq.assert_called_once()
 
@@ -50,8 +50,8 @@ class TestSchedulerForeground:
             mock_daemon.assert_not_called()
 
 
-def _make_config(daemon_mode: str = "foreground", acquisition_enabled: bool = True) -> Config:
-    """Build a minimal Config for testing."""
+def _make_config(acquisition_enabled: bool = False) -> Config:
+    """Build a minimal Config for testing with *acquisition_enabled*."""
     from gamarr.config import (
         DatabaseConfig,
         FitGirlSourceConfig,
@@ -67,7 +67,7 @@ def _make_config(daemon_mode: str = "foreground", acquisition_enabled: bool = Tr
     )
 
     return Config(
-        general=GeneralConfig(daemon_mode=daemon_mode, log_path="", db_path=":memory:"),
+        general=GeneralConfig(log_path="", db_path=":memory:"),
         schedule=ScheduleConfig(
             acquisition=ScheduleTaskConfig(enabled=acquisition_enabled, schedule_time_mins=60, run_on_start=True),
         ),
