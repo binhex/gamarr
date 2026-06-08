@@ -55,6 +55,7 @@ class PendingGame(Base):
     expires_at: Mapped[str] = mapped_column(String, nullable=False)
     last_checked_at: Mapped[str | None] = mapped_column(String, nullable=True)
     score_checks_passed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    verify_attempts: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class SourceTitle(Base):
@@ -201,6 +202,24 @@ class Database:
             row = session.get(PendingGame, slug)
             if row is not None:
                 row.last_checked_at = now
+                session.commit()
+
+    def increment_verify_attempts(self, slug: str) -> int:
+        """Increment the verify_attempts counter and return the new value."""
+        with self._session() as session:
+            row = session.get(PendingGame, slug)
+            if row is None:
+                return 0
+            row.verify_attempts = (row.verify_attempts or 0) + 1
+            session.commit()
+            return row.verify_attempts
+
+    def reset_verify_attempts(self, slug: str) -> None:
+        """Reset verify_attempts to 0 (e.g. after a successful score check)."""
+        with self._session() as session:
+            row = session.get(PendingGame, slug)
+            if row is not None:
+                row.verify_attempts = 0
                 session.commit()
 
     def remove_pending(self, slug: str) -> None:

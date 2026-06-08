@@ -105,6 +105,7 @@ class AcquisitionConfig:
     enabled: bool = True
     pending_days: int = 30
     max_games: int = 1000
+    max_verify_attempts: int = 6
     cutoff_weeks: int | None = None
     exclude_keywords: list[str] | None = None
 
@@ -169,6 +170,7 @@ def run_acquisition(
     enabled: bool = True,
     pending_days: int = 30,
     max_games: int = 1000,
+    max_verify_attempts: int = 6,
     cutoff_weeks: int | None = None,
     exclude_keywords: list[str] | None = None,
     apprise_urls: list[str] | None = None,
@@ -198,6 +200,7 @@ def run_acquisition(
         enabled=enabled,
         pending_days=pending_days,
         max_games=max_games,
+        max_verify_attempts=max_verify_attempts,
         cutoff_weeks=cutoff_weeks,
         exclude_keywords=exclude_keywords,
     )
@@ -314,10 +317,11 @@ def run_acquisition(
                 thresholds,
                 cache_ttl_days=cfg.cache_ttl_days,
                 max_verify=len(pending_games) if cfg.max_games == 0 else min(len(pending_games), cfg.max_games),
+                max_verify_attempts=cfg.max_verify_attempts,
             )
             if removed:
                 logger.info(
-                    "Removed {} games from queue — Metacritic scores below thresholds",
+                    "Removed {} games from queue — Metacritic scores still below thresholds after max attempts",
                     removed,
                 )
 
@@ -557,31 +561,91 @@ def _process_verify_result(
     game: Any,
     result: Any,
     thresholds: dict[str, Any],
+    *,
+    max_verify_attempts: int = 6,
 ) -> bool:
-    """Process one score-check result. Returns True if the game was removed."""
+    """Process one score-check result. Returns True if the game was removed.
+
+    Games that fail the score check are kept in the pending queue for
+    re-verification on subsequent cycles (up to *max_verify_attempts*
+    times).  Once the attempt limit is reached, the game is removed
+    from pending and recorded in the history with result="Failed".
+    """
     if result is None:
-        db.remove_pending(str(game.slug))
+        attempts = db.increment_verify_attempts(str(game.slug))
+        if attempts >= max_verify_attempts:
+            db.record_processed(
+                source="metacritic",
+                source_title=str(game.game_title),
+                game_title=str(game.game_title),
+                platform=str(game.platform),
+                metascore=None,
+                user_score=None,
+                result="Failed",
+                result_details="Game not found on Metacritic detail page after multiple attempts",
+            )
+            db.remove_pending(str(game.slug))
+            logger.debug(
+                "Removed '{}' from queue \u2014 game not found on Metacritic page after {} attempts",
+                game.game_title,
+                attempts,
+            )
+            return True
         logger.debug(
-            "Removed '{}' from queue \u2014 game not found on Metacritic page",
+            "Keeping '{}' in queue \u2014 game not found on Metacritic page (attempt {}/{})",
             game.game_title,
+            attempts,
+            max_verify_attempts,
         )
-        return True
+        return False
 
     if not (_scores_present(result) and _real_scores_pass_thresholds(result, thresholds)):
-        db.remove_pending(str(game.slug))
+        attempts: int = db.increment_verify_attempts(str(game.slug))  # type: ignore[no-redef]
+        if attempts >= max_verify_attempts:
+            score_info = f"({result.metascore}, {result.user_score})" if _scores_present(result) else "(no scores)"
+            db.record_processed(
+                source="metacritic",
+                source_title=str(game.game_title),
+                game_title=str(game.game_title),
+                platform=str(game.platform),
+                metascore=result.metascore,
+                user_score=result.user_score,
+                result="Failed",
+                result_details=f"Scores {score_info} below thresholds after {attempts} attempts",
+            )
+            db.remove_pending(str(game.slug))
+            if _scores_present(result):
+                logger.debug(
+                    "Removed '{}' from queue \u2014 Metacritic scores ({}, {}) below thresholds after {} attempts",
+                    game.game_title,
+                    result.metascore,
+                    result.user_score,
+                    attempts,
+                )
+            else:
+                logger.debug(
+                    "Removed '{}' from queue \u2014 no Metacritic review scores yet after {} attempts",
+                    game.game_title,
+                    attempts,
+                )
+            return True
         if _scores_present(result):
             logger.debug(
-                "Removed '{}' from queue \u2014 Metacritic scores ({}, {}) below thresholds",
+                "Keeping '{}' in queue \u2014 Metacritic scores ({}, {}) below thresholds (attempt {}/{})",
                 game.game_title,
                 result.metascore,
                 result.user_score,
+                attempts,
+                max_verify_attempts,
             )
         else:
             logger.debug(
-                "Removed '{}' from queue \u2014 no Metacritic review scores yet",
+                "Keeping '{}' in queue \u2014 no Metacritic review scores yet (attempt {}/{})",
                 game.game_title,
+                attempts,
+                max_verify_attempts,
             )
-        return True
+        return False
 
     db.update_pending_scores(
         slug=str(game.slug),
@@ -590,6 +654,7 @@ def _process_verify_result(
         user_score=result.user_score,
         user_reviews=result.user_review_count,
     )
+    db.reset_verify_attempts(str(game.slug))
     logger.debug(
         "'{}' passed score check \u2014 ({}, {}) with ({} reviews, {} reviews)",
         game.game_title,
@@ -609,13 +674,15 @@ def _verify_pending_scores(
     *,
     cache_ttl_days: int = 7,
     max_verify: int = 50,
+    max_verify_attempts: int = 6,
 ) -> int:
     """Re-verify pending games' scores against the real Metacritic detail page.
 
     Browse-page Nuxt data does NOT carry standard 0\u2013100 metascores or
     0\u201310 user scores — the \"score\" fields are internal browse-only
     metrics.  Games whose detail-page scores fail the configured thresholds
-    (or cannot be found at all on the detail page) are removed from pending.
+    (or cannot be found at all on the detail page) are kept in the queue
+    for re-verification on subsequent cycles.
 
     Games that pass the real-score check have their pending record updated
     with the correct scores from the detail page.
@@ -625,6 +692,9 @@ def _verify_pending_scores(
     queue (e.g. 2773 games) from generating thousands of sequential
     HTTP requests in a single cycle.
 
+    Games that repeatedly fail are removed after *max_verify_attempts*
+    failed verifications and recorded in the history with result="Failed".
+
     Args:
         db: Database instance.
         mc: MetacriticClient instance.
@@ -633,6 +703,8 @@ def _verify_pending_scores(
         cache_ttl_days: TTL for the detail-page cache.
         max_verify: Maximum number of games to verify per cycle.
             Set to 0 to skip verification entirely.
+        max_verify_attempts: Max times to re-check a failing game before
+            giving up.  Set to 0 to remove immediately (old behavior).
 
     Returns the number of games removed.
     """
@@ -669,7 +741,7 @@ def _verify_pending_scores(
         for verified, (game, fut) in enumerate(zip(batch, futures, strict=True)):
             _log_verify_progress(verified, max_verify, total_pending)
             result = fut.result()
-            if _process_verify_result(db, game, result, thresholds):
+            if _process_verify_result(db, game, result, thresholds, max_verify_attempts=max_verify_attempts):
                 removed += 1
 
     checked = len(batch)

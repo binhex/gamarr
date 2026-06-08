@@ -169,12 +169,10 @@ class TestRunAcquisition:
         """Games below score thresholds must NOT trigger sitemap fetch.
 
         When 52 pending games all have inflated browse-page scores that
-        fail real Metacritic verification, ALL must be verified and
-        removed BEFORE the sitemap is fetched.  With the buggy cap at
-        ``max_verify=50``, only 50 games get checked; 2 survive and
-        wastefully trigger the sitemap fetch (an HTTP request for 7759
-        titles).  The fix removes the cap so all pending games are
-        verified before the sitemap step.
+        fail real Metacritic verification, none should pass
+        score_checks_passed=True, so `has_verified_pending` returns
+        False and the sitemap is not fetched.  Games stay pending
+        for re-verification on a future cycle.
         """
         import datetime
         from unittest.mock import MagicMock, patch
@@ -241,16 +239,18 @@ class TestRunAcquisition:
                 min_metascore_reviews=5,
             )
 
-            # ALL 52 games must be verified and removed BEFORE the sitemap
-            # is fetched.  With max_verify=50 cap, 2 would survive and
-            # trigger fetch_sitemap — the test FAILS before the fix.
+            # Sitemap must NOT be fetched because no pending game has
+            # passed score verification (all have score_checks_passed=None).
             mock_source.fetch_sitemap.assert_not_called()
             assert results == []
 
-            # Confirm ALL games were removed
+            # Confirm ALL games are still pending for future re-verification
             verify_db = Database(db_path)
             remaining = verify_db.get_pending(platform="pc")
-            assert len(remaining) == 0, f"{len(remaining)} games remain unverified"
+            assert len(remaining) == 52, f"{len(remaining)} games should remain pending for re-check"
+            assert all(g.score_checks_passed is None or g.score_checks_passed is False for g in remaining), (
+                "No games should have passed score checks"
+            )
             verify_db.close()
 
 
@@ -836,8 +836,8 @@ class TestMetacriticBrowse:
         assert r"Game \<Director's\>" in output, f"Title with < > should be escaped: {output}"
         db.close()
 
-    def test_verify_pending_removes_game_with_failing_real_scores(self, tmp_path: Path) -> None:
-        """A game added with wrong browse scores should be removed if real scores fail thresholds."""
+    def test_verify_pending_keeps_game_with_failing_real_scores_for_recheck(self, tmp_path: Path) -> None:
+        """A game with failing real scores should stay pending for re-verification."""
         import datetime
         from unittest.mock import MagicMock
 
@@ -883,9 +883,9 @@ class TestMetacriticBrowse:
 
         assert db.is_pending("thick-as-thieves") is True
         removed = _verify_pending_scores(db, mock_mc, "pc", thresholds)
-        # Real scores (62, 3.3) fail thresholds — game should be removed
-        assert removed == 1, "Game with failing real scores should be removed"
-        assert db.is_pending("thick-as-thieves") is False
+        # Real scores (62, 3.3) fail thresholds — game should stay for re-check
+        assert removed == 0, "Game with failing real scores should NOT be removed (re-check later)"
+        assert db.is_pending("thick-as-thieves") is True, "Game should stay in pending queue"
         db.close()
 
     def test_verify_pending_keeps_game_with_passing_real_scores(self, tmp_path: Path) -> None:
@@ -943,8 +943,8 @@ class TestMetacriticBrowse:
         assert pending_list[0].user_score == 8.0, "User score should be updated to real value"
         db.close()
 
-    def test_verify_pending_removes_game_when_lookup_returns_none(self, tmp_path: Path) -> None:
-        """When lookup_game returns None, the pending game should be removed."""
+    def test_verify_pending_keeps_game_when_lookup_returns_none(self, tmp_path: Path) -> None:
+        """When lookup_game returns None, the pending game should stay for re-check."""
         import datetime
         from unittest.mock import MagicMock
 
@@ -977,16 +977,18 @@ class TestMetacriticBrowse:
                 "min_user_reviews": 10,
             },
         )
-        assert removed == 1, "Game with None lookup should be removed"
-        assert db.is_pending("not-found-game") is False
+        # Game with None lookup should stay pending for re-check (max_verify_attempts=6)
+        assert removed == 0, "Game with None lookup should NOT be removed (re-check later)"
+        assert db.is_pending("not-found-game") is True, "Game should stay in pending queue"
         # lookup_game was called with direct_only=True (no browse fallback)
         assert mock_mc.lookup_game.call_count == 1
         _call_args, call_kwargs = mock_mc.lookup_game.call_args
         assert call_kwargs.get("direct_only") is True, "lookup_game must use direct_only=True to avoid browse fallback"
         db.close()
 
-    def test_verify_pending_removes_game_with_all_zero_real_scores(self, tmp_path: Path) -> None:
-        """When detail page returns all None/0 scores, the game should be removed (unreviewed)."""
+    def test_verify_pending_keeps_game_with_tbd_scores_for_recheck(self, tmp_path: Path) -> None:
+        """A game with no real Metacritic scores yet (TBD) should stay pending
+        for re-verification in a future cycle, not be permanently removed."""
         import datetime
         from unittest.mock import MagicMock
 
@@ -1029,8 +1031,14 @@ class TestMetacriticBrowse:
                 "min_user_reviews": 10,
             },
         )
-        assert removed == 1, "Game with no real scores should be removed"
-        assert db.is_pending("unreviewed-game") is False
+        # Game with TBD scores should NOT be removed — stays pending for re-check
+        assert removed == 0, "Game with TBD scores should NOT be removed"
+        assert db.is_pending("unreviewed-game") is True, "Game should stay in pending queue"
+        # score_checks_passed should remain None (not True)
+        pending = db.get_pending()
+        unreviewed = next((g for g in pending if g.slug == "unreviewed-game"), None)
+        assert unreviewed is not None
+        assert unreviewed.score_checks_passed is None or unreviewed.score_checks_passed is False
         db.close()
 
     def test_verify_pending_keeps_game_with_mixed_zero_metascore(self, tmp_path: Path) -> None:
