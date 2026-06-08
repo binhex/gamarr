@@ -219,10 +219,8 @@ def _migrate_fitgirl_exclude_keywords(raw: dict[str, Any]) -> bool:
         fg["reject_keywords"] = fg.pop("exclude_keywords")
         logger.info("Config: migrated 'sources.fitgirl.exclude_keywords' to 'sources.fitgirl.reject_keywords'")
         return True
-    else:
-        del fg["exclude_keywords"]
-        return True
-    return False
+    del fg["exclude_keywords"]
+    return True
 
 
 def _migrate_metacritic_exclude_keywords(raw: dict[str, Any]) -> bool:
@@ -230,6 +228,7 @@ def _migrate_metacritic_exclude_keywords(raw: dict[str, Any]) -> bool:
 
     Returns True if a migration was applied.
     """
+    changed = False
     overrides = raw.get("metacritic", {}).get("platform_overrides", {})
     for platform_key, mc_pc in overrides.items():
         if isinstance(mc_pc, dict) and "exclude_keywords" in mc_pc:
@@ -238,7 +237,8 @@ def _migrate_metacritic_exclude_keywords(raw: dict[str, Any]) -> bool:
                 platform_key,
             )
             del mc_pc["exclude_keywords"]
-    return False
+            changed = True
+    return changed
 
 
 def _migrate_daemon_mode(raw: dict[str, Any]) -> bool:

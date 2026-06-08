@@ -245,6 +245,31 @@ class TestLoadConfig:
         result = _migrate_config(raw)
         assert result is False, "Should return False because no migration needed"
 
+    def test_migrate_metacritic_exclude_keywords_returns_true(self) -> None:
+        """_migrate_metacritic_exclude_keywords should return True when it deletes a key."""
+        from typing import Any
+
+        from gamarr.config import _migrate_metacritic_exclude_keywords
+
+        raw: dict[str, Any] = {
+            "metacritic": {"platform_overrides": {"pc": {"exclude_keywords": ["DLC"]}}},
+        }
+        result = _migrate_metacritic_exclude_keywords(raw)
+        assert result is True
+        assert "exclude_keywords" not in raw["metacritic"]["platform_overrides"]["pc"]
+
+    def test_migrate_metacritic_exclude_keywords_returns_false(self) -> None:
+        """_migrate_metacritic_exclude_keywords should return False when no key to delete."""
+        from typing import Any
+
+        from gamarr.config import _migrate_metacritic_exclude_keywords
+
+        raw: dict[str, Any] = {
+            "metacritic": {"platform_overrides": {"pc": {}}},
+        }
+        result = _migrate_metacritic_exclude_keywords(raw)
+        assert result is False
+
     def test_load_config_merges_with_defaults(self, tmp_path: Path) -> None:
         config_dir = tmp_path / "configs"
         config_dir.mkdir(parents=True)
