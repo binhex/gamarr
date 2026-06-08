@@ -3216,3 +3216,199 @@ class TestFitgirlPendingExpiry:
         # Expiry must NOT be updated (still original +30d)
         assert pending[0].expires_at == expires, f"Expiry should be unchanged ({expires}), got {pending[0].expires_at}"
         db.close()
+
+
+class TestRejectTitle:
+    """Tests for reject_title title substring filtering."""
+
+    def test_reject_title_at_browse(self, tmp_path: Path) -> None:
+        """Game with title matching reject_title should be skipped at browse stage."""
+        from gamarr.database import Database
+        from gamarr.pipeline import _process_browse_games
+
+        db = Database(str(tmp_path / "test.db"))
+        browse_games = [
+            {
+                "title": "Resident Evil 4 Remake",
+                "slug": "resident-evil-4-remake",
+                "score": 85,
+                "critic_review_count": 20,
+                "user_rating": 8.0,
+                "user_review_count": 100,
+            },
+        ]
+        thresholds = {
+            "min_metascore": 75,
+            "min_metascore_reviews": 5,
+            "min_user_score": 7.5,
+            "min_user_reviews": 10,
+        }
+        added = _process_browse_games(
+            browse_games, "pc", db, thresholds,
+            reject_title=["Remake"],
+        )
+        assert added == 0, "Game with matching title should not be added"
+        assert not db.is_pending("resident-evil-4-remake")
+        db.close()
+
+    def test_reject_title_at_verify(self, tmp_path: Path) -> None:
+        """Game with title matching reject_title should be removed during verification."""
+        import datetime
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _verify_pending_scores
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="vr-game",
+            game_title="VR Adventure",
+            platform="pc",
+            metascore=1288.0,
+            user_score=1288.0,
+            release_date="2026-06-01",
+            expires_at=expires,
+        )
+
+        mock_mc = MagicMock()
+        import types
+        mock_mc.lookup_game.return_value = types.SimpleNamespace(
+            metascore=85.0,
+            metascore_review_count=20,
+            user_score=8.0,
+            user_review_count=100,
+            genres=["Action"],
+            must_play=False,
+            release_date="2026-06-01",
+        )
+
+        thresholds = {
+            "min_metascore": 75,
+            "min_metascore_reviews": 5,
+            "min_user_score": 7.5,
+            "min_user_reviews": 10,
+        }
+
+        assert db.is_pending("vr-game") is True
+        removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, reject_title=["VR"])
+        assert removed == 1, "Game with matching title should be removed"
+        assert not db.is_pending("vr-game"), "Game should no longer be pending"
+        db.close()
+
+    def test_reject_title_no_match(self, tmp_path: Path) -> None:
+        """Game with non-matching title should proceed normally."""
+        from gamarr.database import Database
+        from gamarr.pipeline import _process_browse_games
+
+        db = Database(str(tmp_path / "test.db"))
+        browse_games = [
+            {
+                "title": "Elden Ring",
+                "slug": "elden-ring",
+                "score": 96,
+                "critic_review_count": 120,
+                "user_rating": 8.5,
+                "user_review_count": 5000,
+            },
+        ]
+        thresholds = {
+            "min_metascore": 75,
+            "min_metascore_reviews": 5,
+            "min_user_score": 7.5,
+            "min_user_reviews": 10,
+        }
+        added = _process_browse_games(
+            browse_games, "pc", db, thresholds,
+            reject_title=["Remake"],
+        )
+        assert added == 1, "Non-matching game should be added"
+        assert db.is_pending("elden-ring")
+        db.close()
+
+    def test_reject_title_empty_list(self, tmp_path: Path) -> None:
+        """Empty reject_title should have no effect."""
+        from gamarr.database import Database
+        from gamarr.pipeline import _process_browse_games
+
+        db = Database(str(tmp_path / "test.db"))
+        browse_games = [
+            {
+                "title": "VR Adventure",
+                "slug": "vr-adventure",
+                "score": 85,
+                "critic_review_count": 20,
+                "user_rating": 8.0,
+                "user_review_count": 100,
+            },
+        ]
+        thresholds = {
+            "min_metascore": 75,
+            "min_metascore_reviews": 5,
+            "min_user_score": 7.5,
+            "min_user_reviews": 10,
+        }
+        added = _process_browse_games(
+            browse_games, "pc", db, thresholds,
+            reject_title=[],
+        )
+        assert added == 1, "Empty reject_title should not filter anything"
+        db.close()
+
+    def test_reject_title_case_insensitive(self, tmp_path: Path) -> None:
+        """reject_title should match case-insensitively."""
+        from gamarr.database import Database
+        from gamarr.pipeline import _process_browse_games
+
+        db = Database(str(tmp_path / "test.db"))
+        browse_games = [
+            {
+                "title": "The Legend of Zelda: Remake",
+                "slug": "zelda-remake",
+                "score": 95,
+                "critic_review_count": 100,
+                "user_rating": 9.0,
+                "user_review_count": 5000,
+            },
+        ]
+        thresholds = {
+            "min_metascore": 75,
+            "min_metascore_reviews": 5,
+            "min_user_score": 7.5,
+            "min_user_reviews": 10,
+        }
+        added = _process_browse_games(
+            browse_games, "pc", db, thresholds,
+            reject_title=["remake"],  # lowercase, title has "Remake"
+        )
+        assert added == 0, "reject_title should match case-insensitively"
+        db.close()
+
+    def test_reject_title_substring(self, tmp_path: Path) -> None:
+        """reject_title should match partial substrings, not just whole words."""
+        from gamarr.database import Database
+        from gamarr.pipeline import _process_browse_games
+
+        db = Database(str(tmp_path / "test.db"))
+        browse_games = [
+            {
+                "title": "Collection of Classic Games Vol 3",
+                "slug": "collection-classic-3",
+                "score": 80,
+                "critic_review_count": 10,
+                "user_rating": 7.5,
+                "user_review_count": 50,
+            },
+        ]
+        thresholds = {
+            "min_metascore": 75,
+            "min_metascore_reviews": 5,
+            "min_user_score": 7.5,
+            "min_user_reviews": 10,
+        }
+        added = _process_browse_games(
+            browse_games, "pc", db, thresholds,
+            reject_title=["Classic"],
+        )
+        assert added == 0, "reject_title should match on substrings"
+        db.close()
