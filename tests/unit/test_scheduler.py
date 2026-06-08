@@ -204,7 +204,7 @@ class TestDaemonMode:
                     mock_sched.add_job.assert_called_once()
                     mock_sched.start.assert_called_once()
                     mock_signal.signal.assert_any_call(mock_signal.SIGINT, mock_shutdown_event)
-                    mock_sched.shutdown.assert_called_once()
+                    mock_sched.shutdown.assert_called_once_with(wait=True)
             mock_sched_cls.return_value = mock_sched
 
     def test_run_daemon_with_run_on_start_false(self) -> None:

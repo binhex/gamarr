@@ -217,6 +217,30 @@ class TestLoadConfig:
         cfg = load_config(str(config_file))
         assert cfg.general.daemon_mode == "background"
 
+    def test_migrate_config_returns_true_on_change(self) -> None:
+        """_migrate_config should return True when it makes changes."""
+        from gamarr.config import _migrate_config
+
+        raw = {
+            "sources": {"fitgirl": {"exclude_keywords": ["hv"]}},
+            "metacritic": {"platform_overrides": {"pc": {"exclude_keywords": ["DLC"]}}},
+        }
+        result = _migrate_config(raw)
+        assert result is True, "Should return True because migration ran"
+        assert "reject_keywords" in raw["sources"]["fitgirl"]
+        assert "exclude_keywords" not in raw["sources"]["fitgirl"]
+
+    def test_migrate_config_returns_false_on_no_change(self) -> None:
+        """_migrate_config should return False when nothing to migrate."""
+        from gamarr.config import _migrate_config
+
+        raw = {
+            "sources": {"fitgirl": {"reject_keywords": ["hv"]}},
+            "metacritic": {"platform_overrides": {"pc": {}}},
+        }
+        result = _migrate_config(raw)
+        assert result is False, "Should return False because no migration needed"
+
     def test_load_config_merges_with_defaults(self, tmp_path: Path) -> None:
         config_dir = tmp_path / "configs"
         config_dir.mkdir(parents=True)

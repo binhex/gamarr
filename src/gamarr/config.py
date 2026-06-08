@@ -154,8 +154,11 @@ def _normalize_date_values(d: Any) -> Any:
     return d
 
 
-def _rename_config_key(mc_pc: dict[str, Any], old_key: str, new_key: str | None, platform_key: str) -> None:
-    """Rename *old_key* to *new_key* in *mc_pc* if it exists, logging the migration."""
+def _rename_config_key(mc_pc: dict[str, Any], old_key: str, new_key: str | None, platform_key: str) -> bool:
+    """Rename *old_key* to *new_key* in *mc_pc* if it exists, logging the migration.
+
+    Returns True if a key was renamed or removed.
+    """
     if old_key in mc_pc:
         if new_key is None:
             del mc_pc[old_key]
@@ -163,18 +166,28 @@ def _rename_config_key(mc_pc: dict[str, Any], old_key: str, new_key: str | None,
         else:
             mc_pc[new_key] = mc_pc.pop(old_key)
             logger.info("Config: migrated '{}'\u2192'{}' for platform '{}'", old_key, new_key, platform_key)
+        return True
+    return False
 
 
-def _migrate_platform_overrides(raw: dict[str, Any]) -> None:
-    """Migrate renamed/deprecated keys in metacritic.platform_overrides."""
+def _migrate_platform_overrides(raw: dict[str, Any]) -> bool:
+    """Migrate renamed/deprecated keys in metacritic.platform_overrides.
+
+    Returns True if any migration was applied.
+    """
+    changed = False
     overrides = raw.get("metacritic", {}).get("platform_overrides", {})
     for platform_key, mc_pc in overrides.items():
         if not isinstance(mc_pc, dict):
             continue
-        _rename_config_key(mc_pc, "browse_enabled", "enabled", platform_key)
-        _rename_config_key(mc_pc, "browse_cache_ttl_hours", "cache_ttl_hours", platform_key)
-        _rename_config_key(mc_pc, "metacritic_enabled", "enabled", platform_key)
-        _rename_config_key(mc_pc, "metacritic_max_games", "max_games", platform_key)
+        if _rename_config_key(mc_pc, "browse_enabled", "enabled", platform_key):
+            changed = True
+        if _rename_config_key(mc_pc, "browse_cache_ttl_hours", "cache_ttl_hours", platform_key):
+            changed = True
+        if _rename_config_key(mc_pc, "metacritic_enabled", "enabled", platform_key):
+            changed = True
+        if _rename_config_key(mc_pc, "metacritic_max_games", "max_games", platform_key):
+            changed = True
         for old_key in ("browse_max_pages", "max_score_checks"):
             if old_key in mc_pc:
                 logger.warning(
@@ -183,6 +196,7 @@ def _migrate_platform_overrides(raw: dict[str, Any]) -> None:
                     platform_key,
                 )
                 mc_pc.pop(old_key)
+                changed = True
         for old_key in ("browse_cutoff_date", "metacritic_cutoff_date", "cutoff_date"):
             if old_key in mc_pc:
                 logger.warning(
@@ -192,23 +206,35 @@ def _migrate_platform_overrides(raw: dict[str, Any]) -> None:
                     platform_key,
                 )
                 mc_pc.pop(old_key)
-        _rename_config_key(mc_pc, "metacritic_cache_ttl_hours", "cache_ttl_hours", platform_key)
+                changed = True
+        if _rename_config_key(mc_pc, "metacritic_cache_ttl_hours", "cache_ttl_hours", platform_key):
+            changed = True
+    return changed
 
 
-def _migrate_fitgirl_exclude_keywords(raw: dict[str, Any]) -> None:
-    """Rename sources.fitgirl.exclude_keywords to reject_keywords."""
+def _migrate_fitgirl_exclude_keywords(raw: dict[str, Any]) -> bool:
+    """Rename sources.fitgirl.exclude_keywords to reject_keywords.
+
+    Returns True if a migration was applied.
+    """
     fg = raw.get("sources", {}).get("fitgirl", {})
     if not isinstance(fg, dict) or "exclude_keywords" not in fg:
         return
     if "reject_keywords" not in fg:
         fg["reject_keywords"] = fg.pop("exclude_keywords")
         logger.info("Config: migrated 'sources.fitgirl.exclude_keywords' to 'sources.fitgirl.reject_keywords'")
+        return True
     else:
         del fg["exclude_keywords"]
+        return True
+    return False
 
 
-def _migrate_metacritic_exclude_keywords(raw: dict[str, Any]) -> None:
-    """Remove deprecated exclude_keywords from metacritic.platform_overrides."""
+def _migrate_metacritic_exclude_keywords(raw: dict[str, Any]) -> bool:
+    """Remove deprecated exclude_keywords from metacritic.platform_overrides.
+
+    Returns True if a migration was applied.
+    """
     overrides = raw.get("metacritic", {}).get("platform_overrides", {})
     for platform_key, mc_pc in overrides.items():
         if isinstance(mc_pc, dict) and "exclude_keywords" in mc_pc:
@@ -217,13 +243,17 @@ def _migrate_metacritic_exclude_keywords(raw: dict[str, Any]) -> None:
                 platform_key,
             )
             del mc_pc["exclude_keywords"]
+    return False
 
 
-def _migrate_daemon_mode(raw: dict[str, Any]) -> None:
-    """Migrate deprecated general.daemon_mode to schedule.acquisition.enabled."""
+def _migrate_daemon_mode(raw: dict[str, Any]) -> bool:
+    """Migrate deprecated general.daemon_mode to schedule.acquisition.enabled.
+
+    Returns True if a migration was applied.
+    """
     general = raw.get("general", {})
     if general.get("daemon_mode") != "background":
-        return
+        return False
     schedule = raw.setdefault("schedule", {})
     acquisition = schedule.setdefault("acquisition", {})
     if "enabled" not in acquisition:
@@ -231,17 +261,29 @@ def _migrate_daemon_mode(raw: dict[str, Any]) -> None:
         logger.info(
             "Config: migrated deprecated 'general.daemon_mode: background' to 'schedule.acquisition.enabled: true'"
         )
+        return True
+    return False
 
 
-def _migrate_config(raw: dict[str, Any]) -> None:
-    """Migrate renamed config keys in-place for all platforms."""
+def _migrate_config(raw: dict[str, Any]) -> bool:
+    """Migrate renamed config keys in-place for all platforms.
+
+    Returns True if any migration was applied.
+    """
     try:
-        _migrate_platform_overrides(raw)
-        _migrate_fitgirl_exclude_keywords(raw)
-        _migrate_metacritic_exclude_keywords(raw)
-        _migrate_daemon_mode(raw)
+        changed = False
+        if _migrate_platform_overrides(raw):
+            changed = True
+        if _migrate_fitgirl_exclude_keywords(raw):
+            changed = True
+        if _migrate_metacritic_exclude_keywords(raw):
+            changed = True
+        if _migrate_daemon_mode(raw):
+            changed = True
+        return changed
     except Exception as exc:
         logger.warning("Config migration failed: {}", exc)
+        return False
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -333,16 +375,16 @@ def load_config(config_path: str | Path) -> Config:
     else:
         raw = loaded
 
-    # Migrate renamed fields
-    _migrate_config(raw)
+    # Migrate renamed fields (e.g. exclude_keywords → reject_keywords)
+    migrated = _migrate_config(raw)
 
     merged = _deep_merge(_default_config_dict(), raw)
 
-    # If the user's config file is missing any keys that the current
-    # model defines, write the merged config back to the file and bump
-    # the config version.  This keeps existing configs up-to-date
-    # automatically when new fields are added to the model.
-    if raw and _needs_config_update(raw):
+    # If migration made changes or the config is missing keys that the
+    # current model defines, write the merged config back to the file
+    # and bump the config version.  This keeps existing configs up-to-date
+    # automatically when fields are renamed or added.
+    if raw and (migrated or _needs_config_update(raw)):
         old_version = raw.get("general", {}).get("config_version", _CONFIG_VERSION)
         merged["general"]["config_version"] = _next_version(old_version)
         with path.open("w", encoding="utf-8") as fh:

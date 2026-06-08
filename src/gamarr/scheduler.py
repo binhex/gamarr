@@ -115,7 +115,7 @@ def _run_daemon(config: Config) -> None:
     signal.signal(signal.SIGTERM, shutdown_event)
     shutdown_event.wait()
     logger.info("Shutting down scheduler...")
-    scheduler.shutdown(wait=False)
+    scheduler.shutdown(wait=True)
 
 
 class _ShutdownEvent:
