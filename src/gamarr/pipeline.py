@@ -187,7 +187,7 @@ def run_acquisition(
     fitgirl_cache_ttl_hours: int = 6,
     fitgirl_exclude_keywords: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Execute one acquisition cycle.
+    """Execute one scan cycle.
 
     Discovers games by browsing Metacritic (newest-first, up to
     ``max_games`` entries), verifies each game's real
@@ -214,7 +214,7 @@ def run_acquisition(
         reject_title=reject_title,  # ← new
     )
 
-    logger.info("Starting acquisition cycle (platform='{}')", platform)
+    logger.info("Starting scan cycle (platform='{}')", platform)
 
     db = Database(db_path)
     source = FitGirlSource(
@@ -242,7 +242,7 @@ def run_acquisition(
     )
 
     if not qbt.is_connected():
-        logger.warning("qBittorrent is not reachable; skipping acquisition.")
+        logger.warning("qBittorrent is not reachable; skipping scan.")
         notifier.send_error_notification("qBittorrent is not reachable")
         source.close()
         mc.close()

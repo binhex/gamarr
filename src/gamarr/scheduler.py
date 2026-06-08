@@ -13,11 +13,11 @@ from gamarr.pipeline import run_acquisition
 
 
 def run(config_path: str = "configs") -> None:
-    """Run an acquisition cycle, either as scheduled daemon or single pass.
+    """Run a scan cycle, either as scheduled daemon or single pass.
 
     When ``schedule.acquisition.enabled`` is ``true`` in the config, runs
     in continuous scheduled mode using APScheduler. Otherwise runs a
-    single acquisition pass and exits.
+    single scan pass and exits.
 
     Args:
         config_path: Path to the config directory or file.
@@ -73,7 +73,7 @@ def _build_kwargs(config: Config) -> dict[str, Any]:
 
 
 def run_once(config: Config) -> None:
-    """Run a single acquisition cycle (foreground mode)."""
+    """Run a single scan cycle (foreground mode)."""
     logger.info("gamarr running in single-pass mode.")
     kwargs = _build_kwargs(config)
     results = run_acquisition(**kwargs)
