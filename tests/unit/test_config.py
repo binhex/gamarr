@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 import pytest
 import yaml
 
+from pydantic import ValidationError
+
 from gamarr.config import (
     Config,
     FitGirlSourceConfig,
@@ -44,6 +46,14 @@ class TestConfigModels:
         assert cfg.enabled is True
         assert cfg.rss_url == "https://fitgirl-repacks.site/feed/"
         assert cfg.platform == "pc"
+        assert cfg.pending_days == 60
+
+    def test_fitgirl_pending_days_ge_zero(self) -> None:
+        """pending_days must be >= 0 (0 disables expiry extension)."""
+        with pytest.raises(ValidationError):
+            FitGirlSourceConfig(pending_days=-1)
+        FitGirlSourceConfig(pending_days=0)
+        FitGirlSourceConfig(pending_days=1)
 
     def test_metacritic_platform_config_defaults(self) -> None:
         cfg = MetacriticPlatformConfig()

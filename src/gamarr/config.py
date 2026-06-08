@@ -46,7 +46,7 @@ class FitGirlSourceConfig(BaseModel):
     platform: str = "pc"
     cache_ttl_hours: int = Field(default=6, gt=0, le=168)
     exclude_keywords: list[str] = Field(default_factory=list)
-    pending_days: int = 60
+    pending_days: int = Field(default=60, ge=0)
 
 
 class SourcesConfig(BaseModel):
