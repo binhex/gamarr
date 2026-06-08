@@ -680,6 +680,26 @@ def _scores_fail_check(result: Any, thresholds: dict[str, Any]) -> bool:
     return not _scores_present(result) or not _real_scores_pass_thresholds(result, thresholds)
 
 
+def _increment_and_check_attempts(
+    db: Database,
+    game: Any,
+    result: Any | None,
+    max_attempts: int,
+    *,
+    result_details: str | None = None,
+) -> tuple[bool, int]:
+    """Increment verify attempts; fail the game if max attempts reached.
+
+    Returns (was_failed, attempts) — the caller uses the attempt count
+    for logging when the game is kept for re-verification.
+    """
+    attempts = db.increment_verify_attempts(str(game.slug))
+    if attempts >= max_attempts:
+        _fail_game_after_max_attempts(db, game, result, attempts, result_details=result_details)
+        return (True, attempts)
+    return (False, attempts)
+
+
 def _process_verify_result(
     db: Database,
     game: Any,
@@ -714,9 +734,8 @@ def _process_verify_result(
         return True
 
     if result is None:
-        attempts = db.increment_verify_attempts(str(game.slug))
-        if attempts >= max_verify_attempts:
-            _fail_game_after_max_attempts(db, game, result, attempts)
+        failed, attempts = _increment_and_check_attempts(db, game, result, max_verify_attempts)
+        if failed:
             return True
         logger.debug(
             "Keeping '{}' in queue \u2014 game not found on Metacritic page (attempt {}/{})",
@@ -727,9 +746,8 @@ def _process_verify_result(
         return False
 
     if _scores_fail_check(result, thresholds):
-        attempts = db.increment_verify_attempts(str(game.slug))
-        if attempts >= max_verify_attempts:
-            _fail_game_after_max_attempts(db, game, result, attempts)
+        failed, attempts = _increment_and_check_attempts(db, game, result, max_verify_attempts)
+        if failed:
             return True
         _log_keep_pending(game, result, attempts, max_verify_attempts)
         return False
@@ -749,8 +767,8 @@ def _process_verify_result(
         game.game_title,
         result.metascore,
         result.user_score,
-        result.metascore_review_count or 0,
-        result.user_review_count or 0,
+        result.metascore_review_count,
+        result.user_review_count,
     )
     return False
 
