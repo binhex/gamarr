@@ -2799,6 +2799,49 @@ class TestVerifyPendingScoresEdgeCases:
         assert db.is_pending("unknown-game") is True, "Game should remain pending for re-try"
         db.close()
 
+    def test_reject_genre_none_genres(self, tmp_path: Path) -> None:
+        """When result.genres is None, genre check is skipped and score check proceeds."""
+        import datetime
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _verify_pending_scores
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="no-genre-game",
+            game_title="No Genre Game",
+            platform="pc",
+            metascore=1985.0,
+            metascore_reviews=1986,
+            user_score=1994.0,
+            user_reviews=None,
+            release_date="2026-05-19",
+            expires_at=expires,
+        )
+
+        import types
+
+        mock_mc = MagicMock()
+        mock_mc.lookup_game.return_value = types.SimpleNamespace(
+            metascore=88.0,
+            metascore_review_count=50,
+            user_score=8.0,
+            user_review_count=100,
+            genres=None,
+            must_play=True,
+            release_date="2026-05-19",
+            slug="no-genre-game",
+        )
+
+        thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
+
+        removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, reject_genre=["action"])
+        assert removed == 0, "genres=None — genre check skipped, game should not be removed"
+        assert db.is_pending("no-genre-game") is True, "Game should remain pending (scores pass)"
+        db.close()
+
 
 class TestLogGameDetails:
     """_log_game_details end-to-end behaviour."""

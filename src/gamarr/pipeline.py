@@ -635,6 +635,26 @@ def _fail_game_after_max_attempts(
     db.remove_pending(str(game.slug))
 
 
+def _reject_by_genre(
+    game: Any,
+    result: Any,
+    reject_genre: list[str] | None,
+) -> bool:
+    """Return True if *result* has a genre in *reject_genre* (case-insensitive)."""
+    if not (result is not None and reject_genre and result.genres):
+        return False
+    reject_lower = [g.lower() for g in reject_genre]
+    for genre in result.genres:
+        if genre.lower() in reject_lower:
+            logger.info(
+                "Removing '{}' — genre '{}' is in reject_genre list",
+                game.game_title,
+                genre,
+            )
+            return True
+    return False
+
+
 def _process_verify_result(
     db: Database,
     game: Any,
@@ -651,18 +671,9 @@ def _process_verify_result(
     times).  Once the attempt limit is reached, the game is removed
     from pending and recorded in the history with result="Failed".
     """
-    # Check if the game's genre matches a rejected genre (case-insensitive exact match)
-    if result is not None and reject_genre and result.genres:
-        reject_lower = [g.lower() for g in reject_genre]
-        for genre in result.genres:
-            if genre.lower() in reject_lower:
-                logger.info(
-                    "Removing '{}' — genre '{}' is in reject_genre list",
-                    game.game_title,
-                    genre,
-                )
-                _fail_game_after_max_attempts(db, game, result, attempts=1)
-                return True
+    if _reject_by_genre(game, result, reject_genre):
+        _fail_game_after_max_attempts(db, game, result, attempts=1)
+        return True
 
     if result is None:
         attempts = db.increment_verify_attempts(str(game.slug))
