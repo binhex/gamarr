@@ -632,9 +632,10 @@ def _fail_game_after_max_attempts(
             result_details=details,
         )
         logger.debug(
-            "Removed '{}' from queue \u2014 {} ",
+            "Removed '{}' from queue \u2014 {} (after {} attempts)",
             game.game_title,
             details,
+            attempts,
         )
     else:
         if result_details is None:
