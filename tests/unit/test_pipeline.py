@@ -2552,6 +2552,253 @@ class TestVerifyPendingScoresEdgeCases:
         assert db.is_pending("remove-now") is False
         db.close()
 
+    def test_reject_genre_matches(self, tmp_path: Path) -> None:
+        """Game with a genre in reject_genre should be removed immediately."""
+        import datetime
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _verify_pending_scores
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="elden-ring",
+            game_title="Elden Ring",
+            platform="pc",
+            metascore=95.0,
+            metascore_reviews=100,
+            user_score=9.0,
+            user_reviews=500,
+            release_date="2022-02-25",
+            expires_at=expires,
+        )
+
+        import types
+
+        mock_mc = MagicMock()
+        mock_mc.lookup_game.return_value = types.SimpleNamespace(
+            metascore=95.0,
+            metascore_review_count=100,
+            user_score=9.0,
+            user_review_count=500,
+            genres=["Action", "RPG"],
+            must_play=True,
+            release_date="2022-02-25",
+            slug="elden-ring",
+        )
+
+        thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
+
+        assert db.is_pending("elden-ring") is True
+        removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, reject_genre=["rpg"])
+        assert removed == 1, "Game with rejected genre should be removed"
+        assert db.is_pending("elden-ring") is False, "Game should no longer be pending"
+        db.close()
+
+    def test_reject_genre_no_match(self, tmp_path: Path) -> None:
+        """Game without a rejected genre should be processed normally."""
+        import datetime
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _verify_pending_scores
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="forza-horizon-6",
+            game_title="Forza Horizon 6",
+            platform="pc",
+            metascore=1985.0,
+            metascore_reviews=1986,
+            user_score=1994.0,
+            user_reviews=None,
+            release_date="2026-05-19",
+            expires_at=expires,
+        )
+
+        import types
+
+        mock_mc = MagicMock()
+        mock_mc.lookup_game.return_value = types.SimpleNamespace(
+            metascore=88.0,
+            metascore_review_count=50,
+            user_score=8.0,
+            user_review_count=100,
+            genres=["Racing"],
+            must_play=True,
+            release_date="2026-05-19",
+            slug="forza-horizon-6",
+        )
+
+        thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
+
+        removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, reject_genre=["action"])
+        assert removed == 0, "Game genre 'Racing' not in reject_genre ['action'] — should NOT be removed"
+        assert db.is_pending("forza-horizon-6") is True, "Game should remain pending"
+        db.close()
+
+    def test_reject_genre_empty_list(self, tmp_path: Path) -> None:
+        """Empty reject_genre list should have no effect."""
+        import datetime
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _verify_pending_scores
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="elden-ring",
+            game_title="Elden Ring",
+            platform="pc",
+            metascore=95.0,
+            metascore_reviews=100,
+            user_score=9.0,
+            user_reviews=500,
+            release_date="2022-02-25",
+            expires_at=expires,
+        )
+
+        import types
+
+        mock_mc = MagicMock()
+        mock_mc.lookup_game.return_value = types.SimpleNamespace(
+            metascore=95.0,
+            metascore_review_count=100,
+            user_score=9.0,
+            user_review_count=500,
+            genres=["Action", "RPG"],
+            must_play=True,
+            release_date="2022-02-25",
+            slug="elden-ring",
+        )
+
+        thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
+
+        removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, reject_genre=[])
+        assert removed == 0, "Empty reject_genre — game should NOT be removed"
+        assert db.is_pending("elden-ring") is True, "Game should remain pending"
+        db.close()
+
+    def test_reject_genre_multi_match(self, tmp_path: Path) -> None:
+        """Game with multiple genres where one matches reject_genre should be removed."""
+        import datetime
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _verify_pending_scores
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="cyberpunk-2077",
+            game_title="Cyberpunk 2077",
+            platform="pc",
+            metascore=86.0,
+            metascore_reviews=90,
+            user_score=8.5,
+            user_reviews=500,
+            release_date="2020-12-10",
+            expires_at=expires,
+        )
+
+        import types
+
+        mock_mc = MagicMock()
+        mock_mc.lookup_game.return_value = types.SimpleNamespace(
+            metascore=86.0,
+            metascore_review_count=90,
+            user_score=8.5,
+            user_review_count=500,
+            genres=["Action", "RPG", "Open-World"],
+            must_play=True,
+            release_date="2020-12-10",
+            slug="cyberpunk-2077",
+        )
+
+        thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
+
+        removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, reject_genre=["rpg", "sports"])
+        assert removed == 1, "Game has 'RPG' which is in reject_genre — should be removed"
+        assert db.is_pending("cyberpunk-2077") is False
+        db.close()
+
+    def test_reject_genre_case_insensitive(self, tmp_path: Path) -> None:
+        """Genre matching should be case-insensitive."""
+        import datetime
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _verify_pending_scores
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="hades-2",
+            game_title="Hades II",
+            platform="pc",
+            metascore=90.0,
+            metascore_reviews=80,
+            user_score=8.5,
+            user_reviews=300,
+            release_date="2025-05-06",
+            expires_at=expires,
+        )
+
+        import types
+
+        mock_mc = MagicMock()
+        mock_mc.lookup_game.return_value = types.SimpleNamespace(
+            metascore=90.0,
+            metascore_review_count=80,
+            user_score=8.5,
+            user_review_count=300,
+            genres=["Early Access", "Roguelike"],
+            must_play=False,
+            release_date="2025-05-06",
+            slug="hades-2",
+        )
+
+        thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
+
+        removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, reject_genre=["ROGUELIKE"])
+        assert removed == 1, "Case-insensitive match — 'ROGUELIKE' should match 'Roguelike'"
+        db.close()
+
+    def test_reject_genre_result_none(self, tmp_path: Path) -> None:
+        """When lookup returns None, genre check is skipped and normal retry logic applies."""
+        import datetime
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _verify_pending_scores
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="unknown-game",
+            game_title="Unknown Game",
+            platform="pc",
+            metascore=0.0,
+            metascore_reviews=0,
+            user_score=0.0,
+            user_reviews=0,
+            release_date="2026-01-01",
+            expires_at=expires,
+        )
+
+        mock_mc = MagicMock()
+        mock_mc.lookup_game.return_value = None  # lookup failed
+
+        thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
+
+        removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, reject_genre=["action"])
+        assert removed == 0, "Lookup returned None — genre check skipped, game stays for re-check"
+        assert db.is_pending("unknown-game") is True, "Game should remain pending for re-try"
+        db.close()
+
 
 class TestLogGameDetails:
     """_log_game_details end-to-end behaviour."""
