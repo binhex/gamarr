@@ -647,18 +647,27 @@ def _reject_by_genre(
     result: Any,
     reject_genre: list[str] | None,
 ) -> str | None:
-    """Return the first genre that matched *reject_genre*, or *None*."""
+    """Return the first genre that matched *reject_genre* (case-insensitive substring), or *None*.
+
+    Substring match means ``reject_genre=["RPG"]`` matches ``"Action RPG"``,
+    ``"Western RPG"``, ``"JRPG"``, and ``"RPG"`` itself.
+    A more specific entry like ``"Western RPG"`` only matches genres
+    containing that exact substring.
+    """
     if not (result is not None and reject_genre and getattr(result, "genres", None)):
         return None
-    reject_lower = [g.lower() for g in reject_genre]
-    for genre in result.genres:
-        if genre.lower() in reject_lower:
-            logger.info(
-                "Removing '{}' — genre '{}' is in reject_genre list",
-                game.game_title,
-                genre,
-            )
-            return str(genre)
+    genre_lower = [g.lower() for g in result.genres]
+    for term in reject_genre:
+        term_lower = term.lower()
+        for i, genre in enumerate(genre_lower):
+            if term_lower in genre:
+                logger.info(
+                    "Removing '{}' — genre '{}' matches reject genre '{}'",
+                    game.game_title,
+                    result.genres[i],
+                    term,
+                )
+                return str(result.genres[i])
     return None
 
 
@@ -775,8 +784,9 @@ def _verify_pending_scores(
             Set to 0 to skip verification entirely.
         max_verify_attempts: Max times to re-check a failing game before
             giving up.  Set to 0 to remove immediately (old behavior).
-        reject_genre: List of genres to reject (case-insensitive). Games
-            matching any genre in this list are removed immediately.
+        reject_genre: List of genre substrings to reject (case-insensitive).
+            Games whose genre contains any entry are removed immediately.
+            E.g. ``["RPG"]`` matches ``"Action RPG"``, ``"JRPG"``, etc.
 
     Returns the number of games removed.
     """

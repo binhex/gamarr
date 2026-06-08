@@ -2886,6 +2886,92 @@ class TestVerifyPendingScoresEdgeCases:
         assert db.is_pending("default-test") is True, "Game should remain pending"
         db.close()
 
+    def test_reject_genre_substring_broad(self, tmp_path: Path) -> None:
+        """reject_genre=["RPG"] should match "Action RPG" (substring)."""
+        import datetime
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _verify_pending_scores
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="action-rpg-game",
+            game_title="Action RPG Game",
+            platform="pc",
+            metascore=90.0,
+            metascore_reviews=50,
+            user_score=8.5,
+            user_reviews=200,
+            release_date="2026-01-01",
+            expires_at=expires,
+        )
+
+        import types
+
+        mock_mc = MagicMock()
+        mock_mc.lookup_game.return_value = types.SimpleNamespace(
+            metascore=90.0,
+            metascore_review_count=50,
+            user_score=8.5,
+            user_review_count=200,
+            genres=["Action RPG"],
+            must_play=True,
+            release_date="2026-01-01",
+            slug="action-rpg-game",
+        )
+
+        thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
+
+        removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, reject_genre=["RPG"])
+        assert removed == 1, "'RPG' should match 'Action RPG' via substring"
+        assert db.is_pending("action-rpg-game") is False
+        db.close()
+
+    def test_reject_genre_substring_narrow(self, tmp_path: Path) -> None:
+        """reject_genre=["Western RPG"] should NOT match "Action RPG" (substring mismatch)."""
+        import datetime
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _verify_pending_scores
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="action-rpg-game2",
+            game_title="Action RPG Game 2",
+            platform="pc",
+            metascore=90.0,
+            metascore_reviews=50,
+            user_score=8.5,
+            user_reviews=200,
+            release_date="2026-01-01",
+            expires_at=expires,
+        )
+
+        import types
+
+        mock_mc = MagicMock()
+        mock_mc.lookup_game.return_value = types.SimpleNamespace(
+            metascore=90.0,
+            metascore_review_count=50,
+            user_score=8.5,
+            user_review_count=200,
+            genres=["Action RPG"],
+            must_play=True,
+            release_date="2026-01-01",
+            slug="action-rpg-game2",
+        )
+
+        thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
+
+        removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, reject_genre=["Western RPG"])
+        assert removed == 0, "'Western RPG' should NOT match 'Action RPG' — substring not found"
+        assert db.is_pending("action-rpg-game2") is True
+        db.close()
+
 
 class TestLogGameDetails:
     """_log_game_details end-to-end behaviour."""

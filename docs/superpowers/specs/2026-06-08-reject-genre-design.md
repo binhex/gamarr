@@ -1,7 +1,7 @@
 # reject_genre — Genre-based filtering for Metacritic browsing
 
 **Date:** 2026-06-08
-**Status:** Approved design
+**Status:** Approved design (amended 2026-06-08: exact match → case-insensitive substring match)
 
 ## Problem
 
@@ -13,11 +13,18 @@ there is no genre-based filtering — the only rejection mechanism is
 ## Solution
 
 Add a `reject_genre` field to the Metacritic platform config. It accepts
-a list of genre strings. If a game's Metacritic detail-page genres match
-any entry (case-insensitive exact match), the game is immediately removed
-from the pending queue and recorded in history as filtered — no score
-verification is performed and no future re-verification occurs (genres
-never change).
+a list of genre substrings. If a game's Metacritic detail-page genres
+contain any entry (case-insensitive substring match), the game is
+immediately removed from the pending queue and recorded in history as
+filtered — no score verification is performed and no future re-verification
+occurs (genres never change).
+
+**Substring matching rules:**
+- `reject_genre: ["RPG"]` matches any genre containing `"RPG"`
+  (e.g. `"Action RPG"`, `"Western RPG"`, `"JRPG"`, `"RPG"`)
+- `reject_genre: ["Western RPG"]` only matches genres containing
+  `"Western RPG"` (does NOT match `"Action RPG"` or `"JRPG"`)
+- Matching is case-insensitive: `"rpg"` matches `"RPG"`, `"Action RPG"`
 
 Genres are only available after a Metacritic detail-page lookup (the
 browse-page Nuxt API does not expose them), so the one HTTP lookup per
@@ -60,7 +67,7 @@ reject_genre=reject_genre,
 metacritic:
   platform_overrides:
     pc:
-      reject_genre: []    # case-insensitive exact match; e.g. ["Action", "RPG"]
+      reject_genre: []    # case-insensitive substring; e.g. ["RPG"] matches "Action RPG", "JRPG"
 ```
 
 ### 2. Scheduler wiring
@@ -73,72 +80,54 @@ metacritic:
 
 ### 3. Filtering logic
 
+#### `src/gamarr/pipeline.py` — `_reject_by_genre()`
+
+Uses case-insensitive substring matching: each entry in the reject list is
+checked against every game genre. If any entry is found as a substring of
+the genre (after lowering both sides), the game is rejected.
+
+```python
+genre_lower = [g.lower() for g in result.genres]
+for term in reject_genre:
+    term_lower = term.lower()
+    for i, genre in enumerate(genre_lower):
+        if term_lower in genre:
+            # match found
+```
+
 #### `src/gamarr/pipeline.py` — `_process_verify_result()`
 
-Add a `reject_genre` parameter and insert the genre check as the first
-action inside the function, before the `result is None` check:
-
-```python
-def _process_verify_result(
-    db: Database,
-    game: Any,
-    result: Any,
-    thresholds: dict[str, Any],
-    *,
-    max_verify_attempts: int = 6,
-    reject_genre: list[str] | None = None,
-) -> bool:
-```
-
-Genre check pseudocode:
-
-```python
-# Check if the game's genre matches a rejected genre (case-insensitive)
-if result is not None and reject_genre and result.genres:
-    reject_lower = [g.lower() for g in reject_genre]
-    for genre in result.genres:
-        if genre.lower() in reject_lower:
-            logger.info(
-                "Removing '{}' — genre '{}' is in reject_genre list",
-                game.game_title,
-                genre,
-            )
-            _fail_game_after_max_attempts(db, game, result, attempts=1)
-            return True
-```
+Calls `_reject_by_genre()` as the first check. If a genre matches, the
+game is removed via `_fail_game_after_max_attempts` with a custom
+`result_details` containing the matching term and genre name.
 
 Key behaviour:
 - If `result is None` (lookup failed), the genre check is skipped
-  (no genres to check against)
-- Both lists are lowered for case-insensitive comparison
-- Uses `_fail_game_after_max_attempts` (existing helper) to record in
-  history as "Failed" and remove from pending
-- Returns `True` to count toward the `removed` counter in the caller
+- Substring match: `"rpg" in "action rpg"` matches, `"western rpg" in "action rpg"` does not
+- `_fail_game_after_max_attempts` records with accurate reason in history
+- Returns `True` when removed
 
 ### 4. Logging
 
-A single `logger.info` line records which genre caused the rejection.
-This follows the same verbosity pattern as other filter reasons in the
-pipeline.
+A single `logger.info` line records which genre term matched which game
+genre. This follows the same verbosity pattern as other filter reasons.
 
 ### 5. Tests
 
-#### Unit tests for `_process_verify_result`
+#### Unit tests for `_reject_by_genre` (via `_verify_pending_scores`)
 
 | Test | Coverage |
 |------|----------|
-| `test_reject_genre_matches` | Game genre "Action", reject_genre=["action"] → removed (True) |
-| `test_reject_genre_no_match` | Game genre "RPG", reject_genre=["action"] → scores checked normally (False) |
-| `test_reject_genre_empty` | reject_genre=[] → normal flow preserved |
-| `test_reject_genre_multi_match` | Game genres ["Action","RPG"], reject_genre=["rpg"] → removed |
-| `test_reject_genre_case_insensitive` | Genre "Action", reject_genre=["ACTION"] → removed |
-| `test_reject_genre_result_none` | result=None → genre check skipped → normal retry |
-
-#### Integration test
-
-| Test | Coverage |
-|------|----------|
-| `test_reject_genre_integration` | Full pipeline flow via `_run_discovery_phases` with reject_genre set |
+| `test_reject_genre_matches` | Genre "Action", reject_genre=["action"] → removed |
+| `test_reject_genre_no_match` | Genre "Racing", reject_genre=["action"] → not removed |
+| `test_reject_genre_empty_list` | reject_genre=[] → not removed |
+| `test_reject_genre_multi_match` | Genres ["Action","RPG","Open-World"], reject_genre=["rpg","sports"] → removed |
+| `test_reject_genre_case_insensitive` | Genre "Roguelike", reject_genre=["ROGUELIKE"] → removed |
+| `test_reject_genre_result_none` | result=None → genre check skipped |
+| `test_reject_genre_none_genres` | genres=None → genre check skipped |
+| `test_reject_genre_none_default` | reject_genre not passed → not removed |
+| `test_reject_genre_substring_broad` | Genre "Action RPG", reject_genre=["RPG"] → removed |
+| `test_reject_genre_substring_narrow` | Genre "Action RPG", reject_genre=["Western RPG"] → not removed |
 
 All existing tests must continue passing unchanged.
 
@@ -147,15 +136,17 @@ All existing tests must continue passing unchanged.
 | File | Change |
 |------|--------|
 | `src/gamarr/config.py` | Add `reject_genre` field to `MetacriticPlatformConfig` |
-| `src/gamarr/pipeline.py` | Add field to `AcquisitionConfig` + `run_acquisition()` param + filter in `_process_verify_result` |
+| `src/gamarr/pipeline.py` | Add `_reject_by_genre()` with substring matching, `_scores_fail_check()`, threading through `_process_verify_result` and `_verify_pending_scores` |
 | `src/gamarr/scheduler.py` | Add kwarg in `_build_kwargs()` |
 | `configs/gamarr.yml` | Add `reject_genre: []` under `metacritic.platform_overrides.pc` |
-| `tests/unit/test_pipeline.py` | Add unit + integration tests for genre rejection |
+| `tests/unit/test_pipeline.py` | Add 10 unit tests for genre rejection |
+| `tests/unit/test_database.py` | Add 2 migration tests for `_migrate()` |
+| `docs/superpowers/specs/2026-06-08-reject-genre-design.md` | This document |
 
 ## Non-goals
 
 - No database schema changes (genres are not persisted to the pending table)
 - No browse-page genre fetching (genres are only available on detail pages)
-- No partial/substring matching (exact match only, case-insensitive)
-- No genre allowlist feature (this is rejection-only)
+- No allowlist or inclusion-only genre filtering
 - No UI or CLI for managing the reject list
+- No minimum substring length restriction
