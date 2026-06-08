@@ -648,7 +648,7 @@ def _reject_by_genre(
     reject_genre: list[str] | None,
 ) -> str | None:
     """Return the first genre that matched *reject_genre*, or *None*."""
-    if not (result is not None and reject_genre and getattr(result, 'genres', None)):
+    if not (result is not None and reject_genre and getattr(result, "genres", None)):
         return None
     reject_lower = [g.lower() for g in reject_genre]
     for genre in result.genres:
@@ -658,7 +658,7 @@ def _reject_by_genre(
                 game.game_title,
                 genre,
             )
-            return genre
+            return str(genre)
     return None
 
 
@@ -682,7 +682,10 @@ def _process_verify_result(
     if matched_genre is not None:
         attempts = db.increment_verify_attempts(str(game.slug))
         _fail_game_after_max_attempts(
-            db, game, result, attempts=attempts,
+            db,
+            game,
+            result,
+            attempts=attempts,
             result_details=f"Game '{game.game_title}' — genre '{matched_genre}' is in reject_genre list",
         )
         return True
