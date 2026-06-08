@@ -61,9 +61,6 @@ gamarr --test
 
 # Run a single acquisition cycle
 gamarr
-
-# Run as a continuous daemon (polling every 60 minutes)
-gamarr --daemon
 ```
 
 ## CLI Options
@@ -73,7 +70,6 @@ gamarr --daemon
 | `--config-path <dir>` | Directory containing `gamarr.yml` (default: `configs`) |
 | `--log-level <level>` | Override console log level (DEBUG, INFO, SUCCESS, WARNING, ERROR) |
 | `--log-path <path>` | Override log file path |
-| `--daemon` | Run in continuous scheduling mode |
 | `--test` | Validate configuration and exit |
 | `--version` | Show version and exit |
 | `--help` | Show help message and exit |
@@ -89,7 +85,7 @@ on first run. The file is divided into the sections below.
 | Key | Description | Default |
 | --- | ----------- | ------- |
 | `config_version` | Schema version — managed automatically; do not edit. | *(current)* |
-| `daemon_mode` | `foreground` or `background`. Overridden by `--daemon` CLI flag. | `foreground` |
+| `daemon_mode` | `foreground` or `background`. Scheduling is controlled by `schedule.acquisition.enabled`. This field is deprecated. | `foreground` |
 | `log_level_console` | Console logging level. | `INFO` |
 | `log_level_file` | File logging level. | `INFO` |
 | `log_path` | Directory for log files (`gamarr.log` is created inside). | `logs` |
@@ -255,8 +251,9 @@ metacritic.py  →  pipeline.py  →  sources/fitgirl.py  →  qbittorrent.py
 ```
 
 All configuration is driven by a YAML file (`configs/gamarr.yml`) validated
-with Pydantic. The scheduler (`scheduler.py`) supports both single-pass and
-continuous daemon modes via APScheduler.
+with Pydantic. The scheduler (`scheduler.py`) runs in single-pass mode by
+default, or in continuous scheduled mode when
+``schedule.acquisition.enabled`` is ``true``.
 
 ## Development
 

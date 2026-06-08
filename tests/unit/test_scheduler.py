@@ -28,20 +28,26 @@ class TestSchedulerForeground:
     def test_run_calls_daemon_when_schedule_enabled(self) -> None:
         """When schedule.acquisition.enabled=True, run() should call _run_daemon."""
         config = _make_config(acquisition_enabled=True)
-        with patch("gamarr.scheduler._run_daemon") as mock_daemon, patch("gamarr.scheduler.run_once") as mock_once:
-            with patch("gamarr.scheduler.load_config", return_value=config):
-                run(config_path="/tmp")
-                mock_daemon.assert_called_once()
-                mock_once.assert_not_called()
+        with (
+            patch("gamarr.scheduler._run_daemon") as mock_daemon,
+            patch("gamarr.scheduler.run_once") as mock_once,
+            patch("gamarr.scheduler.load_config", return_value=config),
+        ):
+            run(config_path="/tmp")
+            mock_daemon.assert_called_once()
+            mock_once.assert_not_called()
 
     def test_run_calls_run_once_when_schedule_disabled(self) -> None:
         """When schedule.acquisition.enabled=False, run() should call run_once."""
         config = _make_config(acquisition_enabled=False)
-        with patch("gamarr.scheduler._run_daemon") as mock_daemon, patch("gamarr.scheduler.run_once") as mock_once:
-            with patch("gamarr.scheduler.load_config", return_value=config):
-                run(config_path="/tmp")
-                mock_once.assert_called_once()
-                mock_daemon.assert_not_called()
+        with (
+            patch("gamarr.scheduler._run_daemon") as mock_daemon,
+            patch("gamarr.scheduler.run_once") as mock_once,
+            patch("gamarr.scheduler.load_config", return_value=config),
+        ):
+            run(config_path="/tmp")
+            mock_once.assert_called_once()
+            mock_daemon.assert_not_called()
 
 
 def _make_config(daemon_mode: str = "foreground", acquisition_enabled: bool = True) -> Config:
