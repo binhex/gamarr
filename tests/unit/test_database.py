@@ -331,6 +331,41 @@ class TestPendingGame:
         db.close()
 
 
+class TestPendingExpiry:
+    """update_pending_expiry method tests."""
+
+    def test_update_pending_expiry(self, tmp_path: Path) -> None:
+        """update_pending_expiry should recalculate expires_at to now + pending_days."""
+        import datetime
+
+        db = Database(str(tmp_path / "test.db"))
+        # Insert a pending game with a past expiry
+        past = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=10)).isoformat()
+        db.record_pending(
+            slug="expiry-test",
+            game_title="Expiry Test",
+            platform="pc",
+            expires_at=past,
+        )
+        # Call update_pending_expiry with 60 days
+        db.update_pending_expiry("expiry-test", 60)
+        # Retrieve and verify new expiry
+        pending = db.get_pending()
+        assert len(pending) == 1
+        row = pending[0]
+        new_expiry = datetime.datetime.fromisoformat(row.expires_at)
+        expected_min = datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=59)
+        expected_max = datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=61)
+        assert expected_min < new_expiry < expected_max, f"Expected expiry near now+60d, got {new_expiry}"
+        db.close()
+
+    def test_update_pending_expiry_nonexistent_slug(self, tmp_path: Path) -> None:
+        """update_pending_expiry should silently skip non-existent slugs."""
+        db = Database(str(tmp_path / "test.db"))
+        db.update_pending_expiry("does-not-exist", 60)  # should not raise
+        db.close()
+
+
 class TestSourceTitle:
     """SourceTitle operations."""
 

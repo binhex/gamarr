@@ -227,6 +227,19 @@ class Database:
                 row.verify_attempts = 0
                 session.commit()
 
+    def update_pending_expiry(self, slug: str, pending_days: int) -> None:
+        """Recalculate expires_at to now + pending_days for a pending game.
+
+        Used to extend the expiry window when a game transitions from
+        the score-waiting phase to the FitGirl-matching phase.
+        """
+        expires_at = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=pending_days)).isoformat()
+        with self._session() as session:
+            row = session.get(PendingGame, slug)
+            if row is not None:
+                row.expires_at = expires_at
+                session.commit()
+
     def remove_pending(self, slug: str) -> None:
         with self._session() as session:
             row = session.get(PendingGame, slug)
