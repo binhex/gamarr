@@ -325,6 +325,7 @@ def run_acquisition(
                 max_verify=len(pending_games) if cfg.max_games == 0 else min(len(pending_games), cfg.max_games),
                 max_verify_attempts=cfg.max_verify_attempts,
                 reject_genre=cfg.reject_genre,
+                fitgirl_pending_days=cfg.fitgirl_pending_days,  # ← new
             )
             if removed:
                 logger.info(
@@ -687,6 +688,7 @@ def _process_verify_result(
     *,
     max_verify_attempts: int = 6,
     reject_genre: list[str] | None = None,
+    fitgirl_pending_days: int = 60,  # ← new
 ) -> bool:
     """Process one score-check result. Returns True if the game was removed.
 
@@ -694,6 +696,10 @@ def _process_verify_result(
     re-verification on subsequent cycles (up to *max_verify_attempts*
     times).  Once the attempt limit is reached, the game is removed
     from pending and recorded in the history with result="Failed".
+
+    Args:
+        fitgirl_pending_days: Days to extend pending expiry when scores pass.
+            Set to 0 to disable (backward compatible).
     """
     matched_genre = _reject_by_genre(game, result, reject_genre)
     if matched_genre is not None:
@@ -736,6 +742,8 @@ def _process_verify_result(
         user_reviews=result.user_review_count,
     )
     db.reset_verify_attempts(str(game.slug))
+    if fitgirl_pending_days:
+        db.update_pending_expiry(str(game.slug), fitgirl_pending_days)
     logger.debug(
         "'{}' passed score check \u2014 ({}, {}) with ({} reviews, {} reviews)",
         game.game_title,
@@ -757,6 +765,7 @@ def _verify_pending_scores(
     max_verify: int = 50,
     max_verify_attempts: int = 6,
     reject_genre: list[str] | None = None,
+    fitgirl_pending_days: int = 60,  # ← new
 ) -> int:
     """Re-verify pending games' scores against the real Metacritic detail page.
 
@@ -790,6 +799,8 @@ def _verify_pending_scores(
         reject_genre: List of genre substrings to reject (case-insensitive).
             Games whose genre contains any entry are removed immediately.
             E.g. ``["RPG"]`` matches ``"Action RPG"``, ``"JRPG"``, etc.
+        fitgirl_pending_days: Passed through to _process_verify_result for
+            expiry recalculation when scores pass.
 
     Returns the number of games removed.
     """
@@ -833,6 +844,7 @@ def _verify_pending_scores(
                 thresholds,
                 max_verify_attempts=max_verify_attempts,
                 reject_genre=reject_genre,
+                fitgirl_pending_days=fitgirl_pending_days,  # ← new
             ):
                 removed += 1
 
