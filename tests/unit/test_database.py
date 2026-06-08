@@ -491,7 +491,7 @@ class TestGameDetailCacheMetadata:
 
     def test_game_detail_cache_migration_adds_metadata_columns(self, tmp_path: Path) -> None:
         """_migrate() should add genres, must_play, release_date, description columns."""
-        from sqlalchemy import Column, Float, Integer, MetaData, String, Table, Text, create_engine
+        from sqlalchemy import Column, Float, Integer, MetaData, String, Table, create_engine
         from sqlalchemy import inspect as sa_inspect
 
         # Create a database with the pre-migration schema (missing metadata columns)

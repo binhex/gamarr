@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import datetime
 import json
 from pathlib import Path
@@ -375,10 +376,8 @@ class Database:
                 return None
             genres: list[str] | None = None
             if row.genres is not None:
-                try:
+                with contextlib.suppress(json.JSONDecodeError, TypeError):
                     genres = json.loads(row.genres)
-                except (json.JSONDecodeError, TypeError):
-                    pass
             return {
                 "metascore": row.metascore,
                 "metascore_reviews": row.metascore_reviews,
