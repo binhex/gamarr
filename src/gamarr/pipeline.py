@@ -265,8 +265,7 @@ def run_acquisition(
             cutoff_date: str | None = None
             if cfg.cutoff_weeks is not None and cfg.cutoff_weeks > 0:
                 cutoff_date = (
-                    datetime.datetime.now(tz=datetime.UTC).date()
-                    - datetime.timedelta(weeks=cfg.cutoff_weeks)
+                    datetime.datetime.now(tz=datetime.UTC).date() - datetime.timedelta(weeks=cfg.cutoff_weeks)
                 ).isoformat()
 
             browse_games = mc.scan_recent_games(
