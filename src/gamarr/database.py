@@ -232,8 +232,12 @@ class Database:
 
         Used to extend the expiry window when a game transitions from
         the score-waiting phase to the FitGirl-matching phase.
+
+        When *pending_days* is 0 or negative, the expiry is set to a far
+        future date (~27 years), making the game pend indefinitely.
         """
-        expires_at = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=pending_days)).isoformat()
+        days = 9999 if pending_days <= 0 else pending_days
+        expires_at = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=days)).isoformat()
         with self._session() as session:
             row = session.get(PendingGame, slug)
             if row is not None:

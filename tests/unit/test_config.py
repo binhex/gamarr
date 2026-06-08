@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING
 
 import pytest
 import yaml
-
 from pydantic import ValidationError
 
 from gamarr.config import (

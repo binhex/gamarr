@@ -476,7 +476,10 @@ def _process_browse_games(
 
         g_slug = game.get("slug", "")
         g_title = game.get("title", "")
-        expires_at = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=pending_days)).isoformat()
+        if pending_days <= 0:
+            expires_at = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=9999)).isoformat()
+        else:
+            expires_at = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=pending_days)).isoformat()
 
         db.record_pending(
             slug=g_slug,
@@ -719,7 +722,7 @@ def _process_verify_result(
 
     Args:
         fitgirl_pending_days: Days to extend pending expiry when scores pass.
-            Set to 0 to disable (backward compatible).
+            Set to 0 for indefinite pending (far-future expiry).
     """
     matched_genre = _reject_by_genre(game, result, reject_genre)
     if matched_genre is not None:
@@ -760,8 +763,7 @@ def _process_verify_result(
         user_reviews=result.user_review_count,
     )
     db.reset_verify_attempts(str(game.slug))
-    if fitgirl_pending_days:
-        db.update_pending_expiry(str(game.slug), fitgirl_pending_days)
+    db.update_pending_expiry(str(game.slug), fitgirl_pending_days)
     logger.debug(
         "'{}' passed score check \u2014 ({}, {}) with ({} reviews, {} reviews)",
         game.game_title,

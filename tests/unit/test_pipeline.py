@@ -3113,8 +3113,8 @@ class TestFitgirlPendingExpiry:
         assert row.expires_at != original_expiry, "Expiry should have been updated"
         db.close()
 
-    def test_fitgirl_pending_days_zero_disabled(self, tmp_path: Path) -> None:
-        """fitgirl_pending_days=0 should NOT update expiry."""
+    def test_fitgirl_pending_days_zero_indefinite(self, tmp_path: Path) -> None:
+        """fitgirl_pending_days=0 should set expiry to far-future (indefinite pending)."""
         import datetime
         from unittest.mock import MagicMock
 
@@ -3158,8 +3158,13 @@ class TestFitgirlPendingExpiry:
 
         pending = db.get_pending(platform="pc")
         assert len(pending) == 1
-        # Expiry should be unchanged
-        assert pending[0].expires_at == expires, f"Expiry should still be {expires}, got {pending[0].expires_at}"
+        # Expiry should be updated to far-future
+        new_expiry = datetime.datetime.fromisoformat(pending[0].expires_at)
+        expected_min = datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=9998)
+        expected_max = datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=10000)
+        assert expected_min < new_expiry < expected_max, (
+            f"Expiry should be near now+9999d (indefinite), got {new_expiry}"
+        )
         db.close()
 
     def test_fitgirl_pending_days_does_not_affect_failure(self, tmp_path: Path) -> None:
