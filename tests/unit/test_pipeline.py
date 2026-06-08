@@ -2258,7 +2258,7 @@ class TestVerifyPendingScoresEdgeCases:
         }
 
         # max_verify=len(pending_games) simulates what the pipeline does
-        # when max_score_checks=0 (unlimited)
+        # when max_games=0 (unlimited)
         removed = _verify_pending_scores(
             db,
             mock_mc,
