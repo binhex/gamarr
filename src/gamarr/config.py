@@ -178,8 +178,7 @@ def _migrate_config(raw: dict[str, Any]) -> None:
             for old_key in ("browse_max_pages", "max_score_checks"):
                 if old_key in mc_pc:
                     logger.warning(
-                        "Config: '{}' is deprecated for platform '{}'; "
-                        "use 'max_games' instead. Ignoring value.",
+                        "Config: '{}' is deprecated for platform '{}'; use 'max_games' instead. Ignoring value.",
                         old_key,
                         platform_key,
                     )
