@@ -281,7 +281,7 @@ class FitGirlSource:
         """
         if self._cache_ttl_hours > 0 and db.get_sitemap_cache("fitgirl", self._cache_ttl_hours):
             logger.info(
-                "FitGirl sitemap cache is fresh (TTL: {} hours) — skipping fetch",
+                "FitGirl cache is still valid (TTL: {} hours) — skipping fetch",
                 self._cache_ttl_hours,
             )
             return
