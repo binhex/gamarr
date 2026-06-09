@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -3495,6 +3495,7 @@ class TestScrapeHealth:
     def test_scrape_health_metacritic_ok(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """When Metacritic responds <500, should return 'metacritic_broken'."""
         import requests
+
         from gamarr.pipeline import _check_scrape_health
 
         def mock_head(url: str, **kwargs: Any) -> Any:
@@ -3508,6 +3509,7 @@ class TestScrapeHealth:
     def test_scrape_health_metacritic_5xx(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """When Metacritic returns 503, should return 'metacritic_down'."""
         import requests
+
         from gamarr.pipeline import _check_scrape_health
 
         def mock_head(url: str, **kwargs: Any) -> Any:
@@ -3521,6 +3523,7 @@ class TestScrapeHealth:
     def test_scrape_health_metacritic_down_google_up(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """When Metacritic fails but Google works, return 'metacritic_down'."""
         import requests
+
         from gamarr.pipeline import _check_scrape_health
 
         def mock_head(url: str, **kwargs: Any) -> Any:
@@ -3536,6 +3539,7 @@ class TestScrapeHealth:
     def test_scrape_health_internet_down(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """When both Metacritic and Google fail, return 'internet_down'."""
         import requests
+
         from gamarr.pipeline import _check_scrape_health
 
         def mock_head(url: str, **kwargs: Any) -> Any:
@@ -3543,3 +3547,78 @@ class TestScrapeHealth:
 
         monkeypatch.setattr(requests, "head", mock_head)
         assert _check_scrape_health() == "internet_down"
+
+    def test_verify_phase_passes_with_notifier(self, tmp_path: Path) -> None:
+        """When at least one game verifies, no scrape notification fires."""
+        import datetime
+        import types
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.notifications import Notifier
+        from gamarr.pipeline import _verify_pending_scores
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="passing-game",
+            game_title="Passing Game",
+            platform="pc",
+            metascore=1288.0,
+            user_score=1288.0,
+            release_date="2026-06-01",
+            expires_at=expires,
+        )
+
+        # Also add a "no details" game so we have a mix of pass/fail
+        db.record_pending(
+            slug="no-details-game",
+            game_title="No Details Game",
+            platform="pc",
+            metascore=62.0,
+            user_score=3.3,
+            release_date="2026-06-01",
+            expires_at=expires,
+        )
+
+        mock_mc = MagicMock()
+        mock_mc.lookup_game.side_effect = [
+            types.SimpleNamespace(
+                metascore=88.0,
+                metascore_review_count=50,
+                user_score=8.0,
+                user_review_count=100,
+                genres=["Action"],
+                must_play=True,
+                release_date="2026-06-01",
+            ),
+            types.SimpleNamespace(
+                metascore=62.0,
+                metascore_review_count=5,
+                user_score=3.3,
+                user_review_count=20,
+                genres=["RPG"],
+                must_play=False,
+                release_date="2026-06-01",
+            ),
+        ]
+
+        mock_notifier = MagicMock(spec=Notifier)
+
+        thresholds = {
+            "min_metascore": 75,
+            "min_metascore_reviews": 5,
+            "min_user_score": 7.5,
+            "min_user_reviews": 10,
+        }
+
+        _verify_pending_scores(
+            db,
+            mock_mc,
+            "pc",
+            thresholds,
+            notifier=mock_notifier,
+        )
+        # At least one game succeeded, so no scrape notification
+        mock_notifier.send_scrape_notification.assert_not_called()
+        db.close()

@@ -351,6 +351,7 @@ def run_acquisition(
                 reject_genre=cfg.reject_genre,
                 reject_title=cfg.reject_title,  # ← new
                 fitgirl_pending_days=cfg.fitgirl_pending_days,  # ← new
+                notifier=notifier,  # ← new
             )
             if removed:
                 logger.info(
@@ -791,6 +792,7 @@ def _verify_pending_scores(
     reject_genre: list[str] | None = None,
     reject_title: list[str] | None = None,  # ← new
     fitgirl_pending_days: int = 60,  # ← new
+    notifier: Any = None,  # ← new
 ) -> int:
     """Re-verify pending games' scores against the real Metacritic detail page.
 
@@ -823,6 +825,8 @@ def _verify_pending_scores(
             Games whose title contains any entry are removed immediately.
         fitgirl_pending_days: Passed through to _process_verify_result for
             expiry recalculation when scores pass.
+        notifier: Optional Notifier instance. When provided and every lookup
+            in the batch returns None, a scrape notification is sent.
 
     Returns the number of games removed.
     """
@@ -856,9 +860,12 @@ def _verify_pending_scores(
         ]
 
         # Process results in original batch order
+        any_success = False
         for verified, (game, fut) in enumerate(zip(batch, futures, strict=True)):
             _log_verify_progress(verified, max_verify, total_pending)
             result = fut.result()
+            if result is not None:
+                any_success = True
             if _process_verify_result(
                 db,
                 game,
@@ -869,6 +876,23 @@ def _verify_pending_scores(
                 fitgirl_pending_days=fitgirl_pending_days,  # ← new
             ):
                 removed += 1
+
+    # If every lookup returned None, check scrape health
+    if notifier is not None and batch and not any_success:
+        reason = _check_scrape_health()
+        if reason == "metacritic_broken":
+            notifier.send_scrape_notification(
+                "Metacritic game detail lookup failed for all games — the game pages may have changed."
+            )
+        elif reason == "metacritic_down":
+            notifier.send_scrape_notification(
+                "Metacritic game detail lookup failed for all games — Metacritic is unreachable."
+            )
+        else:
+            logger.debug(
+                "Internet appears down — skipping scrape notification for verify phase (reason={})",
+                reason,
+            )
 
     return removed
 
