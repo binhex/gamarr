@@ -303,6 +303,26 @@ def run_acquisition(
                         new_pending,
                         len(browse_games),
                     )
+        # NEW: If browsing returned no games AND no cached data exists,
+        # check whether scraping is broken
+        if cfg.enabled and not browse_games and cfg.notify_on_scrape_failure:
+            # Check if we have any cached browse data (if so, stale data is fine)
+            cached_exists = mc._cache.get_browse_page(platform, 1, ttl_hours=cfg.cache_ttl_hours) is not None
+            if not cached_exists:
+                reason = _check_scrape_health()
+                if reason == "metacritic_broken":
+                    notifier.send_scrape_notification(
+                        "Metacritic browse returned no games — the site structure may have changed."
+                    )
+                elif reason == "metacritic_down":
+                    notifier.send_scrape_notification(
+                        "Metacritic browse returned no games — Metacritic is unreachable."
+                    )
+                else:
+                    logger.debug(
+                        "Internet appears down — skipping scrape notification for browse phase (reason={})",
+                        reason,
+                    )
         # After the browse step, re-verify every pending game against
         # the real Metacritic detail page.  Browse-page Nuxt data does
         # NOT carry standard 0\u2013100 metascores or 0\u201310 user scores
