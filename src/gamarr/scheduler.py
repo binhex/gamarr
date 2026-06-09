@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import os
 import signal
 from typing import TYPE_CHECKING, Any
@@ -30,7 +31,7 @@ def _cleanup_pid_file(pid_path: str | None) -> None:
     """Remove the PID file at *pid_path* if it exists."""
     if pid_path:
         pid_file = pid_path if os.path.splitext(pid_path)[1] else os.path.join(pid_path, "gamarr.pid")
-        if os.path.exists(pid_file):
+        with contextlib.suppress(FileNotFoundError):
             os.unlink(pid_file)
 
 
@@ -48,10 +49,10 @@ def run(config: Config) -> None:
         config: Application configuration (may have CLI overrides applied).
     """
     pid_path = config.general.pid_path or None
-    if pid_path:
-        _write_pid(pid_path)
 
     try:
+        if pid_path:
+            _write_pid(pid_path)
         if config.schedule.acquisition.enabled:
             _run_daemon(config)
         else:

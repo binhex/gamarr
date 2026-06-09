@@ -33,8 +33,9 @@ def _apply_general_overrides(config: Config, overrides: dict[str, Any]) -> None:
         config.general.db_path = str(overrides["db_path"])
     if overrides.get("pid_path") is not None:
         config.general.pid_path = str(overrides["pid_path"])
-    if overrides.get("library_path_list") is not None:
-        config.library.paths = [str(p) for p in overrides["library_path_list"]]
+    paths_override = overrides.get("library_path_list")
+    if paths_override:
+        config.library.paths = [str(p) for p in paths_override]
 
 
 def _apply_qbt_overrides(config: Config, overrides: dict[str, Any]) -> None:
@@ -106,6 +107,7 @@ def _apply_cli_overrides(config: Config, **overrides: Any) -> None:
     "library_path_list",
     multiple=True,
     default=None,
+    type=click.Path(file_okay=False, dir_okay=True, resolve_path=True),
     show_default=False,
     metavar="<path>",
     help="Override library paths from config (repeatable: --library-path /a --library-path /b).",
@@ -136,6 +138,7 @@ def _apply_cli_overrides(config: Config, **overrides: Any) -> None:
     "--qbt-password",
     default=None,
     show_default=False,
+    hide_input=True,
     metavar="<pass>",
     help="Override qBittorrent password from config.",
 )
