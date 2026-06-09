@@ -867,10 +867,11 @@ def _jit_verify_and_update(
     thresholds.  If verification passes, the pending record is updated
     with the real scores.  If it fails, the game is removed from pending.
 
-    Returns a tuple of real scores on success, or ``None`` when the
-    game was removed (missing or failing scores).  When *mc* or
-    *thresholds* is not provided, returns an empty tuple ``()``
-    signalling "use original scores, skip verification".
+    Returns a tuple of (metascore, user_score, metascore_reviews,
+    user_reviews, genres, must_play, description) on success, or ``None``
+    when the game was removed.  When *mc* or *thresholds* is not
+    provided, returns an empty tuple ``()`` signalling "use original
+    scores, skip verification".
     """
     if mc is None or thresholds is None:
         return ()
@@ -900,6 +901,9 @@ def _jit_verify_and_update(
         jit_result.user_score,
         jit_result.metascore_review_count,
         jit_result.user_review_count,
+        getattr(jit_result, "genres", None),
+        getattr(jit_result, "must_play", None),
+        getattr(jit_result, "description", None),
     )
 
 
@@ -942,9 +946,13 @@ def _deliver_with_jit_verify(
     # ``()`` → no mc/thresholds, use original scores
     if jit_scores is None:
         return None
+    game_genres = None
+    game_must_play = None
     if jit_scores:
         game_metascore, game_user_score = jit_scores[0], jit_scores[1]
         game_metascore_reviews, game_user_reviews = jit_scores[2], jit_scores[3]
+        game_genres = jit_scores[4]
+        game_must_play = jit_scores[5]
 
     return _deliver_match(
         db,
@@ -959,6 +967,8 @@ def _deliver_with_jit_verify(
         game_user_score=game_user_score,
         game_metascore_reviews=game_metascore_reviews,
         game_user_reviews=game_user_reviews,
+        game_genres=game_genres,
+        game_must_play=game_must_play,
         game_release_date=game_release_date,
     )
 
@@ -1063,6 +1073,8 @@ def _deliver_match(
     game_user_score: float | None,
     game_metascore_reviews: int | None = None,
     game_user_reviews: int | None = None,
+    game_genres: list[str] | None = None,
+    game_must_play: bool | None = None,
     game_release_date: str | None = None,
 ) -> dict[str, Any]:
     """Deliver a matched pending game to qBittorrent and emit notifications.
@@ -1124,8 +1136,8 @@ def _deliver_match(
             metascore_review_count=game_metascore_reviews,
             user_score=game_user_score,
             user_review_count=game_user_reviews,
-            genres=None,
-            must_play=None,
+            genres=game_genres,
+            must_play=game_must_play,
             release_date=game_release_date,
         )
     )

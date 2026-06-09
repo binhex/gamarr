@@ -724,6 +724,90 @@ class TestMetacriticBrowse:
         assert len(pending) == 1
         db.close()
 
+    def test_deliver_match_logs_genre(self, tmp_path: Path) -> None:
+        """When a game is delivered via JIT verify, the log must include genres."""
+        import datetime
+        import io
+        import types
+        from unittest.mock import MagicMock
+
+        from loguru import logger
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _match_pending_games
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="gothic-1-remake",
+            game_title="Gothic 1 Remake",
+            platform="pc",
+            metascore=76.0,
+            metascore_reviews=12,
+            user_score=8.7,
+            user_reviews=308,
+            release_date="2026-06-05",
+            expires_at=expires,
+        )
+        db.update_pending_scores(
+            slug="gothic-1-remake",
+            metascore=76.0,
+            metascore_reviews=12,
+            user_score=8.7,
+            user_reviews=308,
+        )
+        db.rebuild_source_titles(
+            "fitgirl",
+            [{"title": "Gothic 1 Remake", "url": "https://fitgirl-repacks.site/gothic-1-remake/"}],
+        )
+
+        mock_qbt = MagicMock()
+        mock_qbt.add_torrent.return_value = "gamarr-tag"
+        magnet_fetcher = MagicMock(return_value="magnet:?xt=urn:btih:test")
+
+        # Mock MC lookup to return a ScoreResult with genres
+        mock_mc = MagicMock()
+        mock_mc.lookup_game.return_value = types.SimpleNamespace(
+            metascore=76.0,
+            metascore_review_count=12,
+            user_score=8.7,
+            user_review_count=308,
+            title="Gothic 1 Remake",
+            slug="gothic-1-remake",
+            genres=["Action RPG", "Open-World"],
+            must_play=False,
+            release_date="2026-06-05",
+        )
+
+        thresholds = {
+            "min_metascore": 75,
+            "min_metascore_reviews": 5,
+            "min_user_score": 7.5,
+            "min_user_reviews": 10,
+        }
+
+        # Capture Loguru output
+        buf = io.StringIO()
+        logger_id = logger.add(buf, format="{message}", colorize=False)
+        try:
+            matched = _match_pending_games(
+                db,
+                qbt=mock_qbt,
+                magnet_fetcher=magnet_fetcher,
+                mc=mock_mc,
+                thresholds=thresholds,
+            )
+        finally:
+            logger.remove(logger_id)
+
+        output = buf.getvalue()
+        assert len(matched) == 1
+        assert matched[0]["result"] == "Passed"
+        # The log must include the genre, not "N/A"
+        assert "Action RPG" in output, f"Genres should appear in log: {output}"
+        assert "N/A" not in output.split("Genre:")[1].split("|")[0], "Genre should not be N/A"
+        db.close()
+
     def test_deliver_match_logs_game_details(self, tmp_path: Path) -> None:
         """When a game is delivered, the log must include metascore, user score, and release date."""
         import datetime
