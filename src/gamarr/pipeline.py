@@ -307,6 +307,10 @@ def run_acquisition(
         # are removed from pending.
         pending_games = db.get_pending(platform=platform)
         if pending_games:
+            logger.info(
+                "Identified {} games which pass the initial Metacritic score check",
+                len(pending_games),
+            )
             thresholds = {
                 "min_metascore": cfg.min_metascore,
                 "min_metascore_reviews": cfg.min_metascore_reviews,
