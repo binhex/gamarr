@@ -166,9 +166,7 @@ class TestNotifierFormat:
         mock_apobj = MagicMock()
         with patch.object(Notifier, "_init_apprise", return_value=mock_apobj):
             notifier = Notifier(apprise_urls=["json://localhost"], on_scrape_failure=True)
-            notifier.send_scrape_notification(
-                message="Metacritic browse returned no games"
-            )
+            notifier.send_scrape_notification(message="Metacritic browse returned no games")
             mock_apobj.notify.assert_called_once_with(
                 title="gamarr - Scraping Issue",
                 body=(
