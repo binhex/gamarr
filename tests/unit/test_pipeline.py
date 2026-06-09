@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from gamarr.pipeline import AcquisitionConfig, run_acquisition
 
@@ -3485,3 +3487,59 @@ class TestRejectTitle:
         )
         assert added == 0, "reject_title should match on substrings"
         db.close()
+
+
+class TestScrapeHealth:
+    """Tests for _check_scrape_health connectivity checks."""
+
+    def test_scrape_health_metacritic_ok(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When Metacritic responds <500, should return 'metacritic_broken'."""
+        import requests
+        from gamarr.pipeline import _check_scrape_health
+
+        def mock_head(url: str, **kwargs: Any) -> Any:
+            resp = MagicMock(spec=requests.Response)
+            resp.status_code = 200
+            return resp
+
+        monkeypatch.setattr(requests, "head", mock_head)
+        assert _check_scrape_health() == "metacritic_broken"
+
+    def test_scrape_health_metacritic_5xx(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When Metacritic returns 503, should return 'metacritic_down'."""
+        import requests
+        from gamarr.pipeline import _check_scrape_health
+
+        def mock_head(url: str, **kwargs: Any) -> Any:
+            resp = MagicMock(spec=requests.Response)
+            resp.status_code = 503
+            return resp
+
+        monkeypatch.setattr(requests, "head", mock_head)
+        assert _check_scrape_health() == "metacritic_down"
+
+    def test_scrape_health_metacritic_down_google_up(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When Metacritic fails but Google works, return 'metacritic_down'."""
+        import requests
+        from gamarr.pipeline import _check_scrape_health
+
+        def mock_head(url: str, **kwargs: Any) -> Any:
+            if "metacritic" in url:
+                raise requests.ConnectionError("Metacritic unreachable")
+            resp = MagicMock(spec=requests.Response)
+            resp.status_code = 200
+            return resp
+
+        monkeypatch.setattr(requests, "head", mock_head)
+        assert _check_scrape_health() == "metacritic_down"
+
+    def test_scrape_health_internet_down(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """When both Metacritic and Google fail, return 'internet_down'."""
+        import requests
+        from gamarr.pipeline import _check_scrape_health
+
+        def mock_head(url: str, **kwargs: Any) -> Any:
+            raise requests.ConnectionError("Network unreachable")
+
+        monkeypatch.setattr(requests, "head", mock_head)
+        assert _check_scrape_health() == "internet_down"

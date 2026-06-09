@@ -1390,6 +1390,37 @@ def _record_delivery_error(
     return record_result
 
 
+def _check_scrape_health() -> str:
+    """Check whether Metacritic scraping is broken or it's a network issue.
+
+    Tries Metacritic first. If Metacritic is unreachable, tries a
+    generic endpoint (google.com) to differentiate internet outage
+    from a Metacritic-specific problem.
+
+    Returns:
+        - ``"metacritic_broken"``: Metacritic responded but returned no data
+        - ``"metacritic_down"``: Metacritic unreachable, internet works
+        - ``"internet_down"``: Both Metacritic and internet unreachable
+    """
+    import requests
+
+    # Step 1: Try Metacritic home page
+    try:
+        resp = requests.head("https://www.metacritic.com", timeout=5)
+        if resp.status_code < 500:
+            return "metacritic_broken"
+        return "metacritic_down"
+    except requests.RequestException:
+        pass
+
+    # Step 2: Try generic endpoint to check internet connectivity
+    try:
+        requests.head("https://google.com", timeout=5)
+        return "metacritic_down"
+    except requests.RequestException:
+        return "internet_down"
+
+
 def _safe_notify(
     notifier: Any,
     method_name: str,
