@@ -330,7 +330,7 @@ def run_acquisition(
             )
             if removed:
                 logger.info(
-                    "Removed {} games from queue — Metacritic scores still below thresholds after max attempts",
+                    "Removed {} games from queue — rejected by genre, title, or not found on Metacritic",
                     removed,
                 )
 
@@ -575,13 +575,10 @@ def _real_scores_pass_thresholds(
     return all(checks)
 
 
-
-
-
 def _fail_game_after_max_attempts(
     db: Database,
     game: Any,
-    result: Any | None,
+    result: Any,
     attempts: int,
     result_details: str | None = None,
 ) -> None:
@@ -616,9 +613,9 @@ def _fail_game_after_max_attempts(
     else:
         logger.debug(
             "Removed '{}' from queue \u2014 no Metacritic review scores yet after {} attempts",
-                game.game_title,
-                attempts,
-            )
+            game.game_title,
+            attempts,
+        )
     db.remove_pending(str(game.slug))
 
 
@@ -848,7 +845,6 @@ def _verify_pending_scores(
                 fitgirl_pending_days=fitgirl_pending_days,  # ← new
             ):
                 removed += 1
-
 
     return removed
 
