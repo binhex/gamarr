@@ -4,11 +4,15 @@ from __future__ import annotations
 
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
+from typing import TYPE_CHECKING, Any
 
 import click
 
 from gamarr.logger import create_logger
 from gamarr.utils import get_project_root
+
+if TYPE_CHECKING:
+    from gamarr.config import Config
 
 
 def _resolve_version() -> str:
@@ -24,7 +28,7 @@ _PROJECT_ROOT = get_project_root()
 _DEFAULT_LOGS_PATH = f"{_PROJECT_ROOT}/logs/gamarr.log"
 
 
-def _apply_general_overrides(config: "Config", overrides: dict[str, object]) -> None:
+def _apply_general_overrides(config: Config, overrides: dict[str, Any]) -> None:
     if overrides.get("db_path") is not None:
         config.general.db_path = str(overrides["db_path"])
     if overrides.get("pid_path") is not None:
@@ -33,7 +37,7 @@ def _apply_general_overrides(config: "Config", overrides: dict[str, object]) -> 
         config.library.paths = [str(p) for p in overrides["library_path_list"]]
 
 
-def _apply_qbt_overrides(config: "Config", overrides: dict[str, object]) -> None:
+def _apply_qbt_overrides(config: Config, overrides: dict[str, Any]) -> None:
     if overrides.get("qbt_host") is not None:
         config.torrent_client.qbittorrent.host = str(overrides["qbt_host"])
     if overrides.get("qbt_port") is not None:
@@ -44,7 +48,7 @@ def _apply_qbt_overrides(config: "Config", overrides: dict[str, object]) -> None
         config.torrent_client.qbittorrent.password = str(overrides["qbt_password"])
 
 
-def _apply_cli_overrides(config: "Config", **overrides: object) -> None:
+def _apply_cli_overrides(config: Config, **overrides: Any) -> None:
     """Apply non-None CLI override values onto *config* in-place."""
     _apply_general_overrides(config, overrides)
     _apply_qbt_overrides(config, overrides)

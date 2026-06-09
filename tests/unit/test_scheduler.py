@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 from gamarr.config import Config
 from gamarr.scheduler import run, run_once
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class TestSchedulerForeground:
@@ -157,7 +160,6 @@ class TestBuildKwargs:
 
 class TestDaemonMode:
     """Daemon mode scheduling."""
-
 
     def test_run_daemon_creates_scheduler(self) -> None:
         """Mock BackgroundScheduler to test _run_daemon."""

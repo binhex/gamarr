@@ -86,8 +86,8 @@ class TestCliOverrides:
     """Tests for CLI override functions."""
 
     def test_apply_general_overrides_db_path(self) -> None:
-        from gamarr.config import Config
         from gamarr.cli import _apply_cli_overrides
+        from gamarr.config import Config
 
         config = Config()
         assert config.general.db_path == "db"
@@ -95,8 +95,8 @@ class TestCliOverrides:
         assert config.general.db_path == "/custom/db"
 
     def test_apply_general_overrides_pid_path(self) -> None:
-        from gamarr.config import Config
         from gamarr.cli import _apply_cli_overrides
+        from gamarr.config import Config
 
         config = Config()
         assert config.general.pid_path == "pids"
@@ -104,8 +104,8 @@ class TestCliOverrides:
         assert config.general.pid_path == "/custom/pids"
 
     def test_apply_general_overrides_library_paths(self) -> None:
-        from gamarr.config import Config
         from gamarr.cli import _apply_cli_overrides
+        from gamarr.config import Config
 
         config = Config()
         assert config.library.paths == []
@@ -113,8 +113,8 @@ class TestCliOverrides:
         assert config.library.paths == ["/media/games", "/media/more"]
 
     def test_apply_qbt_overrides(self) -> None:
-        from gamarr.config import Config
         from gamarr.cli import _apply_cli_overrides
+        from gamarr.config import Config
 
         config = Config()
         _apply_cli_overrides(
@@ -130,8 +130,8 @@ class TestCliOverrides:
         assert config.torrent_client.qbittorrent.password == "secret"
 
     def test_override_none_does_not_change_defaults(self) -> None:
-        from gamarr.config import Config
         from gamarr.cli import _apply_cli_overrides
+        from gamarr.config import Config
 
         config = Config()
         _apply_cli_overrides(config)  # no overrides

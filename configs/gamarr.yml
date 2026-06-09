@@ -1,10 +1,12 @@
 general:
-  config_version: 1.10.0
+  config_version: 1.11.0
   daemon_mode: foreground
   log_level_console: INFO
   log_level_file: INFO
   log_path: logs
   db_path: db
+  pid_path: pids
+  library_path_list: []
 schedule:
   acquisition:
     enabled: true

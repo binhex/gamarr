@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import os
 import signal
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from loguru import logger
 
-from gamarr.config import Config, load_config
 from gamarr.pipeline import run_acquisition
+
+if TYPE_CHECKING:
+    from gamarr.config import Config
 
 
 def _write_pid(pid_path: str) -> None:
