@@ -24,6 +24,32 @@ _PROJECT_ROOT = get_project_root()
 _DEFAULT_LOGS_PATH = f"{_PROJECT_ROOT}/logs/gamarr.log"
 
 
+def _apply_general_overrides(config: "Config", overrides: dict[str, object]) -> None:
+    if overrides.get("db_path") is not None:
+        config.general.db_path = str(overrides["db_path"])
+    if overrides.get("pid_path") is not None:
+        config.general.pid_path = str(overrides["pid_path"])
+    if overrides.get("library_path_list") is not None:
+        config.library.paths = [str(p) for p in overrides["library_path_list"]]
+
+
+def _apply_qbt_overrides(config: "Config", overrides: dict[str, object]) -> None:
+    if overrides.get("qbt_host") is not None:
+        config.torrent_client.qbittorrent.host = str(overrides["qbt_host"])
+    if overrides.get("qbt_port") is not None:
+        config.torrent_client.qbittorrent.port = int(overrides["qbt_port"])
+    if overrides.get("qbt_username") is not None:
+        config.torrent_client.qbittorrent.username = str(overrides["qbt_username"])
+    if overrides.get("qbt_password") is not None:
+        config.torrent_client.qbittorrent.password = str(overrides["qbt_password"])
+
+
+def _apply_cli_overrides(config: "Config", **overrides: object) -> None:
+    """Apply non-None CLI override values onto *config* in-place."""
+    _apply_general_overrides(config, overrides)
+    _apply_qbt_overrides(config, overrides)
+
+
 @click.command()
 @click.option(
     "--config-path",
@@ -55,12 +81,73 @@ _DEFAULT_LOGS_PATH = f"{_PROJECT_ROOT}/logs/gamarr.log"
     default=False,
     help="Validate configuration and exit without running any tasks.",
 )
+@click.option(
+    "--db-path",
+    type=click.Path(file_okay=False, dir_okay=True, resolve_path=True),
+    default=None,
+    show_default=False,
+    metavar="<dir>",
+    help="Override the database directory from config.",
+)
+@click.option(
+    "--pid-path",
+    type=click.Path(file_okay=False, dir_okay=True, resolve_path=True),
+    default=None,
+    show_default=False,
+    metavar="<dir>",
+    help="Override the PID file directory from config.",
+)
+@click.option(
+    "--library-path",
+    "library_path_list",
+    multiple=True,
+    default=None,
+    show_default=False,
+    metavar="<path>",
+    help="Override library paths from config (repeatable: --library-path /a --library-path /b).",
+)
+@click.option(
+    "--qbt-host",
+    default=None,
+    show_default=False,
+    metavar="<host>",
+    help="Override qBittorrent host from config.",
+)
+@click.option(
+    "--qbt-port",
+    type=int,
+    default=None,
+    show_default=False,
+    metavar="<port>",
+    help="Override qBittorrent WebUI port from config.",
+)
+@click.option(
+    "--qbt-username",
+    default=None,
+    show_default=False,
+    metavar="<user>",
+    help="Override qBittorrent username from config.",
+)
+@click.option(
+    "--qbt-password",
+    default=None,
+    show_default=False,
+    metavar="<pass>",
+    help="Override qBittorrent password from config.",
+)
 @click.version_option(version=_VERSION, prog_name="gamarr")
 def cli(
     config_path: str,
     log_level: str | None,
     log_path: str | None,
     test: bool,
+    db_path: str | None = None,
+    pid_path: str | None = None,
+    library_path_list: tuple[str, ...] | None = None,
+    qbt_host: str | None = None,
+    qbt_port: int | None = None,
+    qbt_username: str | None = None,
+    qbt_password: str | None = None,
 ) -> None:
     """gamarr — Metadata game downloader.
 
@@ -71,6 +158,21 @@ def cli(
     Runs in scheduled mode when ``schedule.acquisition.enabled`` is
     ``true`` in the config file, or as a single pass otherwise.
     """
+    from gamarr.config import load_config
+
+    config = load_config(config_path)
+
+    _apply_cli_overrides(
+        config,
+        db_path=db_path,
+        pid_path=pid_path,
+        library_path_list=library_path_list,
+        qbt_host=qbt_host,
+        qbt_port=qbt_port,
+        qbt_username=qbt_username,
+        qbt_password=qbt_password,
+    )
+
     log_format = "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>"
     effective_log_path = log_path or _DEFAULT_LOGS_PATH
     effective_log_level = log_level.upper() if log_level else "INFO"
@@ -80,16 +182,13 @@ def cli(
         log_path=effective_log_path,
     )
 
-    from gamarr.scheduler import run
-
     if test:
-        from gamarr.config import load_config
-
-        load_config(config_path)
         click.echo("Configuration loaded successfully. Test mode \u2014 exiting.")
         return
 
-    run(config_path=config_path)
+    from gamarr.scheduler import run
+
+    run(config)
 
 
 if __name__ == "__main__":

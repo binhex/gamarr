@@ -80,3 +80,60 @@ class TestCli:
         with patch("gamarr.scheduler.run"):
             result = self.runner.invoke(cli, ["--config-path", "/tmp/configs"])
         assert result.exit_code == 0
+
+
+class TestCliOverrides:
+    """Tests for CLI override functions."""
+
+    def test_apply_general_overrides_db_path(self) -> None:
+        from gamarr.config import Config
+        from gamarr.cli import _apply_cli_overrides
+
+        config = Config()
+        assert config.general.db_path == "db"
+        _apply_cli_overrides(config, db_path="/custom/db")
+        assert config.general.db_path == "/custom/db"
+
+    def test_apply_general_overrides_pid_path(self) -> None:
+        from gamarr.config import Config
+        from gamarr.cli import _apply_cli_overrides
+
+        config = Config()
+        assert config.general.pid_path == "pids"
+        _apply_cli_overrides(config, pid_path="/custom/pids")
+        assert config.general.pid_path == "/custom/pids"
+
+    def test_apply_general_overrides_library_paths(self) -> None:
+        from gamarr.config import Config
+        from gamarr.cli import _apply_cli_overrides
+
+        config = Config()
+        assert config.library.paths == []
+        _apply_cli_overrides(config, library_path_list=("/media/games", "/media/more"))
+        assert config.library.paths == ["/media/games", "/media/more"]
+
+    def test_apply_qbt_overrides(self) -> None:
+        from gamarr.config import Config
+        from gamarr.cli import _apply_cli_overrides
+
+        config = Config()
+        _apply_cli_overrides(
+            config,
+            qbt_host="192.168.1.10",
+            qbt_port=9090,
+            qbt_username="custom",
+            qbt_password="secret",
+        )
+        assert config.torrent_client.qbittorrent.host == "192.168.1.10"
+        assert config.torrent_client.qbittorrent.port == 9090
+        assert config.torrent_client.qbittorrent.username == "custom"
+        assert config.torrent_client.qbittorrent.password == "secret"
+
+    def test_override_none_does_not_change_defaults(self) -> None:
+        from gamarr.config import Config
+        from gamarr.cli import _apply_cli_overrides
+
+        config = Config()
+        _apply_cli_overrides(config)  # no overrides
+        assert config.general.db_path == "db"
+        assert config.general.pid_path == "pids"
