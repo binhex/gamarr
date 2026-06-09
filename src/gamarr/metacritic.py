@@ -595,7 +595,7 @@ class MetacriticClient:
     def _try_direct_slug(self, slug: str, cache_ttl_days: int, original_title: str | None = None) -> ScoreResult | None:
         cached = self._cache.get_game_detail(slug, ttl_days=cache_ttl_days)
         if cached is not None:
-            logger.debug("Cache hit for slug '{}'", slug)
+            logger.debug("Metacritic detail cache hit for '{}' (TTL: {} days)", slug, cache_ttl_days)
             return ScoreResult(
                 title=original_title or slug.replace("-", " ").title(),
                 slug=slug,
