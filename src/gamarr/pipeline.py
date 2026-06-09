@@ -845,14 +845,6 @@ def _verify_pending_scores(
             ):
                 removed += 1
 
-    checked = len(batch)
-    if checked > 0:
-        logger.info(
-            "Fetched Metacritic details for {} of {} games (limit: {})",
-            checked,
-            total_pending,
-            max_verify,
-        )
 
     return removed
 
