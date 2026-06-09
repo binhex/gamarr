@@ -295,7 +295,7 @@ def run_acquisition(
                 )
                 if new_pending:
                     logger.info(
-                        "{} of {} collected games passed filters — added to score-check queue",
+                        "{} of {} collected games passed title/age filters — added to pending queue",
                         new_pending,
                         len(browse_games),
                     )
@@ -308,7 +308,7 @@ def run_acquisition(
         pending_games = db.get_pending(platform=platform)
         if pending_games:
             logger.info(
-                "Identified {} games which pass the initial Metacritic score check",
+                "Proceeding to verify {} pending games against real Metacritic scores",
                 len(pending_games),
             )
             thresholds = {
