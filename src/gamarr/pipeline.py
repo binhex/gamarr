@@ -511,7 +511,7 @@ def _log_verify_progress(verified: int, max_verify: int, total: int) -> None:
     """Log periodic progress during score verification."""
     if verified > 0 and verified % 10 == 0:
         logger.info(
-            "Verifying {} of {} pending games against real Metacritic scores...",
+            "Fetching Metacritic details for {} of {} games...",
             verified,
             max_verify if max_verify < total else total,
         )
@@ -848,7 +848,7 @@ def _verify_pending_scores(
     checked = len(batch)
     if checked > 0:
         logger.info(
-            "Verified {} of {} pending games against real scores (limit: {})",
+            "Fetched Metacritic details for {} of {} games (limit: {})",
             checked,
             total_pending,
             max_verify,
