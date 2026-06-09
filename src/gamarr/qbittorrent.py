@@ -43,6 +43,11 @@ class QBittorrentClient:
             VERIFY_WEBUI_CERTIFICATE=verify_ssl,
         )
 
+    @property
+    def add_paused(self) -> bool:
+        """Return whether torrents should be added in the paused state."""
+        return self._add_paused
+
     def is_connected(self) -> bool:
         """Return True if the qBittorrent API is reachable and reports a connected status."""
         try:

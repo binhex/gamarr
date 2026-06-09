@@ -37,23 +37,44 @@ class Notifier:
             logger.warning("Failed to initialise Apprise: {}", exc)
             return None
 
+    @staticmethod
+    def _format_score_line(label: str, score: float | None, reviews: int | None) -> str:
+        """Format a score line, optionally appending review count in brackets."""
+        line = f"{label}: {'N/A' if score is None else score}"
+        if score is not None and reviews is not None:
+            line += f" ({reviews} reviews)"
+        return line
+
     def send_download_notification(
         self,
         title: str,
         platform: str,
         metascore: float | None,
         user_score: float | None,
-        magnet_url: str,
+        slug: str,
+        add_paused: bool = False,
+        metascore_reviews: int | None = None,
+        user_reviews: int | None = None,
+        genres: list[str] | None = None,
     ) -> None:
         if not self._on_download or not self._apprise:
             return
-        body = (
-            f"gamarr: {title} ({platform})\n"
-            f"Metascore: {metascore or 'N/A'}\n"
-            f"User Score: {user_score or 'N/A'}\n"
-            f"Magnet: {magnet_url}"
+        status = "Paused" if add_paused else "Downloading"
+        link_slug = slug if slug else "unknown"
+        link_platform = platform if platform else "unknown"
+        genre_line = f"Genre: {', '.join(genres)}" if genres else None
+
+        parts = [f"Status: {status}", f"Link: https://www.metacritic.com/game/{link_platform}/{link_slug}/"]
+        if genre_line:
+            parts.append(genre_line)
+        parts.extend(
+            [
+                self._format_score_line("Critic Score", metascore, metascore_reviews),
+                self._format_score_line("User Score", user_score, user_reviews),
+            ]
         )
-        self._send("gamarr - Download", body)
+
+        self._send(f"gamarr - {title} ({platform})", "\n".join(parts))
 
     def send_failure_notification(self, title: str, reason: str) -> None:
         if not self._on_failure or not self._apprise:

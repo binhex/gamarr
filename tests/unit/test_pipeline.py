@@ -1653,6 +1653,7 @@ class TestMetacriticBrowse:
         )
 
         mock_qbt = MagicMock()
+        mock_qbt.add_paused = False
         mock_qbt.add_torrent.return_value = "gamarr-tag"
         mock_notifier = MagicMock()
         magnet_fetcher = MagicMock(return_value="magnet:?xt=urn:btih:test")
@@ -1668,8 +1669,12 @@ class TestMetacriticBrowse:
             title="Elden Ring",
             platform="pc",
             metascore=96.0,
+            metascore_reviews=None,
             user_score=8.5,
-            magnet_url="magnet:?xt=urn:btih:test",
+            user_reviews=None,
+            slug="elden-ring",
+            genres=None,
+            add_paused=False,
         )
         db.close()
 
@@ -1801,6 +1806,7 @@ class TestMetacriticBrowse:
         )
 
         mock_qbt = MagicMock()
+        mock_qbt.add_paused = False
         mock_qbt.add_torrent.return_value = "gamarr-tag"
         mock_notifier = MagicMock()
         mock_notifier.send_download_notification.side_effect = RuntimeError("apprise down")

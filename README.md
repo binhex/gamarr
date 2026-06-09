@@ -34,7 +34,7 @@ sitemap, and sends qualifying games to qBittorrent.
 - **Notifications** — sends alerts via any
   [apprise](https://github.com/caronc/apprise)-compatible service (ntfy,
   Discord, Telegram, email, and more).
-- **Daemon mode** — runs as a background process, or in foreground mode for
+- **Schedule mode** — runs as a scheduled background process, or in foreground mode for
   single-pass execution.
 - **Automatic config migration** — upgrades the YAML config schema
   automatically on startup when new fields are added.

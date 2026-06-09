@@ -1162,8 +1162,12 @@ def _deliver_match(
         title=game_title,
         platform=game_platform,
         metascore=game_metascore,
+        metascore_reviews=game_metascore_reviews,
         user_score=game_user_score,
-        magnet_url=magnet,
+        user_reviews=game_user_reviews,
+        slug=game_slug,
+        genres=game_genres,
+        add_paused=qbt.add_paused,
     )
     return record_result
 
@@ -1193,8 +1197,8 @@ def _process_single_pending_match(
     matches = db.match_source_title("fitgirl", normalized)
     if not matches:
         db.touch_pending(game_slug)
-        logger.debug(
-            "'{}' has no FitGirl match \u2014 staying in queue",
+        logger.info(
+            "'{}' passed Metacritic checks but has no FitGirl match \u2014 staying in queue",
             game_title,
         )
         return None

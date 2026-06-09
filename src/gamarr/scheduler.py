@@ -82,8 +82,8 @@ def run_once(config: Config) -> None:
 
 
 def _run_daemon(config: Config) -> None:
-    """Run the scheduler in continuous daemon mode."""
-    logger.info("gamarr starting in daemon mode.")
+    """Run the scheduler in continuous schedule mode."""
+    logger.info("gamarr starting in schedule mode.")
     scheduler = BackgroundScheduler()
     acq_cfg = config.schedule.acquisition
     kwargs = _build_kwargs(config)
