@@ -309,20 +309,11 @@ def run_acquisition(
             # Check if we have any cached browse data (if so, stale data is fine)
             cached_exists = mc._cache.get_browse_page(platform, 1, ttl_hours=cfg.cache_ttl_hours) is not None
             if not cached_exists:
-                reason = _check_scrape_health()
-                if reason == "metacritic_broken":
-                    notifier.send_scrape_notification(
-                        "Metacritic browse returned no games — the site structure may have changed."
-                    )
-                elif reason == "metacritic_down":
-                    notifier.send_scrape_notification(
-                        "Metacritic browse returned no games — Metacritic is unreachable."
-                    )
-                else:
-                    logger.debug(
-                        "Internet appears down — skipping scrape notification for browse phase (reason={})",
-                        reason,
-                    )
+                _diagnose_and_notify_scrape(
+                    notifier,
+                    _check_scrape_health(),
+                    "Metacritic browse returned no games",
+                )
         # After the browse step, re-verify every pending game against
         # the real Metacritic detail page.  Browse-page Nuxt data does
         # NOT carry standard 0\u2013100 metascores or 0\u201310 user scores
@@ -718,6 +709,12 @@ def _process_verify_result(
     re-verification on subsequent cycles.
 
     Args:
+        db: Database instance.
+        game: The pending game row.
+        result: ScoreResult from the Metacritic lookup.
+        thresholds: Dict with score threshold keys.
+        reject_genre: Genre substrings to reject (case-insensitive).
+        reject_title: Title substrings to reject (case-insensitive).
         fitgirl_pending_days: Days to extend pending expiry when scores pass.
             Set to 0 for indefinite pending (far-future expiry).
     """
@@ -781,6 +778,75 @@ def _process_verify_result(
     return False
 
 
+def _process_verify_batch(
+    db: Database,
+    mc: MetacriticClient,
+    platform: str,
+    thresholds: dict[str, Any],
+    batch: list[Any],
+    max_verify: int,
+    total_pending: int,
+    *,
+    cache_ttl_days: int = 7,
+    reject_genre: list[str] | None = None,
+    reject_title: list[str] | None = None,
+    fitgirl_pending_days: int = 60,
+) -> tuple[int, bool]:
+    """Process a batch of pending game lookups concurrently.
+
+    Args:
+        db: Database instance.
+        mc: MetacriticClient instance.
+        platform: Platform identifier.
+        thresholds: Score threshold dict.
+        batch: List of pending games to look up.
+        max_verify: Maximum games to verify.
+        total_pending: Total pending games for progress logging.
+        cache_ttl_days: TTL for the detail-page cache.
+        reject_genre: Genre substrings to reject.
+        reject_title: Title substrings to reject.
+        fitgirl_pending_days: Days to extend pending expiry when scores pass.
+
+    Returns:
+        Tuple of ``(removed_count, any_success)`` where *any_success* is True
+        if at least one lookup returned a non-None result.
+    """
+
+    removed = 0
+    any_success = False
+
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        futures = [
+            pool.submit(
+                mc.lookup_game,
+                str(game.game_title),
+                platform=platform,
+                slug=str(game.slug),
+                cache_ttl_days=cache_ttl_days,
+                direct_only=True,
+            )
+            for game in batch
+        ]
+
+        for verified, (game, fut) in enumerate(zip(batch, futures, strict=True)):
+            _log_verify_progress(verified, max_verify, total_pending)
+            result = fut.result()
+            if result is not None:
+                any_success = True
+            if _process_verify_result(
+                db,
+                game,
+                result,
+                thresholds,
+                reject_genre=reject_genre,
+                reject_title=reject_title,
+                fitgirl_pending_days=fitgirl_pending_days,
+            ):
+                removed += 1
+
+    return removed, any_success
+
+
 def _verify_pending_scores(
     db: Database,
     mc: MetacriticClient,
@@ -834,7 +900,6 @@ def _verify_pending_scores(
         return 0
 
     removed = 0
-    verified = 0
     pending = db.get_pending(platform=platform)
     total_pending = len(pending)
 
@@ -844,55 +909,26 @@ def _verify_pending_scores(
     if not batch:
         return 0
 
-    # Submit all Metacritic lookups concurrently (I/O-bound HTTP requests)
+    removed, any_success = _process_verify_batch(
+        db,
+        mc,
+        platform,
+        thresholds,
+        batch,
+        max_verify,
+        total_pending,
+        cache_ttl_days=cache_ttl_days,
+        reject_genre=reject_genre,
+        reject_title=reject_title,
+        fitgirl_pending_days=fitgirl_pending_days,
+    )
 
-    with ThreadPoolExecutor(max_workers=10) as pool:
-        futures = [
-            pool.submit(
-                mc.lookup_game,
-                str(game.game_title),
-                platform=platform,
-                slug=str(game.slug),
-                cache_ttl_days=cache_ttl_days,
-                direct_only=True,
-            )
-            for game in batch
-        ]
-
-        # Process results in original batch order
-        any_success = False
-        for verified, (game, fut) in enumerate(zip(batch, futures, strict=True)):
-            _log_verify_progress(verified, max_verify, total_pending)
-            result = fut.result()
-            if result is not None:
-                any_success = True
-            if _process_verify_result(
-                db,
-                game,
-                result,
-                thresholds,
-                reject_genre=reject_genre,
-                reject_title=reject_title,  # ← new
-                fitgirl_pending_days=fitgirl_pending_days,  # ← new
-            ):
-                removed += 1
-
-    # If every lookup returned None, check scrape health
     if notifier is not None and batch and not any_success:
-        reason = _check_scrape_health()
-        if reason == "metacritic_broken":
-            notifier.send_scrape_notification(
-                "Metacritic game detail lookup failed for all games — the game pages may have changed."
-            )
-        elif reason == "metacritic_down":
-            notifier.send_scrape_notification(
-                "Metacritic game detail lookup failed for all games — Metacritic is unreachable."
-            )
-        else:
-            logger.debug(
-                "Internet appears down — skipping scrape notification for verify phase (reason={})",
-                reason,
-            )
+        _diagnose_and_notify_scrape(
+            notifier,
+            _check_scrape_health(),
+            "Metacritic game detail lookup failed for all games",
+        )
 
     return removed
 
@@ -1467,6 +1503,25 @@ def _check_scrape_health() -> str:
         return "metacritic_down"
     except requests.RequestException:
         return "internet_down"
+
+
+def _diagnose_and_notify_scrape(notifier: Any, reason: str, context: str) -> None:
+    """Diagnose a scrape failure and send notification if appropriate.
+
+    Args:
+        notifier: Notifier instance to send through.
+        reason: Result from ``_check_scrape_health()``.
+        context: Description of what failed (e.g. "Metacritic browse returned no games").
+    """
+    if reason == "metacritic_broken":
+        notifier.send_scrape_notification(f"{context} — the site structure may have changed.")
+    elif reason == "metacritic_down":
+        notifier.send_scrape_notification(f"{context} — Metacritic is unreachable.")
+    else:
+        logger.debug(
+            "Internet appears down — skipping scrape notification (reason={})",
+            reason,
+        )
 
 
 def _safe_notify(
