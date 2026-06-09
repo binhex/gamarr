@@ -63,6 +63,7 @@ def _build_kwargs(config: Config) -> dict[str, Any]:
         "notify_on_download": config.notification.on_download,
         "notify_on_failure": config.notification.on_failure,
         "notify_on_error": config.notification.on_error,
+        "notify_on_scrape_failure": config.notification.on_scrape_failure,
         "fitgirl_cache_ttl_hours": config.sources.fitgirl.cache_ttl_hours,
         "fitgirl_reject_keywords": config.sources.fitgirl.reject_keywords,
         "fitgirl_pending_days": config.sources.fitgirl.pending_days,

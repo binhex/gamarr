@@ -1,0 +1,60 @@
+general:
+  config_version: 1.10.0
+  daemon_mode: foreground
+  log_level_console: INFO
+  log_level_file: INFO
+  log_path: logs
+  db_path: db
+schedule:
+  acquisition:
+    enabled: true
+    schedule_time_mins: 60
+    run_on_start: true
+sources:
+  fitgirl:
+    enabled: true
+    rss_url: https://fitgirl-repacks.site/feed/
+    platform: pc
+    cache_ttl_hours: 6
+    reject_keywords:
+    - hv
+    pending_days: 60
+metacritic:
+  platform_overrides:
+    pc:
+      min_metascore: 75
+      min_metascore_reviews: 10
+      min_user_score: 7.5
+      min_user_reviews: 10
+      days_since_release: 60
+      cache_ttl_days: 7
+      cache_ttl_hours: 6
+      pending_days: 30
+      enabled: true
+      max_games: 0
+      cutoff_weeks: 8
+      reject_genre:
+      - novel
+      - card
+      reject_title: []
+torrent_client:
+  selected: qbittorrent
+  qbittorrent:
+    host: 192.168.1.10
+    port: 2100
+    username: admin
+    password: belindathebmw
+    add_paused: true
+    category: games-gamarr
+notification:
+  apprise_urls:
+  - ntfy://peccleston_lan_alerting
+  on_download: true
+  on_failure: false
+  on_error: false
+  on_scrape_failure: true
+database:
+  processed_expiry_days: 365
+library:
+  paths:
+  - /media/Games
