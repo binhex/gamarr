@@ -16,11 +16,13 @@ class Notifier:
         on_download: bool = True,
         on_failure: bool = False,
         on_error: bool = False,
+        on_scrape_failure: bool = True,
     ) -> None:
         self._urls = apprise_urls or []
         self._on_download = on_download
         self._on_failure = on_failure
         self._on_error = on_error
+        self._on_scrape_failure = on_scrape_failure
         self._apprise = self._init_apprise()
 
     def _init_apprise(self) -> Any:
@@ -87,6 +89,16 @@ class Notifier:
             return
         body = f"gamarr pipeline error:\n{error_message}"
         self._send("gamarr - Error", body)
+
+    def send_scrape_notification(self, message: str) -> None:
+        """Send a notification when Metacritic scraping appears to be broken.
+
+        Controlled by the ``on_scrape_failure`` config option.
+        """
+        if not self._on_scrape_failure or not self._apprise:
+            return
+        body = f"{message}\n\nThis may indicate a Metacritic site change or network issue."
+        self._send("gamarr - Scraping Issue", body)
 
     def _send(self, title: str, body: str) -> None:
         if not self._apprise:

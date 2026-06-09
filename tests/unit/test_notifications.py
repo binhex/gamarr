@@ -40,6 +40,10 @@ class TestNotifier:
             title="Game", platform="pc", metascore=80.0, user_score=8.0, slug="game", add_paused=False
         )
 
+    def test_scrape_notification_when_disabled(self) -> None:
+        notifier = Notifier(apprise_urls=[], on_scrape_failure=False)
+        notifier.send_scrape_notification(message="Metacritic is down")
+
 
 class TestNotifierSend:
     """Test notification dispatch with mocked Apprise."""
@@ -154,6 +158,23 @@ class TestNotifierFormat:
                     "Link: https://www.metacritic.com/game/ps5/elden-ring/\n"
                     "Critic Score: N/A\n"
                     "User Score: N/A"
+                ),
+            )
+
+    def test_scrape_notification_format(self) -> None:
+        """send_scrape_notification should format with gamarr prefix and the message."""
+        mock_apobj = MagicMock()
+        with patch.object(Notifier, "_init_apprise", return_value=mock_apobj):
+            notifier = Notifier(apprise_urls=["json://localhost"], on_scrape_failure=True)
+            notifier.send_scrape_notification(
+                message="Metacritic browse returned no games"
+            )
+            mock_apobj.notify.assert_called_once_with(
+                title="gamarr - Scraping Issue",
+                body=(
+                    "Metacritic browse returned no games\n"
+                    "\n"
+                    "This may indicate a Metacritic site change or network issue."
                 ),
             )
 
