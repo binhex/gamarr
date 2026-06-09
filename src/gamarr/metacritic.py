@@ -553,7 +553,7 @@ class MetacriticClient:
         title: str,
         platform: str = "pc",
         cache_ttl_days: int = 7,
-        cache_ttl_hours: int = 4,
+        cache_ttl_hours: int = 6,
         direct_only: bool = False,
         slug: str | None = None,
     ) -> ScoreResult | None:
@@ -727,7 +727,7 @@ class MetacriticClient:
         platform: str,
         *,
         max_games: int = 1000,
-        cache_ttl_hours: int = 4,
+        cache_ttl_hours: int = 6,
         cutoff_date: str | None = None,
     ) -> list[dict[str, Any]]:
         """Return up to *max_games* from Metacritic browse pages.

@@ -64,7 +64,7 @@ class MetacriticPlatformConfig(BaseModel):
     min_user_reviews: int = 10
     days_since_release: int = 90
     cache_ttl_days: int = 7
-    cache_ttl_hours: int = 4
+    cache_ttl_hours: int = 6
     pending_days: int = 30
     enabled: bool = True
     max_games: int = Field(default=1000, ge=0, le=20000)

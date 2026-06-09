@@ -101,7 +101,7 @@ class AcquisitionConfig:
     min_user_reviews: int
     days_since_release: int
     cache_ttl_days: int = 7
-    cache_ttl_hours: int = 4
+    cache_ttl_hours: int = 6
     enabled: bool = True
     pending_days: int = 30
     max_games: int = 1000
@@ -167,7 +167,7 @@ def run_acquisition(
     min_user_reviews: int = 10,
     days_since_release: int = 90,
     cache_ttl_days: int = 7,
-    cache_ttl_hours: int = 4,
+    cache_ttl_hours: int = 6,
     enabled: bool = True,
     pending_days: int = 30,
     fitgirl_pending_days: int = 60,
