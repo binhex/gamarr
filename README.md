@@ -73,6 +73,13 @@ gamarr
 | `--config-path <dir>` | Directory containing `gamarr.yml` (default: `configs`) |
 | `--log-level <level>` | Override console log level (DEBUG, INFO, SUCCESS, WARNING, ERROR) |
 | `--log-path <path>` | Override log file path |
+| `--db-path <dir>` | Override the database directory from config |
+| `--pid-path <dir>` | Override the PID file directory from config |
+| `--library-path <path>` | Override library paths (repeatable: `--library-path /a --library-path /b`) |
+| `--qbt-host <host>` | Override qBittorrent host from config |
+| `--qbt-port <port>` | Override qBittorrent WebUI port from config |
+| `--qbt-username <user>` | Override qBittorrent username from config |
+| `--qbt-password <pass>` | Override qBittorrent password from config |
 | `--test` | Validate configuration and exit |
 | `--version` | Show version and exit |
 | `--help` | Show help message and exit |
