@@ -153,6 +153,7 @@ on first run. The file is divided into the sections below.
 | `on_download` | Send a notification when a game is successfully added to qBittorrent. | `true` |
 | `on_failure` | Send a notification when a game fails verification after max attempts. | `false` |
 | `on_error` | Send a notification when an error occurs during the acquisition cycle. | `false` |
+| `on_scrape_failure` | Send a notification when Metacritic scraping appears to be broken. | `true` |
 
 ### `database`
 

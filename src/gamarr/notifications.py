@@ -94,6 +94,9 @@ class Notifier:
         """Send a notification when Metacritic scraping appears to be broken.
 
         Controlled by the ``on_scrape_failure`` config option.
+
+        Args:
+            message: Description of the scraping issue to include in the body.
         """
         if not self._on_scrape_failure or not self._apprise:
             return
