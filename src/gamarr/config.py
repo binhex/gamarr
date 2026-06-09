@@ -106,6 +106,7 @@ class NotificationConfig(BaseModel):
     on_download: bool = True
     on_failure: bool = False
     on_error: bool = False
+    on_scrape_failure: bool = True
 
 
 class DatabaseConfig(BaseModel):
