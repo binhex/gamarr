@@ -370,6 +370,8 @@ class TestSourceTitle:
     """SourceTitle operations."""
 
     def test_rebuild_and_query(self, tmp_path: Path) -> None:
+        from gamarr.utils import normalise_for_compare
+
         db = Database(str(tmp_path / "test.db"))
         titles = [
             {
@@ -379,7 +381,8 @@ class TestSourceTitle:
             },
         ]
         db.rebuild_source_titles("fitgirl", titles)
-        results = db.match_source_title("fitgirl", "elden ring")
+        normalized = normalise_for_compare("Elden Ring")
+        results = db.match_source_title("fitgirl", normalized)
         assert len(results) == 1
         assert "Elden Ring" in results[0]["title"]
         db.close()
@@ -412,6 +415,38 @@ class TestSourceTitle:
             f"Expected match for '{game_title}' against '{fitgirl_title}', got {len(results)} results"
         )
         assert fitgirl_title in results[0]["title"]
+        db.close()
+
+    def test_match_url_slug_title(self, tmp_path: Path) -> None:
+        """FitGirl titles derived from URL slugs should still match the game title.
+
+        ``_title_from_url`` converts URL slugs like ``mouse-p-i-for-hire``
+        to ``Mouse P I For Hire`` (hyphens → spaces, title case).
+        The Metacritic title ``MOUSE: P.I. For Hire`` normalises to
+        ``"mouse pi for hire"`` while the slug-derived title normalises
+        to ``"mouse p i for hire"`` — they differ only by a space in
+        the abbreviation ``P.I.`` vs ``P I``.
+        """
+        from gamarr.utils import normalise_for_compare
+
+        db = Database(str(tmp_path / "test.db"))
+        # This is what _title_from_url produces from the FitGirl slug
+        slug_title = "Mouse P I For Hire"
+        titles = [
+            {
+                "source": "fitgirl",
+                "title": slug_title,
+                "url": "https://fitgirl-repacks.site/mouse-p-i-for-hire/",
+            },
+        ]
+        db.rebuild_source_titles("fitgirl", titles)
+
+        game_title = "MOUSE: P.I. For Hire"
+        normalized = normalise_for_compare(game_title)
+        results = db.match_source_title("fitgirl", normalized)
+        assert len(results) == 1, (
+            f"Expected match for '{game_title}' against slug-derived title '{slug_title}', got {len(results)} results"
+        )
         db.close()
 
 
