@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import signal
 from typing import Any
 
@@ -12,22 +13,49 @@ from gamarr.config import Config, load_config
 from gamarr.pipeline import run_acquisition
 
 
-def run(config_path: str = "configs") -> None:
+def _write_pid(pid_path: str) -> None:
+    """Write the current process PID to a file under *pid_path*."""
+    pid_file = pid_path if os.path.splitext(pid_path)[1] else os.path.join(pid_path, "gamarr.pid")
+    pid_dir = os.path.dirname(pid_file)
+    if pid_dir:
+        os.makedirs(pid_dir, exist_ok=True)
+    with open(pid_file, "w") as f:
+        f.write(str(os.getpid()))
+    logger.debug("PID {} written to '{}'.", os.getpid(), pid_file)
+
+
+def _cleanup_pid_file(pid_path: str | None) -> None:
+    """Remove the PID file at *pid_path* if it exists."""
+    if pid_path:
+        pid_file = pid_path if os.path.splitext(pid_path)[1] else os.path.join(pid_path, "gamarr.pid")
+        if os.path.exists(pid_file):
+            os.unlink(pid_file)
+
+
+def run(config: Config) -> None:
     """Run a scan cycle, either as scheduled daemon or single pass.
 
     When ``schedule.acquisition.enabled`` is ``true`` in the config, runs
     in continuous scheduled mode using APScheduler. Otherwise runs a
     single scan pass and exits.
 
-    Args:
-        config_path: Path to the config directory or file.
-    """
-    config = load_config(config_path)
+    The PID file is written before starting and cleaned up in a
+    ``finally`` block.
 
-    if config.schedule.acquisition.enabled:
-        _run_daemon(config)
-    else:
-        run_once(config)
+    Args:
+        config: Application configuration (may have CLI overrides applied).
+    """
+    pid_path = config.general.pid_path or None
+    if pid_path:
+        _write_pid(pid_path)
+
+    try:
+        if config.schedule.acquisition.enabled:
+            _run_daemon(config)
+        else:
+            run_once(config)
+    finally:
+        _cleanup_pid_file(pid_path)
 
 
 def _build_kwargs(config: Config) -> dict[str, Any]:

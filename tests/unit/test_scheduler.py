@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from gamarr.config import Config
@@ -21,9 +23,8 @@ class TestSchedulerForeground:
     def test_run_foreground_calls_run_once(self) -> None:
         with patch("gamarr.scheduler.run_once") as mock_run_once:
             config = _make_config(acquisition_enabled=False)
-            with patch("gamarr.scheduler.load_config", return_value=config):
-                run(config_path="/tmp")
-                mock_run_once.assert_called_once()
+            run(config)
+            mock_run_once.assert_called_once()
 
     def test_run_calls_daemon_when_schedule_enabled(self) -> None:
         """When schedule.acquisition.enabled=True, run() should call _run_daemon."""
@@ -31,9 +32,8 @@ class TestSchedulerForeground:
         with (
             patch("gamarr.scheduler._run_daemon") as mock_daemon,
             patch("gamarr.scheduler.run_once") as mock_once,
-            patch("gamarr.scheduler.load_config", return_value=config),
         ):
-            run(config_path="/tmp")
+            run(config)
             mock_daemon.assert_called_once()
             mock_once.assert_not_called()
 
@@ -43,9 +43,8 @@ class TestSchedulerForeground:
         with (
             patch("gamarr.scheduler._run_daemon") as mock_daemon,
             patch("gamarr.scheduler.run_once") as mock_once,
-            patch("gamarr.scheduler.load_config", return_value=config),
         ):
-            run(config_path="/tmp")
+            run(config)
             mock_once.assert_called_once()
             mock_daemon.assert_not_called()
 
@@ -67,7 +66,7 @@ def _make_config(acquisition_enabled: bool = False) -> Config:
     )
 
     return Config(
-        general=GeneralConfig(log_path="", db_path=":memory:"),
+        general=GeneralConfig(log_path="", db_path=":memory:", pid_path=""),
         schedule=ScheduleConfig(
             acquisition=ScheduleTaskConfig(enabled=acquisition_enabled, schedule_time_mins=60, run_on_start=True),
         ),
@@ -159,6 +158,7 @@ class TestBuildKwargs:
 class TestDaemonMode:
     """Daemon mode scheduling."""
 
+
     def test_run_daemon_creates_scheduler(self) -> None:
         """Mock BackgroundScheduler to test _run_daemon."""
         from gamarr.scheduler import _run_daemon
@@ -248,3 +248,47 @@ class TestDaemonMode:
                 _run_daemon(config)
                 mock_sched.add_job.assert_called_once()
                 mock_sched.start.assert_called_once()
+
+
+class TestPidFile:
+    """PID file write/cleanup tests."""
+
+    def test_write_pid_creates_file(self, tmp_path: Path) -> None:
+        from gamarr.scheduler import _write_pid
+
+        pid_dir = tmp_path / "pids"
+        pid_dir.mkdir()
+        _write_pid(str(pid_dir))
+        pid_file = pid_dir / "gamarr.pid"
+        assert pid_file.exists()
+        content = pid_file.read_text().strip()
+        assert content == str(os.getpid())
+
+    def test_write_pid_full_path(self, tmp_path: Path) -> None:
+        from gamarr.scheduler import _write_pid
+
+        pid_file = tmp_path / "custom.pid"
+        _write_pid(str(pid_file))
+        assert pid_file.exists()
+        assert pid_file.read_text().strip() == str(os.getpid())
+
+    def test_cleanup_pid_file_removes(self, tmp_path: Path) -> None:
+        from gamarr.scheduler import _cleanup_pid_file
+
+        pid_file = tmp_path / "gamarr.pid"
+        pid_file.write_text("12345")
+        assert pid_file.exists()
+        _cleanup_pid_file(str(tmp_path))
+        assert not pid_file.exists()
+
+    def test_cleanup_pid_file_nonexistent(self, tmp_path: Path) -> None:
+        """Should not raise when PID file doesn't exist."""
+        from gamarr.scheduler import _cleanup_pid_file
+
+        _cleanup_pid_file(str(tmp_path / "nonexistent.pid"))  # should not raise
+
+    def test_cleanup_pid_file_none(self) -> None:
+        """Should not raise when pid_path is None."""
+        from gamarr.scheduler import _cleanup_pid_file
+
+        _cleanup_pid_file(None)  # should not raise
