@@ -59,6 +59,11 @@ class TestConfigModels:
         cfg = MetacriticPlatformConfig()
         assert not hasattr(cfg, "exclude_keywords")
 
+    def test_metacritic_no_max_verify_attempts(self) -> None:
+        """MetacriticPlatformConfig should NOT have max_verify_attempts."""
+        cfg = MetacriticPlatformConfig()
+        assert not hasattr(cfg, "max_verify_attempts")
+
     def test_fitgirl_pending_days_ge_zero(self) -> None:
         """pending_days must be >= 0 (0 disables expiry extension)."""
         with pytest.raises(ValidationError):

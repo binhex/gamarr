@@ -126,7 +126,6 @@ on first run. The file is divided into the sections below.
 | `days_since_release` | Maximum age in days since release. Games older are rejected. | `90` |
 | `enabled` | Enable or disable the Metacritic browse step. Disabling skips game discovery entirely. | `true` |
 | `max_games` | Maximum number of games to scan per cycle (0 = unlimited). | `1000` |
-| `max_verify_attempts` | Max times to re-check a game whose real scores don't match browse scores before giving up. | `6` |
 | `pending_days` | Days a game stays in the pending queue before expiring. `0` = indefinite pending (no expiry). | `30` |
 | `cache_ttl_days` | Days to cache Metacritic detail-page results. | `7` |
 | `cache_ttl_hours` | Hours to cache Metacritic browse-page results. | `4` |
@@ -228,7 +227,7 @@ flowchart TD
 4. **Score verification** — Each pending game's real Metacritic detail page
    is fetched. The real 0–100 critic score and 0–10 user score are compared
    against configured thresholds. Games whose real scores fail the checks
-   are kept for re-verification (up to `max_verify_attempts` tries).
+   are kept for re-verification.
    **When scores pass**, the game's expiry is recalculated to
    `now + sources.fitgirl.pending_days` (default 60, or `0` for
    indefinite), giving it a fresh window for the FitGirl-matching phase.

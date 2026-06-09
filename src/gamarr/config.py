@@ -68,7 +68,6 @@ class MetacriticPlatformConfig(BaseModel):
     pending_days: int = 30
     enabled: bool = True
     max_games: int = Field(default=1000, ge=0, le=20000)
-    max_verify_attempts: int = Field(default=6, ge=0)
     cutoff_weeks: int | None = None
     reject_genre: list[str] = Field(default_factory=list)
     reject_title: list[str] = Field(default_factory=list)  # case-insensitive substrings
@@ -204,6 +203,14 @@ def _migrate_platform_overrides(raw: dict[str, Any]) -> bool:
                 mc_pc.pop(old_key)
                 changed |= True
         changed |= _rename_config_key(mc_pc, "metacritic_cache_ttl_hours", "cache_ttl_hours", platform_key)
+        # Deprecated: max_verify_attempts — removed, pending_days controls expiry
+        if "max_verify_attempts" in mc_pc:
+            logger.info(
+                "Config: removing deprecated 'max_verify_attempts' for platform '{}' — pending_days controls expiry",
+                platform_key,
+            )
+            del mc_pc["max_verify_attempts"]
+            changed = True
     return changed
 
 

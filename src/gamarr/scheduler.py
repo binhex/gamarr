@@ -55,7 +55,6 @@ def _build_kwargs(config: Config) -> dict[str, Any]:
         "cache_ttl_hours": mc_cfg.cache_ttl_hours,
         "enabled": mc_cfg.enabled,
         "max_games": mc_cfg.max_games,
-        "max_verify_attempts": mc_cfg.max_verify_attempts,
         "cutoff_weeks": mc_cfg.cutoff_weeks,
         "reject_genre": mc_cfg.reject_genre,
         "reject_title": mc_cfg.reject_title,

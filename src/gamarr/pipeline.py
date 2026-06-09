@@ -105,7 +105,6 @@ class AcquisitionConfig:
     enabled: bool = True
     pending_days: int = 30
     max_games: int = 1000
-    max_verify_attempts: int = 6
     cutoff_weeks: int | None = None
     reject_genre: list[str] | None = None
     reject_title: list[str] | None = None  # ← new
@@ -173,7 +172,6 @@ def run_acquisition(
     pending_days: int = 30,
     fitgirl_pending_days: int = 60,
     max_games: int = 1000,
-    max_verify_attempts: int = 6,
     cutoff_weeks: int | None = None,
     reject_genre: list[str] | None = None,
     reject_title: list[str] | None = None,  # ← new
@@ -205,7 +203,6 @@ def run_acquisition(
         pending_days=pending_days,
         fitgirl_pending_days=fitgirl_pending_days,
         max_games=max_games,
-        max_verify_attempts=max_verify_attempts,
         cutoff_weeks=cutoff_weeks,
         reject_genre=reject_genre,
         reject_title=reject_title,  # ← new
@@ -323,7 +320,6 @@ def run_acquisition(
                 thresholds,
                 cache_ttl_days=cfg.cache_ttl_days,
                 max_verify=len(pending_games) if cfg.max_games == 0 else min(len(pending_games), cfg.max_games),
-                max_verify_attempts=cfg.max_verify_attempts,
                 reject_genre=cfg.reject_genre,
                 reject_title=cfg.reject_title,  # ← new
                 fitgirl_pending_days=cfg.fitgirl_pending_days,  # ← new
@@ -575,24 +571,7 @@ def _real_scores_pass_thresholds(
     return all(checks)
 
 
-def _log_keep_pending(game: Any, result: Any, attempts: int, max_verify_attempts: int) -> None:
-    """Log that a game is being kept in the queue for re-verification."""
-    if _scores_present(result):
-        logger.debug(
-            "Keeping '{}' in queue \u2014 Metacritic scores ({}, {}) below thresholds (attempt {}/{})",
-            game.game_title,
-            result.metascore,
-            result.user_score,
-            attempts,
-            max_verify_attempts,
-        )
-    else:
-        logger.debug(
-            "Keeping '{}' in queue \u2014 no Metacritic review scores yet (attempt {}/{})",
-            game.game_title,
-            attempts,
-            max_verify_attempts,
-        )
+
 
 
 def _fail_game_after_max_attempts(
@@ -608,51 +587,31 @@ def _fail_game_after_max_attempts(
     "below thresholds" message (e.g. for genre-rejected games).
     """
     game_slug = str(game.slug)
-    if result is None:
-        details = result_details or "Game not found on Metacritic detail page after multiple attempts"
-        db.record_processed(
-            source="metacritic",
-            source_title=str(game.game_title),
-            source_url=f"mc:{game_slug}",
-            game_title=str(game.game_title),
-            platform=str(game.platform),
-            metascore=None,
-            user_score=None,
-            result="Failed",
-            result_details=details,
-        )
+    if result_details is None:
+        score_info = f"({result.metascore}, {result.user_score})" if _scores_present(result) else "(no scores)"
+        result_details = f"Scores {score_info} below thresholds after {attempts} attempts"
+    db.record_processed(
+        source="metacritic",
+        source_title=str(game.game_title),
+        source_url=f"mc:{game_slug}",
+        game_title=str(game.game_title),
+        platform=str(game.platform),
+        metascore=result.metascore,
+        user_score=result.user_score,
+        result="Failed",
+        result_details=result_details,
+    )
+    if _scores_present(result):
         logger.debug(
-            "Removed '{}' from queue \u2014 {} (after {} attempts)",
+            "Removed '{}' from queue \u2014 Metacritic scores ({}, {}) below thresholds after {} attempts",
             game.game_title,
-            details,
+            result.metascore,
+            result.user_score,
             attempts,
         )
     else:
-        if result_details is None:
-            score_info = f"({result.metascore}, {result.user_score})" if _scores_present(result) else "(no scores)"
-            result_details = f"Scores {score_info} below thresholds after {attempts} attempts"
-        db.record_processed(
-            source="metacritic",
-            source_title=str(game.game_title),
-            source_url=f"mc:{game_slug}",
-            game_title=str(game.game_title),
-            platform=str(game.platform),
-            metascore=result.metascore,
-            user_score=result.user_score,
-            result="Failed",
-            result_details=result_details,
-        )
-        if _scores_present(result):
-            logger.debug(
-                "Removed '{}' from queue \u2014 Metacritic scores ({}, {}) below thresholds after {} attempts",
-                game.game_title,
-                result.metascore,
-                result.user_score,
-                attempts,
-            )
-        else:
-            logger.debug(
-                "Removed '{}' from queue \u2014 no Metacritic review scores yet after {} attempts",
+        logger.debug(
+            "Removed '{}' from queue \u2014 no Metacritic review scores yet after {} attempts",
                 game.game_title,
                 attempts,
             )
@@ -717,33 +676,12 @@ def _scores_fail_check(result: Any, thresholds: dict[str, Any]) -> bool:
     return not _scores_present(result) or not _real_scores_pass_thresholds(result, thresholds)
 
 
-def _increment_and_check_attempts(
-    db: Database,
-    game: Any,
-    result: Any | None,
-    max_attempts: int,
-    *,
-    result_details: str | None = None,
-) -> tuple[bool, int]:
-    """Increment verify attempts; fail the game if max attempts reached.
-
-    Returns (was_failed, attempts) — the caller uses the attempt count
-    for logging when the game is kept for re-verification.
-    """
-    attempts = db.increment_verify_attempts(str(game.slug))
-    if attempts >= max_attempts:
-        _fail_game_after_max_attempts(db, game, result, attempts, result_details=result_details)
-        return (True, attempts)
-    return (False, attempts)
-
-
 def _process_verify_result(
     db: Database,
     game: Any,
     result: Any,
     thresholds: dict[str, Any],
     *,
-    max_verify_attempts: int = 6,
     reject_genre: list[str] | None = None,
     reject_title: list[str] | None = None,  # ← new
     fitgirl_pending_days: int = 60,  # ← new
@@ -751,9 +689,7 @@ def _process_verify_result(
     """Process one score-check result. Returns True if the game was removed.
 
     Games that fail the score check are kept in the pending queue for
-    re-verification on subsequent cycles (up to *max_verify_attempts*
-    times).  Once the attempt limit is reached, the game is removed
-    from pending and recorded in the history with result="Failed".
+    re-verification on subsequent cycles.
 
     Args:
         fitgirl_pending_days: Days to extend pending expiry when scores pass.
@@ -773,33 +709,30 @@ def _process_verify_result(
 
     matched_title = _reject_by_title(game, reject_title)
     if matched_title is not None:
-        attempts = db.increment_verify_attempts(str(game.slug))
+        db.increment_verify_attempts(str(game.slug))
         _fail_game_after_max_attempts(
             db,
             game,
             result,
-            attempts=attempts,
+            attempts=0,
             result_details=f"Game '{game.game_title}' — title matches reject_title '{matched_title}'",
         )
         return True
 
     if result is None:
-        failed, attempts = _increment_and_check_attempts(db, game, result, max_verify_attempts)
-        if failed:
-            return True
         logger.debug(
-            "Keeping '{}' in queue \u2014 game not found on Metacritic page (attempt {}/{})",
+            "Keeping '{}' in queue \u2014 game not found on Metacritic page",
             game.game_title,
-            attempts,
-            max_verify_attempts,
         )
         return False
 
     if _scores_fail_check(result, thresholds):
-        failed, attempts = _increment_and_check_attempts(db, game, result, max_verify_attempts)
-        if failed:
-            return True
-        _log_keep_pending(game, result, attempts, max_verify_attempts)
+        logger.debug(
+            "Keeping '{}' in queue \u2014 Metacritic scores ({}, {}) below thresholds",
+            game.game_title,
+            result.metascore,
+            result.user_score,
+        )
         return False
 
     db.update_pending_scores(
@@ -830,7 +763,6 @@ def _verify_pending_scores(
     *,
     cache_ttl_days: int = 7,
     max_verify: int = 50,
-    max_verify_attempts: int = 6,
     reject_genre: list[str] | None = None,
     reject_title: list[str] | None = None,  # ← new
     fitgirl_pending_days: int = 60,  # ← new
@@ -851,9 +783,6 @@ def _verify_pending_scores(
     queue (e.g. 2773 games) from generating thousands of sequential
     HTTP requests in a single cycle.
 
-    Games that repeatedly fail are removed after *max_verify_attempts*
-    failed verifications and recorded in the history with result="Failed".
-
     Args:
         db: Database instance.
         mc: MetacriticClient instance.
@@ -862,8 +791,6 @@ def _verify_pending_scores(
         cache_ttl_days: TTL for the detail-page cache.
         max_verify: Maximum number of games to verify per cycle.
             Set to 0 to skip verification entirely.
-        max_verify_attempts: Max times to re-check a failing game before
-            giving up.  Set to 0 to remove immediately (old behavior).
         reject_genre: List of genre substrings to reject (case-insensitive).
             Games whose genre contains any entry are removed immediately.
             E.g. ``["RPG"]`` matches ``"Action RPG"``, ``"JRPG"``, etc.
@@ -912,7 +839,6 @@ def _verify_pending_scores(
                 game,
                 result,
                 thresholds,
-                max_verify_attempts=max_verify_attempts,
                 reject_genre=reject_genre,
                 reject_title=reject_title,  # ← new
                 fitgirl_pending_days=fitgirl_pending_days,  # ← new
