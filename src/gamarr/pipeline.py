@@ -654,7 +654,7 @@ def _reject_by_genre(
         term_lower = term.lower()
         for i, genre in enumerate(genre_lower):
             if term_lower in genre:
-                logger.info(
+                logger.debug(
                     "Removing '{}' — genre '{}' matches reject genre '{}'",
                     game.game_title,
                     result.genres[i],
@@ -679,7 +679,7 @@ def _reject_by_title(
     for term in reject_title:
         term_lower = term.lower()
         if term_lower in title_lower:
-            logger.info(
+            logger.debug(
                 "Removing '{}' — title matches reject_title '{}'",
                 game.game_title,
                 term,

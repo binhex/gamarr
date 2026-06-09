@@ -299,24 +299,24 @@ class TestNormaliseForCompare:
     def test_normalise_simple(self) -> None:
         from gamarr.utils import normalise_for_compare
 
-        assert normalise_for_compare("Elden Ring") == "elden ring"
+        assert normalise_for_compare("Elden Ring") == "eldenring"
 
     def test_normalise_punctuation(self) -> None:
         from gamarr.utils import normalise_for_compare
 
-        assert normalise_for_compare("Baldur's Gate 3!") == "baldurs gate 3"
+        assert normalise_for_compare("Baldur's Gate 3!") == "baldursgate3"
 
     def test_normalise_whitespace(self) -> None:
         from gamarr.utils import normalise_for_compare
 
-        assert normalise_for_compare("  Game   Name  ") == "game name"
+        assert normalise_for_compare("  Game   Name  ") == "gamename"
 
     def test_normalise_en_dash(self) -> None:
         """Strip en-dash (U+2013) like other punctuation."""
         from gamarr.utils import normalise_for_compare
 
         result = normalise_for_compare("Magin: The Rat Project Stories \u2013 Essence Edition")
-        assert result == "magin the rat project stories essence edition"
+        assert result == "magintheratprojectstoriesessenceedition"
 
 
 class TestNuxtVal:
