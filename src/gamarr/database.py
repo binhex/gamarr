@@ -342,16 +342,48 @@ class Database:
             rows = session.query(SourceTitle).filter(SourceTitle.source == source).order_by(SourceTitle.url).all()
         return [{"title": str(row.title), "url": str(row.url)} for row in rows]
 
+    @staticmethod
+    def _normalised_title_matches(db_title: str, query: str) -> int:
+        """Return a match score if *db_title* matches *query*, or 0 if no match.
+
+        Uses normalised title strings (via ``normalise_for_compare``).
+
+        Returns a score where higher values indicate a better match:
+        - ``2``: exact match (best possible)
+        - ``1``: substring match, shorter string >= 5 chars
+        - ``0``: no match
+
+        The substring fallback handles FitGirl sitemap titles that have
+        version/bonus info appended (e.g.
+        ``"MOUSE: P.I. For Hire – v1.0.1.8044 + 2 Bonus DLCs"``).
+        """
+        if db_title == query:
+            return 2
+        if len(db_title) < 5 or len(query) < 5:
+            return 0
+        if db_title in query or query in db_title:
+            return 1
+        return 0
+
     def match_source_title(self, source: str, normalized_title: str) -> list[dict[str, str]]:
         from gamarr.utils import normalise_for_compare
 
         with self._session() as session:
             rows = session.query(SourceTitle).filter(SourceTitle.source == source).all()
-        results = []
+        matched: list[tuple[int, float, str, str]] = []
         for row in rows:
-            if normalise_for_compare(str(row.title)) == normalized_title:
-                results.append({"title": str(row.title), "url": str(row.url)})
-        return results
+            row_normalised = normalise_for_compare(str(row.title))
+            score = self._normalised_title_matches(row_normalised, normalized_title)
+            if score:
+                # Sort key: higher score first, then better length ratio (closer to 1.0)
+                shorter = min(len(row_normalised), len(normalized_title))
+                longer = max(len(row_normalised), len(normalized_title))
+                ratio = shorter / longer if longer > 0 else 0.0
+                matched.append((score, ratio, row.title, row.url))
+
+        # Sort by score descending, then by ratio descending (better match first)
+        matched.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        return [{"title": t, "url": u} for (_, _, t, u) in matched]
 
     def get_sitemap_cache(self, source: str, ttl_hours: int) -> bool:
         """Return True if the sitemap for *source* was cached within *ttl_hours*."""

@@ -384,6 +384,36 @@ class TestSourceTitle:
         assert "Elden Ring" in results[0]["title"]
         db.close()
 
+    def test_match_with_version_suffix(self, tmp_path: Path) -> None:
+        """FitGirl titles with version/bonus suffixes should still match the base game title.
+
+        Real FitGirl sitemap entries include version strings and bonus
+        descriptions appended to the game name, e.g.
+        "MOUSE: P.I. For Hire – v1.0.1.8044 + 2 Bonus DLCs".
+        The normalised game title "mouse pi for hire" should still match.
+        """
+        from gamarr.utils import normalise_for_compare
+
+        db = Database(str(tmp_path / "test.db"))
+        fitgirl_title = "MOUSE: P.I. For Hire – v1.0.1.8044 + 2 Bonus DLCs"
+        titles = [
+            {
+                "source": "fitgirl",
+                "title": fitgirl_title,
+                "url": "https://fitgirl-repacks.site/mouse-p-i-for-hire/",
+            },
+        ]
+        db.rebuild_source_titles("fitgirl", titles)
+
+        game_title = "MOUSE: P.I. For Hire"
+        normalized = normalise_for_compare(game_title)
+        results = db.match_source_title("fitgirl", normalized)
+        assert len(results) == 1, (
+            f"Expected match for '{game_title}' against '{fitgirl_title}', got {len(results)} results"
+        )
+        assert fitgirl_title in results[0]["title"]
+        db.close()
+
 
 class TestDatabaseAlreadyOwned:
     """Already owned stats tracking."""
