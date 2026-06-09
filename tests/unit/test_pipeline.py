@@ -5,12 +5,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from gamarr.pipeline import AcquisitionConfig, run_acquisition
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    import pytest
 
 
 class TestAcquisitionConfig:
@@ -3620,5 +3620,119 @@ class TestScrapeHealth:
             notifier=mock_notifier,
         )
         # At least one game succeeded, so no scrape notification
+        mock_notifier.send_scrape_notification.assert_not_called()
+        db.close()
+
+    def test_verify_phase_all_fail_sends_notification(self, tmp_path: Path) -> None:
+        """When every lookup returns None, scrape notification should fire."""
+        import datetime
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.database import Database
+        from gamarr.notifications import Notifier
+        from gamarr.pipeline import _verify_pending_scores
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="failing-game",
+            game_title="Failing Game",
+            platform="pc",
+            metascore=62.0,
+            user_score=3.3,
+            release_date="2026-06-01",
+            expires_at=expires,
+        )
+
+        mock_mc = MagicMock()
+        mock_mc.lookup_game.return_value = None  # All lookups return None
+
+        mock_notifier = MagicMock(spec=Notifier)
+
+        with patch("gamarr.pipeline._check_scrape_health", return_value="metacritic_broken"):
+            _verify_pending_scores(
+                db,
+                mock_mc,
+                "pc",
+                {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10},
+                notifier=mock_notifier,
+            )
+
+        mock_notifier.send_scrape_notification.assert_called_once()
+        db.close()
+
+    def test_verify_phase_all_fail_metacritic_down_sends_notification(self, tmp_path: Path) -> None:
+        """When _check_scrape_health returns metacritic_down, notification should fire."""
+        import datetime
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.database import Database
+        from gamarr.notifications import Notifier
+        from gamarr.pipeline import _verify_pending_scores
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="down-game",
+            game_title="Down Game",
+            platform="pc",
+            metascore=62.0,
+            user_score=3.3,
+            release_date="2026-06-01",
+            expires_at=expires,
+        )
+
+        mock_mc = MagicMock()
+        mock_mc.lookup_game.return_value = None
+
+        mock_notifier = MagicMock(spec=Notifier)
+
+        with patch("gamarr.pipeline._check_scrape_health", return_value="metacritic_down"):
+            _verify_pending_scores(
+                db,
+                mock_mc,
+                "pc",
+                {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10},
+                notifier=mock_notifier,
+            )
+
+        mock_notifier.send_scrape_notification.assert_called_once()
+        db.close()
+
+    def test_verify_phase_all_fail_internet_down_skips_notification(self, tmp_path: Path) -> None:
+        """When _check_scrape_health returns internet_down, no notification fires."""
+        import datetime
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.database import Database
+        from gamarr.notifications import Notifier
+        from gamarr.pipeline import _verify_pending_scores
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="offline-game",
+            game_title="Offline Game",
+            platform="pc",
+            metascore=62.0,
+            user_score=3.3,
+            release_date="2026-06-01",
+            expires_at=expires,
+        )
+
+        mock_mc = MagicMock()
+        mock_mc.lookup_game.return_value = None
+
+        mock_notifier = MagicMock(spec=Notifier)
+
+        with patch("gamarr.pipeline._check_scrape_health", return_value="internet_down"):
+            _verify_pending_scores(
+                db,
+                mock_mc,
+                "pc",
+                {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10},
+                notifier=mock_notifier,
+            )
+
         mock_notifier.send_scrape_notification.assert_not_called()
         db.close()
