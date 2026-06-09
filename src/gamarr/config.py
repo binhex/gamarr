@@ -22,6 +22,8 @@ class GeneralConfig(BaseModel):
     log_level_file: str = "INFO"
     log_path: str = "logs"
     db_path: str = "db"
+    pid_path: str = "pids"
+    library_path_list: list[str] = Field(default_factory=list)
 
 
 class ScheduleTaskConfig(BaseModel):
