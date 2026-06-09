@@ -109,6 +109,7 @@ class AcquisitionConfig:
     reject_genre: list[str] | None = None
     reject_title: list[str] | None = None  # ← new
     fitgirl_pending_days: int = 60
+    notify_on_scrape_failure: bool = True
 
 
 def _is_below_threshold(value: float | None, threshold: float) -> bool:
@@ -171,6 +172,7 @@ def run_acquisition(
     enabled: bool = True,
     pending_days: int = 30,
     fitgirl_pending_days: int = 60,
+    notify_on_scrape_failure: bool = True,
     max_games: int = 1000,
     cutoff_weeks: int | None = None,
     reject_genre: list[str] | None = None,
@@ -202,6 +204,7 @@ def run_acquisition(
         enabled=enabled,
         pending_days=pending_days,
         fitgirl_pending_days=fitgirl_pending_days,
+        notify_on_scrape_failure=notify_on_scrape_failure,
         max_games=max_games,
         cutoff_weeks=cutoff_weeks,
         reject_genre=reject_genre,
@@ -224,6 +227,7 @@ def run_acquisition(
         on_download=notify_on_download,
         on_failure=notify_on_failure,
         on_error=notify_on_error,
+        on_scrape_failure=notify_on_scrape_failure,
     )
 
     qbt = QBittorrentClient(
