@@ -18,9 +18,11 @@ from bs4 import BeautifulSoup
 from loguru import logger
 
 if TYPE_CHECKING:
+    import threading
+
     from gamarr.metacritic_cache import MetacriticCache
 
-from gamarr.utils import normalise_for_compare
+from gamarr.utils import is_cancelled, normalise_for_compare
 
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -520,6 +522,18 @@ def _parse_browse_page(content: bytes) -> list[dict[str, Any]] | None:
     return _resolve_browse_game_list(nuxt_data, game_items)
 
 
+def _validate_cutoff_date(cutoff_date: str | None) -> str | None:
+    """Validate and return *cutoff_date*, or None if invalid."""
+    if cutoff_date is not None and _parse_date_flexible(cutoff_date) is None:
+        logger.warning(
+            "cutoff_date '{}' is not a valid date — expected YYYY-MM-DD "
+            "(e.g. 2025-01-01) or DD-MM-YYYY. Ignoring cutoff.",
+            cutoff_date,
+        )
+        return None
+    return cutoff_date
+
+
 class MetacriticClient:
     """Client for looking up game scores on Metacritic.
 
@@ -729,6 +743,7 @@ class MetacriticClient:
         max_games: int = 1000,
         cache_ttl_hours: int = 6,
         cutoff_date: str | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> list[dict[str, Any]]:
         """Return up to *max_games* from Metacritic browse pages.
 
@@ -739,8 +754,10 @@ class MetacriticClient:
 
         Args:
             max_games: Maximum number of game entries to collect.
-            cutoff_date: ISO date string ("YYYY-MM-DD").  Pages whose
-                games are all older than this date are skipped.
+            cutoff_date: Date string in "YYYY-MM-DD" or "DD-MM-YYYY" format.
+                Pages whose games are all older than this date are skipped.
+            cancel_event: Optional threading.Event.  When set, the
+                scan stops early and returns partial results.
 
         Returns a list of game dicts with keys ``title``, ``slug``,
         ``score``, ``critic_review_count``, ``user_rating``,
@@ -748,21 +765,21 @@ class MetacriticClient:
         """
         all_games: list[dict[str, Any]] = []
 
-        # Validate cutoff_date format once at the start
-        if cutoff_date is not None:  # noqa: SIM102
-            if _parse_date_flexible(cutoff_date) is None:
-                logger.warning(
-                    "cutoff_date '{}' is not a valid date — expected YYYY-MM-DD "
-                    "(e.g. 2025-01-01) or DD-MM-YYYY. Ignoring cutoff.",
-                    cutoff_date,
-                )
-                cutoff_date = None
+        cutoff_date = _validate_cutoff_date(cutoff_date)
 
         effective_max = max_games if max_games > 0 else 999999
         page_number = 1
         while len(all_games) < effective_max and page_number <= 500:
             games = self._fetch_browse_page(platform, page_number, cache_ttl_hours)
             if not games:
+                break
+
+            # Check for cancellation after the page fetch
+            if is_cancelled(cancel_event):
+                logger.info(
+                    "Scan cancelled by shutdown signal; returning after {} page(s)",
+                    page_number - 1,
+                )
                 break
 
             # Date-based early stop: if every game on this page has a

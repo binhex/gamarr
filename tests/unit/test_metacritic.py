@@ -843,3 +843,44 @@ class TestCheckUserReviewItem:
         }
         result = _check_user_review_item(page_data, item, "people-of-note")
         assert result is None, f"Different slug should not match: {result}"
+
+
+class TestScanRecentGamesCancellation:
+    """Cancel event support in scan_recent_games."""
+
+    def test_scan_recent_games_returns_early_on_cancel(self) -> None:
+        """When cancel_event is set mid-scan, scan_recent_games returns
+        with partial results instead of completing all pages."""
+        import threading
+        from unittest.mock import patch
+
+        from gamarr.metacritic import MetacriticClient
+
+        client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
+
+        cancel_event = threading.Event()
+        call_count = 0
+
+        def mock_fetch(
+            _platform: str,
+            _page_number: int,
+            _cache_ttl_hours: int,
+        ) -> list[dict] | None:
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 2:
+                cancel_event.set()
+            return [{"title": f"Game {i}", "slug": f"game-{i}", "score": 85, "user_rating": 8.0} for i in range(20)]
+
+        with patch.object(client, "_fetch_browse_page", side_effect=mock_fetch):
+            result = client.scan_recent_games(
+                "pc",
+                max_games=0,
+                cancel_event=cancel_event,
+            )
+
+        # After cancel was set (call_count >= 2), scan_recent_games should
+        # have stopped. We expect at most 3 pages: page 1 (no cancel),
+        # page 2 (cancel set inside mock_fetch), then cancel check stops it.
+        assert call_count <= 3, f"Expected early stop but fetched {call_count} pages"
+        assert len(result) <= 60, f"Expected <=60 games but got {len(result)}"  # 3 pages * 20 games

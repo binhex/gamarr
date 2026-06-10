@@ -294,3 +294,25 @@ class TestPidFile:
         from gamarr.scheduler import _cleanup_pid_file
 
         _cleanup_pid_file(None)  # should not raise
+
+
+class TestCancelEvent:
+    """Cancel event wiring in _run_daemon and _ShutdownEvent."""
+
+    def test_shutdown_event_sets_cancel_event(self) -> None:
+        """When _ShutdownEvent.__call__ is invoked, it should set the
+        associated cancel_event."""
+        import threading
+
+        from gamarr.scheduler import _ShutdownEvent
+
+        cancel_event = threading.Event()
+        evt = _ShutdownEvent(cancel_event=cancel_event)
+        # The cancel_event should NOT be set yet
+        assert not cancel_event.is_set()
+
+        # Simulate a signal
+        evt(15, None)
+
+        # After the signal fires, the cancel_event should ALSO be set
+        assert cancel_event.is_set()

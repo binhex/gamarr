@@ -17,9 +17,10 @@ from gamarr.metacritic_cache import MetacriticCache
 from gamarr.notifications import Notifier
 from gamarr.qbittorrent import QBittorrentClient
 from gamarr.sources.fitgirl import _USER_AGENT, FitGirlSource, _extract_magnet_from_html
-from gamarr.utils import normalise_for_compare
+from gamarr.utils import is_cancelled, normalise_for_compare
 
 if TYPE_CHECKING:
+    import threading
     from collections.abc import Callable
 
 
@@ -184,6 +185,7 @@ def run_acquisition(
     library_paths: list[str] | None = None,
     fitgirl_cache_ttl_hours: int = 6,
     fitgirl_reject_keywords: list[str] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> list[dict[str, Any]]:
     """Execute one scan cycle.
 
@@ -280,6 +282,7 @@ def run_acquisition(
                 max_games=cfg.max_games,
                 cache_ttl_hours=cfg.cache_ttl_hours,
                 cutoff_date=cutoff_date,
+                cancel_event=cancel_event,
             )
             if browse_games:
                 thresholds = {
@@ -304,8 +307,8 @@ def run_acquisition(
                         len(browse_games),
                     )
         # NEW: If browsing returned no games AND no cached data exists,
-        # check whether scraping is broken
-        if cfg.enabled and not browse_games and cfg.notify_on_scrape_failure:
+        # check whether scraping is broken (skip if cancelled)
+        if cfg.enabled and not is_cancelled(cancel_event) and not browse_games and cfg.notify_on_scrape_failure:
             # Check if we have any cached browse data (if so, stale data is fine)
             cached_exists = mc._cache.get_browse_page(platform, 1, ttl_hours=cfg.cache_ttl_hours) is not None
             if not cached_exists:
@@ -343,6 +346,7 @@ def run_acquisition(
                 reject_title=cfg.reject_title,  # ← new
                 fitgirl_pending_days=cfg.fitgirl_pending_days,  # ← new
                 notifier=notifier,  # ← new
+                cancel_event=cancel_event,
             )
             if removed:
                 logger.info(
@@ -355,28 +359,30 @@ def run_acquisition(
             from gamarr.library import LibraryScanner
 
             library = LibraryScanner(library_paths)
+        matched: list[dict[str, Any]] = []
         # Only fetch the FitGirl sitemap if there are score-checked games
         # to match against it. Games whose real Metacritic scores haven't
         # been checked yet wait for the next cycle and do NOT trigger the
         # FitGirl sitemap fetch.
-        if db.has_verified_pending(platform=platform):
-            source.fetch_sitemap(db)
-        match_thresholds = {
-            "min_metascore": cfg.min_metascore,
-            "min_metascore_reviews": cfg.min_metascore_reviews,
-            "min_user_score": cfg.min_user_score,
-            "min_user_reviews": cfg.min_user_reviews,
-        }
-        matched = _match_pending_games(
-            db,
-            qbt=qbt,
-            magnet_fetcher=_default_magnet_fetcher,
-            notifier=notifier,
-            library=library,
-            mc=mc,
-            thresholds=match_thresholds,
-            reject_keywords=fitgirl_reject_keywords or None,
-        )
+        if not is_cancelled(cancel_event):
+            if db.has_verified_pending(platform=platform):
+                source.fetch_sitemap(db)
+            match_thresholds = {
+                "min_metascore": cfg.min_metascore,
+                "min_metascore_reviews": cfg.min_metascore_reviews,
+                "min_user_score": cfg.min_user_score,
+                "min_user_reviews": cfg.min_user_reviews,
+            }
+            matched = _match_pending_games(
+                db,
+                qbt=qbt,
+                magnet_fetcher=_default_magnet_fetcher,
+                notifier=notifier,
+                library=library,
+                mc=mc,
+                thresholds=match_thresholds,
+                reject_keywords=fitgirl_reject_keywords or None,
+            )
         if matched:
             logger.info("{} queued games found on FitGirl", len(matched))
 
@@ -392,6 +398,12 @@ def run_acquisition(
         mc.close()
         if source._db is not db:  # Only close separately if not shared
             db.close()
+
+
+def _cancel_remaining_futures(futures: list[Any], start: int) -> None:
+    """Cancel all futures from *start* onwards."""
+    for remaining_fut in futures[start:]:
+        remaining_fut.cancel()
 
 
 def _title_contains_keywords(title: str, keywords: list[str] | None) -> bool:
@@ -791,6 +803,7 @@ def _process_verify_batch(
     reject_genre: list[str] | None = None,
     reject_title: list[str] | None = None,
     fitgirl_pending_days: int = 60,
+    cancel_event: threading.Event | None = None,
 ) -> tuple[int, bool]:
     """Process a batch of pending game lookups concurrently.
 
@@ -815,7 +828,13 @@ def _process_verify_batch(
     removed = 0
     any_success = False
 
-    with ThreadPoolExecutor(max_workers=10) as pool:
+    # Check for pre-set cancellation before submitting any work
+    if is_cancelled(cancel_event):
+        logger.info("Verify cancelled by shutdown signal; skipping batch")
+        return removed, any_success
+
+    pool = ThreadPoolExecutor(max_workers=10)
+    try:
         futures = [
             pool.submit(
                 mc.lookup_game,
@@ -829,6 +848,15 @@ def _process_verify_batch(
         ]
 
         for verified, (game, fut) in enumerate(zip(batch, futures, strict=True)):
+            # Check for mid-batch cancellation
+            if is_cancelled(cancel_event):
+                logger.info(
+                    "Verify cancelled by shutdown signal; partial results after {} games",
+                    verified,
+                )
+                _cancel_remaining_futures(futures, verified)
+                break
+
             _log_verify_progress(verified, max_verify, total_pending)
             result = fut.result()
             if result is not None:
@@ -843,6 +871,8 @@ def _process_verify_batch(
                 fitgirl_pending_days=fitgirl_pending_days,
             ):
                 removed += 1
+    finally:
+        pool.shutdown(wait=False)
 
     return removed, any_success
 
@@ -859,6 +889,7 @@ def _verify_pending_scores(
     reject_title: list[str] | None = None,  # ← new
     fitgirl_pending_days: int = 60,  # ← new
     notifier: Any = None,  # ← new
+    cancel_event: threading.Event | None = None,  # ← new
 ) -> int:
     """Re-verify pending games' scores against the real Metacritic detail page.
 
@@ -921,9 +952,10 @@ def _verify_pending_scores(
         reject_genre=reject_genre,
         reject_title=reject_title,
         fitgirl_pending_days=fitgirl_pending_days,
+        cancel_event=cancel_event,
     )
 
-    if notifier is not None and batch and not any_success:
+    if notifier is not None and not is_cancelled(cancel_event) and batch and not any_success:
         _diagnose_and_notify_scrape(
             notifier,
             _check_scrape_health(),

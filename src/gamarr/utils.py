@@ -1,5 +1,11 @@
+from __future__ import annotations
+
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import threading
 
 
 def get_project_root() -> Path:
@@ -16,3 +22,8 @@ def normalise_for_compare(text: str) -> str:
     """
     text = text.lower()
     return re.sub(r"[^a-z0-9]+", "", text)
+
+
+def is_cancelled(cancel_event: threading.Event | None) -> bool:
+    """Return True if *cancel_event* is not None and is set."""
+    return cancel_event is not None and cancel_event.is_set()
