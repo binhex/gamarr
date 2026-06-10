@@ -1426,7 +1426,7 @@ class TestMetacriticBrowse:
         # The HTML page has a full title with HV, but the sitemap entry doesn't
         html_with_hv = (
             "<html><head><title>Crimson Desert [FitGirl HV Repack]</title></head>"
-            "<body><a href=\"magnet:?xt=urn:btih:abc\">magnet</a></body></html>"
+            '<body><a href="magnet:?xt=urn:btih:abc">magnet</a></body></html>'
         )
 
         with patch("gamarr.pipeline.requests.get") as mock_get:
