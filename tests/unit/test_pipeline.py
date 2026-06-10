@@ -22,7 +22,7 @@ class TestAcquisitionConfig:
             min_metascore_reviews=5,
             min_user_score=7.5,
             min_user_reviews=10,
-            days_since_release=90,
+            cutoff_weeks=12,  # ~84 days, roughly equivalent to 90 days
         )
         assert cfg.min_metascore == 75
 
@@ -339,16 +339,13 @@ class TestEvaluateScores:
 
         from gamarr.pipeline import _evaluate_scores
 
-        cfg = type(
-            "Cfg",
-            (),
-            {
-                "min_metascore": 75,
-                "min_metascore_reviews": 5,
-                "min_user_score": 7.5,
-                "min_user_reviews": 10,
-            },
-        )()
+        cfg = AcquisitionConfig(
+            min_metascore=75,
+            min_metascore_reviews=5,
+            min_user_score=7.5,
+            min_user_reviews=10,
+            cutoff_weeks=40,
+        )
         mc_result = types.SimpleNamespace(metascore=None, user_score=None)
         assert _evaluate_scores(mc_result, cfg) == "no_scores"
 
@@ -357,16 +354,13 @@ class TestEvaluateScores:
 
         from gamarr.pipeline import _evaluate_scores
 
-        cfg = type(
-            "Cfg",
-            (),
-            {
-                "min_metascore": 75,
-                "min_metascore_reviews": 5,
-                "min_user_score": 7.5,
-                "min_user_reviews": 10,
-            },
-        )()
+        cfg = AcquisitionConfig(
+            min_metascore=75,
+            min_metascore_reviews=5,
+            min_user_score=7.5,
+            min_user_reviews=10,
+            cutoff_weeks=40,
+        )
         mc_result = types.SimpleNamespace(
             metascore=90.0,
             metascore_review_count=2,
@@ -380,16 +374,13 @@ class TestEvaluateScores:
 
         from gamarr.pipeline import _evaluate_scores
 
-        cfg = type(
-            "Cfg",
-            (),
-            {
-                "min_metascore": 75,
-                "min_metascore_reviews": 5,
-                "min_user_score": 7.5,
-                "min_user_reviews": 10,
-            },
-        )()
+        cfg = AcquisitionConfig(
+            min_metascore=75,
+            min_metascore_reviews=5,
+            min_user_score=7.5,
+            min_user_reviews=10,
+            cutoff_weeks=40,
+        )
         mc_result = types.SimpleNamespace(
             metascore=90.0,
             metascore_review_count=50,
@@ -399,22 +390,18 @@ class TestEvaluateScores:
         assert _evaluate_scores(mc_result, cfg) == "user_reviews_too_few"
 
     def test_old_game_fails_days_since_release(self) -> None:
-        """A game older than days_since_release should fail."""
+        """A game older than cutoff_weeks should fail."""
         import types
 
         from gamarr.pipeline import _evaluate_scores
 
-        cfg = type(
-            "Cfg",
-            (),
-            {
-                "min_metascore": 0,
-                "min_metascore_reviews": 0,
-                "min_user_score": 0.0,
-                "min_user_reviews": 0,
-                "days_since_release": 30,
-            },
-        )()
+        cfg = AcquisitionConfig(
+            min_metascore=0,
+            min_metascore_reviews=0,
+            min_user_score=0.0,
+            min_user_reviews=0,
+            cutoff_weeks=4,
+        )
         mc_result = types.SimpleNamespace(
             metascore=90.0,
             metascore_review_count=50,
@@ -425,7 +412,7 @@ class TestEvaluateScores:
         assert _evaluate_scores(mc_result, cfg) == "release_date_too_old"
 
     def test_recent_game_passes_days_since_release(self) -> None:
-        """A game within days_since_release should pass (if scores are fine)."""
+        """A game within cutoff_weeks should pass (if scores are fine)."""
         import datetime
         import types
 
@@ -433,17 +420,13 @@ class TestEvaluateScores:
 
         recent = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=5)).strftime("%Y-%m-%d")
 
-        cfg = type(
-            "Cfg",
-            (),
-            {
-                "min_metascore": 0,
-                "min_metascore_reviews": 0,
-                "min_user_score": 0.0,
-                "min_user_reviews": 0,
-                "days_since_release": 30,
-            },
-        )()
+        cfg = AcquisitionConfig(
+            min_metascore=0,
+            min_metascore_reviews=0,
+            min_user_score=0.0,
+            min_user_reviews=0,
+            cutoff_weeks=40,
+        )
         mc_result = types.SimpleNamespace(
             metascore=90.0,
             metascore_review_count=50,
@@ -460,17 +443,13 @@ class TestEvaluateScores:
 
         from gamarr.pipeline import _evaluate_scores
 
-        cfg = type(
-            "Cfg",
-            (),
-            {
-                "min_metascore": 0,
-                "min_metascore_reviews": 0,
-                "min_user_score": 0.0,
-                "min_user_reviews": 0,
-                "days_since_release": 30,
-            },
-        )()
+        cfg = AcquisitionConfig(
+            min_metascore=0,
+            min_metascore_reviews=0,
+            min_user_score=0.0,
+            min_user_reviews=0,
+            cutoff_weeks=4,
+        )
         mc_result = types.SimpleNamespace(
             metascore=90.0,
             metascore_review_count=50,
@@ -486,17 +465,13 @@ class TestEvaluateScores:
 
         from gamarr.pipeline import _evaluate_scores
 
-        cfg = type(
-            "Cfg",
-            (),
-            {
-                "min_metascore": 0,
-                "min_metascore_reviews": 0,
-                "min_user_score": 0.0,
-                "min_user_reviews": 0,
-                "days_since_release": 30,
-            },
-        )()
+        cfg = AcquisitionConfig(
+            min_metascore=0,
+            min_metascore_reviews=0,
+            min_user_score=0.0,
+            min_user_reviews=0,
+            cutoff_weeks=4,
+        )
         mc_result = types.SimpleNamespace(
             metascore=90.0,
             metascore_review_count=50,
@@ -516,16 +491,13 @@ class TestEvaluateScoresTbdBug:
 
         from gamarr.pipeline import _evaluate_scores
 
-        cfg = type(
-            "Cfg",
-            (),
-            {
-                "min_metascore": 75,
-                "min_metascore_reviews": 5,
-                "min_user_score": 7.5,
-                "min_user_reviews": 10,
-            },
-        )()
+        cfg = AcquisitionConfig(
+            min_metascore=75,
+            min_metascore_reviews=5,
+            min_user_score=7.5,
+            min_user_reviews=10,
+            cutoff_weeks=40,
+        )
         mc_result = types.SimpleNamespace(
             metascore=None,
             metascore_review_count=None,
@@ -540,16 +512,13 @@ class TestEvaluateScoresTbdBug:
 
         from gamarr.pipeline import _evaluate_scores
 
-        cfg = type(
-            "Cfg",
-            (),
-            {
-                "min_metascore": 75,
-                "min_metascore_reviews": 5,
-                "min_user_score": 7.5,
-                "min_user_reviews": 10,
-            },
-        )()
+        cfg = AcquisitionConfig(
+            min_metascore=75,
+            min_metascore_reviews=5,
+            min_user_score=7.5,
+            min_user_reviews=10,
+            cutoff_weeks=40,
+        )
         mc_result = types.SimpleNamespace(
             metascore=85.0,
             metascore_review_count=50,
@@ -568,16 +537,13 @@ class TestEvaluateScoresCoverage:
 
         from gamarr.pipeline import _evaluate_scores
 
-        cfg = type(
-            "Cfg",
-            (),
-            {
-                "min_metascore": 75,
-                "min_metascore_reviews": 5,
-                "min_user_score": 7.5,
-                "min_user_reviews": 10,
-            },
-        )()
+        cfg = AcquisitionConfig(
+            min_metascore=75,
+            min_metascore_reviews=5,
+            min_user_score=7.5,
+            min_user_reviews=10,
+            cutoff_weeks=40,
+        )
         mc_result = types.SimpleNamespace(
             metascore=85.0,
             metascore_review_count=50,
@@ -596,16 +562,13 @@ class TestEvaluateScoresNoneReviews:
 
         from gamarr.pipeline import _evaluate_scores
 
-        cfg = type(
-            "Cfg",
-            (),
-            {
-                "min_metascore": 75,
-                "min_metascore_reviews": 5,
-                "min_user_score": 7.5,
-                "min_user_reviews": 10,
-            },
-        )()
+        cfg = AcquisitionConfig(
+            min_metascore=75,
+            min_metascore_reviews=5,
+            min_user_score=7.5,
+            min_user_reviews=10,
+            cutoff_weeks=40,
+        )
         mc_result = types.SimpleNamespace(
             metascore=96.0,
             metascore_review_count=None,
@@ -620,16 +583,13 @@ class TestEvaluateScoresNoneReviews:
 
         from gamarr.pipeline import _evaluate_scores
 
-        cfg = type(
-            "Cfg",
-            (),
-            {
-                "min_metascore": 75,
-                "min_metascore_reviews": 5,
-                "min_user_score": 7.5,
-                "min_user_reviews": 10,
-            },
-        )()
+        cfg = AcquisitionConfig(
+            min_metascore=75,
+            min_metascore_reviews=5,
+            min_user_score=7.5,
+            min_user_reviews=10,
+            cutoff_weeks=40,
+        )
         mc_result = types.SimpleNamespace(
             metascore=96.0,
             metascore_review_count=93,
