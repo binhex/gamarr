@@ -45,7 +45,8 @@ class TestConfigModels:
         assert cfg.enabled is True
         assert cfg.rss_url == "https://fitgirl-repacks.site/feed/"
         assert cfg.platform == "pc"
-        assert cfg.pending_days == 60
+        assert not hasattr(cfg, "pending_days"), "Field was renamed to recheck_days"
+        assert cfg.recheck_days == 60
         assert cfg.reject_keywords == []
 
     def test_fitgirl_reject_keywords_replaces_exclude_keywords(self) -> None:
@@ -64,18 +65,20 @@ class TestConfigModels:
         cfg = MetacriticPlatformConfig()
         assert not hasattr(cfg, "max_verify_attempts")
 
-    def test_fitgirl_pending_days_ge_zero(self) -> None:
-        """pending_days must be >= 0 (0 disables expiry extension)."""
+    def test_fitgirl_recheck_days_ge_zero(self) -> None:
+        """recheck_days must be >= 0 (0 disables expiry extension)."""
         with pytest.raises(ValidationError):
-            FitGirlSourceConfig(pending_days=-1)
-        FitGirlSourceConfig(pending_days=0)
-        FitGirlSourceConfig(pending_days=1)
+            FitGirlSourceConfig(recheck_days=-1)
+        FitGirlSourceConfig(recheck_days=0)
+        FitGirlSourceConfig(recheck_days=1)
 
     def test_metacritic_platform_config_defaults(self) -> None:
         cfg = MetacriticPlatformConfig()
         assert cfg.min_metascore == 75
         assert cfg.min_user_score == 7.5
         assert not hasattr(cfg, "days_since_release"), "Field was removed"
+        assert not hasattr(cfg, "pending_days"), "Field was renamed to recheck_days"
+        assert cfg.recheck_days == 30
         assert cfg.cutoff_weeks == 13, "Default cutoff_weeks should be ~90 days (13 weeks)"
         assert cfg.max_games == 1000
 
@@ -324,6 +327,31 @@ class TestLoadConfig:
         pc = raw["metacritic"]["platform_overrides"]["pc"]
         assert "days_since_release" not in pc
         assert pc["cutoff_weeks"] == 17  # 120 / 7 ≈ 17
+
+    def test_migrate_pending_days_to_recheck(self) -> None:
+        """Old pending_days key is renamed to recheck_days in metacritic and fitgirl sections."""
+        from typing import Any
+
+        from gamarr.config import _migrate_config
+
+        raw: dict[str, Any] = {
+            "metacritic": {
+                "platform_overrides": {
+                    "pc": {"pending_days": 30, "cutoff_weeks": 12},
+                },
+            },
+            "download_sites": {
+                "fitgirl": {"pending_days": 60, "rss_url": "http://example.com"},
+            },
+        }
+        result = _migrate_config(raw)
+        assert result is True
+        pc = raw["metacritic"]["platform_overrides"]["pc"]
+        assert "pending_days" not in pc
+        assert pc["recheck_days"] == 30
+        fg = raw["download_sites"]["fitgirl"]
+        assert "pending_days" not in fg
+        assert fg["recheck_days"] == 60
 
     def test_migrate_metacritic_exclude_keywords_returns_true(self) -> None:
         """_migrate_metacritic_exclude_keywords should return True when it deletes a key."""
