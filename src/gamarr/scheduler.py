@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import os
 import signal
+import threading
 from typing import TYPE_CHECKING, Any
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -129,10 +130,11 @@ def _run_daemon(config: Config) -> None:
     else:
         _next_run = datetime.now() + timedelta(minutes=acq_cfg.schedule_time_mins)
 
+    cancel_event = threading.Event()
     scheduler.add_job(
         run_acquisition,
         trigger=IntervalTrigger(minutes=acq_cfg.schedule_time_mins),
-        kwargs=kwargs,
+        kwargs={**kwargs, "cancel_event": cancel_event},
         id="acquisition",
         name="Acquisition",
         next_run_time=_next_run,
@@ -141,7 +143,7 @@ def _run_daemon(config: Config) -> None:
     scheduler.start()
     logger.info("Scheduler started (interval={} min)", acq_cfg.schedule_time_mins)
 
-    shutdown_event = _ShutdownEvent()
+    shutdown_event = _ShutdownEvent(cancel_event=cancel_event)
     signal.signal(signal.SIGINT, shutdown_event)
     signal.signal(signal.SIGTERM, shutdown_event)
     shutdown_event.wait()
@@ -152,14 +154,15 @@ def _run_daemon(config: Config) -> None:
 class _ShutdownEvent:
     """Simple event for waiting on shutdown signals."""
 
-    def __init__(self) -> None:
-        import threading
-
+    def __init__(self, cancel_event: threading.Event | None = None) -> None:
         self._event = threading.Event()
+        self._cancel_event = cancel_event
 
     def __call__(self, signum: int, _frame: object) -> None:
         logger.info("Received signal {}; shutting down...", signum)
         self._event.set()
+        if self._cancel_event is not None:
+            self._cancel_event.set()
 
     def wait(self) -> None:
         self._event.wait()

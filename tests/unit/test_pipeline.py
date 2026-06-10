@@ -3736,3 +3736,89 @@ class TestScrapeHealth:
 
         mock_notifier.send_scrape_notification.assert_not_called()
         db.close()
+
+
+class TestCancellation:
+    """Cancel event propagation through the pipeline."""
+
+    def test_process_verify_batch_returns_early_when_precancelled(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """When cancel_event is pre-set, _process_verify_batch returns
+        immediately with (0, False) without processing any games."""
+        import threading
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _process_verify_batch
+
+        db = Database(str(tmp_path / "test.db"))
+        cancel_event = threading.Event()
+        cancel_event.set()  # Pre-set before call
+
+        mock_mc = MagicMock()
+        batch = [MagicMock()]
+
+        removed, any_success = _process_verify_batch(
+            db,
+            mock_mc,
+            "pc",
+            {
+                "min_metascore": 75,
+                "min_metascore_reviews": 5,
+                "min_user_score": 7.5,
+                "min_user_reviews": 10,
+            },
+            batch,
+            max_verify=10,
+            total_pending=10,
+            cancel_event=cancel_event,
+        )
+
+        assert removed == 0
+        assert any_success is False
+        mock_mc.lookup_game.assert_not_called()
+
+    def test_run_acquisition_returns_early_when_precancelled(self) -> None:
+        """When cancel_event is pre-set, run_acquisition returns
+        early — scan_recent_games aborts its page loop immediately
+        and no further pipeline steps run."""
+        import threading
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.pipeline import run_acquisition
+
+        cancel_event = threading.Event()
+        cancel_event.set()
+
+        with (
+            patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
+            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+        ):
+            mock_source = MagicMock()
+            mock_source_cls.return_value = mock_source
+            mock_mc = MagicMock()
+            # scan_recent_games will return empty (aborted by cancel_event)
+            # so we make it return [] to simulate a clean early exit
+            mock_mc.scan_recent_games.return_value = []
+            mock_mc_cls.return_value = mock_mc
+            mock_qbt = MagicMock()
+            mock_qbt.is_connected.return_value = True
+            mock_qbt_cls.return_value = mock_qbt
+
+            results = run_acquisition(
+                fitgirl_rss_url="http://example.com/feed",
+                platform="pc",
+                qbt_host="localhost",
+                qbt_port=8080,
+                cancel_event=cancel_event,
+            )
+
+        # scan_recent_games is called (cancel check is inside it), but
+        # no pending games means no verify, no sitemap, no delivery
+        mock_mc.scan_recent_games.assert_called_once()
+        mock_mc.lookup_game.assert_not_called()
+        mock_source.fetch_sitemap.assert_not_called()
+        assert results == []
