@@ -353,6 +353,28 @@ class TestLoadConfig:
         assert "pending_days" not in fg
         assert fg["recheck_days"] == 60
 
+    def test_migrate_pending_days_under_sources_key(self) -> None:
+        """Old pending_days under the legacy sources key is also renamed."""
+        from typing import Any
+
+        from gamarr.config import _migrate_config
+
+        raw: dict[str, Any] = {
+            "metacritic": {
+                "platform_overrides": {
+                    "pc": {"pending_days": 45},
+                },
+            },
+            "sources": {
+                "fitgirl": {"pending_days": 90, "reject_keywords": ["test"]},
+            },
+        }
+        result = _migrate_config(raw)
+        assert result is True
+        assert "sources" not in raw
+        assert raw["metacritic"]["platform_overrides"]["pc"]["recheck_days"] == 45
+        assert raw["download_sites"]["fitgirl"]["recheck_days"] == 90
+
     def test_migrate_metacritic_exclude_keywords_returns_true(self) -> None:
         """_migrate_metacritic_exclude_keywords should return True when it deletes a key."""
         from typing import Any

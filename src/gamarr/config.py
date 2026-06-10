@@ -205,10 +205,10 @@ def _migrate_platform_overrides(raw: dict[str, Any]) -> bool:
                 mc_pc.pop(old_key)
                 changed |= True
         changed |= _rename_config_key(mc_pc, "metacritic_cache_ttl_hours", "cache_ttl_hours", platform_key)
-        # Deprecated: max_verify_attempts — removed, pending_days controls expiry
+        # Deprecated: max_verify_attempts — removed, recheck_days controls expiry
         if "max_verify_attempts" in mc_pc:
             logger.info(
-                "Config: removing deprecated 'max_verify_attempts' for platform '{}' — pending_days controls expiry",
+                "Config: removing deprecated 'max_verify_attempts' for platform '{}' — recheck_days controls expiry",
                 platform_key,
             )
             del mc_pc["max_verify_attempts"]
