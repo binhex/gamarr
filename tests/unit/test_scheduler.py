@@ -296,6 +296,39 @@ class TestPidFile:
         _cleanup_pid_file(None)  # should not raise
 
 
+class TestNextRunTimeLogging:
+    """_log_next_run_time emits the next scheduled run time after a cycle."""
+
+    def test_log_next_run_time_logs_interval_and_time(self) -> None:
+        """After a scheduled cycle completes, the next run time and interval should be logged.
+
+        The message should contain the wait interval in minutes and the
+        formatted date/time of the next run.
+        """
+        from datetime import datetime, timedelta, timezone
+        from unittest.mock import MagicMock, PropertyMock, patch
+
+        from gamarr.scheduler import _log_next_run_time
+
+        mock_scheduler = MagicMock()
+        mock_job = MagicMock()
+        future = datetime.now(timezone.utc) + timedelta(minutes=30)
+        type(mock_job).next_run_time = PropertyMock(return_value=future)
+        mock_scheduler.get_job.return_value = mock_job
+
+        with patch("gamarr.scheduler.logger") as mock_logger:
+            _log_next_run_time(mock_scheduler, "acquisition")
+
+        mock_logger.info.assert_called_once()
+        args, _ = mock_logger.info.call_args
+        # Loguru separates format string (args[0]) from positional values
+        format_str = args[0]
+        assert "minute(s)" in format_str, f"Expected 'minute(s)' in format, got: {format_str}"
+        assert args[1] == 30, f"Expected interval 30, got {args[1]}"
+        next_time_str = future.strftime("%Y-%m-%d %H:%M:%S")
+        assert next_time_str == args[2], f"Expected next time '{next_time_str}', got {args[2]}"
+
+
 class TestCancelEvent:
     """Cancel event wiring in _run_daemon and _ShutdownEvent."""
 

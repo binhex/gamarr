@@ -2060,6 +2060,127 @@ class TestMetacriticBrowse:
             result = _default_magnet_fetcher("http://example.com/page")
         assert result is None
 
+    def test_default_magnet_fetcher_rejects_non_https(self) -> None:
+        """_default_magnet_fetcher returns None for non-HTTPS URLs."""
+        from unittest.mock import patch
+
+        from gamarr.pipeline import _default_magnet_fetcher
+
+        with patch("gamarr.pipeline.logger") as mock_logger:
+            result = _default_magnet_fetcher("http://example.com/page")
+        assert result is None
+        mock_logger.warning.assert_called_once()
+        assert "Skipping" in mock_logger.warning.call_args[0][0]
+
+    def test_default_magnet_fetcher_returns_magnet_on_success(self) -> None:
+        """_default_magnet_fetcher returns magnet when HTTP and extraction succeed."""
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.pipeline import _default_magnet_fetcher, _fitgirl_page_title_cache
+
+        _fitgirl_page_title_cache.clear()
+
+        mock_resp = MagicMock()
+        mock_resp.text = "<html><title>Crimson Desert [FitGirl HV Repack]</title>"
+
+        with (
+            patch("gamarr.pipeline.requests.get", return_value=mock_resp),
+            patch(
+                "gamarr.pipeline._extract_magnet_from_html",
+                return_value="magnet:?xt=urn:btih:abc",
+            ),
+        ):
+            result = _default_magnet_fetcher("https://example.com/game")
+
+        assert result == "magnet:?xt=urn:btih:abc"
+        assert _fitgirl_page_title_cache.get("https://example.com/game") == "Crimson Desert [FitGirl HV Repack]"
+        _fitgirl_page_title_cache.clear()
+
+    def test_default_magnet_fetcher_caches_none_when_no_title(self) -> None:
+        """_default_magnet_fetcher caches None when page has no <title> tag."""
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.pipeline import _default_magnet_fetcher, _fitgirl_page_title_cache
+
+        _fitgirl_page_title_cache.clear()
+
+        mock_resp = MagicMock()
+        mock_resp.text = "<html><body>No title</body>"
+
+        with (
+            patch("gamarr.pipeline.requests.get", return_value=mock_resp),
+            patch(
+                "gamarr.pipeline._extract_magnet_from_html",
+                return_value="magnet:?xt=urn:btih:abc",
+            ),
+        ):
+            result = _default_magnet_fetcher("https://example.com/no-title")
+
+        assert result == "magnet:?xt=urn:btih:abc"
+        assert _fitgirl_page_title_cache.get("https://example.com/no-title") is None
+        _fitgirl_page_title_cache.clear()
+
+    def test_default_magnet_fetcher_returns_none_when_no_magnet(self) -> None:
+        """_default_magnet_fetcher returns None when no magnet is found in HTML."""
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.pipeline import _default_magnet_fetcher
+
+        mock_resp = MagicMock()
+        mock_resp.text = "<html><title>Game</title><p>no magnet here</p></html>"
+
+        with patch("gamarr.pipeline.requests.get", return_value=mock_resp):
+            result = _default_magnet_fetcher("https://example.com/no-magnet")
+
+        assert result is None
+
+    def test_fetch_fitgirl_page_title_rejects_non_https(self) -> None:
+        """_fetch_fitgirl_page_title returns None for non-HTTPS URLs."""
+        from gamarr.pipeline import _fetch_fitgirl_page_title
+
+        result = _fetch_fitgirl_page_title("http://example.com/game")
+        assert result is None
+
+    def test_fetch_fitgirl_page_title_returns_none_on_request_failure(self) -> None:
+        """_fetch_fitgirl_page_title returns None when the HTTP request fails."""
+        from unittest.mock import patch
+
+        import requests
+
+        from gamarr.pipeline import _fetch_fitgirl_page_title
+
+        with patch("gamarr.pipeline.requests.get", side_effect=requests.exceptions.ConnectionError("nope")):
+            result = _fetch_fitgirl_page_title("https://example.com/game")
+        assert result is None
+
+    def test_fetch_fitgirl_page_title_returns_title(self) -> None:
+        """_fetch_fitgirl_page_title extracts the <title> tag content."""
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.pipeline import _fetch_fitgirl_page_title
+
+        mock_resp = MagicMock()
+        mock_resp.text = "<html><title>Elden Ring [FitGirl HV Repack]</title><body>...</body></html>"
+
+        with patch("gamarr.pipeline.requests.get", return_value=mock_resp):
+            result = _fetch_fitgirl_page_title("https://example.com/elden-ring")
+
+        assert result == "Elden Ring [FitGirl HV Repack]"
+
+    def test_fetch_fitgirl_page_title_returns_none_when_no_title_tag(self) -> None:
+        """_fetch_fitgirl_page_title returns None when page has no <title> tag."""
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.pipeline import _fetch_fitgirl_page_title
+
+        mock_resp = MagicMock()
+        mock_resp.text = "<html><body>No title here</body></html>"
+
+        with patch("gamarr.pipeline.requests.get", return_value=mock_resp):
+            result = _fetch_fitgirl_page_title("https://example.com/no-title")
+
+        assert result is None
+
     def test_browse_skips_below_threshold(self, tmp_path: Path) -> None:
         """Games below score thresholds should NOT be inserted as pending."""
         from gamarr.database import Database

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import contextlib
+import math
 import os
 import signal
 import threading
 from typing import TYPE_CHECKING, Any
 
+from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED
 from apscheduler.schedulers.background import BackgroundScheduler
 from loguru import logger
 
@@ -26,6 +28,33 @@ def _write_pid(pid_path: str) -> None:
     with open(pid_file, "w") as f:
         f.write(str(os.getpid()))
     logger.debug("PID {} written to '{}'.", os.getpid(), pid_file)
+
+
+def _log_next_run_time(scheduler: Any, job_id: str) -> None:
+    """Log the next scheduled run time for a completed job.
+
+    Reads the job's ``next_run_time`` from APScheduler and emits an
+    info-level message with the approximate wait duration (in minutes)
+    and the absolute date/time of the next run.
+    """
+    from datetime import datetime, timezone
+
+    job = scheduler.get_job(job_id)
+    if job is None or job.next_run_time is None:
+        return
+    # Use the job's own timezone so the subtraction is safe:
+    # ``datetime.now()`` is naive while ``job.next_run_time`` from
+    # APScheduler is always timezone-aware.
+    tz = job.next_run_time.tzinfo or timezone.utc
+    now = datetime.now(tz)
+    remaining = (job.next_run_time - now).total_seconds()
+    wait_minutes = max(1, math.ceil(remaining / 60))
+    next_str = job.next_run_time.strftime("%Y-%m-%d %H:%M:%S")
+    logger.info(
+        "Next acquisition cycle in ~{} minute(s) at {}",
+        wait_minutes,
+        next_str,
+    )
 
 
 def _cleanup_pid_file(pid_path: str | None) -> None:
@@ -141,6 +170,13 @@ def _run_daemon(config: Config) -> None:
 
     scheduler.start()
     logger.info("Scheduler started (interval={} min)", acq_cfg.schedule_time_mins)
+
+    # Log the next run time after each cycle completes so users know
+    # when to expect the next acquisition.
+    scheduler.add_listener(
+        lambda event: _log_next_run_time(scheduler, event.job_id),
+        EVENT_JOB_EXECUTED | EVENT_JOB_ERROR,
+    )
 
     shutdown_event = _ShutdownEvent(cancel_event=cancel_event)
     signal.signal(signal.SIGINT, shutdown_event)
