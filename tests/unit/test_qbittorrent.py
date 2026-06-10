@@ -145,6 +145,21 @@ class TestQBittorrentRename:
             # Should still reannounce despite rename failure
             mock_client.torrents_reannounce.assert_called_once()
 
+    def test_add_torrent_skips_rename_for_whitespace_title(self) -> None:
+        """Whitespace-only title is treated as empty — no rename."""
+        client = QBittorrentClient()
+        with patch.object(client, "_client") as mock_client:
+            mock_client.torrents_add.return_value = "Ok."
+            mock_client.torrents_info.return_value = [MagicMock(hash="abc123")]
+
+            result = client.add_torrent(
+                magnet_url="magnet:?xt=urn:btih:abc",
+                title="   ",
+            )
+            assert result is not False
+            mock_client.torrents_rename.assert_not_called()
+            mock_client.torrents_reannounce.assert_called_once()
+
     def test_add_torrent_info_failure_skips_post_add(self) -> None:
         """torrents_info failure skips both rename and reannounce."""
         import qbittorrentapi

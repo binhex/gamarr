@@ -82,7 +82,7 @@ class QBittorrentClient:
             infos = self._client.torrents_info(tag=tag)
             if infos:
                 h = str(infos[0].hash)
-                if title:
+                if title and title.strip():
                     try:
                         self._client.torrents_rename(
                             torrent_hash=h,

@@ -214,7 +214,7 @@ def run_acquisition(
         reject_title=reject_title,  # ← new
     )
 
-    logger.info("Starting scan cycle (platform='{}')", platform)
+    logger.info("Fetching Metacritic pages for platform '{}', please wait...", platform)
 
     db = Database(db_path)
     source = FitGirlSource(
