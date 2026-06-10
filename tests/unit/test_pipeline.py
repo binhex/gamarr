@@ -1461,6 +1461,125 @@ class TestMetacriticBrowse:
             assert db.is_pending("crimson-desert")
             db.close()
 
+    def test_reject_keywords_clean_page_title_passes(self, tmp_path: Path) -> None:
+        """When HTML page title does NOT contain keyword, the game should proceed."""
+        import datetime
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _process_single_pending_match
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="crimson-desert",
+            game_title="Crimson Desert",
+            platform="pc",
+            metascore=85.0,
+            user_score=8.0,
+            expires_at=expires,
+        )
+        db.update_pending_scores(slug="crimson-desert", metascore=85.0, user_score=8.0)
+        db.rebuild_source_titles(
+            "fitgirl",
+            [{"title": "Crimson Desert", "url": "https://fitgirl-repacks.site/crimson-desert/"}],
+        )
+
+        mock_qbt = MagicMock()
+        mock_qbt.add_torrent.return_value = "gamarr-tag"
+
+        # Page title is clean — no HV
+        html_clean = (
+            "<html><head><title>Crimson Desert [FitGirl Repack]</title></head>"
+            '<body><a href="magnet:?xt=urn:btih:abc">magnet</a></body></html>'
+        )
+
+        with patch("gamarr.pipeline.requests.get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.text = html_clean
+            mock_resp.raise_for_status.return_value = None
+            mock_get.return_value = mock_resp
+
+            result = _process_single_pending_match(
+                db,
+                mc=None,
+                thresholds=None,
+                qbt=mock_qbt,
+                magnet_fetcher=MagicMock(return_value="magnet:?xt=urn:btih:abc"),
+                notifier=None,
+                library=None,
+                can_deliver=True,
+                game_title="Crimson Desert",
+                game_slug="crimson-desert",
+                game_platform="pc",
+                game_metascore=85.0,
+                game_metascore_reviews=100,
+                game_user_score=8.0,
+                game_user_reviews=50,
+                game_release_date=None,
+                reject_keywords=["HV"],
+            )
+            # Should proceed — page title doesn't contain HV
+            assert result is not None, "Game should proceed — page title does not contain HV"
+            db.close()
+
+    def test_reject_keywords_fallback_to_sitemap_title(self, tmp_path: Path) -> None:
+        """When page fetch fails, fall back to checking sitemap title."""
+        import datetime
+        from unittest.mock import MagicMock, patch
+
+        import requests
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _process_single_pending_match
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="hv-game",
+            game_title="HV Game",
+            platform="pc",
+            metascore=85.0,
+            user_score=8.0,
+            expires_at=expires,
+        )
+        db.update_pending_scores(slug="hv-game", metascore=85.0, user_score=8.0)
+        # Sitemap title DOES contain HV
+        db.rebuild_source_titles(
+            "fitgirl",
+            [{"title": "HV Game [FitGirl HV Repack]", "url": "https://example.com/hv-game"}],
+        )
+
+        mock_qbt = MagicMock()
+        mock_qbt.add_torrent.return_value = "gamarr-tag"
+
+        with patch("gamarr.pipeline.requests.get") as mock_get:
+            mock_get.side_effect = requests.RequestException("Connection error")
+
+            result = _process_single_pending_match(
+                db,
+                mc=None,
+                thresholds=None,
+                qbt=mock_qbt,
+                magnet_fetcher=None,
+                notifier=None,
+                library=None,
+                can_deliver=True,
+                game_title="HV Game",
+                game_slug="hv-game",
+                game_platform="pc",
+                game_metascore=85.0,
+                game_metascore_reviews=100,
+                game_user_score=8.0,
+                game_user_reviews=50,
+                game_release_date=None,
+                reject_keywords=["HV"],
+            )
+            # Should be rejected — fallback to sitemap title which contains HV
+            assert result is None, "Should reject via sitemap title fallback"
+            assert db.is_pending("hv-game"), "Should remain pending"
+            db.close()
+
     def test_match_pending_against_source(self, tmp_path: Path) -> None:
         import datetime
 
