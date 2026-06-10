@@ -81,8 +81,18 @@ class QBittorrentClient:
         try:
             infos = self._client.torrents_info(tag=tag)
             if infos:
-                self._client.torrents_reannounce(torrent_hashes=str(infos[0].hash))
+                h = str(infos[0].hash)
+                if title:
+                    try:
+                        self._client.torrents_rename(
+                            torrent_hash=h,
+                            new_torrent_name=title,
+                        )
+                        logger.info("Renamed torrent to '{}'", title)
+                    except Exception as exc:
+                        logger.warning("Failed to rename torrent '{}': {}", title, exc)
+                self._client.torrents_reannounce(torrent_hashes=h)
         except Exception as exc:
-            logger.warning("Reannounce failed for '{}': {}; continuing.", title, exc)
+            logger.warning("Post-add operations failed for '{}': {}; continuing.", title, exc)
 
         return tag
