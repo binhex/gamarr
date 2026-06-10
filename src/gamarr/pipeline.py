@@ -1692,7 +1692,7 @@ def _fetch_fitgirl_page_title(url: str) -> str | None:
     except requests.RequestException:
         return None
     # Extract <title> tag content
-    import re as _re
+    import re as _re  # noqa: PLC0415 — stdlib, cached after first import
 
     match = _re.search(r"<title[^>]*>(.*?)</title>", resp.text, _re.IGNORECASE | _re.DOTALL)
     if match:
