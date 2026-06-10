@@ -266,7 +266,7 @@ class TestEvaluateScores:
         game = {
             "title": "Some Game",
             "slug": "some-game",
-            "score": 1478.0,       # inflated browse metric
+            "score": 1478.0,  # inflated browse metric
             "user_rating": 2007.0,  # inflated browse metric
         }
         thresholds = {
