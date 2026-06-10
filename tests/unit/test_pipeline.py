@@ -1383,7 +1383,7 @@ class TestMetacriticBrowse:
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
-        _process_browse_games(browse_games, "pc", db, thresholds, pending_days=30)
+        _process_browse_games(browse_games, "pc", db, thresholds, recheck_days=30)
         pending = db.get_pending(platform="pc")
         assert len(pending) == 1
         assert pending[0].slug == "elden-ring"
@@ -1887,7 +1887,7 @@ class TestMetacriticBrowse:
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
-        new_count = _process_browse_games(games, "pc", db, thresholds, pending_days=30)
+        new_count = _process_browse_games(games, "pc", db, thresholds, recheck_days=30)
         assert new_count == 0
         pending = db.get_pending()
         assert len(pending) == 0
@@ -1930,7 +1930,7 @@ class TestMetacriticBrowse:
             "min_user_score": 0.0,
             "min_user_reviews": 0,
         }
-        new_count = _process_browse_games(games, "pc", db, thresholds, pending_days=30, days_since_release=90)
+        new_count = _process_browse_games(games, "pc", db, thresholds, recheck_days=30, days_since_release=90)
         # Only the recent game (30d old) should pass; old game (365d) should be filtered
         assert new_count == 1, f"Expected 1 pending game, got {new_count}"
         pending = db.get_pending()
@@ -1981,7 +1981,7 @@ class TestMetacriticBrowse:
             "pc",
             db,
             thresholds,
-            pending_days=30,
+            recheck_days=30,
             reject_title=["DLC", "Soundtrack", "Bundle"],
         )
         assert new_count == 1, "Only the non-excluded game should be added"
@@ -3059,11 +3059,11 @@ class TestLogGameDetails:
         assert "No" in msg
 
 
-class TestFitgirlPendingExpiry:
-    """Tests for fitgirl_pending_days expiry recalculation."""
+class TestFitgirlRecheckExpiry:
+    """Tests for fitgirl_recheck_days expiry recalculation."""
 
-    def test_fitgirl_pending_days_updates_expiry(self, tmp_path: Path) -> None:
-        """Game with passing scores should have expires_at recalculated to now + fitgirl_pending_days."""
+    def test_fitgirl_recheck_days_updates_expiry(self, tmp_path: Path) -> None:
+        """Game with passing scores should have expires_at recalculated to now + fitgirl_recheck_days."""
         import datetime
         from unittest.mock import MagicMock
 
@@ -3104,7 +3104,7 @@ class TestFitgirlPendingExpiry:
             "min_user_reviews": 10,
         }
 
-        _verify_pending_scores(db, mock_mc, "pc", thresholds, fitgirl_pending_days=60)
+        _verify_pending_scores(db, mock_mc, "pc", thresholds, fitgirl_recheck_days=60)
 
         # Game should still be pending
         pending = db.get_pending(platform="pc")
@@ -3119,8 +3119,8 @@ class TestFitgirlPendingExpiry:
         assert row.expires_at != original_expiry, "Expiry should have been updated"
         db.close()
 
-    def test_fitgirl_pending_days_zero_indefinite(self, tmp_path: Path) -> None:
-        """fitgirl_pending_days=0 should set expiry to far-future (indefinite pending)."""
+    def test_fitgirl_recheck_days_zero_indefinite(self, tmp_path: Path) -> None:
+        """fitgirl_recheck_days=0 should set expiry to far-future (indefinite pending)."""
         import datetime
         from unittest.mock import MagicMock
 
@@ -3160,7 +3160,7 @@ class TestFitgirlPendingExpiry:
             "min_user_reviews": 10,
         }
 
-        _verify_pending_scores(db, mock_mc, "pc", thresholds, fitgirl_pending_days=0)
+        _verify_pending_scores(db, mock_mc, "pc", thresholds, fitgirl_recheck_days=0)
 
         pending = db.get_pending(platform="pc")
         assert len(pending) == 1
@@ -3173,7 +3173,7 @@ class TestFitgirlPendingExpiry:
         )
         db.close()
 
-    def test_fitgirl_pending_days_does_not_affect_failure(self, tmp_path: Path) -> None:
+    def test_fitgirl_recheck_days_does_not_affect_failure(self, tmp_path: Path) -> None:
         """Game with failing scores should NOT have its expiry updated."""
         import datetime
         from unittest.mock import MagicMock
@@ -3214,7 +3214,7 @@ class TestFitgirlPendingExpiry:
             "min_user_reviews": 10,
         }
 
-        _verify_pending_scores(db, mock_mc, "pc", thresholds, fitgirl_pending_days=60)
+        _verify_pending_scores(db, mock_mc, "pc", thresholds, fitgirl_recheck_days=60)
 
         # Game should still be pending (re-check)
         pending = db.get_pending(platform="pc")
@@ -3871,7 +3871,7 @@ class TestBrowseReviewCountPrefilter:
             platform="pc",
             db=db,
             thresholds=thresholds,
-            pending_days=30,
+            recheck_days=30,
         )
         assert new_count == 0, "Low-review-count game should not be added to pending"
         pending = db.get_pending(platform="pc")
@@ -3907,7 +3907,7 @@ class TestBrowseReviewCountPrefilter:
             platform="pc",
             db=db,
             thresholds=thresholds,
-            pending_days=30,
+            recheck_days=30,
         )
         assert new_count == 1, "Game with missing review data should enter pending"
         pending = db.get_pending(platform="pc")

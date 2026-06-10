@@ -1,5 +1,5 @@
 general:
-  config_version: 1.13.0
+  config_version: 1.14.0
   daemon_mode: foreground
   log_level_console: INFO
   log_level_file: INFO
@@ -20,7 +20,7 @@ download_sites:
     cache_ttl_hours: 6
     reject_keywords:
     - hv
-    pending_days: 60
+    recheck_days: 60
 metacritic:
   platform_overrides:
     pc:
@@ -30,7 +30,7 @@ metacritic:
       min_user_reviews: 10
       cache_ttl_days: 7
       cache_ttl_hours: 6
-      pending_days: 30
+      recheck_days: 30
       enabled: true
       max_games: 0
       cutoff_weeks: 16

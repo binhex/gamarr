@@ -335,7 +335,7 @@ class TestPendingExpiry:
     """update_pending_expiry method tests."""
 
     def test_update_pending_expiry(self, tmp_path: Path) -> None:
-        """update_pending_expiry should recalculate expires_at to now + pending_days."""
+        """update_pending_expiry should recalculate expires_at to now + recheck_days."""
         import datetime
 
         db = Database(str(tmp_path / "test.db"))

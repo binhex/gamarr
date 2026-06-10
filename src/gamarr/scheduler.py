@@ -89,7 +89,7 @@ def _build_kwargs(config: Config) -> dict[str, Any]:
         "cutoff_weeks": mc_cfg.cutoff_weeks,
         "reject_genre": mc_cfg.reject_genre,
         "reject_title": mc_cfg.reject_title,
-        "pending_days": mc_cfg.pending_days,
+        "recheck_days": mc_cfg.recheck_days,
         "apprise_urls": config.notification.apprise_urls,
         "notify_on_download": config.notification.on_download,
         "notify_on_failure": config.notification.on_failure,
@@ -97,7 +97,7 @@ def _build_kwargs(config: Config) -> dict[str, Any]:
         "notify_on_scrape_failure": config.notification.on_scrape_failure,
         "fitgirl_cache_ttl_hours": config.download_sites.fitgirl.cache_ttl_hours,
         "fitgirl_reject_keywords": config.download_sites.fitgirl.reject_keywords,
-        "fitgirl_pending_days": config.download_sites.fitgirl.pending_days,
+        "fitgirl_recheck_days": config.download_sites.fitgirl.recheck_days,
         "library_paths": config.library.paths,
     }
 

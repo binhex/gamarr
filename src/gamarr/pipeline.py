@@ -103,12 +103,12 @@ class AcquisitionConfig:
     cache_ttl_days: int = 7
     cache_ttl_hours: int = 6
     enabled: bool = True
-    pending_days: int = 30
+    recheck_days: int = 30
     max_games: int = 1000
     cutoff_weeks: int | None = None
     reject_genre: list[str] | None = None
     reject_title: list[str] | None = None
-    fitgirl_pending_days: int = 60
+    fitgirl_recheck_days: int = 60
     notify_on_scrape_failure: bool = True
 
     def _age_days(self) -> int:
@@ -173,9 +173,9 @@ def run_acquisition(
     cache_ttl_days: int = 7,
     cache_ttl_hours: int = 6,
     enabled: bool = True,
-    pending_days: int = 30,
+    recheck_days: int = 30,
     cutoff_weeks: int | None = None,
-    fitgirl_pending_days: int = 60,
+    fitgirl_recheck_days: int = 60,
     notify_on_scrape_failure: bool = True,
     max_games: int = 1000,
     reject_genre: list[str] | None = None,
@@ -205,9 +205,9 @@ def run_acquisition(
         cache_ttl_days=cache_ttl_days,
         cache_ttl_hours=cache_ttl_hours,
         enabled=enabled,
-        pending_days=pending_days,
+        recheck_days=recheck_days,
         cutoff_weeks=cutoff_weeks,
-        fitgirl_pending_days=fitgirl_pending_days,
+        fitgirl_recheck_days=fitgirl_recheck_days,
         notify_on_scrape_failure=notify_on_scrape_failure,
         max_games=max_games,
         reject_genre=reject_genre,
@@ -297,7 +297,7 @@ def run_acquisition(
                     platform,
                     db,
                     thresholds,
-                    pending_days=cfg.pending_days,
+                    recheck_days=cfg.recheck_days,
                     days_since_release=cfg._age_days(),
                     reject_title=cfg.reject_title,  # ← new
                 )
@@ -345,7 +345,7 @@ def run_acquisition(
                 max_verify=len(pending_games) if cfg.max_games == 0 else min(len(pending_games), cfg.max_games),
                 reject_genre=cfg.reject_genre,
                 reject_title=cfg.reject_title,  # ← new
-                fitgirl_pending_days=cfg.fitgirl_pending_days,  # ← new
+                fitgirl_recheck_days=cfg.fitgirl_recheck_days,  # ← new
                 notifier=notifier,  # ← new
                 cancel_event=cancel_event,
             )
@@ -506,9 +506,9 @@ def _process_browse_games(
     db: Database,
     thresholds: dict[str, Any],
     *,
-    pending_days: int = 30,
+    recheck_days: int = 30,
     days_since_release: int = 0,
-    reject_title: list[str] | None = None,  # ← new
+    reject_title: list[str] | None = None,
 ) -> int:
     """Evaluate browse-page games and insert qualifying ones into the pending queue.
 
@@ -523,7 +523,7 @@ def _process_browse_games(
         platform: Target platform name.
         db: Database instance.
         thresholds: Dict with ``min_metascore`` keys.
-        pending_days: How many days to keep the game pending before expiry.
+        recheck_days: How many days to keep the game pending before expiry.
         days_since_release: Max age in days. Games older than this are skipped.
         reject_title: Titles matching any of these are skipped.
 
@@ -538,7 +538,6 @@ def _process_browse_games(
             logger.debug("Skipping '{}' — matches reject_title", game.get("title", ""))
             continue
 
-        # NEW: browse-page review count pre-filter
         reject_reason = _reject_by_browse_review_counts(
             game,
             min_critic_reviews=thresholds.get("min_metascore_reviews", 0),
@@ -554,10 +553,10 @@ def _process_browse_games(
 
         g_slug = game.get("slug", "")
         g_title = game.get("title", "")
-        if pending_days <= 0:
+        if recheck_days <= 0:
             expires_at = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=9999)).isoformat()
         else:
-            expires_at = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=pending_days)).isoformat()
+            expires_at = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=recheck_days)).isoformat()
 
         db.record_pending(
             slug=g_slug,
@@ -755,7 +754,7 @@ def _process_verify_result(
     *,
     reject_genre: list[str] | None = None,
     reject_title: list[str] | None = None,  # ← new
-    fitgirl_pending_days: int = 60,  # ← new
+    fitgirl_recheck_days: int = 60,  # ← new
 ) -> bool:
     """Process one score-check result. Returns True if the game was removed.
 
@@ -769,7 +768,7 @@ def _process_verify_result(
         thresholds: Dict with score threshold keys.
         reject_genre: Genre substrings to reject (case-insensitive).
         reject_title: Title substrings to reject (case-insensitive).
-        fitgirl_pending_days: Days to extend pending expiry when scores pass.
+        fitgirl_recheck_days: Days to extend pending expiry when scores pass.
             Set to 0 for indefinite pending (far-future expiry).
     """
     matched_genre = _reject_by_genre(game, result, reject_genre)
@@ -820,7 +819,7 @@ def _process_verify_result(
         user_reviews=result.user_review_count,
     )
     db.reset_verify_attempts(str(game.slug))
-    db.update_pending_expiry(str(game.slug), fitgirl_pending_days)
+    db.update_pending_expiry(str(game.slug), fitgirl_recheck_days)
     logger.debug(
         "'{}' passed score check \u2014 ({}, {}) with ({} reviews, {} reviews)",
         game.game_title,
@@ -844,7 +843,7 @@ def _process_verify_batch(
     cache_ttl_days: int = 7,
     reject_genre: list[str] | None = None,
     reject_title: list[str] | None = None,
-    fitgirl_pending_days: int = 60,
+    fitgirl_recheck_days: int = 60,
     cancel_event: threading.Event | None = None,
 ) -> tuple[int, bool]:
     """Process a batch of pending game lookups concurrently.
@@ -860,7 +859,7 @@ def _process_verify_batch(
         cache_ttl_days: TTL for the detail-page cache.
         reject_genre: Genre substrings to reject.
         reject_title: Title substrings to reject.
-        fitgirl_pending_days: Days to extend pending expiry when scores pass.
+        fitgirl_recheck_days: Days to extend pending expiry when scores pass.
 
     Returns:
         Tuple of ``(removed_count, any_success)`` where *any_success* is True
@@ -910,7 +909,7 @@ def _process_verify_batch(
                 thresholds,
                 reject_genre=reject_genre,
                 reject_title=reject_title,
-                fitgirl_pending_days=fitgirl_pending_days,
+                fitgirl_recheck_days=fitgirl_recheck_days,
             ):
                 removed += 1
     finally:
@@ -929,7 +928,7 @@ def _verify_pending_scores(
     max_verify: int = 50,
     reject_genre: list[str] | None = None,
     reject_title: list[str] | None = None,  # ← new
-    fitgirl_pending_days: int = 60,  # ← new
+    fitgirl_recheck_days: int = 60,  # ← new
     notifier: Any = None,  # ← new
     cancel_event: threading.Event | None = None,  # ← new
 ) -> int:
@@ -962,7 +961,7 @@ def _verify_pending_scores(
             E.g. ``["RPG"]`` matches ``"Action RPG"``, ``"JRPG"``, etc.
         reject_title: List of title substrings to reject (case-insensitive).
             Games whose title contains any entry are removed immediately.
-        fitgirl_pending_days: Passed through to _process_verify_result for
+        fitgirl_recheck_days: Passed through to _process_verify_result for
             expiry recalculation when scores pass.
         notifier: Optional Notifier instance. When provided and every lookup
             in the batch returns None, a scrape notification is sent.
@@ -993,7 +992,7 @@ def _verify_pending_scores(
         cache_ttl_days=cache_ttl_days,
         reject_genre=reject_genre,
         reject_title=reject_title,
-        fitgirl_pending_days=fitgirl_pending_days,
+        fitgirl_recheck_days=fitgirl_recheck_days,
         cancel_event=cancel_event,
     )
 

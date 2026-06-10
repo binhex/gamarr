@@ -48,7 +48,7 @@ class FitGirlSourceConfig(BaseModel):
     platform: str = "pc"
     cache_ttl_hours: int = Field(default=6, gt=0, le=168)
     reject_keywords: list[str] = Field(default_factory=list)
-    pending_days: int = Field(default=60, ge=0)
+    recheck_days: int = Field(default=60, ge=0)
 
 
 class DownloadSitesConfig(BaseModel):
@@ -66,7 +66,7 @@ class MetacriticPlatformConfig(BaseModel):
     min_user_reviews: int = 10
     cache_ttl_days: int = 7
     cache_ttl_hours: int = 6
-    pending_days: int = 30
+    recheck_days: int = 30
     enabled: bool = True
     max_games: int = Field(default=1000, ge=0, le=20000)
     cutoff_weeks: int | None = Field(default=13, ge=0)
@@ -300,6 +300,35 @@ def _migrate_metacritic_exclude_keywords(raw: dict[str, Any]) -> bool:
     return changed
 
 
+def _migrate_pending_days_to_recheck(raw: dict[str, Any]) -> bool:
+    """Rename pending_days to recheck_days in metacritic and fitgirl config sections.
+
+    Returns True if a migration was applied.
+    """
+    changed = False
+    # Check metacritic.platform_overrides.<platform>.pending_days
+    overrides = raw.get("metacritic", {}).get("platform_overrides", {})
+    for platform_key, mc_pc in overrides.items():
+        if isinstance(mc_pc, dict) and "pending_days" in mc_pc and "recheck_days" not in mc_pc:
+            mc_pc["recheck_days"] = mc_pc.pop("pending_days")
+            logger.info(
+                "Config: renamed 'metacritic.platform_overrides.{}.pending_days' to 'recheck_days'",
+                platform_key,
+            )
+            changed = True
+    # Check download_sites.fitgirl.pending_days (also check old sources key)
+    for parent_key in ("download_sites", "sources"):
+        fg = raw.get(parent_key, {}).get("fitgirl", {})
+        if isinstance(fg, dict) and "pending_days" in fg and "recheck_days" not in fg:
+            fg["recheck_days"] = fg.pop("pending_days")
+            logger.info(
+                "Config: renamed '{}.fitgirl.pending_days' to 'recheck_days'",
+                parent_key,
+            )
+            changed = True
+    return changed
+
+
 def _migrate_daemon_mode(raw: dict[str, Any]) -> bool:
     """Migrate deprecated general.daemon_mode to schedule.acquisition.enabled.
 
@@ -335,6 +364,8 @@ def _migrate_config(raw: dict[str, Any]) -> bool:
         if _migrate_fitgirl_exclude_keywords(raw):
             changed = True
         if _migrate_days_since_release(raw):
+            changed = True
+        if _migrate_pending_days_to_recheck(raw):
             changed = True
         if _migrate_metacritic_exclude_keywords(raw):
             changed = True

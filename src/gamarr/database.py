@@ -256,16 +256,16 @@ class Database:
                 row.verify_attempts = 0
                 session.commit()
 
-    def update_pending_expiry(self, slug: str, pending_days: int) -> None:
-        """Recalculate expires_at to now + pending_days for a pending game.
+    def update_pending_expiry(self, slug: str, recheck_days: int) -> None:
+        """Recalculate expires_at to now + recheck_days for a pending game.
 
         Used to extend the expiry window when a game transitions from
         the score-waiting phase to the FitGirl-matching phase.
 
-        When *pending_days* is 0 or negative, the expiry is set to a far
+        When *recheck_days* is 0 or negative, the expiry is set to a far
         future date (~27 years), making the game pend indefinitely.
         """
-        days = 9999 if pending_days <= 0 else pending_days
+        days = 9999 if recheck_days <= 0 else recheck_days
         expires_at = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=days)).isoformat()
         with self._session() as session:
             row = session.get(PendingGame, slug)
