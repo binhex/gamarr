@@ -302,31 +302,31 @@ def _migrate_metacritic_exclude_keywords(raw: dict[str, Any]) -> bool:
     return changed
 
 
+def _rename_pending_days(d: dict[str, Any], label: str) -> bool:
+    """If *d* is a dict with ``pending_days`` (but no ``recheck_days``), rename it.
+
+    Returns True if the rename was applied.
+    """
+    if isinstance(d, dict) and "pending_days" in d and "recheck_days" not in d:
+        d["recheck_days"] = d.pop("pending_days")
+        logger.info("Config: renamed '{}.pending_days' to 'recheck_days'", label)
+        return True
+    return False
+
+
 def _migrate_pending_days_to_recheck(raw: dict[str, Any]) -> bool:
     """Rename pending_days to recheck_days in metacritic and fitgirl config sections.
 
     Returns True if a migration was applied.
     """
     changed = False
-    # Check metacritic.platform_overrides.<platform>.pending_days
     overrides = raw.get("metacritic", {}).get("platform_overrides", {})
     for platform_key, mc_pc in overrides.items():
-        if isinstance(mc_pc, dict) and "pending_days" in mc_pc and "recheck_days" not in mc_pc:
-            mc_pc["recheck_days"] = mc_pc.pop("pending_days")
-            logger.info(
-                "Config: renamed 'metacritic.platform_overrides.{}.pending_days' to 'recheck_days'",
-                platform_key,
-            )
+        if _rename_pending_days(mc_pc, f"metacritic.platform_overrides.{platform_key}"):
             changed = True
-    # Check download_sites.fitgirl.pending_days (also check old sources key)
     for parent_key in ("download_sites", "sources"):
         fg = raw.get(parent_key, {}).get("fitgirl", {})
-        if isinstance(fg, dict) and "pending_days" in fg and "recheck_days" not in fg:
-            fg["recheck_days"] = fg.pop("pending_days")
-            logger.info(
-                "Config: renamed '{}.fitgirl.pending_days' to 'recheck_days'",
-                parent_key,
-            )
+        if _rename_pending_days(fg, f"{parent_key}.fitgirl"):
             changed = True
     return changed
 
@@ -357,22 +357,20 @@ def _migrate_config(raw: dict[str, Any]) -> bool:
     """
     try:
         changed = False
-        # Run sources → download_sites FIRST so downstream migrations
-        # see the new key
-        if _migrate_download_sites(raw):
-            changed = True
-        if _migrate_platform_overrides(raw):
-            changed = True
-        if _migrate_fitgirl_exclude_keywords(raw):
-            changed = True
-        if _migrate_days_since_release(raw):
-            changed = True
-        if _migrate_pending_days_to_recheck(raw):
-            changed = True
-        if _migrate_metacritic_exclude_keywords(raw):
-            changed = True
-        if _migrate_daemon_mode(raw):
-            changed = True
+        # Run migration functions in order.  sources → download_sites
+        # must run first so downstream migrations see the consolidated key.
+        _migrations = [
+            _migrate_download_sites,
+            _migrate_platform_overrides,
+            _migrate_fitgirl_exclude_keywords,
+            _migrate_days_since_release,
+            _migrate_pending_days_to_recheck,
+            _migrate_metacritic_exclude_keywords,
+            _migrate_daemon_mode,
+        ]
+        for fn in _migrations:
+            if fn(raw):
+                changed = True
         return changed
     except Exception as exc:
         logger.warning("Config migration failed: {}", exc)

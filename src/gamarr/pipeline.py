@@ -1345,6 +1345,47 @@ def _deliver_match(
     return record_result
 
 
+def _check_fitgirl_reject_keywords(
+    db: Database,
+    best: dict[str, Any],
+    game_title: str,
+    game_slug: str,
+    reject_keywords: list[str] | None,
+) -> bool:
+    """Check whether a FitGirl match should be skipped due to rejected keywords.
+
+    Returns True if the match should be skipped, keeping the game
+    pending for the next cycle.  Checks the HTML <title> tag first;
+    falls back to the URL-derived sitemap title when the page cannot
+    be fetched.
+    """
+    if not reject_keywords:
+        return False
+    page_title = _fetch_fitgirl_page_title(best["url"])
+    if page_title and _title_contains_keywords(page_title, reject_keywords):
+        logger.info(
+            "Skipping match for '{}' \u2014 FitGirl page title '{}' contains rejected keyword",
+            game_title,
+            page_title,
+        )
+        db.touch_pending(game_slug)
+        return True
+    if page_title is None:
+        logger.warning(
+            "Could not fetch page title for '{}' \u2014 checking sitemap title instead",
+            best["url"],
+        )
+        if _title_contains_keywords(best["title"], reject_keywords):
+            logger.info(
+                "Skipping match for '{}' \u2014 sitemap title '{}' contains rejected keyword",
+                game_title,
+                best["title"],
+            )
+            db.touch_pending(game_slug)
+            return True
+    return False
+
+
 def _process_single_pending_match(
     db: Database,
     mc: Any,
@@ -1385,31 +1426,8 @@ def _process_single_pending_match(
     )
 
     # Skip matches whose FitGirl page title contains rejected keywords.
-    # The sitemap title is URL-derived (clean while the HTML <title> tag
-    # carries repack metadata like "[FitGirl HV Repack]").
-    if reject_keywords:
-        page_title = _fetch_fitgirl_page_title(best["url"])
-        if page_title and _title_contains_keywords(page_title, reject_keywords):
-            logger.info(
-                "Skipping match for '{}' \u2014 FitGirl page title '{}' contains rejected keyword",
-                game_title,
-                page_title,
-            )
-            db.touch_pending(game_slug)
-            return None
-        if page_title is None:
-            logger.warning(
-                "Could not fetch page title for '{}' \u2014 checking sitemap title instead",
-                best["url"],
-            )
-            if _title_contains_keywords(best["title"], reject_keywords):
-                logger.info(
-                    "Skipping match for '{}' \u2014 sitemap title '{}' contains rejected keyword",
-                    game_title,
-                    best["title"],
-                )
-                db.touch_pending(game_slug)
-                return None
+    if _check_fitgirl_reject_keywords(db, best, game_title, game_slug, reject_keywords):
+        return None
 
     # Check library first — skip if already owned
     if library is not None:
