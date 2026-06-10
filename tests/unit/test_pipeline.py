@@ -3893,3 +3893,77 @@ class TestBrowseReviewCountPrefilter:
         }
         result = _reject_by_browse_review_counts(game, min_critic_reviews=0, min_user_reviews=0)
         assert result is None
+
+    def test_process_browse_games_skips_low_review_count_games(self, tmp_path: Path) -> None:
+        """Games with browse-page critic_review_count below threshold
+        should NOT be added to the pending queue by _process_browse_games."""
+        from gamarr.database import Database
+        from gamarr.pipeline import _process_browse_games
+
+        db = Database(str(tmp_path / "test.db"))
+        browse_games = [
+            {
+                "title": "Low Reviews",
+                "slug": "low-reviews",
+                "score": 1478.0,
+                "critic_review_count": 2,   # below threshold 5
+                "user_rating": 2007.0,
+                "user_review_count": 50,
+                "release_date": "2026-06-01",
+            },
+        ]
+        thresholds = {
+            "min_metascore": 75,
+            "min_metascore_reviews": 5,
+            "min_user_score": 7.5,
+            "min_user_reviews": 10,
+        }
+
+        new_count = _process_browse_games(
+            browse_games,
+            platform="pc",
+            db=db,
+            thresholds=thresholds,
+            pending_days=30,
+        )
+        assert new_count == 0, "Low-review-count game should not be added to pending"
+        pending = db.get_pending(platform="pc")
+        assert len(pending) == 0
+        db.close()
+
+    def test_process_browse_games_passes_when_review_counts_unavailable(self, tmp_path: Path) -> None:
+        """Games with None review counts on the browse page should still
+        enter the pending queue (fallback to detail-page verification)."""
+        from gamarr.database import Database
+        from gamarr.pipeline import _process_browse_games
+
+        db = Database(str(tmp_path / "test.db"))
+        browse_games = [
+            {
+                "title": "No Review Data",
+                "slug": "no-review-data",
+                "score": 1478.0,
+                "critic_review_count": None,   # missing from browse data
+                "user_rating": 2007.0,
+                "user_review_count": None,
+                "release_date": "2026-06-01",
+            },
+        ]
+        thresholds = {
+            "min_metascore": 75,
+            "min_metascore_reviews": 5,
+            "min_user_score": 7.5,
+            "min_user_reviews": 10,
+        }
+        new_count = _process_browse_games(
+            browse_games,
+            platform="pc",
+            db=db,
+            thresholds=thresholds,
+            pending_days=30,
+        )
+        assert new_count == 1, "Game with missing review data should enter pending"
+        pending = db.get_pending(platform="pc")
+        assert len(pending) == 1
+        assert pending[0].slug == "no-review-data"
+        db.close()
