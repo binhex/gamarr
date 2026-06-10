@@ -25,7 +25,6 @@ dependencies = [
     "backoff",
     "click",
     "loguru",
-    "daemonize",
     "apprise",
     "pyyaml",
     "requests",

@@ -2438,9 +2438,10 @@ class TestVerifyPendingScoresEdgeCases:
             mc=mock_mc,
             thresholds=thresholds,
         )
-        # Game should be removed (JIT verification failed) — no results
+        # Game should stay pending (transient Metacritic failure —
+        # re-verify on next cycle)
         assert len(matched) == 0
-        assert not db.is_pending("failing-jit"), "Game should be removed from pending"
+        assert db.is_pending("failing-jit"), "Game should stay pending for re-check"
         # qBittorrent should NOT be called
         mock_qbt.add_torrent.assert_not_called()
         db.close()

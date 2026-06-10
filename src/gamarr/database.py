@@ -152,7 +152,7 @@ class Database:
                     session.commit()
                 logger.debug("Added verify_attempts column to pending_games")
         except Exception:
-            pass  # Migration best-effort
+            logger.debug("Migration of pending_games skipped (table may not exist yet)")
 
     def _migrate_game_detail_cache(self) -> None:
         """Add metadata columns to game_detail_cache that were added in newer versions."""
@@ -171,7 +171,7 @@ class Database:
                         session.commit()
                     logger.debug("Added '{}' column to game_detail_cache", col)
         except Exception:
-            pass  # Migration best-effort
+            logger.debug("Migration of game_detail_cache skipped (table may not exist yet)")
 
     def close(self) -> None:
         self._engine.dispose()

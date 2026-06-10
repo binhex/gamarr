@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import re
 import types
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -785,12 +786,12 @@ def _process_verify_result(
 
     matched_title = _reject_by_title(game, reject_title)
     if matched_title is not None:
-        db.increment_verify_attempts(str(game.slug))
+        attempts = db.increment_verify_attempts(str(game.slug))
         _fail_game_after_max_attempts(
             db,
             game,
             result,
-            attempts=0,
+            attempts=attempts,
             result_details=f"Game '{game.game_title}' — title matches reject_title '{matched_title}'",
         )
         return True
@@ -1021,10 +1022,12 @@ def _jit_verify_and_update(
     with the real scores.  If it fails, the game is removed from pending.
 
     Returns a tuple of (metascore, user_score, metascore_reviews,
-    user_reviews, genres, must_play, description) on success, or ``None``
-    when the game was removed.  When *mc* or *thresholds* is not
-    provided, returns an empty tuple ``()`` signalling "use original
-    scores, skip verification".
+    user_reviews, genres, must_play, description) on success (real
+    scores pass thresholds), or ``None`` when the game was removed
+    (confirmed failing scores) or kept pending (transient Metacritic
+    failure).  When *mc* or *thresholds* is not provided, returns an
+    empty tuple ``()`` signalling "use original scores, skip
+    verification".
     """
     if mc is None or thresholds is None:
         return ()
@@ -1034,7 +1037,16 @@ def _jit_verify_and_update(
         slug=game_slug,
         direct_only=True,
     )
-    if jit_result is None or not (_scores_present(jit_result) and _real_scores_pass_thresholds(jit_result, thresholds)):
+    if jit_result is None:
+        # Transient Metacritic failure (timeout, DNS, etc.) \u2014 keep
+        # pending for re-verification on the next cycle.  Removing the
+        # game silently loses a verified, scored, and matched entry.
+        logger.debug(
+            "Keeping '{}' pending \u2014 Metacritic unavailable during JIT verify",
+            game_title,
+        )
+        return None
+    if not (_scores_present(jit_result) and _real_scores_pass_thresholds(jit_result, thresholds)):
         db.remove_pending(game_slug)
         logger.debug(
             "Skipped '{}' \u2014 scores missing or below thresholds",
@@ -1700,9 +1712,7 @@ def _fetch_fitgirl_page_title(url: str) -> str | None:
     except requests.RequestException:
         return None
     # Extract <title> tag content
-    import re as _re  # noqa: PLC0415 — stdlib, cached after first import
-
-    match = _re.search(r"<title[^>]*>(.*?)</title>", resp.text, _re.IGNORECASE | _re.DOTALL)
+    match = re.search(r"<title[^>]*>(.*?)</title>", resp.text, re.IGNORECASE | re.DOTALL)
     if match:
         return match.group(1).strip()
     return None
@@ -1728,8 +1738,6 @@ def _default_magnet_fetcher(url: str) -> str | None:
         logger.warning("Magnet fetch failed for {}: {}", url, exc)
         return None
     # Cache page title for torrent rename (avoids re-fetch)
-    import re as _re  # noqa: PLC0415 — stdlib, cached after first import
-
-    title_match = _re.search(r"<title[^>]*>(.*?)</title>", resp.text, _re.IGNORECASE | _re.DOTALL)
+    title_match = re.search(r"<title[^>]*>(.*?)</title>", resp.text, re.IGNORECASE | re.DOTALL)
     _fitgirl_page_title_cache[url] = title_match.group(1).strip() if title_match else None
     return _extract_magnet_from_html(resp.text)
