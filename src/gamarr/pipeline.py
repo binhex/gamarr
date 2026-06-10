@@ -406,6 +406,36 @@ def _cancel_remaining_futures(futures: list[Any], start: int) -> None:
         remaining_fut.cancel()
 
 
+def _reject_by_browse_review_counts(
+    game: dict[str, Any],
+    min_critic_reviews: int,
+    min_user_reviews: int,
+) -> str | None:
+    """Return a rejection reason string if browse-page review counts
+    are available and below threshold, or None if the game should proceed.
+
+    Only uses browse-page fields that are real counts (not scaled browse
+    metrics).  When a count is None (missing from browse data), the check
+    is skipped and the game proceeds to the detail-page verify phase.
+
+    Args:
+        game: A browse-page game dict from ``_parse_browse_page``.
+        min_critic_reviews: Minimum critic reviews threshold (``min_metascore_reviews``).
+        min_user_reviews: Minimum user reviews threshold (``min_user_reviews``).
+
+    Returns:
+        ``"critic_reviews_too_few_at_browse"``, ``"user_reviews_too_few_at_browse"``,
+        or ``None`` if the game should proceed.
+    """
+    critic_count = game.get("critic_review_count")
+    if critic_count is not None and critic_count < min_critic_reviews:
+        return "critic_reviews_too_few_at_browse"
+    user_count = game.get("user_review_count")
+    if user_count is not None and user_count < min_user_reviews:
+        return "user_reviews_too_few_at_browse"
+    return None
+
+
 def _title_contains_keywords(title: str, keywords: list[str] | None) -> bool:
     """Return True if *title* case-insensitively matches any *keywords*."""
     if not keywords:
