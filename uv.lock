@@ -304,15 +304,6 @@ wheels = [
 ]
 
 [[package]]
-name = "daemonize"
-version = "2.5.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/8c/20/96f7dbc23812cfe4cf479c87af3e4305d0d115fd1fffec32ddeee7b9c82b/daemonize-2.5.0.tar.gz", hash = "sha256:dd026e4ff8d22cb016ed2130bc738b7d4b1da597ef93c074d2adb9e4dea08bc3", size = 8759, upload-time = "2018-12-12T19:47:39.57Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/45/ad/1b20db02287afd40d3130a218ac5ce2f7d2ab581cfda29bada5e1c4bee17/daemonize-2.5.0-py2.py3-none-any.whl", hash = "sha256:9b6b91311a9d934ff3f5f766666635ca280d3de8e7137e4cd7d3f052543b989f", size = 5231, upload-time = "2018-12-12T19:47:37.831Z" },
-]
-
-[[package]]
 name = "distlib"
 version = "0.4.0"
 source = { registry = "https://pypi.org/simple" }
@@ -340,7 +331,6 @@ dependencies = [
     { name = "backoff" },
     { name = "beautifulsoup4" },
     { name = "click" },
-    { name = "daemonize" },
     { name = "loguru" },
     { name = "lxml" },
     { name = "pydantic" },
@@ -372,7 +362,6 @@ requires-dist = [
     { name = "backoff" },
     { name = "beautifulsoup4" },
     { name = "click" },
-    { name = "daemonize" },
     { name = "loguru" },
     { name = "lxml" },
     { name = "pydantic", specifier = ">=2.0.0" },

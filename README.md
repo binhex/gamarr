@@ -257,7 +257,7 @@ flowchart TD
 The codebase is structured as a **Metacritic-first** pipeline:
 
 ```text
-metacritic.py  →  pipeline.py  →  sources/fitgirl.py  →  qbittorrent.py  
+metacritic.py  →  pipeline.py  →  sources/fitgirl.py  →  qbittorrent.py
 _(Note: `sources/` is the Python package name for download site implementations — distinct from the config key.)
        ↓              ↓                   ↓                    ↓
    Browse new    Score filter +      Sitemap match         Add torrent
