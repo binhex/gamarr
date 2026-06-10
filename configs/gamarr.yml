@@ -33,7 +33,7 @@ metacritic:
       recheck_days: 30
       enabled: true
       max_games: 0
-      cutoff_weeks: 16
+      cutoff_weeks: 4
       reject_genre:
       - novel
       - card
