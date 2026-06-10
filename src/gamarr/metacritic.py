@@ -801,10 +801,9 @@ class MetacriticClient:
 
         n_pages = max(page_number - 1, 0)
         logger.info(
-            "Scanned {} Metacritic page(s) — collected {} games with browse-only scores (limit: {})",
+            "Scanned {} Metacritic page(s) — collected {} games",
             n_pages,
             len(all_games),
-            max_games,
         )
 
         return all_games
