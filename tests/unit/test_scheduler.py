@@ -64,7 +64,7 @@ def _make_config(acquisition_enabled: bool = False) -> Config:
         QbittorrentConfig,
         ScheduleConfig,
         ScheduleTaskConfig,
-        SourcesConfig,
+        DownloadSitesConfig,
         TorrentClientConfig,
     )
 
@@ -73,7 +73,7 @@ def _make_config(acquisition_enabled: bool = False) -> Config:
         schedule=ScheduleConfig(
             acquisition=ScheduleTaskConfig(enabled=acquisition_enabled, schedule_time_mins=60, run_on_start=True),
         ),
-        sources=SourcesConfig(
+        download_sites=DownloadSitesConfig(
             fitgirl=FitGirlSourceConfig(enabled=True, rss_url="http://example.com/feed", platform="pc"),
         ),
         metacritic=MetacriticConfig(
@@ -130,7 +130,7 @@ class TestBuildKwargs:
             QbittorrentConfig,
             ScheduleConfig,
             ScheduleTaskConfig,
-            SourcesConfig,
+            DownloadSitesConfig,
             TorrentClientConfig,
         )
         from gamarr.scheduler import _build_kwargs
@@ -140,7 +140,7 @@ class TestBuildKwargs:
             schedule=ScheduleConfig(
                 acquisition=ScheduleTaskConfig(enabled=True, schedule_time_mins=60),
             ),
-            sources=SourcesConfig(
+            download_sites=DownloadSitesConfig(
                 fitgirl=FitGirlSourceConfig(enabled=True, rss_url="http://example.com/feed"),
             ),
             metacritic=MetacriticConfig(
@@ -183,8 +183,8 @@ class TestDaemonMode:
                 config.metacritic.platform_overrides["pc"].days_since_release = 90
                 config.metacritic.platform_overrides["pc"].cache_ttl_days = 7
                 config.metacritic.platform_overrides["pc"].cache_ttl_hours = 4
-                config.sources.fitgirl.rss_url = "http://example.com/feed"
-                config.sources.fitgirl.platform = "pc"
+                config.download_sites.fitgirl.rss_url = "http://example.com/feed"
+                config.download_sites.fitgirl.platform = "pc"
                 config.general.db_path = ":memory:"
                 config.torrent_client.qbittorrent.host = "localhost"
                 config.torrent_client.qbittorrent.port = 8080
@@ -229,8 +229,8 @@ class TestDaemonMode:
             config.metacritic.platform_overrides["pc"].days_since_release = 90
             config.metacritic.platform_overrides["pc"].cache_ttl_days = 7
             config.metacritic.platform_overrides["pc"].cache_ttl_hours = 4
-            config.sources.fitgirl.rss_url = "http://example.com/feed"
-            config.sources.fitgirl.platform = "pc"
+            config.download_sites.fitgirl.rss_url = "http://example.com/feed"
+            config.download_sites.fitgirl.platform = "pc"
             config.general.db_path = ":memory:"
             config.torrent_client.qbittorrent.host = "localhost"
             config.torrent_client.qbittorrent.port = 8080

@@ -181,7 +181,7 @@ class TestConfigModels:
     def test_root_config_defaults(self) -> None:
         cfg = Config()
         assert cfg.general.daemon_mode == "foreground"
-        assert cfg.sources.fitgirl.enabled is True
+        assert cfg.download_sites.fitgirl.enabled is True
         assert cfg.metacritic.platform_overrides["pc"].min_metascore == 75
         assert cfg.torrent_client.selected == "qbittorrent"
 
@@ -234,8 +234,44 @@ class TestLoadConfig:
         }
         result = _migrate_config(raw)
         assert result is True, "Should return True because migration ran"
-        assert "reject_keywords" in raw["sources"]["fitgirl"]
-        assert "exclude_keywords" not in raw["sources"]["fitgirl"]
+        assert "sources" not in raw, "Old sources key should be removed by sources→download_sites migration"
+        assert "reject_keywords" in raw["download_sites"]["fitgirl"]
+        assert "exclude_keywords" not in raw["download_sites"]["fitgirl"]
+
+    def test_migrate_sources_to_download_sites(self) -> None:
+        """Old sources key is migrated to download_sites."""
+        from typing import Any
+
+        from gamarr.config import _migrate_config
+
+        raw: dict[str, Any] = {
+            "sources": {"fitgirl": {"reject_keywords": ["hv"]}},
+            "metacritic": {"platform_overrides": {"pc": {}}},
+        }
+        result = _migrate_config(raw)
+        assert result is True
+        assert "sources" not in raw, "Old sources key should be removed"
+        assert "download_sites" in raw, "New download_sites key should exist"
+        assert raw["download_sites"]["fitgirl"]["reject_keywords"] == ["hv"]
+        # Other fitgirl defaults (enabled, rss_url, etc.) are added by _deep_merge
+        # with _default_config_dict during load_config, not by the raw migration
+
+    def test_migrate_sources_to_download_sites_both_exist(self) -> None:
+        """When both old sources and new download_sites exist, merge and drop sources."""
+        from typing import Any
+
+        from gamarr.config import _migrate_config
+
+        raw: dict[str, Any] = {
+            "sources": {"fitgirl": {"new_key": "old_val"}},
+            "download_sites": {"fitgirl": {"existing_key": "existing_val"}},
+            "metacritic": {"platform_overrides": {"pc": {}}},
+        }
+        result = _migrate_config(raw)
+        assert result is True
+        assert "sources" not in raw
+        assert raw["download_sites"]["fitgirl"]["existing_key"] == "existing_val"
+        assert raw["download_sites"]["fitgirl"]["new_key"] == "old_val"
 
     def test_migrate_config_returns_false_on_no_change(self) -> None:
         """_migrate_config should return False when nothing to migrate."""
@@ -244,7 +280,7 @@ class TestLoadConfig:
         from gamarr.config import _migrate_config
 
         raw: dict[str, Any] = {
-            "sources": {"fitgirl": {"reject_keywords": ["hv"]}},
+            "download_sites": {"fitgirl": {"reject_keywords": ["hv"]}},
             "metacritic": {"platform_overrides": {"pc": {}}},
         }
         result = _migrate_config(raw)
@@ -282,7 +318,7 @@ class TestLoadConfig:
         config_file.write_text("")
         cfg = load_config(str(config_file))
         assert cfg.general.daemon_mode == "foreground"
-        assert cfg.sources.fitgirl.enabled is True
+        assert cfg.download_sites.fitgirl.enabled is True
 
     def test_missing_optional_key_uses_default(self, tmp_path: Path) -> None:
         config_dir = tmp_path / "configs"

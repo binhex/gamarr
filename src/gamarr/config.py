@@ -51,8 +51,8 @@ class FitGirlSourceConfig(BaseModel):
     pending_days: int = Field(default=60, ge=0)
 
 
-class SourcesConfig(BaseModel):
-    """Aggregated source configurations."""
+class DownloadSitesConfig(BaseModel):
+    """Aggregated download site configurations."""
 
     fitgirl: FitGirlSourceConfig = Field(default_factory=FitGirlSourceConfig)
 
@@ -131,7 +131,7 @@ class Config(BaseModel):
 
     general: GeneralConfig = Field(default_factory=GeneralConfig)
     schedule: ScheduleConfig = Field(default_factory=ScheduleConfig)
-    sources: SourcesConfig = Field(default_factory=SourcesConfig)
+    download_sites: DownloadSitesConfig = Field(default_factory=DownloadSitesConfig)
     metacritic: MetacriticConfig = Field(default_factory=MetacriticConfig)
     torrent_client: TorrentClientConfig = Field(default_factory=TorrentClientConfig)
     notification: NotificationConfig = Field(default_factory=NotificationConfig)
@@ -217,20 +217,42 @@ def _migrate_platform_overrides(raw: dict[str, Any]) -> bool:
     return changed
 
 
-def _migrate_fitgirl_exclude_keywords(raw: dict[str, Any]) -> bool:
-    """Rename sources.fitgirl.exclude_keywords to reject_keywords.
+def _migrate_download_sites(raw: dict[str, Any]) -> bool:
+    """Rename old sources key to download_sites.
 
     Returns True if a migration was applied.
     """
-    fg = raw.get("sources", {}).get("fitgirl", {})
-    if not isinstance(fg, dict) or "exclude_keywords" not in fg:
+    if "sources" not in raw:
         return False
-    if "reject_keywords" not in fg:
-        fg["reject_keywords"] = fg.pop("exclude_keywords")
-        logger.info("Config: migrated 'sources.fitgirl.exclude_keywords' to 'sources.fitgirl.reject_keywords'")
+    if "download_sites" not in raw:
+        raw["download_sites"] = raw.pop("sources")
+        logger.info("Config: migrated 'sources' to 'download_sites'")
         return True
-    del fg["exclude_keywords"]
+    # Both exist — deep-merge sources into download_sites and drop sources
+    old_sources = raw.pop("sources")
+    if isinstance(old_sources, dict):
+        raw["download_sites"] = _deep_merge(raw["download_sites"], old_sources)
+    logger.info("Config: merged 'sources' into 'download_sites'")
     return True
+
+
+def _migrate_fitgirl_exclude_keywords(raw: dict[str, Any]) -> bool:
+    """Rename fitgirl.exclude_keywords to reject_keywords.
+
+    Checks under both old (sources) and new (download_sites) keys.
+    Returns True if a migration was applied.
+    """
+    for parent_key in ("download_sites", "sources"):
+        fg = raw.get(parent_key, {}).get("fitgirl", {})
+        if not isinstance(fg, dict) or "exclude_keywords" not in fg:
+            continue
+        if "reject_keywords" not in fg:
+            fg["reject_keywords"] = fg.pop("exclude_keywords")
+            logger.info("Config: migrated '{}.fitgirl.exclude_keywords' to 'reject_keywords'", parent_key)
+            return True
+        del fg["exclude_keywords"]
+        return True
+    return False
 
 
 def _migrate_metacritic_exclude_keywords(raw: dict[str, Any]) -> bool:
@@ -277,6 +299,10 @@ def _migrate_config(raw: dict[str, Any]) -> bool:
     """
     try:
         changed = False
+        # Run sources → download_sites FIRST so downstream migrations
+        # see the new key
+        if _migrate_download_sites(raw):
+            changed = True
         if _migrate_platform_overrides(raw):
             changed = True
         if _migrate_fitgirl_exclude_keywords(raw):
