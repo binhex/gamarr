@@ -91,8 +91,8 @@ class TestQBittorrentConnectivity:
 class TestQBittorrentRename:
     """Torrent rename on add."""
 
-    def test_add_torrent_renames_to_title(self) -> None:
-        """torrents_rename is called with the correct hash and title."""
+    def test_add_torrent_renames_via_add_param(self) -> None:
+        """torrents_add is called with rename=<title> when title is provided."""
         client = QBittorrentClient()
         with patch.object(client, "_client") as mock_client:
             mock_client.torrents_add.return_value = "Ok."
@@ -105,14 +105,19 @@ class TestQBittorrentRename:
             assert result is not False
             assert isinstance(result, str)
             assert result.startswith("gamarr-")
-            mock_client.torrents_rename.assert_called_once_with(
-                torrent_hash="abc123",
-                new_torrent_name="Elden Ring",
+            # Should pass rename= to torrents_add (not use separate rename call)
+            mock_client.torrents_add.assert_called_once_with(
+                urls="magnet:?xt=urn:btih:abc",
+                category="games-gamarr",
+                is_paused=False,
+                tags=result,
+                rename="Elden Ring",
             )
-            mock_client.torrents_reannounce.assert_called_once()
+            # No separate torrents_rename call needed
+            mock_client.torrents_rename.assert_not_called()
 
     def test_add_torrent_skips_rename_when_no_title(self) -> None:
-        """No rename call when title is empty."""
+        """No rename param when title is empty."""
         client = QBittorrentClient()
         with patch.object(client, "_client") as mock_client:
             mock_client.torrents_add.return_value = "Ok."
@@ -123,26 +128,9 @@ class TestQBittorrentRename:
                 title="",
             )
             assert result is not False
-            mock_client.torrents_rename.assert_not_called()
-            mock_client.torrents_reannounce.assert_called_once()
-
-    def test_add_torrent_rename_failure_continues(self) -> None:
-        """Rename failure is caught, torrent is still reannounced."""
-        import qbittorrentapi
-
-        client = QBittorrentClient()
-        with patch.object(client, "_client") as mock_client:
-            mock_client.torrents_add.return_value = "Ok."
-            mock_client.torrents_info.return_value = [MagicMock(hash="abc123")]
-            mock_client.torrents_rename.side_effect = qbittorrentapi.APIError("rename failed")
-
-            result = client.add_torrent(
-                magnet_url="magnet:?xt=urn:btih:abc",
-                title="Elden Ring",
-            )
-            assert result is not False
-            mock_client.torrents_rename.assert_called_once()
-            # Should still reannounce despite rename failure
+            # Should NOT include rename param when title is empty
+            args, kwargs = mock_client.torrents_add.call_args
+            assert "rename" not in kwargs or kwargs["rename"] is None
             mock_client.torrents_reannounce.assert_called_once()
 
     def test_add_torrent_skips_rename_for_whitespace_title(self) -> None:
@@ -157,7 +145,9 @@ class TestQBittorrentRename:
                 title="   ",
             )
             assert result is not False
-            mock_client.torrents_rename.assert_not_called()
+            # Should NOT include rename param for whitespace title
+            args, kwargs = mock_client.torrents_add.call_args
+            assert "rename" not in kwargs or kwargs["rename"] is None
             mock_client.torrents_reannounce.assert_called_once()
 
     def test_add_torrent_info_failure_skips_post_add(self) -> None:

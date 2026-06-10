@@ -60,9 +60,10 @@ class QBittorrentClient:
     def add_torrent(self, magnet_url: str, title: str = "") -> str | bool:
         """Add a magnet link to qBittorrent and return a unique tag.
 
-        When *title* is provided, the torrent is renamed to *title* after
-        addition (so the user sees the game name, not a magnet SHA hash).
-        Whitespace-only titles are treated as empty (rename skipped).
+        When *title* is provided, the torrent's display name is set to
+        *title* at add time via the ``rename`` parameter (so the user
+        sees the game name, not a magnet SHA hash).  Whitespace-only
+        titles are treated as empty (rename skipped).
 
         Returns a gamarr-{uuid} tag string on success, or False on failure.
         """
@@ -70,13 +71,21 @@ class QBittorrentClient:
             return False
 
         tag = f"{_TAG_PREFIX}{uuid.uuid4()}"
+        # Pass rename= to torrents_add so qBittorrent sets the display name
+        # immediately. A separate torrents_rename call won't work because
+        # the torrent hasn't appeared in the list yet (magnet is still
+        # resolving when added via URL).
+        add_kwargs = {
+            "urls": magnet_url,
+            "category": self._category,
+            "is_paused": self._add_paused,
+            "tags": tag,
+        }
+        if title and title.strip():
+            add_kwargs["rename"] = title
+
         try:
-            self._client.torrents_add(
-                urls=magnet_url,
-                category=self._category,
-                is_paused=self._add_paused,
-                tags=tag,
-            )
+            self._client.torrents_add(**add_kwargs)
             logger.info("Added torrent '{}' with tag '{}'", title, tag)
         except Exception as exc:
             logger.warning("Failed to add torrent '{}': {}", title, exc)
@@ -85,18 +94,8 @@ class QBittorrentClient:
         try:
             infos = self._client.torrents_info(tag=tag)
             if infos:
-                h = str(infos[0].hash)
-                if title and title.strip():
-                    try:
-                        self._client.torrents_rename(
-                            torrent_hash=h,
-                            new_torrent_name=title,
-                        )
-                        logger.info("Renamed torrent to '{}'", title)
-                    except Exception as exc:
-                        logger.warning("Failed to rename torrent '{}': {}", title, exc)
-                self._client.torrents_reannounce(torrent_hashes=h)
+                self._client.torrents_reannounce(torrent_hashes=str(infos[0].hash))
         except Exception as exc:
-            logger.warning("Post-add operations failed for '{}': {}; continuing.", title, exc)
+            logger.warning("Reannounce failed for '{}': {}; continuing.", title, exc)
 
         return tag
