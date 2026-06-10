@@ -3822,3 +3822,74 @@ class TestCancellation:
         mock_mc.lookup_game.assert_not_called()
         mock_source.fetch_sitemap.assert_not_called()
         assert results == []
+
+
+class TestBrowseReviewCountPrefilter:
+    """_reject_by_browse_review_counts function."""
+
+    def test_returns_none_when_both_counts_missing(self) -> None:
+        """When both critic_review_count and user_review_count are None
+        (not available in browse data), the function should return None
+        so the game proceeds to detail-page verification as before."""
+        from gamarr.pipeline import _reject_by_browse_review_counts
+
+        game: dict[str, Any] = {
+            "title": "Test Game",
+            "slug": "test-game",
+            "critic_review_count": None,
+            "user_review_count": None,
+        }
+        result = _reject_by_browse_review_counts(game, min_critic_reviews=5, min_user_reviews=10)
+        assert result is None
+
+    def test_returns_none_when_counts_sufficient(self) -> None:
+        """When both counts meet or exceed thresholds, return None."""
+        from gamarr.pipeline import _reject_by_browse_review_counts
+
+        game: dict[str, Any] = {
+            "title": "Popular Game",
+            "slug": "popular-game",
+            "critic_review_count": 20,
+            "user_review_count": 50,
+        }
+        result = _reject_by_browse_review_counts(game, min_critic_reviews=5, min_user_reviews=10)
+        assert result is None
+
+    def test_returns_reason_when_critic_count_too_low(self) -> None:
+        """When critic_review_count is below min_critic_reviews, return the reason string."""
+        from gamarr.pipeline import _reject_by_browse_review_counts
+
+        game: dict[str, Any] = {
+            "title": "Obscure Game",
+            "slug": "obscure-game",
+            "critic_review_count": 2,
+            "user_review_count": 0,
+        }
+        result = _reject_by_browse_review_counts(game, min_critic_reviews=5, min_user_reviews=10)
+        assert result == "critic_reviews_too_few_at_browse"
+
+    def test_returns_reason_when_user_count_too_low(self) -> None:
+        """When user_review_count is below min_user_reviews (and critic count is fine), return reason."""
+        from gamarr.pipeline import _reject_by_browse_review_counts
+
+        game: dict[str, Any] = {
+            "title": "Unreviewed Game",
+            "slug": "unreviewed-game",
+            "critic_review_count": 20,
+            "user_review_count": 3,
+        }
+        result = _reject_by_browse_review_counts(game, min_critic_reviews=5, min_user_reviews=10)
+        assert result == "user_reviews_too_few_at_browse"
+
+    def test_ignores_zero_threshold(self) -> None:
+        """When min thresholds are 0 (disabled), function should never reject."""
+        from gamarr.pipeline import _reject_by_browse_review_counts
+
+        game: dict[str, Any] = {
+            "title": "Zero Reviews Game",
+            "slug": "zero-review-game",
+            "critic_review_count": 0,
+            "user_review_count": 0,
+        }
+        result = _reject_by_browse_review_counts(game, min_critic_reviews=0, min_user_reviews=0)
+        assert result is None
