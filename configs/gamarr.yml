@@ -1,5 +1,5 @@
 general:
-  config_version: 1.11.0
+  config_version: 1.12.0
   daemon_mode: foreground
   log_level_console: INFO
   log_level_file: INFO
@@ -12,7 +12,7 @@ schedule:
     enabled: true
     schedule_time_mins: 60
     run_on_start: true
-sources:
+download_sites:
   fitgirl:
     enabled: true
     rss_url: https://fitgirl-repacks.site/feed/

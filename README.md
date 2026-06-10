@@ -23,7 +23,7 @@ sitemap, and sends qualifying games to qBittorrent.
   for re-verification, up to a configurable maximum number of attempts.
 - **Two-phase pending expiry** — games awaiting score review expire after
   `pending_days` (under metacritic thresholds). Once scores pass, a fresh
-  expiry window (`sources.fitgirl.pending_days`) starts for the
+  expiry window (`download_sites.fitgirl.pending_days`) starts for the
   FitGirl-matching phase. Set either value to `0` for indefinite pending.
 - **FitGirl sitemap matching** — fetches the FitGirl repacks sitemap only
   when there are verified games to match against.
@@ -109,7 +109,7 @@ on first run. The file is divided into the sections below.
 | `acquisition.schedule_time_mins` | Interval in minutes between acquisition cycles. | `60` |
 | `acquisition.run_on_start` | Run acquisition immediately on start, before the first interval. | `true` |
 
-### `sources`
+### `download_sites`
 
 | Key | Description | Default |
 | --- | ----------- | ------- |
@@ -237,7 +237,7 @@ flowchart TD
    against configured thresholds. Games whose real scores fail the checks
    are kept for re-verification.
    **When scores pass**, the game's expiry is recalculated to
-   `now + sources.fitgirl.pending_days` (default 60, or `0` for
+   `now + download_sites.fitgirl.pending_days` (default 60, or `0` for
    indefinite), giving it a fresh window for the FitGirl-matching phase.
 5. **Genre rejection** — Before score verification, the game's genres
    (extracted from the detail page) are checked against `reject_genre`.
@@ -258,7 +258,8 @@ flowchart TD
 The codebase is structured as a **Metacritic-first** pipeline:
 
 ```text
-metacritic.py  →  pipeline.py  →  sources/fitgirl.py  →  qbittorrent.py
+metacritic.py  →  pipeline.py  →  sources/fitgirl.py  →  qbittorrent.py  
+_(Note: `sources/` is the Python package name for download site implementations — distinct from the config key.)
        ↓              ↓                   ↓                    ↓
    Browse new    Score filter +      Sitemap match         Add torrent
    releases      pending queue       + magnet fetch
@@ -292,10 +293,10 @@ uv run pytest
 
 ## FAQ
 
-**Q: What sources are supported?**
+**Q: What download sites are supported?**
 
 **A:** Currently FitGirl repacks RSS. The architecture supports adding more
-sources (Jackett/Prowlarr, Dodi, Ankergames) via the `BaseSource` protocol.
+download sites (Jackett/Prowlarr, Dodi, Ankergames) via the `BaseSource` protocol.
 
 **Q: Can I add Nintendo Switch games?**
 

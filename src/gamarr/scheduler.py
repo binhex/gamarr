@@ -65,12 +65,12 @@ def run(config: Config) -> None:
 def _build_kwargs(config: Config) -> dict[str, Any]:
     """Extract acquisition pipeline kwargs from the config."""
     mc_cfg = config.metacritic.platform_overrides.get(
-        config.sources.fitgirl.platform,
+        config.download_sites.fitgirl.platform,
         config.metacritic.platform_overrides["pc"],
     )
     return {
-        "fitgirl_rss_url": config.sources.fitgirl.rss_url,
-        "platform": config.sources.fitgirl.platform,
+        "fitgirl_rss_url": config.download_sites.fitgirl.rss_url,
+        "platform": config.download_sites.fitgirl.platform,
         "db_path": config.general.db_path,
         "qbt_host": config.torrent_client.qbittorrent.host,
         "qbt_port": config.torrent_client.qbittorrent.port,
@@ -96,9 +96,9 @@ def _build_kwargs(config: Config) -> dict[str, Any]:
         "notify_on_failure": config.notification.on_failure,
         "notify_on_error": config.notification.on_error,
         "notify_on_scrape_failure": config.notification.on_scrape_failure,
-        "fitgirl_cache_ttl_hours": config.sources.fitgirl.cache_ttl_hours,
-        "fitgirl_reject_keywords": config.sources.fitgirl.reject_keywords,
-        "fitgirl_pending_days": config.sources.fitgirl.pending_days,
+        "fitgirl_cache_ttl_hours": config.download_sites.fitgirl.cache_ttl_hours,
+        "fitgirl_reject_keywords": config.download_sites.fitgirl.reject_keywords,
+        "fitgirl_pending_days": config.download_sites.fitgirl.pending_days,
         "library_paths": config.library.paths,
     }
 
