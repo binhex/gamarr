@@ -64,7 +64,6 @@ class MetacriticPlatformConfig(BaseModel):
     min_metascore_reviews: int = 10
     min_user_score: float = 7.5
     min_user_reviews: int = 10
-    days_since_release: int = 90
     cache_ttl_days: int = 7
     cache_ttl_hours: int = 6
     pending_days: int = 30
@@ -257,6 +256,25 @@ def _migrate_fitgirl_exclude_keywords(raw: dict[str, Any]) -> bool:
     return False
 
 
+def _migrate_days_since_release(raw: dict[str, Any]) -> bool:
+    """Remove deprecated days_since_release from metacritic.platform_overrides.
+
+    cutoff_weeks replaces this field (same purpose, weeks not days).
+    Returns True if a migration was applied.
+    """
+    changed = False
+    overrides = raw.get("metacritic", {}).get("platform_overrides", {})
+    for platform_key, mc_pc in overrides.items():
+        if isinstance(mc_pc, dict) and "days_since_release" in mc_pc:
+            logger.info(
+                "Config: removing deprecated 'days_since_release' for platform '{}' — use cutoff_weeks instead",
+                platform_key,
+            )
+            del mc_pc["days_since_release"]
+            changed = True
+    return changed
+
+
 def _migrate_metacritic_exclude_keywords(raw: dict[str, Any]) -> bool:
     """Remove deprecated exclude_keywords from metacritic.platform_overrides.
 
@@ -308,6 +326,8 @@ def _migrate_config(raw: dict[str, Any]) -> bool:
         if _migrate_platform_overrides(raw):
             changed = True
         if _migrate_fitgirl_exclude_keywords(raw):
+            changed = True
+        if _migrate_days_since_release(raw):
             changed = True
         if _migrate_metacritic_exclude_keywords(raw):
             changed = True

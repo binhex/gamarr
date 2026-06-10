@@ -82,7 +82,6 @@ def _build_kwargs(config: Config) -> dict[str, Any]:
         "min_metascore_reviews": mc_cfg.min_metascore_reviews,
         "min_user_score": mc_cfg.min_user_score,
         "min_user_reviews": mc_cfg.min_user_reviews,
-        "days_since_release": mc_cfg.days_since_release,
         "cache_ttl_days": mc_cfg.cache_ttl_days,
         "cache_ttl_hours": mc_cfg.cache_ttl_hours,
         "enabled": mc_cfg.enabled,

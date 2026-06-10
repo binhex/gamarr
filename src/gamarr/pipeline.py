@@ -100,7 +100,6 @@ class AcquisitionConfig:
     min_metascore_reviews: int
     min_user_score: float
     min_user_reviews: int
-    days_since_release: int
     cache_ttl_days: int = 7
     cache_ttl_hours: int = 6
     enabled: bool = True
@@ -108,9 +107,13 @@ class AcquisitionConfig:
     max_games: int = 1000
     cutoff_weeks: int | None = None
     reject_genre: list[str] | None = None
-    reject_title: list[str] | None = None  # ← new
+    reject_title: list[str] | None = None
     fitgirl_pending_days: int = 60
     notify_on_scrape_failure: bool = True
+
+    def _age_days(self) -> int:
+        """Return the age filter in days, derived from cutoff_weeks."""
+        return (self.cutoff_weeks or 0) * 7
 
 
 def _is_below_threshold(value: float | None, threshold: float) -> bool:
@@ -146,7 +149,7 @@ def _evaluate_scores(
     if _is_below_threshold(mc_result.user_review_count, cfg.min_user_reviews):
         return "user_reviews_too_few"
 
-    if _is_older_than(getattr(mc_result, "release_date", None), cfg.days_since_release):
+    if _is_older_than(getattr(mc_result, "release_date", None), cfg._age_days()):
         return "release_date_too_old"
 
     return "Passed"
@@ -167,15 +170,14 @@ def run_acquisition(
     min_metascore_reviews: int = 10,
     min_user_score: float = 7.5,
     min_user_reviews: int = 10,
-    days_since_release: int = 90,
     cache_ttl_days: int = 7,
     cache_ttl_hours: int = 6,
     enabled: bool = True,
     pending_days: int = 30,
+    cutoff_weeks: int | None = None,
     fitgirl_pending_days: int = 60,
     notify_on_scrape_failure: bool = True,
     max_games: int = 1000,
-    cutoff_weeks: int | None = None,
     reject_genre: list[str] | None = None,
     reject_title: list[str] | None = None,  # ← new
     apprise_urls: list[str] | None = None,
@@ -200,15 +202,14 @@ def run_acquisition(
         min_metascore_reviews=min_metascore_reviews,
         min_user_score=min_user_score,
         min_user_reviews=min_user_reviews,
-        days_since_release=days_since_release,
         cache_ttl_days=cache_ttl_days,
         cache_ttl_hours=cache_ttl_hours,
         enabled=enabled,
         pending_days=pending_days,
+        cutoff_weeks=cutoff_weeks,
         fitgirl_pending_days=fitgirl_pending_days,
         notify_on_scrape_failure=notify_on_scrape_failure,
         max_games=max_games,
-        cutoff_weeks=cutoff_weeks,
         reject_genre=reject_genre,
         reject_title=reject_title,  # ← new
     )
@@ -297,7 +298,7 @@ def run_acquisition(
                     db,
                     thresholds,
                     pending_days=cfg.pending_days,
-                    days_since_release=cfg.days_since_release,
+                    days_since_release=cfg._age_days(),
                     reject_title=cfg.reject_title,  # ← new
                 )
                 if new_pending:

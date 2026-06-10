@@ -75,7 +75,8 @@ class TestConfigModels:
         cfg = MetacriticPlatformConfig()
         assert cfg.min_metascore == 75
         assert cfg.min_user_score == 7.5
-        assert cfg.days_since_release == 90
+        assert not hasattr(cfg, "days_since_release"), "Field was removed"
+        assert cfg.cutoff_weeks is None
         assert cfg.max_games == 1000
 
     def test_migrate_config_renames_browse_keys(self) -> None:
@@ -285,6 +286,25 @@ class TestLoadConfig:
         }
         result = _migrate_config(raw)
         assert result is False, "Should return False because no migration needed"
+
+    def test_migrate_days_since_release_removes_field(self) -> None:
+        """Old days_since_release in metacritic.platform_overrides is removed."""
+        from typing import Any
+
+        from gamarr.config import _migrate_config
+
+        raw: dict[str, Any] = {
+            "metacritic": {
+                "platform_overrides": {
+                    "pc": {"days_since_release": 90, "cutoff_weeks": 12},
+                },
+            },
+        }
+        result = _migrate_config(raw)
+        assert result is True
+        pc = raw["metacritic"]["platform_overrides"]["pc"]
+        assert "days_since_release" not in pc
+        assert pc["cutoff_weeks"] == 12
 
     def test_migrate_metacritic_exclude_keywords_returns_true(self) -> None:
         """_migrate_metacritic_exclude_keywords should return True when it deletes a key."""

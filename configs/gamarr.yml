@@ -1,5 +1,5 @@
 general:
-  config_version: 1.12.0
+  config_version: 1.13.0
   daemon_mode: foreground
   log_level_console: INFO
   log_level_file: INFO
@@ -28,7 +28,6 @@ metacritic:
       min_metascore_reviews: 10
       min_user_score: 8.0
       min_user_reviews: 10
-      days_since_release: 120
       cache_ttl_days: 7
       cache_ttl_hours: 6
       pending_days: 30

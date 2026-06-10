@@ -130,13 +130,12 @@ on first run. The file is divided into the sections below.
 | `min_metascore_reviews` | Minimum number of critic reviews required. | `10` |
 | `min_user_score` | Minimum Metacritic user score (0–10). | `7.5` |
 | `min_user_reviews` | Minimum number of user reviews required. | `10` |
-| `days_since_release` | Maximum age in days since release. Games older are rejected. | `90` |
+| `cutoff_weeks` | Look-back window in weeks from today. Games released before this are skipped. `null` or `0` = no cutoff. | `null` |
 | `enabled` | Enable or disable the Metacritic browse step. Disabling skips game discovery entirely. | `true` |
 | `max_games` | Maximum number of games to scan per cycle (0 = unlimited). | `1000` |
 | `pending_days` | Days a game stays in the pending queue before expiring. `0` = indefinite pending (no expiry). | `30` |
 | `cache_ttl_days` | Days to cache Metacritic detail-page results. | `7` |
 | `cache_ttl_hours` | Hours to cache Metacritic browse-page results. | `6` |
-| `cutoff_weeks` | Look-back window in weeks from today. Games released before this are skipped. `null` or `0` = no cutoff. | `null` |
 | `reject_genre` | Reject games whose Metacritic genre contains any of these substrings (case-insensitive). E.g. `["RPG"]` matches "Action RPG", "JRPG", "Western RPG". | `[]` |
 | `reject_title` | Reject games whose title contains any of these substrings (case-insensitive). E.g. `["Remake"]` matches "Resident Evil 4 Remake", "Remake Collection". | `[]` |
 
