@@ -453,25 +453,22 @@ def _title_matches_reject(title: str, reject_title: list[str] | None) -> bool:
 
 
 def _game_passes_thresholds(game: dict[str, Any], thresholds: dict[str, Any]) -> bool:
-    """Check if a browse-page game dict passes all score thresholds."""
+    """Check if a browse-page game dict passes all score thresholds.
+
+    Note: browse-page ``score`` and ``user_rating`` fields are internal
+    metrics on a different scale (e.g. 1478), not real 0-100 metascores
+    or 0-10 user scores.  Real score verification happens during the
+    detail-page phase.  Review count filtering is now handled by
+    ``_reject_by_browse_review_counts`` in ``_process_browse_games``.
+    """
     metascore = game.get("score")
     user_score = game.get("user_rating")
     if metascore is None or user_score is None:
         return False
-    # ``critic_review_count`` and ``user_review_count`` are not always
-    # available in the Metacritic browse page Nuxt data (the browse
-    # listing only carries ``criticScoreSummary.score`` and
-    # ``userScore.score``).  When the field is missing we skip that
-    # specific check rather than treating it as 0, which would silently
-    # drop every browse-page game.
-    critic_reviews = game.get("critic_review_count")
-    user_reviews = game.get("user_review_count")
     return all(
         [
             metascore >= thresholds["min_metascore"],
-            critic_reviews is None or critic_reviews >= thresholds["min_metascore_reviews"],
             user_score >= thresholds["min_user_score"],
-            user_reviews is None or user_reviews >= thresholds["min_user_reviews"],
         ]
     )
 
