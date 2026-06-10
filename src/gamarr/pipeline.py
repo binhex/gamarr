@@ -1368,15 +1368,32 @@ def _process_single_pending_match(
         best["url"],
     )
 
-    # Skip matches whose FitGirl title contains rejected keywords
-    if _title_contains_keywords(best["title"], reject_keywords):
-        logger.info(
-            "Skipping match for '{}' \u2014 FitGirl title '{}' contains rejected keyword",
-            game_title,
-            best["title"],
-        )
-        db.touch_pending(game_slug)
-        return None
+    # Skip matches whose FitGirl page title contains rejected keywords.
+    # The sitemap title is URL-derived (clean while the HTML <title> tag
+    # carries repack metadata like "[FitGirl HV Repack]").
+    if reject_keywords:
+        page_title = _fetch_fitgirl_page_title(best["url"])
+        if page_title and _title_contains_keywords(page_title, reject_keywords):
+            logger.info(
+                "Skipping match for '{}' \u2014 FitGirl page title '{}' contains rejected keyword",
+                game_title,
+                page_title,
+            )
+            db.touch_pending(game_slug)
+            return None
+        if page_title is None:
+            logger.warning(
+                "Could not fetch page title for '{}' \u2014 checking sitemap title instead",
+                best["url"],
+            )
+            if _title_contains_keywords(best["title"], reject_keywords):
+                logger.info(
+                    "Skipping match for '{}' \u2014 sitemap title '{}' contains rejected keyword",
+                    game_title,
+                    best["title"],
+                )
+                db.touch_pending(game_slug)
+                return None
 
     # Check library first — skip if already owned
     if library is not None:
@@ -1655,6 +1672,32 @@ def _record_result(
 
 
 _SITEMAP_TIMEOUT = 30.0
+
+
+def _fetch_fitgirl_page_title(url: str) -> str | None:
+    """Fetch a FitGirl repack page and extract its HTML <title> tag.
+
+    Returns the full page title (e.g. "Crimson Desert [FitGirl HV Repack]")
+    or None if the page could not be fetched.
+    """
+    try:
+        if not url.startswith("https://"):
+            return None
+        resp = requests.get(
+            url,
+            headers={"User-Agent": _USER_AGENT},
+            timeout=_SITEMAP_TIMEOUT,
+        )
+        resp.raise_for_status()
+    except requests.RequestException:
+        return None
+    # Extract <title> tag content
+    import re as _re
+
+    match = _re.search(r"<title[^>]*>(.*?)</title>", resp.text, _re.IGNORECASE | _re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    return None
 
 
 def _default_magnet_fetcher(url: str) -> str | None:

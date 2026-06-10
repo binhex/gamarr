@@ -1389,6 +1389,78 @@ class TestMetacriticBrowse:
         assert pending[0].slug == "elden-ring"
         db.close()
 
+    def test_reject_keywords_fails_with_clean_sitemap_title(self, tmp_path: Path) -> None:
+        """reject_keywords must also check the HTML page title, not just the sitemap title.
+
+        The sitemap title is URL-derived (clean — never contains [FitGirl HV Repack]).
+        The HTML <title> tag on the FitGirl repack page DOES contain the full
+        title including repack metadata. The keyword check must inspect the
+        fetched HTML title, not just the sitemap entry.
+        """
+        import datetime
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _process_single_pending_match
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="crimson-desert",
+            game_title="Crimson Desert",
+            platform="pc",
+            metascore=85.0,
+            user_score=8.0,
+            expires_at=expires,
+        )
+        db.update_pending_scores(slug="crimson-desert", metascore=85.0, user_score=8.0)
+        # Sitemap title is URL-derived and CLEAN — "HV" is NOT in it
+        db.rebuild_source_titles(
+            "fitgirl",
+            [{"title": "Crimson Desert", "url": "https://fitgirl-repacks.site/crimson-desert/"}],
+        )
+
+        mock_qbt = MagicMock()
+        mock_qbt.add_torrent.return_value = "gamarr-tag"
+
+        # The HTML page has a full title with HV, but the sitemap entry doesn't
+        html_with_hv = (
+            "<html><head><title>Crimson Desert [FitGirl HV Repack]</title></head>"
+            "<body><a href=\"magnet:?xt=urn:btih:abc\">magnet</a></body></html>"
+        )
+
+        with patch("gamarr.pipeline.requests.get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.text = html_with_hv
+            mock_resp.raise_for_status.return_value = None
+            mock_get.return_value = mock_resp
+
+            result = _process_single_pending_match(
+                db,
+                mc=None,
+                thresholds=None,
+                qbt=mock_qbt,
+                magnet_fetcher=None,
+                notifier=None,
+                library=None,
+                can_deliver=True,
+                game_title="Crimson Desert",
+                game_slug="crimson-desert",
+                game_platform="pc",
+                game_metascore=85.0,
+                game_metascore_reviews=100,
+                game_user_score=8.0,
+                game_user_reviews=50,
+                game_release_date=None,
+                reject_keywords=["HV"],
+            )
+            # SHOULD be rejected because HTML title contains "HV"
+            assert result is None, "Game should be rejected — FitGirl page title contains HV"
+            mock_get.assert_called_once()
+            # The game should remain pending (not removed)
+            assert db.is_pending("crimson-desert")
+            db.close()
+
     def test_match_pending_against_source(self, tmp_path: Path) -> None:
         import datetime
 
