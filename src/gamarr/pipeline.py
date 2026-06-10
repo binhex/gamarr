@@ -540,6 +540,20 @@ def _process_browse_games(
             logger.debug("Skipping '{}' — matches reject_title", game.get("title", ""))
             continue
 
+        # NEW: browse-page review count pre-filter
+        reject_reason = _reject_by_browse_review_counts(
+            game,
+            min_critic_reviews=thresholds.get("min_metascore_reviews", 0),
+            min_user_reviews=thresholds.get("min_user_reviews", 0),
+        )
+        if reject_reason is not None:
+            logger.debug(
+                "Skipping '{}' — {}",
+                game.get("title", ""),
+                reject_reason,
+            )
+            continue
+
         g_slug = game.get("slug", "")
         g_title = game.get("title", "")
         if pending_days <= 0:
