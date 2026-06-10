@@ -75,17 +75,16 @@ class QBittorrentClient:
         # immediately. A separate torrents_rename call won't work because
         # the torrent hasn't appeared in the list yet (magnet is still
         # resolving when added via URL).
-        add_kwargs = {
-            "urls": magnet_url,
-            "category": self._category,
-            "is_paused": self._add_paused,
-            "tags": tag,
-        }
-        if title and title.strip():
-            add_kwargs["rename"] = title
+        rename_param = title if (title and title.strip()) else None
 
         try:
-            self._client.torrents_add(**add_kwargs)
+            self._client.torrents_add(
+                urls=magnet_url,
+                category=self._category,
+                is_paused=self._add_paused,
+                tags=tag,
+                rename=rename_param,
+            )
             logger.info("Added torrent '{}' with tag '{}'", title, tag)
         except Exception as exc:
             logger.warning("Failed to add torrent '{}': {}", title, exc)
