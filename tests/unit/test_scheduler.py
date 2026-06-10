@@ -56,6 +56,7 @@ def _make_config(acquisition_enabled: bool = False) -> Config:
     """Build a minimal Config for testing with *acquisition_enabled*."""
     from gamarr.config import (
         DatabaseConfig,
+        DownloadSitesConfig,
         FitGirlSourceConfig,
         GeneralConfig,
         MetacriticConfig,
@@ -64,7 +65,6 @@ def _make_config(acquisition_enabled: bool = False) -> Config:
         QbittorrentConfig,
         ScheduleConfig,
         ScheduleTaskConfig,
-        DownloadSitesConfig,
         TorrentClientConfig,
     )
 
@@ -122,6 +122,7 @@ class TestBuildKwargs:
         from gamarr.config import (
             Config,
             DatabaseConfig,
+            DownloadSitesConfig,
             FitGirlSourceConfig,
             GeneralConfig,
             MetacriticConfig,
@@ -130,7 +131,6 @@ class TestBuildKwargs:
             QbittorrentConfig,
             ScheduleConfig,
             ScheduleTaskConfig,
-            DownloadSitesConfig,
             TorrentClientConfig,
         )
         from gamarr.scheduler import _build_kwargs
