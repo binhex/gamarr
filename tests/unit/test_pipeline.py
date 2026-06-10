@@ -259,25 +259,15 @@ class TestRunAcquisition:
 class TestEvaluateScores:
     """_evaluate_scores function edge cases."""
 
-    def test_browse_game_passes_thresholds_without_user_review_count(self) -> None:
-        """Browse-page games without user_review_count should pass if user_score meets threshold.
-
-        The Metacritic browse page Nuxt data only includes ``userScore.score``
-        for each game — it does NOT include a user review count.  The
-        threshold check must therefore tolerate a missing
-        ``user_review_count`` rather than treating it as 0 (which would
-        silently drop every browse-page game).
-        """
+    def test_browse_game_passes_thresholds_with_high_browse_scores(self) -> None:
+        """Browse-page games with inflated scores should pass the threshold check."""
         from gamarr.pipeline import _game_passes_thresholds
 
         game = {
             "title": "Some Game",
             "slug": "some-game",
-            "score": 85.0,
-            "critic_review_count": 20,
-            "user_rating": 8.5,
-            "user_review_count": None,  # browse page doesn't provide this
-            "release_date": "2026-06-01",
+            "score": 1478.0,       # inflated browse metric
+            "user_rating": 2007.0,  # inflated browse metric
         }
         thresholds = {
             "min_metascore": 75,
@@ -326,18 +316,15 @@ class TestEvaluateScores:
         }
         assert _game_passes_thresholds(game, thresholds) is False
 
-    def test_browse_game_passes_thresholds_without_critic_review_count(self) -> None:
-        """Browse-page games without critic_review_count should pass if score is high."""
+    def test_browse_game_fails_when_browse_score_missing(self) -> None:
+        """A game with no browse scores should fail the threshold check."""
         from gamarr.pipeline import _game_passes_thresholds
 
         game = {
-            "title": "Some Game",
-            "slug": "some-game",
-            "score": 85.0,
-            "critic_review_count": None,  # browse page doesn't provide this
-            "user_rating": 8.5,
-            "user_review_count": None,
-            "release_date": "2026-06-01",
+            "title": "No Score Game",
+            "slug": "no-score",
+            "score": None,
+            "user_rating": None,
         }
         thresholds = {
             "min_metascore": 75,
@@ -345,7 +332,7 @@ class TestEvaluateScores:
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
-        assert _game_passes_thresholds(game, thresholds) is True
+        assert _game_passes_thresholds(game, thresholds) is False
 
     def test_both_scores_none_returns_failed(self) -> None:
         import types
@@ -3906,7 +3893,7 @@ class TestBrowseReviewCountPrefilter:
                 "title": "Low Reviews",
                 "slug": "low-reviews",
                 "score": 1478.0,
-                "critic_review_count": 2,   # below threshold 5
+                "critic_review_count": 2,  # below threshold 5
                 "user_rating": 2007.0,
                 "user_review_count": 50,
                 "release_date": "2026-06-01",
@@ -3943,7 +3930,7 @@ class TestBrowseReviewCountPrefilter:
                 "title": "No Review Data",
                 "slug": "no-review-data",
                 "score": 1478.0,
-                "critic_review_count": None,   # missing from browse data
+                "critic_review_count": None,  # missing from browse data
                 "user_rating": 2007.0,
                 "user_review_count": None,
                 "release_date": "2026-06-01",
