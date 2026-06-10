@@ -271,7 +271,9 @@ def _migrate_days_since_release(raw: dict[str, Any]) -> bool:
                 mc_pc["cutoff_weeks"] = max(1, round(days / 7))
                 logger.info(
                     "Config: converted days_since_release={} to cutoff_weeks={} for platform '{}'",
-                    days, mc_pc["cutoff_weeks"], platform_key,
+                    days,
+                    mc_pc["cutoff_weeks"],
+                    platform_key,
                 )
             else:
                 logger.info(
