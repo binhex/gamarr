@@ -60,6 +60,10 @@ class QBittorrentClient:
     def add_torrent(self, magnet_url: str, title: str = "") -> str | bool:
         """Add a magnet link to qBittorrent and return a unique tag.
 
+        When *title* is provided, the torrent is renamed to *title* after
+        addition (so the user sees the game name, not a magnet SHA hash).
+        Whitespace-only titles are treated as empty (rename skipped).
+
         Returns a gamarr-{uuid} tag string on success, or False on failure.
         """
         if not magnet_url:
