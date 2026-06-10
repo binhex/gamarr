@@ -1262,7 +1262,11 @@ def _deliver_match(
         )
         return record_result
 
-    tag = qbt.add_torrent(magnet_url=magnet, title=game_title)
+    # Use the full FitGirl page title (with repack metadata) for the
+    # torrent name, falling back to the sitemap title then game title.
+    fitgirl_title = _fitgirl_page_title_cache.pop(source_url, None) or best["title"] or game_title
+
+    tag = qbt.add_torrent(magnet_url=magnet, title=fitgirl_title)
     if not tag:
         record_result = _record_delivery_error(
             db,
@@ -1673,6 +1677,10 @@ def _record_result(
 
 _SITEMAP_TIMEOUT = 30.0
 
+# Cache: URL → HTML <title> tag, populated by _default_magnet_fetcher
+# to avoid a second HTTP request for torrent rename.
+_fitgirl_page_title_cache: dict[str, str | None] = {}
+
 
 def _fetch_fitgirl_page_title(url: str) -> str | None:
     """Fetch a FitGirl repack page and extract its HTML <title> tag.
@@ -1701,7 +1709,11 @@ def _fetch_fitgirl_page_title(url: str) -> str | None:
 
 
 def _default_magnet_fetcher(url: str) -> str | None:
-    """Fetch a FitGirl page and extract its magnet link."""
+    """Fetch a FitGirl page and extract its magnet link.
+
+    Also caches the HTML <title> tag in ``_fitgirl_page_title_cache``
+    so callers can retrieve it without a second HTTP request.
+    """
     try:
         if not url.startswith("https://"):
             logger.warning("Skipping non-HTTPS magnet source: {}", url)
@@ -1715,4 +1727,9 @@ def _default_magnet_fetcher(url: str) -> str | None:
     except requests.RequestException as exc:
         logger.warning("Magnet fetch failed for {}: {}", url, exc)
         return None
+    # Cache page title for torrent rename (avoids re-fetch)
+    import re as _re  # noqa: PLC0415 — stdlib, cached after first import
+
+    title_match = _re.search(r"<title[^>]*>(.*?)</title>", resp.text, _re.IGNORECASE | _re.DOTALL)
+    _fitgirl_page_title_cache[url] = title_match.group(1).strip() if title_match else None
     return _extract_magnet_from_html(resp.text)

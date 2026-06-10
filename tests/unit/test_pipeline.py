@@ -1655,7 +1655,11 @@ class TestMetacriticBrowse:
         assert matched[0]["result"] == "Passed"
         # Magnet should have been fetched and torrent should have been added
         magnet_fetcher.assert_called_once_with("https://fitgirl-repacks.site/elden-ring/")
-        mock_qbt.add_torrent.assert_called_once_with(magnet_url="magnet:?xt=urn:btih:test", title="Elden Ring")
+        # Title should come from the FitGirl page title cache
+        mock_qbt.add_torrent.assert_called_once()
+        args, kwargs = mock_qbt.add_torrent.call_args
+        assert kwargs["magnet_url"] == "magnet:?xt=urn:btih:test"
+        assert kwargs["title"] == "Elden Ring", "Falls back to sitemap/game title when no page cached"
         assert db.is_pending("elden-ring") is False
         db.close()
 
