@@ -76,7 +76,7 @@ class TestConfigModels:
         assert cfg.min_metascore == 75
         assert cfg.min_user_score == 7.5
         assert not hasattr(cfg, "days_since_release"), "Field was removed"
-        assert cfg.cutoff_weeks is None
+        assert cfg.cutoff_weeks == 13, "Default cutoff_weeks should be ~90 days (13 weeks)"
         assert cfg.max_games == 1000
 
     def test_migrate_config_renames_browse_keys(self) -> None:
@@ -305,6 +305,25 @@ class TestLoadConfig:
         pc = raw["metacritic"]["platform_overrides"]["pc"]
         assert "days_since_release" not in pc
         assert pc["cutoff_weeks"] == 12
+
+    def test_migrate_days_since_release_converts_to_cutoff_weeks(self) -> None:
+        """days_since_release without cutoff_weeks should be converted."""
+        from typing import Any
+
+        from gamarr.config import _migrate_config
+
+        raw: dict[str, Any] = {
+            "metacritic": {
+                "platform_overrides": {
+                    "pc": {"days_since_release": 120},
+                },
+            },
+        }
+        result = _migrate_config(raw)
+        assert result is True
+        pc = raw["metacritic"]["platform_overrides"]["pc"]
+        assert "days_since_release" not in pc
+        assert pc["cutoff_weeks"] == 17  # 120 / 7 ≈ 17
 
     def test_migrate_metacritic_exclude_keywords_returns_true(self) -> None:
         """_migrate_metacritic_exclude_keywords should return True when it deletes a key."""

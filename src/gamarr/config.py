@@ -69,7 +69,7 @@ class MetacriticPlatformConfig(BaseModel):
     pending_days: int = 30
     enabled: bool = True
     max_games: int = Field(default=1000, ge=0, le=20000)
-    cutoff_weeks: int | None = None
+    cutoff_weeks: int | None = Field(default=13, ge=0)
     reject_genre: list[str] = Field(default_factory=list)
     reject_title: list[str] = Field(default_factory=list)  # case-insensitive substrings
 
@@ -257,7 +257,7 @@ def _migrate_fitgirl_exclude_keywords(raw: dict[str, Any]) -> bool:
 
 
 def _migrate_days_since_release(raw: dict[str, Any]) -> bool:
-    """Remove deprecated days_since_release from metacritic.platform_overrides.
+    """Convert deprecated days_since_release to cutoff_weeks in metacritic.platform_overrides.
 
     cutoff_weeks replaces this field (same purpose, weeks not days).
     Returns True if a migration was applied.
@@ -266,11 +266,18 @@ def _migrate_days_since_release(raw: dict[str, Any]) -> bool:
     overrides = raw.get("metacritic", {}).get("platform_overrides", {})
     for platform_key, mc_pc in overrides.items():
         if isinstance(mc_pc, dict) and "days_since_release" in mc_pc:
-            logger.info(
-                "Config: removing deprecated 'days_since_release' for platform '{}' — use cutoff_weeks instead",
-                platform_key,
-            )
-            del mc_pc["days_since_release"]
+            days = mc_pc.pop("days_since_release")
+            if isinstance(days, (int, float)) and days > 0 and "cutoff_weeks" not in mc_pc:
+                mc_pc["cutoff_weeks"] = max(1, round(days / 7))
+                logger.info(
+                    "Config: converted days_since_release={} to cutoff_weeks={} for platform '{}'",
+                    days, mc_pc["cutoff_weeks"], platform_key,
+                )
+            else:
+                logger.info(
+                    "Config: removed deprecated 'days_since_release' for platform '{}'",
+                    platform_key,
+                )
             changed = True
     return changed
 
