@@ -26,15 +26,15 @@ metacritic:
     pc:
       min_metascore: 75
       min_metascore_reviews: 10
-      min_user_score: 7.5
+      min_user_score: 8.0
       min_user_reviews: 10
-      days_since_release: 60
+      days_since_release: 120
       cache_ttl_days: 7
       cache_ttl_hours: 6
       pending_days: 30
       enabled: true
       max_games: 0
-      cutoff_weeks: 8
+      cutoff_weeks: 16
       reject_genre:
       - novel
       - card
