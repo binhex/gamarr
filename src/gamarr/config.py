@@ -232,7 +232,9 @@ def _migrate_download_sites(raw: dict[str, Any]) -> bool:
     old_sources = raw.pop("sources")
     if isinstance(old_sources, dict):
         raw["download_sites"] = _deep_merge(raw["download_sites"], old_sources)
-    logger.info("Config: merged 'sources' into 'download_sites'")
+        logger.info("Config: merged 'sources' into 'download_sites'")
+    else:
+        logger.warning("Config: dropped non-dict 'sources' value during migration")
     return True
 
 
