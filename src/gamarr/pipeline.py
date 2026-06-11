@@ -181,7 +181,7 @@ def run_acquisition(
     notify_on_scrape_failure: bool = True,
     max_games: int = 1000,
     reject_genre: list[str] | None = None,
-    reject_title: list[str] | None = None,  # ← new
+    reject_title: list[str] | None = None,
     age_recheck_weeks: int | None = None,
     apprise_urls: list[str] | None = None,
     notify_on_download: bool = True,
@@ -214,7 +214,7 @@ def run_acquisition(
         notify_on_scrape_failure=notify_on_scrape_failure,
         max_games=max_games,
         reject_genre=reject_genre,
-        reject_title=reject_title,  # ← new
+        reject_title=reject_title,
         age_recheck_weeks=age_recheck_weeks,
     )
 
@@ -303,7 +303,7 @@ def run_acquisition(
                     thresholds,
                     recheck_days=cfg.recheck_days,
                     days_since_release=cfg._age_days(),
-                    reject_title=cfg.reject_title,  # ← new
+                    reject_title=cfg.reject_title,
                 )
                 if new_pending:
                     logger.info(
@@ -348,10 +348,10 @@ def run_acquisition(
                 cache_details_days=cfg.cache_details_days,
                 max_verify=len(pending_games) if cfg.max_games == 0 else min(len(pending_games), cfg.max_games),
                 reject_genre=cfg.reject_genre,
-                reject_title=cfg.reject_title,  # ← new
+                reject_title=cfg.reject_title,
                 age_recheck_weeks=cfg.age_recheck_weeks,
-                fitgirl_recheck_days=cfg.fitgirl_recheck_days,  # ← new
-                notifier=notifier,  # ← new
+                fitgirl_recheck_days=cfg.fitgirl_recheck_days,
+                notifier=notifier,
                 cancel_event=cancel_event,
             )
             if removed:
@@ -758,14 +758,15 @@ def _should_seal_by_age(game: Any, age_recheck_weeks: int | None) -> bool:
     Games without a ``release_date`` are never sealed (we can't determine
     their age).
     """
-    if not age_recheck_weeks:
+    if age_recheck_weeks is None:
         return False
-    if not getattr(game, "release_date", None):
+    release_date = getattr(game, "release_date", None)
+    if not release_date:
         return False
-    return _is_older_than(game.release_date, days=age_recheck_weeks * 7)
+    return _is_older_than(release_date, days=age_recheck_weeks * 7)
 
 
-def _seal_game(db: Database, game: Any, result: Any) -> bool:
+def _seal_game(db: Database, game: Any, result: Any, age_recheck_weeks: int) -> bool:
     """Permanently record *game* as processed and remove from pending.
 
     Writes a history row with ``result="Processed"`` and removes the
@@ -781,9 +782,14 @@ def _seal_game(db: Database, game: Any, result: Any) -> bool:
         metascore=result.metascore,
         user_score=result.user_score,
         result="Processed",
-        result_details="Game older than age_recheck_weeks threshold",
+        result_details=f"Game older than {age_recheck_weeks}-week age_recheck_weeks threshold",
     )
     db.remove_pending(str(game.slug))
+    logger.info(
+        "Sealed '{}' \u2014 release date is older than {} weeks",
+        game.game_title,
+        age_recheck_weeks,
+    )
     return True
 
 
@@ -794,9 +800,9 @@ def _process_verify_result(
     thresholds: dict[str, Any],
     *,
     reject_genre: list[str] | None = None,
-    reject_title: list[str] | None = None,  # ← new
+    reject_title: list[str] | None = None,
     age_recheck_weeks: int | None = None,
-    fitgirl_recheck_days: int = 60,  # ← new
+    fitgirl_recheck_days: int = 60,
 ) -> bool:
     """Process one score-check result. Returns True if the game was removed.
 
@@ -855,7 +861,8 @@ def _process_verify_result(
 
     # Seal old games instead of keeping them in the pending queue
     if _should_seal_by_age(game, age_recheck_weeks):
-        return _seal_game(db, game, result)
+        assert age_recheck_weeks is not None  # guarded by _should_seal_by_age above
+        return _seal_game(db, game, result, age_recheck_weeks)
 
     db.update_pending_scores(
         slug=str(game.slug),

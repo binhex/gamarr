@@ -37,11 +37,7 @@ def _apply_general_overrides(config: Config, overrides: dict[str, Any]) -> None:
 
     paths_override = overrides.get("library_path_list")
     if paths_override:
-        config.library.paths = [
-            _os.path.abspath(p.strip())
-            for p in paths_override.split("|")
-            if p.strip()
-        ]
+        config.library.paths = [_os.path.abspath(p.strip()) for p in paths_override.split("|") if p.strip()]
 
 
 def _apply_qbt_overrides(config: Config, overrides: dict[str, Any]) -> None:

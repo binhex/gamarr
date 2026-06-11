@@ -1,5 +1,5 @@
 general:
-  config_version: 1.14.0
+  config_version: 1.15.0
   daemon_mode: foreground
   log_level_console: INFO
   log_level_file: INFO
@@ -38,6 +38,7 @@ metacritic:
       - novel
       - card
       reject_title: []
+      age_recheck_weeks: null
 torrent_client:
   selected: qbittorrent
   qbittorrent:
