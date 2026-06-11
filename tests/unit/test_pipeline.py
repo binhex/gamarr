@@ -4231,3 +4231,176 @@ class TestBrowseReviewCountPrefilter:
         assert len(pending) == 1
         assert pending[0].slug == "no-review-data"
         db.close()
+
+
+class TestSealByAge:
+    """Tests for _should_seal_by_age helper."""
+
+    def test_seal_by_age_returns_true_for_old_game(self) -> None:
+        """A game older than age_recheck_weeks should be sealed."""
+        from datetime import datetime, timedelta
+
+        from gamarr.pipeline import _should_seal_by_age
+
+        class FakeGame:
+            release_date = (datetime.now() - timedelta(days=400)).strftime("%Y-%m-%d")
+
+        result = _should_seal_by_age(FakeGame(), age_recheck_weeks=52)
+        assert result is True
+
+    def test_seal_by_age_returns_false_for_recent_game(self) -> None:
+        """A game newer than age_recheck_weeks should NOT be sealed."""
+        from datetime import datetime, timedelta
+
+        from gamarr.pipeline import _should_seal_by_age
+
+        class FakeGame:
+            release_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
+
+        result = _should_seal_by_age(FakeGame(), age_recheck_weeks=52)
+        assert result is False
+
+    def test_seal_by_age_returns_false_when_disabled(self) -> None:
+        """age_recheck_weeks=None or 0 should disable sealing."""
+        from gamarr.pipeline import _should_seal_by_age
+
+        class FakeGame:
+            release_date = "2020-01-01"
+
+        assert _should_seal_by_age(FakeGame(), age_recheck_weeks=None) is False
+        assert _should_seal_by_age(FakeGame(), age_recheck_weeks=0) is False
+
+    def test_seal_by_age_returns_false_when_no_release_date(self) -> None:
+        """A game with no release_date should NOT be sealed."""
+        from gamarr.pipeline import _should_seal_by_age
+
+        class FakeGame:
+            release_date = None
+
+        result = _should_seal_by_age(FakeGame(), age_recheck_weeks=52)
+        assert result is False
+
+    def test_seal_game_records_and_removes(self, tmp_path: Path) -> None:
+        """_seal_game should record as Processed and remove from pending."""
+        import datetime
+        import types
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _seal_game
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="old-game",
+            game_title="Old Game",
+            platform="pc",
+            metascore=85.0,
+            user_score=8.0,
+            release_date="2020-01-01",
+            expires_at=expires,
+        )
+        db.update_pending_scores(slug="old-game", metascore=85.0, user_score=8.0)
+
+        game = db.get_pending(platform="pc")[0]
+        result = types.SimpleNamespace(
+            metascore=85.0,
+            metascore_review_count=20,
+            user_score=8.0,
+            user_review_count=100,
+        )
+        sealed = _seal_game(db, game, result)
+        assert sealed is True, "_seal_game should return True"
+        assert not db.is_pending("old-game"), "Game should be removed from pending"
+        stats = db.get_stats()
+        assert stats["total"] == 1, "One history record should exist"
+        db.close()
+
+    def test_process_verify_result_seals_old_game(self, tmp_path: Path) -> None:
+        """A pending game older than age_recheck_weeks should be sealed
+        when its scores pass thresholds."""
+        import datetime
+        import types
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _process_verify_result
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="ancient-game",
+            game_title="Ancient Game",
+            platform="pc",
+            metascore=80.0,
+            user_score=7.5,
+            release_date="2010-06-01",
+            expires_at=expires,
+        )
+        game = db.get_pending()[0]
+        result = types.SimpleNamespace(
+            metascore=80.0,
+            metascore_review_count=50,
+            user_score=7.5,
+            user_review_count=100,
+            genres=["Action"],
+        )
+        thresholds = {
+            "min_metascore": 75,
+            "min_metascore_reviews": 5,
+            "min_user_score": 7.5,
+            "min_user_reviews": 10,
+        }
+        removed = _process_verify_result(
+            db,
+            game,
+            result,
+            thresholds,
+            age_recheck_weeks=52,
+        )
+        assert removed is True, "Old game should be sealed"
+        assert not db.is_pending("ancient-game"), "Should be removed from pending"
+        db.close()
+
+    def test_process_verify_result_keeps_recent_game(self, tmp_path: Path) -> None:
+        """A recent game should NOT be sealed."""
+        import datetime
+        import types
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _process_verify_result
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        recent = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
+        db.record_pending(
+            slug="recent-game",
+            game_title="Recent Game",
+            platform="pc",
+            metascore=80.0,
+            user_score=7.5,
+            release_date=recent,
+            expires_at=expires,
+        )
+        game = db.get_pending()[0]
+        result = types.SimpleNamespace(
+            metascore=80.0,
+            metascore_review_count=50,
+            user_score=7.5,
+            user_review_count=100,
+            genres=["Action"],
+        )
+        thresholds = {
+            "min_metascore": 75,
+            "min_metascore_reviews": 5,
+            "min_user_score": 7.5,
+            "min_user_reviews": 10,
+        }
+        removed = _process_verify_result(
+            db,
+            game,
+            result,
+            thresholds,
+            age_recheck_weeks=52,
+        )
+        assert removed is False, "Recent game should NOT be sealed"
+        assert db.is_pending("recent-game"), "Should still be pending"
+        db.close()

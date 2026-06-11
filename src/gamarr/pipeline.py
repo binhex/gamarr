@@ -751,6 +751,42 @@ def _scores_fail_check(result: Any, thresholds: dict[str, Any]) -> bool:
     return not _scores_present(result) or not _real_scores_pass_thresholds(result, thresholds)
 
 
+def _should_seal_by_age(game: Any, age_recheck_weeks: int | None) -> bool:
+    """Return True if *game* is old enough to be permanently sealed.
+
+    When *age_recheck_weeks* is ``None`` or ``0``, sealing is disabled.
+    Games without a ``release_date`` are never sealed (we can't determine
+    their age).
+    """
+    if not age_recheck_weeks:
+        return False
+    if not getattr(game, "release_date", None):
+        return False
+    return _is_older_than(game.release_date, days=age_recheck_weeks * 7)
+
+
+def _seal_game(db: Database, game: Any, result: Any) -> bool:
+    """Permanently record *game* as processed and remove from pending.
+
+    Writes a history row with ``result="Processed"`` and removes the
+    pending row.  Returns ``True`` to signal the caller that the game
+    was removed.
+    """
+    db.record_processed(
+        source="metacritic",
+        source_title=str(game.game_title),
+        source_url=f"mc:{game.slug}",
+        game_title=str(game.game_title),
+        platform=str(game.platform),
+        metascore=result.metascore,
+        user_score=result.user_score,
+        result="Processed",
+        result_details="Game older than age_recheck_weeks threshold",
+    )
+    db.remove_pending(str(game.slug))
+    return True
+
+
 def _process_verify_result(
     db: Database,
     game: Any,
@@ -816,6 +852,10 @@ def _process_verify_result(
             result.user_score,
         )
         return False
+
+    # Seal old games instead of keeping them in the pending queue
+    if _should_seal_by_age(game, age_recheck_weeks):
+        return _seal_game(db, game, result)
 
     db.update_pending_scores(
         slug=str(game.slug),
