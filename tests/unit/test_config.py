@@ -79,8 +79,9 @@ class TestConfigModels:
         assert not hasattr(cfg, "days_since_release"), "Field was removed"
         assert not hasattr(cfg, "pending_days"), "Field was renamed to recheck_days"
         assert cfg.recheck_days == 30
-        assert cfg.cutoff_weeks == 13, "Default cutoff_weeks should be ~90 days (13 weeks)"
-        assert cfg.max_games == 1000
+        assert cfg.max_weeks == 13, "Default max_weeks should be ~90 days (13 weeks)"
+        assert not hasattr(cfg, "cutoff_weeks"), "Field was renamed to max_weeks"
+        assert not hasattr(cfg, "max_games"), "Field was removed — max_weeks controls game count"
 
     def test_cache_details_days_replaces_cache_ttl_days(self) -> None:
         """MetacriticPlatformConfig should use cache_details_days, not cache_ttl_days."""
@@ -243,7 +244,7 @@ class TestConfigModels:
         assert "metacritic_cache_ttl_hours" not in mc_pc
         assert "cutoff_date" not in mc_pc
         assert mc_pc["enabled"] is False
-        assert mc_pc["max_games"] == 500
+        assert "max_games" not in mc_pc, "max_games was removed — use max_weeks"
         assert mc_pc["cache_pages_hours"] == 12
 
     def test_migrate_config_handles_exception_gracefully(self) -> None:
@@ -255,6 +256,24 @@ class TestConfigModels:
             "metacritic": ["not-a-dict"],
         }
         _migrate_config(raw)  # Should not raise, logs warning
+
+    def test_migrate_max_verify_attempts_removed(self) -> None:
+        """Old max_verify_attempts in metacritic.platform_overrides is removed."""
+        from typing import Any
+
+        from gamarr.config import _migrate_config
+
+        raw: dict[str, Any] = {
+            "metacritic": {
+                "platform_overrides": {
+                    "pc": {"max_verify_attempts": 3},
+                },
+            },
+        }
+        result = _migrate_config(raw)
+        assert result is True
+        pc = raw["metacritic"]["platform_overrides"]["pc"]
+        assert "max_verify_attempts" not in pc
 
     def test_qbittorrent_config_defaults(self) -> None:
         cfg = QbittorrentConfig()
@@ -411,10 +430,11 @@ class TestLoadConfig:
         assert result is True
         pc = raw["metacritic"]["platform_overrides"]["pc"]
         assert "days_since_release" not in pc
-        assert pc["cutoff_weeks"] == 12
+        assert "cutoff_weeks" not in pc, "cutoff_weeks was renamed to max_weeks"
+        assert pc["max_weeks"] == 12
 
-    def test_migrate_days_since_release_converts_to_cutoff_weeks(self) -> None:
-        """days_since_release without cutoff_weeks should be converted."""
+    def test_migrate_days_since_release_converts_to_max_weeks(self) -> None:
+        """days_since_release without max_weeks should be converted."""
         from typing import Any
 
         from gamarr.config import _migrate_config
@@ -430,7 +450,8 @@ class TestLoadConfig:
         assert result is True
         pc = raw["metacritic"]["platform_overrides"]["pc"]
         assert "days_since_release" not in pc
-        assert pc["cutoff_weeks"] == 17  # 120 / 7 ≈ 17
+        assert "cutoff_weeks" not in pc, "cutoff_weeks was renamed to max_weeks"
+        assert pc["max_weeks"] == 17  # 120 / 7 ≈ 17
 
     def test_migrate_pending_days_to_recheck(self) -> None:
         """Old pending_days key is renamed to recheck_days in metacritic and fitgirl sections."""

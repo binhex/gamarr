@@ -1,5 +1,5 @@
 general:
-  config_version: 1.15.0
+  config_version: 1.16.0
   daemon_mode: foreground
   log_level_console: INFO
   log_level_file: INFO
@@ -32,8 +32,7 @@ metacritic:
       cache_pages_hours: 6
       recheck_days: 30
       enabled: true
-      max_games: 0
-      cutoff_weeks: 16
+      max_weeks: 16
       reject_genre:
       - novel
       - card

@@ -22,7 +22,7 @@ class TestAcquisitionConfig:
             min_metascore_reviews=5,
             min_user_score=7.5,
             min_user_reviews=10,
-            cutoff_weeks=12,  # ~84 days, roughly equivalent to 90 days
+            max_weeks=12,  # ~84 days, roughly equivalent to 90 days
         )
         assert cfg.min_metascore == 75
 
@@ -344,7 +344,7 @@ class TestEvaluateScores:
             min_metascore_reviews=5,
             min_user_score=7.5,
             min_user_reviews=10,
-            cutoff_weeks=40,
+            max_weeks=40,
         )
         mc_result = types.SimpleNamespace(metascore=None, user_score=None)
         assert _evaluate_scores(mc_result, cfg) == "no_scores"
@@ -359,7 +359,7 @@ class TestEvaluateScores:
             min_metascore_reviews=5,
             min_user_score=7.5,
             min_user_reviews=10,
-            cutoff_weeks=40,
+            max_weeks=40,
         )
         mc_result = types.SimpleNamespace(
             metascore=90.0,
@@ -379,7 +379,7 @@ class TestEvaluateScores:
             min_metascore_reviews=5,
             min_user_score=7.5,
             min_user_reviews=10,
-            cutoff_weeks=40,
+            max_weeks=40,
         )
         mc_result = types.SimpleNamespace(
             metascore=90.0,
@@ -390,7 +390,7 @@ class TestEvaluateScores:
         assert _evaluate_scores(mc_result, cfg) == "user_reviews_too_few"
 
     def test_old_game_fails_days_since_release(self) -> None:
-        """A game older than cutoff_weeks should fail."""
+        """A game older than max_weeks should fail."""
         import types
 
         from gamarr.pipeline import _evaluate_scores
@@ -400,7 +400,7 @@ class TestEvaluateScores:
             min_metascore_reviews=0,
             min_user_score=0.0,
             min_user_reviews=0,
-            cutoff_weeks=4,
+            max_weeks=4,
         )
         mc_result = types.SimpleNamespace(
             metascore=90.0,
@@ -412,7 +412,7 @@ class TestEvaluateScores:
         assert _evaluate_scores(mc_result, cfg) == "release_date_too_old"
 
     def test_recent_game_passes_days_since_release(self) -> None:
-        """A game within cutoff_weeks should pass (if scores are fine)."""
+        """A game within max_weeks should pass (if scores are fine)."""
         import datetime
         import types
 
@@ -425,7 +425,7 @@ class TestEvaluateScores:
             min_metascore_reviews=0,
             min_user_score=0.0,
             min_user_reviews=0,
-            cutoff_weeks=40,
+            max_weeks=40,
         )
         mc_result = types.SimpleNamespace(
             metascore=90.0,
@@ -448,7 +448,7 @@ class TestEvaluateScores:
             min_metascore_reviews=0,
             min_user_score=0.0,
             min_user_reviews=0,
-            cutoff_weeks=4,
+            max_weeks=4,
         )
         mc_result = types.SimpleNamespace(
             metascore=90.0,
@@ -470,7 +470,7 @@ class TestEvaluateScores:
             min_metascore_reviews=0,
             min_user_score=0.0,
             min_user_reviews=0,
-            cutoff_weeks=4,
+            max_weeks=4,
         )
         mc_result = types.SimpleNamespace(
             metascore=90.0,
@@ -496,7 +496,7 @@ class TestEvaluateScoresTbdBug:
             min_metascore_reviews=5,
             min_user_score=7.5,
             min_user_reviews=10,
-            cutoff_weeks=40,
+            max_weeks=40,
         )
         mc_result = types.SimpleNamespace(
             metascore=None,
@@ -517,7 +517,7 @@ class TestEvaluateScoresTbdBug:
             min_metascore_reviews=5,
             min_user_score=7.5,
             min_user_reviews=10,
-            cutoff_weeks=40,
+            max_weeks=40,
         )
         mc_result = types.SimpleNamespace(
             metascore=85.0,
@@ -542,7 +542,7 @@ class TestEvaluateScoresCoverage:
             min_metascore_reviews=5,
             min_user_score=7.5,
             min_user_reviews=10,
-            cutoff_weeks=40,
+            max_weeks=40,
         )
         mc_result = types.SimpleNamespace(
             metascore=85.0,
@@ -567,7 +567,7 @@ class TestEvaluateScoresNoneReviews:
             min_metascore_reviews=5,
             min_user_score=7.5,
             min_user_reviews=10,
-            cutoff_weeks=40,
+            max_weeks=40,
         )
         mc_result = types.SimpleNamespace(
             metascore=96.0,
@@ -588,7 +588,7 @@ class TestEvaluateScoresNoneReviews:
             min_metascore_reviews=5,
             min_user_score=7.5,
             min_user_reviews=10,
-            cutoff_weeks=40,
+            max_weeks=40,
         )
         mc_result = types.SimpleNamespace(
             metascore=96.0,
@@ -2567,20 +2567,11 @@ class TestVerifyPendingScoresEdgeCases:
         mock_qbt.add_torrent.assert_not_called()
         db.close()
 
-    def test_config_allows_zero_max_games(self) -> None:
-        """max_games=0 must be accepted by the config model.
+    def test_verify_pending_checks_all_games(self, tmp_path: Path) -> None:
+        """_verify_pending_scores should check all pending games per cycle.
 
-        A value of 0 means "unlimited" — score-check all pending games.
-        """
-        from gamarr.config import MetacriticPlatformConfig
-
-        cfg = MetacriticPlatformConfig(max_games=0)
-        assert cfg.max_games == 0
-
-    def test_verify_pending_max_checks_zero_passes_all_games(self, tmp_path: Path) -> None:
-        """When max_games=0, _verify_pending_scores should check ALL games.
-
-        The pipeline passes len(pending_games) as max_verify when max_games=0.
+        With max_games removed, the verify phase checks all pending games
+        since the input pool is bounded by max_weeks.
         """
         import datetime
         from unittest.mock import MagicMock
@@ -2621,8 +2612,7 @@ class TestVerifyPendingScoresEdgeCases:
             "min_user_reviews": 10,
         }
 
-        # max_verify=len(pending_games) simulates what the pipeline does
-        # when max_games=0 (unlimited)
+        # Verify all pending games (no max_games cap anymore)
         removed = _verify_pending_scores(
             db,
             mock_mc,
