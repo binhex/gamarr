@@ -75,7 +75,7 @@ gamarr
 | `--log-path <path>` | Override log file path |
 | `--db-path <dir>` | Override the database directory from config |
 | `--pid-path <dir>` | Override the PID file directory from config |
-| `--library-path <path>` | Override library paths (repeatable: `--library-path /a --library-path /b`) |
+| `--library-path <paths>` | Override library paths (pipe-separated: `--library-path "/a|/b"`) |
 | `--qbt-host <host>` | Override qBittorrent host from config |
 | `--qbt-port <port>` | Override qBittorrent WebUI port from config |
 | `--qbt-username <user>` | Override qBittorrent username from config |
