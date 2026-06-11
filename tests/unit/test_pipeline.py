@@ -4308,7 +4308,7 @@ class TestSealByAge:
             user_score=8.0,
             user_review_count=100,
         )
-        sealed = _seal_game(db, game, result)
+        sealed = _seal_game(db, game, result, age_recheck_weeks=52)
         assert sealed is True, "_seal_game should return True"
         assert not db.is_pending("old-game"), "Game should be removed from pending"
         stats = db.get_stats()

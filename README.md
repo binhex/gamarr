@@ -131,6 +131,7 @@ on first run. The file is divided into the sections below.
 | `min_user_score` | Minimum Metacritic user score (0–10). | `7.5` |
 | `min_user_reviews` | Minimum number of user reviews required. | `10` |
 | `cutoff_weeks` | Look-back window in weeks from today. Games released before this are skipped. `null` or `0` = no cutoff. | `null` |
+| `age_recheck_weeks` | Games older than this (weeks since release) are permanently processed once their Metacritic scores pass thresholds. `null` or `0` = disabled. | `null` |
 | `enabled` | Enable or disable the Metacritic browse step. Disabling skips game discovery entirely. | `true` |
 | `max_games` | Maximum number of games to scan per cycle (0 = unlimited). | `1000` |
 | `recheck_days` | Days a game stays in the pending queue before expiring. `0` = indefinite pending (no expiry). | `30` |
