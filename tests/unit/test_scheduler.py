@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from datetime import UTC
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
@@ -181,7 +182,7 @@ class TestDaemonMode:
                 config.metacritic.platform_overrides["pc"].min_user_score = 7.5
                 config.metacritic.platform_overrides["pc"].min_user_reviews = 10
                 config.metacritic.platform_overrides["pc"].cutoff_weeks = 12
-                config.metacritic.platform_overrides["pc"].cache_ttl_days = 7
+                config.metacritic.platform_overrides["pc"].cache_details_days = 7
                 config.metacritic.platform_overrides["pc"].cache_ttl_hours = 4
                 config.download_sites.fitgirl.rss_url = "http://example.com/feed"
                 config.download_sites.fitgirl.platform = "pc"
@@ -227,7 +228,7 @@ class TestDaemonMode:
             config.metacritic.platform_overrides["pc"].min_user_score = 7.5
             config.metacritic.platform_overrides["pc"].min_user_reviews = 10
             config.metacritic.platform_overrides["pc"].cutoff_weeks = 12
-            config.metacritic.platform_overrides["pc"].cache_ttl_days = 7
+            config.metacritic.platform_overrides["pc"].cache_details_days = 7
             config.metacritic.platform_overrides["pc"].cache_ttl_hours = 4
             config.download_sites.fitgirl.rss_url = "http://example.com/feed"
             config.download_sites.fitgirl.platform = "pc"
@@ -305,14 +306,14 @@ class TestNextRunTimeLogging:
         The message should contain the wait interval in minutes and the
         formatted date/time of the next run.
         """
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
         from unittest.mock import MagicMock, PropertyMock, patch
 
         from gamarr.scheduler import _log_next_run_time
 
         mock_scheduler = MagicMock()
         mock_job = MagicMock()
-        future = datetime.now(timezone.utc) + timedelta(minutes=30)
+        future = datetime.now(UTC) + timedelta(minutes=30)
         type(mock_job).next_run_time = PropertyMock(return_value=future)
         mock_scheduler.get_job.return_value = mock_job
 

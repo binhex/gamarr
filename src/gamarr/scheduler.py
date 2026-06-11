@@ -7,6 +7,7 @@ import math
 import os
 import signal
 import threading
+from datetime import UTC
 from typing import TYPE_CHECKING, Any
 
 from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED
@@ -37,7 +38,7 @@ def _log_next_run_time(scheduler: Any, job_id: str) -> None:
     info-level message with the approximate wait duration (in minutes)
     and the absolute date/time of the next run.
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     job = scheduler.get_job(job_id)
     if job is None or job.next_run_time is None:
@@ -45,7 +46,7 @@ def _log_next_run_time(scheduler: Any, job_id: str) -> None:
     # Use the job's own timezone so the subtraction is safe:
     # ``datetime.now()`` is naive while ``job.next_run_time`` from
     # APScheduler is always timezone-aware.
-    tz = job.next_run_time.tzinfo or timezone.utc
+    tz = job.next_run_time.tzinfo or UTC
     now = datetime.now(tz)
     remaining = (job.next_run_time - now).total_seconds()
     wait_minutes = max(1, math.ceil(remaining / 60))
@@ -111,7 +112,7 @@ def _build_kwargs(config: Config) -> dict[str, Any]:
         "min_metascore_reviews": mc_cfg.min_metascore_reviews,
         "min_user_score": mc_cfg.min_user_score,
         "min_user_reviews": mc_cfg.min_user_reviews,
-        "cache_ttl_days": mc_cfg.cache_ttl_days,
+        "cache_details_days": mc_cfg.cache_details_days,
         "cache_ttl_hours": mc_cfg.cache_ttl_hours,
         "enabled": mc_cfg.enabled,
         "max_games": mc_cfg.max_games,

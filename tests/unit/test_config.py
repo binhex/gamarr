@@ -82,6 +82,42 @@ class TestConfigModels:
         assert cfg.cutoff_weeks == 13, "Default cutoff_weeks should be ~90 days (13 weeks)"
         assert cfg.max_games == 1000
 
+    def test_cache_details_days_replaces_cache_ttl_days(self) -> None:
+        """MetacriticPlatformConfig should use cache_details_days, not cache_ttl_days."""
+        from gamarr.config import MetacriticPlatformConfig
+
+        cfg = MetacriticPlatformConfig()
+        assert not hasattr(cfg, "cache_ttl_days"), "Field was renamed to cache_details_days"
+        assert hasattr(cfg, "cache_details_days"), "New field name should exist"
+        assert cfg.cache_details_days == 7, "Default should remain 7"
+
+    def test_migrate_cache_ttl_days_to_cache_details_days(self) -> None:
+        """_migrate_config should rename cache_ttl_days to cache_details_days."""
+        from gamarr.config import _migrate_config
+
+        raw = {
+            "metacritic": {
+                "platform_overrides": {
+                    "pc": {
+                        "cache_ttl_days": 7,
+                    },
+                },
+            },
+        }
+        _migrate_config(raw)
+        mc_pc = raw["metacritic"]["platform_overrides"]["pc"]
+        assert "cache_ttl_days" not in mc_pc, "Old key should be removed"
+        assert mc_pc["cache_details_days"] == 7, "New key should have the same value"
+
+    def test_default_config_dict_contains_cache_details_days(self) -> None:
+        """The default config dict should use cache_details_days, not cache_ttl_days."""
+        from gamarr.config import _default_config_dict
+
+        defaults = _default_config_dict()
+        mc_pc = defaults["metacritic"]["platform_overrides"]["pc"]
+        assert "cache_ttl_days" not in mc_pc, "Old key should not appear in defaults"
+        assert mc_pc["cache_details_days"] == 7, "New key should have default 7"
+
     def test_migrate_config_renames_browse_keys(self) -> None:
         """_migrate_config should rename old browse_* keys and drop deprecated cutoff_date."""
         from gamarr.config import _migrate_config

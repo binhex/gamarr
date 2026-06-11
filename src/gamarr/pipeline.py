@@ -101,7 +101,7 @@ class AcquisitionConfig:
     min_metascore_reviews: int
     min_user_score: float
     min_user_reviews: int
-    cache_ttl_days: int = 7
+    cache_details_days: int = 7
     cache_ttl_hours: int = 6
     enabled: bool = True
     recheck_days: int = 30
@@ -171,7 +171,7 @@ def run_acquisition(
     min_metascore_reviews: int = 10,
     min_user_score: float = 7.5,
     min_user_reviews: int = 10,
-    cache_ttl_days: int = 7,
+    cache_details_days: int = 7,
     cache_ttl_hours: int = 6,
     enabled: bool = True,
     recheck_days: int = 30,
@@ -203,7 +203,7 @@ def run_acquisition(
         min_metascore_reviews=min_metascore_reviews,
         min_user_score=min_user_score,
         min_user_reviews=min_user_reviews,
-        cache_ttl_days=cache_ttl_days,
+        cache_details_days=cache_details_days,
         cache_ttl_hours=cache_ttl_hours,
         enabled=enabled,
         recheck_days=recheck_days,
@@ -342,7 +342,7 @@ def run_acquisition(
                 mc,
                 platform,
                 thresholds,
-                cache_ttl_days=cfg.cache_ttl_days,
+                cache_details_days=cfg.cache_details_days,
                 max_verify=len(pending_games) if cfg.max_games == 0 else min(len(pending_games), cfg.max_games),
                 reject_genre=cfg.reject_genre,
                 reject_title=cfg.reject_title,  # ← new
@@ -841,7 +841,7 @@ def _process_verify_batch(
     max_verify: int,
     total_pending: int,
     *,
-    cache_ttl_days: int = 7,
+    cache_details_days: int = 7,
     reject_genre: list[str] | None = None,
     reject_title: list[str] | None = None,
     fitgirl_recheck_days: int = 60,
@@ -857,7 +857,7 @@ def _process_verify_batch(
         batch: List of pending games to look up.
         max_verify: Maximum games to verify.
         total_pending: Total pending games for progress logging.
-        cache_ttl_days: TTL for the detail-page cache.
+        cache_details_days: TTL for the detail-page cache.
         reject_genre: Genre substrings to reject.
         reject_title: Title substrings to reject.
         fitgirl_recheck_days: Days to extend pending expiry when scores pass.
@@ -883,7 +883,7 @@ def _process_verify_batch(
                 str(game.game_title),
                 platform=platform,
                 slug=str(game.slug),
-                cache_ttl_days=cache_ttl_days,
+                cache_details_days=cache_details_days,
                 direct_only=True,
             )
             for game in batch
@@ -925,13 +925,13 @@ def _verify_pending_scores(
     platform: str,
     thresholds: dict[str, Any],
     *,
-    cache_ttl_days: int = 7,
+    cache_details_days: int = 7,
     max_verify: int = 50,
     reject_genre: list[str] | None = None,
-    reject_title: list[str] | None = None,  # ← new
-    fitgirl_recheck_days: int = 60,  # ← new
-    notifier: Any = None,  # ← new
-    cancel_event: threading.Event | None = None,  # ← new
+    reject_title: list[str] | None = None,
+    fitgirl_recheck_days: int = 60,
+    notifier: Any = None,
+    cancel_event: threading.Event | None = None,
 ) -> int:
     """Re-verify pending games' scores against the real Metacritic detail page.
 
@@ -954,7 +954,7 @@ def _verify_pending_scores(
         mc: MetacriticClient instance.
         platform: Platform identifier (e.g. ``"pc"``).
         thresholds: Dict with score threshold keys.
-        cache_ttl_days: TTL for the detail-page cache.
+        cache_details_days: TTL for the detail-page cache.
         max_verify: Maximum number of games to verify per cycle.
             Set to 0 to skip verification entirely.
         reject_genre: List of genre substrings to reject (case-insensitive).
@@ -990,7 +990,7 @@ def _verify_pending_scores(
         batch,
         max_verify,
         total_pending,
-        cache_ttl_days=cache_ttl_days,
+        cache_details_days=cache_details_days,
         reject_genre=reject_genre,
         reject_title=reject_title,
         fitgirl_recheck_days=fitgirl_recheck_days,

@@ -566,7 +566,7 @@ class MetacriticClient:
         self,
         title: str,
         platform: str = "pc",
-        cache_ttl_days: int = 7,
+        cache_details_days: int = 7,
         cache_ttl_hours: int = 6,
         direct_only: bool = False,
         slug: str | None = None,
@@ -577,7 +577,7 @@ class MetacriticClient:
             title: The game title to search for (used for slug generation
                 when *slug* is ``None``).
             platform: The platform identifier (default ``"pc"``).
-            cache_ttl_days: TTL in days for game detail cache.
+            cache_details_days: TTL in days for game detail cache.
             cache_ttl_hours: TTL in hours for browse page cache.
             direct_only: When ``True``, skip the slow browse-page fallback
                 and only check the direct slug.  Use this when the caller
@@ -595,7 +595,7 @@ class MetacriticClient:
         if slug is None:
             slug = _make_slug(title)
 
-        result = self._try_direct_slug(slug, cache_ttl_days, original_title=title)
+        result = self._try_direct_slug(slug, cache_details_days, original_title=title)
         if result is not None:
             return result
 
@@ -603,13 +603,15 @@ class MetacriticClient:
             return None
 
         logger.debug("Direct slug '{}' failed for '{}', scanning browse pages...", slug, title)
-        result = self._scan_browse_pages(title, platform, cache_ttl_hours, cache_ttl_days)
+        result = self._scan_browse_pages(title, platform, cache_ttl_hours, cache_details_days)
         return result
 
-    def _try_direct_slug(self, slug: str, cache_ttl_days: int, original_title: str | None = None) -> ScoreResult | None:
-        cached = self._cache.get_game_detail(slug, ttl_days=cache_ttl_days)
+    def _try_direct_slug(
+        self, slug: str, cache_details_days: int, original_title: str | None = None
+    ) -> ScoreResult | None:
+        cached = self._cache.get_game_detail(slug, ttl_days=cache_details_days)
         if cached is not None:
-            logger.debug("Metacritic detail cache hit for '{}' (TTL: {} days)", slug, cache_ttl_days)
+            logger.debug("Metacritic detail cache hit for '{}' (TTL: {} days)", slug, cache_details_days)
             return ScoreResult(
                 title=original_title or slug.replace("-", " ").title(),
                 slug=slug,
@@ -677,7 +679,7 @@ class MetacriticClient:
         title: str,
         platform: str,
         cache_ttl_hours: int,
-        cache_ttl_days: int,
+        cache_details_days: int,
     ) -> ScoreResult | None:
         normalized_title = normalise_for_compare(title)
         scanned = 0
@@ -691,7 +693,7 @@ class MetacriticClient:
             slug = self._match_game_on_page(games, normalized_title)
             if slug is not None:
                 logger.info("Found matching game on browse page {}", page_number)
-                return self._try_direct_slug(slug, cache_ttl_days, original_title=None)
+                return self._try_direct_slug(slug, cache_details_days, original_title=None)
 
         logger.info(
             "Game '{}' not on Metacritic detail page (slug resolution failed, scanned {} browse page{})",

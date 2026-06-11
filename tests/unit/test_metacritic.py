@@ -347,7 +347,7 @@ class TestTryDirectSlug:
     def test_try_direct_slug_cache_hit(self) -> None:
         client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
         client._cache.set_game_detail("elden-ring", 96.0, 120, 8.5, 5000)
-        result = client._try_direct_slug("elden-ring", cache_ttl_days=7)
+        result = client._try_direct_slug("elden-ring", cache_details_days=7)
         assert result is not None
         assert result.metascore == 96.0
         assert result.user_score == 8.5
@@ -355,7 +355,7 @@ class TestTryDirectSlug:
     def test_try_direct_slug_cache_miss_no_http(self) -> None:
         """Without cache or network, slug lookup returns None."""
         client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
-        result = client._try_direct_slug("nonexistent-game-12345", cache_ttl_days=7)
+        result = client._try_direct_slug("nonexistent-game-12345", cache_details_days=7)
         assert result is None
 
     def test_try_direct_slug_http_failure(self) -> None:
@@ -366,7 +366,7 @@ class TestTryDirectSlug:
 
         client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
         with patch("gamarr.metacritic.requests.get", side_effect=requests.exceptions.ConnectionError("mock error")):
-            result = client._try_direct_slug("some-game", cache_ttl_days=7)
+            result = client._try_direct_slug("some-game", cache_details_days=7)
         assert result is None
 
     def test_try_direct_slug_http_not_found(self) -> None:
@@ -377,7 +377,7 @@ class TestTryDirectSlug:
         mock_resp.status_code = 404
         client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
         with patch("gamarr.metacritic.requests.get", return_value=mock_resp):
-            result = client._try_direct_slug("nonexistent-game", cache_ttl_days=7)
+            result = client._try_direct_slug("nonexistent-game", cache_details_days=7)
         assert result is None
 
 
