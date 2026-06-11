@@ -102,7 +102,7 @@ class AcquisitionConfig:
     min_user_score: float
     min_user_reviews: int
     cache_details_days: int = 7
-    cache_ttl_hours: int = 6
+    cache_pages_hours: int = 6
     enabled: bool = True
     recheck_days: int = 30
     max_games: int = 1000
@@ -172,7 +172,7 @@ def run_acquisition(
     min_user_score: float = 7.5,
     min_user_reviews: int = 10,
     cache_details_days: int = 7,
-    cache_ttl_hours: int = 6,
+    cache_pages_hours: int = 6,
     enabled: bool = True,
     recheck_days: int = 30,
     cutoff_weeks: int | None = None,
@@ -186,7 +186,7 @@ def run_acquisition(
     notify_on_failure: bool = False,
     notify_on_error: bool = False,
     library_paths: list[str] | None = None,
-    fitgirl_cache_ttl_hours: int = 6,
+    fitgirl_cache_pages_hours: int = 6,
     fitgirl_reject_keywords: list[str] | None = None,
     cancel_event: threading.Event | None = None,
 ) -> list[dict[str, Any]]:
@@ -204,7 +204,7 @@ def run_acquisition(
         min_user_score=min_user_score,
         min_user_reviews=min_user_reviews,
         cache_details_days=cache_details_days,
-        cache_ttl_hours=cache_ttl_hours,
+        cache_pages_hours=cache_pages_hours,
         enabled=enabled,
         recheck_days=recheck_days,
         cutoff_weeks=cutoff_weeks,
@@ -222,7 +222,7 @@ def run_acquisition(
         rss_url=fitgirl_rss_url,
         platform=platform,
         db=db,
-        cache_ttl_hours=fitgirl_cache_ttl_hours,
+        cache_pages_hours=fitgirl_cache_pages_hours,
     )
     mc = MetacriticClient(cache=MetacriticCache(db))
 
@@ -282,7 +282,7 @@ def run_acquisition(
             browse_games = mc.scan_recent_games(
                 platform,
                 max_games=cfg.max_games,
-                cache_ttl_hours=cfg.cache_ttl_hours,
+                cache_pages_hours=cfg.cache_pages_hours,
                 cutoff_date=cutoff_date,
                 cancel_event=cancel_event,
             )
@@ -312,7 +312,7 @@ def run_acquisition(
         # check whether scraping is broken (skip if cancelled)
         if cfg.enabled and not is_cancelled(cancel_event) and not browse_games and cfg.notify_on_scrape_failure:
             # Check if we have any cached browse data (if so, stale data is fine)
-            cached_exists = mc._cache.get_browse_page(platform, 1, ttl_hours=cfg.cache_ttl_hours) is not None
+            cached_exists = mc._cache.get_browse_page(platform, 1, ttl_hours=cfg.cache_pages_hours) is not None
             if not cached_exists:
                 _diagnose_and_notify_scrape(
                     notifier,

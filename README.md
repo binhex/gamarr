@@ -116,7 +116,7 @@ on first run. The file is divided into the sections below.
 | `fitgirl.enabled` | Enable the FitGirl source. | `true` |
 | `fitgirl.rss_url` | FitGirl repacks RSS feed URL. | `https://fitgirl-repacks.site/feed/` |
 | `fitgirl.platform` | Target platform for matching. | `pc` |
-| `fitgirl.cache_ttl_hours` | How long to cache the FitGirl sitemap before re-fetching. | `6` |
+| `fitgirl.cache_pages_hours` | How long to cache the FitGirl sitemap before re-fetching. | `6` |
 | `fitgirl.reject_keywords` | Reject FitGirl repack titles containing any of these keywords (case-insensitive). | `[]` |
 | `fitgirl.recheck_days` | How many days a game stays in the pending queue *after* its scores are verified (the FitGirl-matching phase). `0` = indefinite pending (no expiry). | `60` |
 
@@ -135,7 +135,7 @@ on first run. The file is divided into the sections below.
 | `max_games` | Maximum number of games to scan per cycle (0 = unlimited). | `1000` |
 | `recheck_days` | Days a game stays in the pending queue before expiring. `0` = indefinite pending (no expiry). | `30` |
 | `cache_details_days` | Days to cache Metacritic detail-page results. | `7` |
-| `cache_ttl_hours` | Hours to cache Metacritic browse-page results. | `6` |
+| `cache_pages_hours` | Hours to cache Metacritic browse-page results. | `6` |
 | `reject_genre` | Reject games whose Metacritic genre contains any of these substrings (case-insensitive). E.g. `["RPG"]` matches "Action RPG", "JRPG", "Western RPG". | `[]` |
 | `reject_title` | Reject games whose title contains any of these substrings (case-insensitive). E.g. `["Remake"]` matches "Resident Evil 4 Remake", "Remake Collection". | `[]` |
 

@@ -567,7 +567,7 @@ class MetacriticClient:
         title: str,
         platform: str = "pc",
         cache_details_days: int = 7,
-        cache_ttl_hours: int = 6,
+        cache_pages_hours: int = 6,
         direct_only: bool = False,
         slug: str | None = None,
     ) -> ScoreResult | None:
@@ -578,7 +578,7 @@ class MetacriticClient:
                 when *slug* is ``None``).
             platform: The platform identifier (default ``"pc"``).
             cache_details_days: TTL in days for game detail cache.
-            cache_ttl_hours: TTL in hours for browse page cache.
+            cache_pages_hours: TTL in hours for browse page cache.
             direct_only: When ``True``, skip the slow browse-page fallback
                 and only check the direct slug.  Use this when the caller
                 already knows the game exists on Metacritic (e.g., from
@@ -603,7 +603,7 @@ class MetacriticClient:
             return None
 
         logger.debug("Direct slug '{}' failed for '{}', scanning browse pages...", slug, title)
-        result = self._scan_browse_pages(title, platform, cache_ttl_hours, cache_details_days)
+        result = self._scan_browse_pages(title, platform, cache_pages_hours, cache_details_days)
         return result
 
     def _try_direct_slug(
@@ -678,7 +678,7 @@ class MetacriticClient:
         self,
         title: str,
         platform: str,
-        cache_ttl_hours: int,
+        cache_pages_hours: int,
         cache_details_days: int,
     ) -> ScoreResult | None:
         normalized_title = normalise_for_compare(title)
@@ -686,7 +686,7 @@ class MetacriticClient:
 
         for page_number in range(1, 11):
             logger.debug("Scanning browse page {} for '{}'", page_number, title)
-            games = self._fetch_browse_page(platform, page_number, cache_ttl_hours)
+            games = self._fetch_browse_page(platform, page_number, cache_pages_hours)
             if not games:
                 break
             scanned += 1
@@ -703,9 +703,9 @@ class MetacriticClient:
         )
         return None
 
-    def _fetch_browse_page(self, platform: str, page_number: int, cache_ttl_hours: int) -> list[dict] | None:
+    def _fetch_browse_page(self, platform: str, page_number: int, cache_pages_hours: int) -> list[dict] | None:
         """Return game listings for a browse page from cache or HTTP."""
-        cached = self._cache.get_browse_page(platform, page_number, ttl_hours=cache_ttl_hours)
+        cached = self._cache.get_browse_page(platform, page_number, ttl_hours=cache_pages_hours)
         if cached is not None:
             return cached
         url = (
@@ -743,7 +743,7 @@ class MetacriticClient:
         platform: str,
         *,
         max_games: int = 1000,
-        cache_ttl_hours: int = 6,
+        cache_pages_hours: int = 6,
         cutoff_date: str | None = None,
         cancel_event: threading.Event | None = None,
     ) -> list[dict[str, Any]]:
@@ -772,7 +772,7 @@ class MetacriticClient:
         effective_max = max_games if max_games > 0 else 999999
         page_number = 1
         while len(all_games) < effective_max and page_number <= 500:
-            games = self._fetch_browse_page(platform, page_number, cache_ttl_hours)
+            games = self._fetch_browse_page(platform, page_number, cache_pages_hours)
             if not games:
                 break
 

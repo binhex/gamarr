@@ -250,11 +250,11 @@ class FitGirlSource:
         platform: str = "pc",
         db_path: str = ":memory:",
         db: Database | None = None,
-        cache_ttl_hours: int = 6,
+        cache_pages_hours: int = 6,
     ) -> None:
         self._rss_url = rss_url
         self._platform = platform
-        self._cache_ttl_hours = cache_ttl_hours
+        self._cache_pages_hours = cache_pages_hours
 
         if db is not None:
             self._db = db
@@ -275,12 +275,12 @@ class FitGirlSource:
         """Fetch the FitGirl sitemap and rebuild the source_titles index.
 
         Handles both ``<urlset>`` and ``<sitemapindex>`` sitemap formats.
-        Results are cached in ``sitemap_cache`` for ``cache_ttl_hours``.
+        Results are cached in ``sitemap_cache`` for ``cache_pages_hours``.
         """
-        if self._cache_ttl_hours > 0 and db.get_sitemap_cache("fitgirl", self._cache_ttl_hours):
+        if self._cache_pages_hours > 0 and db.get_sitemap_cache("fitgirl", self._cache_pages_hours):
             logger.info(
                 "FitGirl cache is still valid (TTL: {} hours) — skipping fetch",
-                self._cache_ttl_hours,
+                self._cache_pages_hours,
             )
             return
 
