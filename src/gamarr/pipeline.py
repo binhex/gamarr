@@ -359,6 +359,9 @@ def run_acquisition(
                     removed,
                 )
 
+        # Process old verified games so they aren't re-checked in future cycles
+        _process_aged_games(db, cfg, platform)
+
         library: Any = None
         if library_paths:
             from gamarr.library import LibraryScanner
@@ -790,6 +793,63 @@ def _record_processed_game(db: Database, game: Any, result: Any, age_recheck_wee
         age_recheck_weeks,
     )
     return True
+
+
+def _process_aged_games(
+    db: Database,
+    cfg: AcquisitionConfig,
+    platform: str,
+) -> int:
+    """Mark old verified pending games as processed.
+
+    Queries all non-expired pending games that have been checked at
+    least once (``last_checked_at IS NOT NULL``) and whose
+    ``release_date`` is older than ``cfg.age_recheck_weeks``.
+
+    These games are permanently recorded with ``result="Processed"``
+    and removed from the pending queue — they will not be re-checked
+    on future cycles.
+
+    Returns the count of games processed.
+    """
+    if not cfg.age_recheck_weeks:
+        return 0
+
+    pending = db.get_pending(platform=platform)
+    processed = 0
+    for game in pending:
+        if game.last_checked_at is None:
+            continue
+        if not game.release_date:
+            continue
+        if not _is_older_than(game.release_date, days=cfg.age_recheck_weeks * 7):
+            continue
+
+        db.record_processed(
+            source="metacritic",
+            source_title=str(game.game_title),
+            source_url=f"mc:{game.slug}",
+            game_title=str(game.game_title),
+            platform=str(game.platform),
+            metascore=game.metascore,
+            user_score=game.user_score,
+            result="Processed",
+            result_details=f"Game older than {cfg.age_recheck_weeks}-week threshold, not re-checked",
+        )
+        db.remove_pending(str(game.slug))
+        logger.debug(
+            "Processed '{}' \u2014 release date older than {} weeks",
+            game.game_title,
+            cfg.age_recheck_weeks,
+        )
+        processed += 1
+
+    if processed:
+        logger.info(
+            "Processed {} old game(s) \u2014 will not be re-checked",
+            processed,
+        )
+    return processed
 
 
 def _process_verify_result(
