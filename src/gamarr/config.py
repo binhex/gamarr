@@ -48,7 +48,7 @@ class FitGirlSourceConfig(BaseModel):
     platform: str = "pc"
     cache_pages_hours: int = Field(default=6, gt=0, le=168)
     reject_keywords: list[str] = Field(default_factory=list)
-    recheck_days: int = Field(default=60, ge=0)
+    max_queue_days: int = Field(default=60, ge=0)
 
 
 class DownloadSitesConfig(BaseModel):
@@ -66,7 +66,7 @@ class MetacriticPlatformConfig(BaseModel):
     min_user_reviews: int = 10
     cache_details_days: int = 7
     cache_pages_hours: int = 6
-    recheck_days: int = 30
+    max_queue_days: int = 30
     enabled: bool = True
     max_weeks: int | None = Field(default=13, ge=0)
     reject_genre: list[str] = Field(default_factory=list)
@@ -236,7 +236,7 @@ def _drop_max_verify_attempts(mc_pc: dict[str, Any], platform_key: str) -> bool:
     if "max_verify_attempts" not in mc_pc:
         return False
     logger.info(
-        "Config: removing deprecated 'max_verify_attempts' for platform '{}' — recheck_days controls expiry",
+        "Config: removing deprecated 'max_verify_attempts' for platform '{}' — max_queue_days controls expiry",
         platform_key,
     )
     del mc_pc["max_verify_attempts"]
@@ -330,19 +330,19 @@ def _migrate_metacritic_exclude_keywords(raw: dict[str, Any]) -> bool:
 
 
 def _rename_pending_days(d: dict[str, Any], label: str) -> bool:
-    """If *d* is a dict with ``pending_days`` (but no ``recheck_days``), rename it.
+    """If *d* is a dict with ``pending_days`` (but no ``max_queue_days``), rename it.
 
     Returns True if the rename was applied.
     """
-    if isinstance(d, dict) and "pending_days" in d and "recheck_days" not in d:
-        d["recheck_days"] = d.pop("pending_days")
-        logger.info("Config: renamed '{}.pending_days' to 'recheck_days'", label)
+    if isinstance(d, dict) and "pending_days" in d and "max_queue_days" not in d:
+        d["max_queue_days"] = d.pop("pending_days")
+        logger.info("Config: renamed '{}.pending_days' to 'max_queue_days'", label)
         return True
     return False
 
 
-def _migrate_pending_days_to_recheck(raw: dict[str, Any]) -> bool:
-    """Rename pending_days to recheck_days in metacritic and fitgirl config sections.
+def _migrate_pending_days_to_max_queue_days(raw: dict[str, Any]) -> bool:
+    """Rename pending_days to max_queue_days in metacritic and fitgirl config sections.
 
     Returns True if a migration was applied.
     """
@@ -413,6 +413,35 @@ def _migrate_remove_max_games(raw: dict[str, Any]) -> bool:
     return changed
 
 
+def _rename_recheck_days_in_dict(d: Any, label: str) -> bool:
+    """If *d* is a dict with recheck_days (no max_queue_days), rename it.
+
+    Returns True if a rename was applied.
+    """
+    if isinstance(d, dict) and "recheck_days" in d and "max_queue_days" not in d:
+        d["max_queue_days"] = d.pop("recheck_days")
+        logger.info("Config: renamed 'recheck_days' to 'max_queue_days' for '{}'", label)
+        return True
+    return False
+
+
+def _migrate_recheck_days_to_max_queue_days(raw: dict[str, Any]) -> bool:
+    """Rename recheck_days to max_queue_days in metacritic and fitgirl config sections.
+
+    Returns True if any migration was applied.
+    """
+    changed = False
+    overrides = raw.get("metacritic", {}).get("platform_overrides", {})
+    for platform_key, mc_pc in overrides.items():
+        if _rename_recheck_days_in_dict(mc_pc, f"metacritic.platform_overrides.{platform_key}"):
+            changed = True
+    for parent_key in ("download_sites", "sources"):
+        ds = raw.get(parent_key, {})
+        if _rename_recheck_days_in_dict(ds.get("fitgirl"), f"{parent_key}.fitgirl"):
+            changed = True
+    return changed
+
+
 def _migrate_daemon_mode(raw: dict[str, Any]) -> bool:
     """Migrate deprecated general.daemon_mode to schedule.acquisition.enabled.
 
@@ -448,7 +477,8 @@ def _migrate_config(raw: dict[str, Any]) -> bool:
             _migrate_fitgirl_cache_ttl_hours,
             _migrate_cutoff_weeks_to_max_weeks,
             _migrate_days_since_release,
-            _migrate_pending_days_to_recheck,
+            _migrate_pending_days_to_max_queue_days,
+            _migrate_recheck_days_to_max_queue_days,
             _migrate_metacritic_exclude_keywords,
             _migrate_remove_max_games,
             _migrate_daemon_mode,

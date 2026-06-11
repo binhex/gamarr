@@ -22,8 +22,8 @@ sitemap, and sends qualifying games to qBittorrent.
   page scores don't match the browse page scores are kept in a pending queue
   for re-verification, up to a configurable maximum number of attempts.
 - **Two-phase pending expiry** — games awaiting score review expire after
-  `recheck_days` (under metacritic thresholds). Once scores pass, a fresh
-  expiry window (`download_sites.fitgirl.recheck_days`) starts for the
+  `max_queue_days` (under metacritic thresholds). Once scores pass, a fresh
+  expiry window (`download_sites.fitgirl.max_queue_days`) starts for the
   FitGirl-matching phase. Set either value to `0` for indefinite pending.
 - **FitGirl sitemap matching** — fetches the FitGirl repacks sitemap only
   when there are verified games to match against.
@@ -118,7 +118,7 @@ on first run. The file is divided into the sections below.
 | `fitgirl.platform` | Target platform for matching. | `pc` |
 | `fitgirl.cache_pages_hours` | How long to cache the FitGirl sitemap before re-fetching. | `6` |
 | `fitgirl.reject_keywords` | Reject FitGirl repack titles containing any of these keywords (case-insensitive). | `[]` |
-| `fitgirl.recheck_days` | How many days a game stays in the pending queue *after* its scores are verified (the FitGirl-matching phase). `0` = indefinite pending (no expiry). | `60` |
+| `fitgirl.max_queue_days` | How many days a game stays in the pending queue *after* its scores are verified (the FitGirl-matching phase). `0` = indefinite pending (no expiry). | `60` |
 
 ### `metacritic`
 
@@ -133,7 +133,7 @@ on first run. The file is divided into the sections below.
 | `max_weeks` | Look-back window in weeks from today. Games released before this are skipped. `null` or `0` = no cutoff. | `null` |
 | `age_recheck_weeks` | Games older than this (weeks since release) are permanently processed once their Metacritic scores pass thresholds. `null` or `0` = disabled. | `null` |
 | `enabled` | Enable or disable the Metacritic browse step. Disabling skips game discovery entirely. | `true` |
-| `recheck_days` | Days a game stays in the pending queue before expiring. `0` = indefinite pending (no expiry). | `30` |
+| `max_queue_days` | Days a game stays in the pending queue before expiring. `0` = indefinite pending (no expiry). | `30` |
 | `cache_details_days` | Days to cache Metacritic detail-page results. | `7` |
 | `cache_pages_hours` | Hours to cache Metacritic browse-page results. | `6` |
 | `reject_genre` | Reject games whose Metacritic genre contains any of these substrings (case-insensitive). E.g. `["RPG"]` matches "Action RPG", "JRPG", "Western RPG". | `[]` |
@@ -229,7 +229,7 @@ are collected.
    exceed the configured thresholds — score filtering effectively starts
    at the verification step (phase 4), not here.
 3. **Pending queue** — Surviving games enter a `pending_games` queue with a
-   configurable expiry (`metacritic.platform_overrides.*.recheck_days`,
+   configurable expiry (`metacritic.platform_overrides.*.max_queue_days`,
    default 30, or `0` for indefinite). They wait for a detail-page
    verification pass.
 4. **Score verification** — Each pending game's real Metacritic detail page
@@ -237,7 +237,7 @@ are collected.
    against configured thresholds. Games whose real scores fail the checks
    are kept for re-verification.
    **When scores pass**, the game's expiry is recalculated to
-   `now + download_sites.fitgirl.recheck_days` (default 60, or `0` for
+   `now + download_sites.fitgirl.max_queue_days` (default 60, or `0` for
    indefinite), giving it a fresh window for the FitGirl-matching phase.
 5. **Genre rejection** — Before score verification, the game's genres
    (extracted from the detail page) are checked against `reject_genre`.
