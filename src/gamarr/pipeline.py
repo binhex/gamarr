@@ -349,7 +349,6 @@ def run_acquisition(
                 max_verify=len(pending_games) if cfg.max_games == 0 else min(len(pending_games), cfg.max_games),
                 reject_genre=cfg.reject_genre,
                 reject_title=cfg.reject_title,
-                age_recheck_weeks=cfg.age_recheck_weeks,
                 fitgirl_recheck_days=cfg.fitgirl_recheck_days,
                 notifier=notifier,
                 cancel_event=cancel_event,
@@ -751,11 +750,11 @@ def _scores_fail_check(result: Any, thresholds: dict[str, Any]) -> bool:
     return not _scores_present(result) or not _real_scores_pass_thresholds(result, thresholds)
 
 
-def _should_seal_by_age(game: Any, age_recheck_weeks: int | None) -> bool:
-    """Return True if *game* is old enough to be permanently sealed.
+def _should_process_by_age(game: Any, age_recheck_weeks: int | None) -> bool:
+    """Return True if *game* is old enough to be permanently processed.
 
-    When *age_recheck_weeks* is ``None`` or ``0``, sealing is disabled.
-    Games without a ``release_date`` are never sealed (we can't determine
+    When *age_recheck_weeks* is ``None`` or ``0``, processing is disabled.
+    Games without a ``release_date`` are never processed (we can't determine
     their age).
     """
     if age_recheck_weeks is None:
@@ -766,7 +765,7 @@ def _should_seal_by_age(game: Any, age_recheck_weeks: int | None) -> bool:
     return _is_older_than(release_date, days=age_recheck_weeks * 7)
 
 
-def _seal_game(db: Database, game: Any, result: Any, age_recheck_weeks: int) -> bool:
+def _record_processed_game(db: Database, game: Any, result: Any, age_recheck_weeks: int) -> bool:
     """Permanently record *game* as processed and remove from pending.
 
     Writes a history row with ``result="Processed"`` and removes the
@@ -782,11 +781,11 @@ def _seal_game(db: Database, game: Any, result: Any, age_recheck_weeks: int) -> 
         metascore=result.metascore,
         user_score=result.user_score,
         result="Processed",
-        result_details=f"Game older than {age_recheck_weeks}-week age_recheck_weeks threshold",
+        result_details=f"Game older than {age_recheck_weeks}-week threshold, not re-checked",
     )
     db.remove_pending(str(game.slug))
-    logger.info(
-        "Sealed '{}' \u2014 release date is older than {} weeks",
+    logger.debug(
+        "Processed '{}' \u2014 release date older than {} weeks",
         game.game_title,
         age_recheck_weeks,
     )
@@ -801,7 +800,6 @@ def _process_verify_result(
     *,
     reject_genre: list[str] | None = None,
     reject_title: list[str] | None = None,
-    age_recheck_weeks: int | None = None,
     fitgirl_recheck_days: int = 60,
 ) -> bool:
     """Process one score-check result. Returns True if the game was removed.
@@ -859,11 +857,6 @@ def _process_verify_result(
         )
         return False
 
-    # Seal old games instead of keeping them in the pending queue
-    if _should_seal_by_age(game, age_recheck_weeks):
-        assert age_recheck_weeks is not None  # guarded by _should_seal_by_age above
-        return _seal_game(db, game, result, age_recheck_weeks)
-
     db.update_pending_scores(
         slug=str(game.slug),
         metascore=result.metascore,
@@ -896,7 +889,6 @@ def _process_verify_batch(
     cache_details_days: int = 7,
     reject_genre: list[str] | None = None,
     reject_title: list[str] | None = None,
-    age_recheck_weeks: int | None = None,
     fitgirl_recheck_days: int = 60,
     cancel_event: threading.Event | None = None,
 ) -> tuple[int, bool]:
@@ -963,7 +955,6 @@ def _process_verify_batch(
                 thresholds,
                 reject_genre=reject_genre,
                 reject_title=reject_title,
-                age_recheck_weeks=age_recheck_weeks,
                 fitgirl_recheck_days=fitgirl_recheck_days,
             ):
                 removed += 1
@@ -983,7 +974,6 @@ def _verify_pending_scores(
     max_verify: int = 50,
     reject_genre: list[str] | None = None,
     reject_title: list[str] | None = None,
-    age_recheck_weeks: int | None = None,
     fitgirl_recheck_days: int = 60,
     notifier: Any = None,
     cancel_event: threading.Event | None = None,
@@ -1048,7 +1038,6 @@ def _verify_pending_scores(
         cache_details_days=cache_details_days,
         reject_genre=reject_genre,
         reject_title=reject_title,
-        age_recheck_weeks=age_recheck_weeks,
         fitgirl_recheck_days=fitgirl_recheck_days,
         cancel_event=cancel_event,
     )
