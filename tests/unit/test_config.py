@@ -286,6 +286,13 @@ class TestConfigModels:
         assert cfg.metacritic.platform_overrides["pc"].min_metascore == 75
         assert cfg.torrent_client.selected == "qbittorrent"
 
+    def test_age_recheck_weeks_default(self) -> None:
+        """MetacriticPlatformConfig.age_recheck_weeks defaults to None."""
+        from gamarr.config import MetacriticPlatformConfig
+
+        cfg = MetacriticPlatformConfig()
+        assert cfg.age_recheck_weeks is None
+
 
 class TestLoadConfig:
     """Config file loading."""

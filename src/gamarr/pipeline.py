@@ -111,6 +111,7 @@ class AcquisitionConfig:
     reject_title: list[str] | None = None
     fitgirl_recheck_days: int = 60
     notify_on_scrape_failure: bool = True
+    age_recheck_weeks: int | None = None
 
     def _age_days(self) -> int:
         """Return the age filter in days, derived from cutoff_weeks."""
@@ -181,6 +182,7 @@ def run_acquisition(
     max_games: int = 1000,
     reject_genre: list[str] | None = None,
     reject_title: list[str] | None = None,  # ← new
+    age_recheck_weeks: int | None = None,
     apprise_urls: list[str] | None = None,
     notify_on_download: bool = True,
     notify_on_failure: bool = False,
@@ -213,6 +215,7 @@ def run_acquisition(
         max_games=max_games,
         reject_genre=reject_genre,
         reject_title=reject_title,  # ← new
+        age_recheck_weeks=age_recheck_weeks,
     )
 
     logger.info("Fetching Metacritic pages for platform '{}', please wait...", platform)
@@ -346,6 +349,7 @@ def run_acquisition(
                 max_verify=len(pending_games) if cfg.max_games == 0 else min(len(pending_games), cfg.max_games),
                 reject_genre=cfg.reject_genre,
                 reject_title=cfg.reject_title,  # ← new
+                age_recheck_weeks=cfg.age_recheck_weeks,
                 fitgirl_recheck_days=cfg.fitgirl_recheck_days,  # ← new
                 notifier=notifier,  # ← new
                 cancel_event=cancel_event,
@@ -755,6 +759,7 @@ def _process_verify_result(
     *,
     reject_genre: list[str] | None = None,
     reject_title: list[str] | None = None,  # ← new
+    age_recheck_weeks: int | None = None,
     fitgirl_recheck_days: int = 60,  # ← new
 ) -> bool:
     """Process one score-check result. Returns True if the game was removed.
@@ -844,6 +849,7 @@ def _process_verify_batch(
     cache_details_days: int = 7,
     reject_genre: list[str] | None = None,
     reject_title: list[str] | None = None,
+    age_recheck_weeks: int | None = None,
     fitgirl_recheck_days: int = 60,
     cancel_event: threading.Event | None = None,
 ) -> tuple[int, bool]:
@@ -910,6 +916,7 @@ def _process_verify_batch(
                 thresholds,
                 reject_genre=reject_genre,
                 reject_title=reject_title,
+                age_recheck_weeks=age_recheck_weeks,
                 fitgirl_recheck_days=fitgirl_recheck_days,
             ):
                 removed += 1
@@ -929,6 +936,7 @@ def _verify_pending_scores(
     max_verify: int = 50,
     reject_genre: list[str] | None = None,
     reject_title: list[str] | None = None,
+    age_recheck_weeks: int | None = None,
     fitgirl_recheck_days: int = 60,
     notifier: Any = None,
     cancel_event: threading.Event | None = None,
@@ -993,6 +1001,7 @@ def _verify_pending_scores(
         cache_details_days=cache_details_days,
         reject_genre=reject_genre,
         reject_title=reject_title,
+        age_recheck_weeks=age_recheck_weeks,
         fitgirl_recheck_days=fitgirl_recheck_days,
         cancel_event=cancel_event,
     )
