@@ -38,7 +38,7 @@ metacritic:
       - novel
       - card
       reject_title: []
-      age_recheck_weeks: 8
+      age_recheck_weeks: 4
 torrent_client:
   selected: qbittorrent
   qbittorrent:

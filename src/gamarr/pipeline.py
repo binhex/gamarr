@@ -330,9 +330,19 @@ def run_acquisition(
         # are removed from pending.
         pending_games = db.get_pending(platform=platform)
         if pending_games:
+            total_pending = len(pending_games)
+            carryover = total_pending - (new_pending if browse_games else 0)
+            if carryover > 0:
+                logger.info(
+                    "{} pending games ({} new + {} from previous {})",
+                    total_pending,
+                    total_pending - carryover if browse_games else 0,
+                    carryover,
+                    "cycle" if carryover == 1 else "cycles",
+                )
             logger.info(
                 "Proceeding to verify {} pending games against real Metacritic scores",
-                len(pending_games),
+                total_pending,
             )
             thresholds = {
                 "min_metascore": cfg.min_metascore,
@@ -808,7 +818,7 @@ def _process_aged_games(
     ``release_date`` is older than ``cfg.age_recheck_weeks``.
 
     These games are permanently recorded with ``result="Processed"``
-    and removed from the pending queue — they will not be re-checked
+    and removed from the pending queue — they are skipped on the next run
     on future cycles.
 
     Returns the count of games processed.
@@ -849,8 +859,7 @@ def _process_aged_games(
 
     if processed:
         logger.info(
-            "Processed {} old game(s) \u2014 will not be re-checked",
-            processed,
+            f"Processed {processed} game(s) older than {cfg.age_recheck_weeks} weeks \u2014 skipping on next run",
         )
     return processed
 
