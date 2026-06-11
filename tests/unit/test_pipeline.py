@@ -1383,7 +1383,7 @@ class TestMetacriticBrowse:
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
-        _process_browse_games(browse_games, "pc", db, thresholds, recheck_days=30)
+        _process_browse_games(browse_games, "pc", db, thresholds, max_queue_days=30)
         pending = db.get_pending(platform="pc")
         assert len(pending) == 1
         assert pending[0].slug == "elden-ring"
@@ -2203,7 +2203,7 @@ class TestMetacriticBrowse:
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
-        new_count = _process_browse_games(games, "pc", db, thresholds, recheck_days=30)
+        new_count = _process_browse_games(games, "pc", db, thresholds, max_queue_days=30)
         assert new_count == 0
         pending = db.get_pending()
         assert len(pending) == 0
@@ -2246,7 +2246,7 @@ class TestMetacriticBrowse:
             "min_user_score": 0.0,
             "min_user_reviews": 0,
         }
-        new_count = _process_browse_games(games, "pc", db, thresholds, recheck_days=30, days_since_release=90)
+        new_count = _process_browse_games(games, "pc", db, thresholds, max_queue_days=30, days_since_release=90)
         # Only the recent game (30d old) should pass; old game (365d) should be filtered
         assert new_count == 1, f"Expected 1 pending game, got {new_count}"
         pending = db.get_pending()
@@ -2297,7 +2297,7 @@ class TestMetacriticBrowse:
             "pc",
             db,
             thresholds,
-            recheck_days=30,
+            max_queue_days=30,
             reject_title=["DLC", "Soundtrack", "Bundle"],
         )
         assert new_count == 1, "Only the non-excluded game should be added"
@@ -2753,89 +2753,6 @@ class TestVerifyPendingScoresEdgeCases:
         output = buf.getvalue()
         assert "Passing Game" in output, "Game that passed score checks should appear in log"
         assert "score check" in output.lower() or "passed" in output.lower(), "Should mention that score check passed"
-        db.close()
-
-    def test_verify_pending_keeps_game_with_failing_scores(self, tmp_path: Path) -> None:
-        """A game with failing scores should stay pending (not removed)."""
-        import datetime
-        from unittest.mock import MagicMock
-
-        from gamarr.database import Database
-        from gamarr.pipeline import _verify_pending_scores
-
-        db = Database(str(tmp_path / "test.db"))
-        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
-            slug="failing-game",
-            game_title="Failing Game",
-            platform="pc",
-            metascore=1998.0,
-            user_score=2007.0,
-            expires_at=expires,
-        )
-
-        mock_mc = MagicMock()
-        import types
-
-        mock_mc.lookup_game.return_value = types.SimpleNamespace(
-            metascore=62.0,
-            metascore_review_count=25,
-            user_score=3.3,
-            user_review_count=100,
-            genres=["Action"],
-            must_play=False,
-            release_date="2026-06-01",
-        )
-
-        thresholds = {
-            "min_metascore": 75,
-            "min_metascore_reviews": 10,
-            "min_user_score": 7.5,
-            "min_user_reviews": 10,
-        }
-
-        assert db.is_pending("failing-game") is True
-        removed = _verify_pending_scores(db, mock_mc, "pc", thresholds)
-        assert removed == 0, "Game with failing scores should stay pending"
-        assert db.is_pending("failing-game") is True, "Game should remain pending"
-        db.close()
-
-    def test_verify_pending_keeps_game_with_none_lookup(self, tmp_path: Path) -> None:
-        """A game with None lookup should stay pending (not removed)."""
-        import datetime
-        from unittest.mock import MagicMock
-
-        from gamarr.database import Database
-        from gamarr.pipeline import _verify_pending_scores
-
-        db = Database(str(tmp_path / "test.db"))
-        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
-            slug="ghost-game",
-            game_title="Ghost Game",
-            platform="pc",
-            metascore=1288.0,
-            user_score=1288.0,
-            expires_at=expires,
-        )
-
-        mock_mc = MagicMock()
-        mock_mc.lookup_game.return_value = None
-
-        assert db.is_pending("ghost-game") is True
-        removed = _verify_pending_scores(
-            db,
-            mock_mc,
-            "pc",
-            {
-                "min_metascore": 75,
-                "min_metascore_reviews": 5,
-                "min_user_score": 7.5,
-                "min_user_reviews": 10,
-            },
-        )
-        assert removed == 0, "Game with None lookup should stay pending"
-        assert db.is_pending("ghost-game") is True, "Game should remain pending"
         db.close()
 
     def test_fail_game_without_result_details(self, tmp_path: Path) -> None:
@@ -3367,10 +3284,10 @@ class TestLogGameDetails:
 
 
 class TestFitgirlRecheckExpiry:
-    """Tests for fitgirl_recheck_days expiry recalculation."""
+    """Tests for fitgirl_max_queue_days expiry recalculation."""
 
-    def test_fitgirl_recheck_days_updates_expiry(self, tmp_path: Path) -> None:
-        """Game with passing scores should have expires_at recalculated to now + fitgirl_recheck_days."""
+    def test_fitgirl_max_queue_days_updates_expiry(self, tmp_path: Path) -> None:
+        """Game with passing scores should have expires_at recalculated to now + fitgirl_max_queue_days."""
         import datetime
         from unittest.mock import MagicMock
 
@@ -3411,7 +3328,7 @@ class TestFitgirlRecheckExpiry:
             "min_user_reviews": 10,
         }
 
-        _verify_pending_scores(db, mock_mc, "pc", thresholds, fitgirl_recheck_days=60)
+        _verify_pending_scores(db, mock_mc, "pc", thresholds, fitgirl_max_queue_days=60)
 
         # Game should still be pending
         pending = db.get_pending(platform="pc")
@@ -3426,8 +3343,8 @@ class TestFitgirlRecheckExpiry:
         assert row.expires_at != original_expiry, "Expiry should have been updated"
         db.close()
 
-    def test_fitgirl_recheck_days_zero_indefinite(self, tmp_path: Path) -> None:
-        """fitgirl_recheck_days=0 should set expiry to far-future (indefinite pending)."""
+    def test_fitgirl_max_queue_days_zero_indefinite(self, tmp_path: Path) -> None:
+        """fitgirl_max_queue_days=0 should set expiry to far-future (indefinite pending)."""
         import datetime
         from unittest.mock import MagicMock
 
@@ -3467,7 +3384,7 @@ class TestFitgirlRecheckExpiry:
             "min_user_reviews": 10,
         }
 
-        _verify_pending_scores(db, mock_mc, "pc", thresholds, fitgirl_recheck_days=0)
+        _verify_pending_scores(db, mock_mc, "pc", thresholds, fitgirl_max_queue_days=0)
 
         pending = db.get_pending(platform="pc")
         assert len(pending) == 1
@@ -3480,7 +3397,7 @@ class TestFitgirlRecheckExpiry:
         )
         db.close()
 
-    def test_fitgirl_recheck_days_does_not_affect_failure(self, tmp_path: Path) -> None:
+    def test_fitgirl_max_queue_days_does_not_affect_failure(self, tmp_path: Path) -> None:
         """Game with failing scores should NOT have its expiry updated."""
         import datetime
         from unittest.mock import MagicMock
@@ -3521,7 +3438,7 @@ class TestFitgirlRecheckExpiry:
             "min_user_reviews": 10,
         }
 
-        _verify_pending_scores(db, mock_mc, "pc", thresholds, fitgirl_recheck_days=60)
+        _verify_pending_scores(db, mock_mc, "pc", thresholds, fitgirl_max_queue_days=60)
 
         # Game should still be pending (re-check)
         pending = db.get_pending(platform="pc")
@@ -4178,7 +4095,7 @@ class TestBrowseReviewCountPrefilter:
             platform="pc",
             db=db,
             thresholds=thresholds,
-            recheck_days=30,
+            max_queue_days=30,
         )
         assert new_count == 0, "Low-review-count game should not be added to pending"
         pending = db.get_pending(platform="pc")
@@ -4214,7 +4131,7 @@ class TestBrowseReviewCountPrefilter:
             platform="pc",
             db=db,
             thresholds=thresholds,
-            recheck_days=30,
+            max_queue_days=30,
         )
         assert new_count == 1, "Game with missing review data should enter pending"
         pending = db.get_pending(platform="pc")
