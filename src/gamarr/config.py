@@ -46,7 +46,7 @@ class FitGirlSourceConfig(BaseModel):
     enabled: bool = True
     rss_url: str = "https://fitgirl-repacks.site/feed/"
     platform: str = "pc"
-    cache_ttl_hours: int = Field(default=6, gt=0, le=168)
+    cache_pages_hours: int = Field(default=6, gt=0, le=168)
     reject_keywords: list[str] = Field(default_factory=list)
     recheck_days: int = Field(default=60, ge=0)
 
@@ -65,7 +65,7 @@ class MetacriticPlatformConfig(BaseModel):
     min_user_score: float = 7.5
     min_user_reviews: int = 10
     cache_details_days: int = 7
-    cache_ttl_hours: int = 6
+    cache_pages_hours: int = 6
     recheck_days: int = 30
     enabled: bool = True
     max_games: int = Field(default=1000, ge=0, le=20000)
@@ -182,7 +182,7 @@ def _migrate_platform_overrides(raw: dict[str, Any]) -> bool:
         if not isinstance(mc_pc, dict):
             continue
         changed |= _rename_config_key(mc_pc, "browse_enabled", "enabled", platform_key)
-        changed |= _rename_config_key(mc_pc, "browse_cache_ttl_hours", "cache_ttl_hours", platform_key)
+        changed |= _rename_config_key(mc_pc, "browse_cache_ttl_hours", "cache_pages_hours", platform_key)
         changed |= _rename_config_key(mc_pc, "metacritic_enabled", "enabled", platform_key)
         changed |= _rename_config_key(mc_pc, "metacritic_max_games", "max_games", platform_key)
         for old_key in ("browse_max_pages", "max_score_checks"):
@@ -204,8 +204,9 @@ def _migrate_platform_overrides(raw: dict[str, Any]) -> bool:
                 )
                 mc_pc.pop(old_key)
                 changed |= True
-        changed |= _rename_config_key(mc_pc, "metacritic_cache_ttl_hours", "cache_ttl_hours", platform_key)
+        changed |= _rename_config_key(mc_pc, "metacritic_cache_ttl_hours", "cache_pages_hours", platform_key)
         changed |= _rename_config_key(mc_pc, "cache_ttl_days", "cache_details_days", platform_key)
+        changed |= _rename_config_key(mc_pc, "cache_ttl_hours", "cache_pages_hours", platform_key)
         # Deprecated: max_verify_attempts — removed, recheck_days controls expiry
         if "max_verify_attempts" in mc_pc:
             logger.info(
@@ -332,6 +333,24 @@ def _migrate_pending_days_to_recheck(raw: dict[str, Any]) -> bool:
     return changed
 
 
+def _migrate_fitgirl_cache_ttl_hours(raw: dict[str, Any]) -> bool:
+    """Rename download_sites.fitgirl.cache_ttl_hours to cache_pages_hours.
+
+    Returns True if a migration was applied.
+    """
+    changed = False
+    for parent_key in ("download_sites", "sources"):
+        fg = raw.get(parent_key, {}).get("fitgirl", {})
+        if isinstance(fg, dict) and "cache_ttl_hours" in fg and "cache_pages_hours" not in fg:
+            fg["cache_pages_hours"] = fg.pop("cache_ttl_hours")
+            logger.info(
+                "Config: renamed '{}.fitgirl.cache_ttl_hours' to 'cache_pages_hours'",
+                parent_key,
+            )
+            changed = True
+    return changed
+
+
 def _migrate_daemon_mode(raw: dict[str, Any]) -> bool:
     """Migrate deprecated general.daemon_mode to schedule.acquisition.enabled.
 
@@ -364,6 +383,7 @@ def _migrate_config(raw: dict[str, Any]) -> bool:
             _migrate_download_sites,
             _migrate_platform_overrides,
             _migrate_fitgirl_exclude_keywords,
+            _migrate_fitgirl_cache_ttl_hours,
             _migrate_days_since_release,
             _migrate_pending_days_to_recheck,
             _migrate_metacritic_exclude_keywords,

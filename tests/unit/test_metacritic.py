@@ -864,7 +864,7 @@ class TestScanRecentGamesCancellation:
         def mock_fetch(
             _platform: str,
             _page_number: int,
-            _cache_ttl_hours: int,
+            _cache_pages_hours: int,
         ) -> list[dict] | None:
             nonlocal call_count
             call_count += 1

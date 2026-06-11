@@ -118,6 +118,67 @@ class TestConfigModels:
         assert "cache_ttl_days" not in mc_pc, "Old key should not appear in defaults"
         assert mc_pc["cache_details_days"] == 7, "New key should have default 7"
 
+    def test_cache_pages_hours_replaces_cache_ttl_hours(self) -> None:
+        """MetacriticPlatformConfig should use cache_pages_hours, not cache_ttl_hours."""
+        from gamarr.config import MetacriticPlatformConfig
+
+        cfg = MetacriticPlatformConfig()
+        assert not hasattr(cfg, "cache_ttl_hours"), "Field was renamed to cache_pages_hours"
+        assert hasattr(cfg, "cache_pages_hours"), "New field name should exist"
+        assert cfg.cache_pages_hours == 6, "Default should remain 6"
+
+    def test_fitgirl_cache_pages_hours_replaces_cache_ttl_hours(self) -> None:
+        """FitGirlSourceConfig should use cache_pages_hours, not cache_ttl_hours."""
+        from gamarr.config import FitGirlSourceConfig
+
+        cfg = FitGirlSourceConfig()
+        assert not hasattr(cfg, "cache_ttl_hours"), "Field was renamed to cache_pages_hours"
+        assert hasattr(cfg, "cache_pages_hours"), "New field name should exist"
+        assert cfg.cache_pages_hours == 6, "Default should remain 6"
+
+    def test_migrate_cache_ttl_hours_to_cache_pages_hours(self) -> None:
+        """_migrate_config should rename cache_ttl_hours to cache_pages_hours."""
+        from gamarr.config import _migrate_config
+
+        raw = {
+            "metacritic": {
+                "platform_overrides": {
+                    "pc": {
+                        "cache_ttl_hours": 6,
+                    },
+                },
+            },
+        }
+        _migrate_config(raw)
+        mc_pc = raw["metacritic"]["platform_overrides"]["pc"]
+        assert "cache_ttl_hours" not in mc_pc, "Old key should be removed"
+        assert mc_pc["cache_pages_hours"] == 6, "New key should have the same value"
+
+    def test_migrate_fitgirl_cache_ttl_hours_to_cache_pages_hours(self) -> None:
+        """_migrate_config should rename fitgirl.cache_ttl_hours to cache_pages_hours."""
+        from gamarr.config import _migrate_config
+
+        raw = {
+            "download_sites": {
+                "fitgirl": {
+                    "cache_ttl_hours": 12,
+                },
+            },
+        }
+        _migrate_config(raw)
+        fg = raw["download_sites"]["fitgirl"]
+        assert "cache_ttl_hours" not in fg, "Old key should be removed"
+        assert fg["cache_pages_hours"] == 12, "New key should have the same value"
+
+    def test_default_config_dict_contains_cache_pages_hours(self) -> None:
+        """The default config dict should use cache_pages_hours, not cache_ttl_hours."""
+        from gamarr.config import _default_config_dict
+
+        defaults = _default_config_dict()
+        mc_pc = defaults["metacritic"]["platform_overrides"]["pc"]
+        assert "cache_ttl_hours" not in mc_pc, "Old key should not appear in defaults"
+        assert mc_pc["cache_pages_hours"] == 6, "New key should have default 6"
+
     def test_migrate_config_renames_browse_keys(self) -> None:
         """_migrate_config should rename old browse_* keys and drop deprecated cutoff_date."""
         from gamarr.config import _migrate_config
@@ -142,7 +203,7 @@ class TestConfigModels:
         assert "browse_cache_ttl_hours" not in mc_pc
         assert "cutoff_date" not in mc_pc
         assert mc_pc["enabled"] is True
-        assert mc_pc["cache_ttl_hours"] == 4
+        assert mc_pc["cache_pages_hours"] == 4
 
     def test_migrate_config_ignores_non_dict_overrides(self) -> None:
         """_migrate_config should skip platform overrides that are not dicts."""
@@ -183,7 +244,7 @@ class TestConfigModels:
         assert "cutoff_date" not in mc_pc
         assert mc_pc["enabled"] is False
         assert mc_pc["max_games"] == 500
-        assert mc_pc["cache_ttl_hours"] == 12
+        assert mc_pc["cache_pages_hours"] == 12
 
     def test_migrate_config_handles_exception_gracefully(self) -> None:
         """_migrate_config should catch exceptions and log a warning."""
