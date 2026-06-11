@@ -317,6 +317,19 @@ It uses case-insensitive substring matching. For example:
 
 See the [genres section](#metacriticplatform_overridesplatform) for details.
 
+**Q: Why do I see "X from previous cycles" in the log — why aren't those games leaving the queue?**
+
+**A:** Games leave the pending queue in only two ways:
+
+1. **Downloaded** — scores pass thresholds AND a matching torrent is found on FitGirl
+2. **Aged out** — `age_recheck_weeks` is set and the game's release date is old enough
+
+Games that are verified but **fail score thresholds**, or **pass but have no FitGirl match**, stay in the queue. They get re-verified each cycle because their scores could change or a new FitGirl repack could appear. If you find the queue growing indefinitely:
+
+- Set `age_recheck_weeks` to a reasonable value (e.g. `52` for one year) to automatically retire old games
+- Games with no `release_date` cannot be aged out — this is expected for unreleased or obscure titles
+- The message `0 new + X from previous cycles` means browsing didn't find anything new, and all X are carryovers from earlier cycles
+
 ___
 If you appreciate my work, then please consider buying me a beer  :D
 
