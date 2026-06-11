@@ -360,7 +360,7 @@ def run_acquisition(
                 )
 
         # Process old verified games so they aren't re-checked in future cycles
-        _process_aged_games(db, cfg, platform)
+        _process_aged_games(db, cfg, platform, cancel_event=cancel_event)
 
         library: Any = None
         if library_paths:
@@ -589,7 +589,7 @@ def _process_browse_games(
 
 def _log_verify_progress(verified: int, max_verify: int, total: int) -> None:
     """Log periodic progress during score verification."""
-    if verified > 0 and verified % 10 == 0:
+    if verified % 100 == 0:
         logger.info(
             "Fetching Metacritic details for {} of {} games...",
             verified,
@@ -799,6 +799,7 @@ def _process_aged_games(
     db: Database,
     cfg: AcquisitionConfig,
     platform: str,
+    cancel_event: threading.Event | None = None,
 ) -> int:
     """Mark old verified pending games as processed.
 
@@ -818,6 +819,8 @@ def _process_aged_games(
     pending = db.get_pending(platform=platform)
     processed = 0
     for game in pending:
+        if is_cancelled(cancel_event):
+            break
         if game.last_checked_at is None:
             continue
         if not game.release_date:
@@ -902,6 +905,7 @@ def _process_verify_result(
         return True
 
     if result is None:
+        db.touch_pending(str(game.slug))
         logger.debug(
             "Keeping '{}' in queue \u2014 game not found on Metacritic page",
             game.game_title,
@@ -909,6 +913,7 @@ def _process_verify_result(
         return False
 
     if _scores_fail_check(result, thresholds):
+        db.touch_pending(str(game.slug))
         logger.debug(
             "Keeping '{}' in queue \u2014 Metacritic scores ({}, {}) below thresholds",
             game.game_title,
