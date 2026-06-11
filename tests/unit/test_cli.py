@@ -104,12 +104,40 @@ class TestCliOverrides:
         assert config.general.pid_path == "/custom/pids"
 
     def test_apply_general_overrides_library_paths(self) -> None:
+        """--library-path should accept a | separated string like trimarr."""
         from gamarr.cli import _apply_cli_overrides
         from gamarr.config import Config
 
         config = Config()
         assert config.library.paths == []
-        _apply_cli_overrides(config, library_path_list=("/media/games", "/media/more"))
+        _apply_cli_overrides(config, library_path_list="/media/games|/media/more")
+        assert config.library.paths == ["/media/games", "/media/more"]
+
+    def test_apply_general_overrides_library_paths_single(self) -> None:
+        """A single path without | should produce a single-element list."""
+        from gamarr.cli import _apply_cli_overrides
+        from gamarr.config import Config
+
+        config = Config()
+        _apply_cli_overrides(config, library_path_list="/media/games")
+        assert config.library.paths == ["/media/games"]
+
+    def test_apply_general_overrides_library_paths_empty(self) -> None:
+        """An empty | separated string should not set any paths."""
+        from gamarr.cli import _apply_cli_overrides
+        from gamarr.config import Config
+
+        config = Config()
+        _apply_cli_overrides(config, library_path_list="")
+        assert config.library.paths == []
+
+    def test_apply_general_overrides_library_paths_whitespace(self) -> None:
+        """Whitespace around paths should be stripped."""
+        from gamarr.cli import _apply_cli_overrides
+        from gamarr.config import Config
+
+        config = Config()
+        _apply_cli_overrides(config, library_path_list="/media/games | /media/more")
         assert config.library.paths == ["/media/games", "/media/more"]
 
     def test_apply_qbt_overrides(self) -> None:

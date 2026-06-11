@@ -33,9 +33,15 @@ def _apply_general_overrides(config: Config, overrides: dict[str, Any]) -> None:
         config.general.db_path = str(overrides["db_path"])
     if overrides.get("pid_path") is not None:
         config.general.pid_path = str(overrides["pid_path"])
+    import os as _os
+
     paths_override = overrides.get("library_path_list")
     if paths_override:
-        config.library.paths = [str(p) for p in paths_override]
+        config.library.paths = [
+            _os.path.abspath(p.strip())
+            for p in paths_override.split("|")
+            if p.strip()
+        ]
 
 
 def _apply_qbt_overrides(config: Config, overrides: dict[str, Any]) -> None:
@@ -105,12 +111,11 @@ def _apply_cli_overrides(config: Config, **overrides: Any) -> None:
 @click.option(
     "--library-path",
     "library_path_list",
-    multiple=True,
     default=None,
-    type=click.Path(file_okay=False, dir_okay=True, resolve_path=True),
+    type=str,
     show_default=False,
-    metavar="<path>",
-    help="Override library paths from config (repeatable: --library-path /a --library-path /b).",
+    metavar="<paths>",
+    help='Override library paths from config (pipe-separated: --library-path "/a|/b").',
 )
 @click.option(
     "--qbt-host",
@@ -150,7 +155,7 @@ def cli(
     test: bool,
     db_path: str | None = None,
     pid_path: str | None = None,
-    library_path_list: tuple[str, ...] | None = None,
+    library_path_list: str | None = None,
     qbt_host: str | None = None,
     qbt_port: int | None = None,
     qbt_username: str | None = None,
