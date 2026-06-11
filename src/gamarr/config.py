@@ -64,7 +64,7 @@ class MetacriticPlatformConfig(BaseModel):
     min_metascore_reviews: int = 10
     min_user_score: float = 7.5
     min_user_reviews: int = 10
-    cache_ttl_days: int = 7
+    cache_details_days: int = 7
     cache_ttl_hours: int = 6
     recheck_days: int = 30
     enabled: bool = True
@@ -205,6 +205,7 @@ def _migrate_platform_overrides(raw: dict[str, Any]) -> bool:
                 mc_pc.pop(old_key)
                 changed |= True
         changed |= _rename_config_key(mc_pc, "metacritic_cache_ttl_hours", "cache_ttl_hours", platform_key)
+        changed |= _rename_config_key(mc_pc, "cache_ttl_days", "cache_details_days", platform_key)
         # Deprecated: max_verify_attempts — removed, recheck_days controls expiry
         if "max_verify_attempts" in mc_pc:
             logger.info(
