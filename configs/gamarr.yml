@@ -33,12 +33,12 @@ metacritic:
       recheck_days: 30
       enabled: true
       max_games: 0
-      cutoff_weeks: 4
+      cutoff_weeks: 16
       reject_genre:
       - novel
       - card
       reject_title: []
-      age_recheck_weeks: null
+      age_recheck_weeks: 8
 torrent_client:
   selected: qbittorrent
   qbittorrent:

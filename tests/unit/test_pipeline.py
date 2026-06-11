@@ -4316,6 +4316,44 @@ class TestProcessByAge:
         db.close()
 
 
+class TestLogVerifyProgress:
+    """Tests for _log_verify_progress helper."""
+
+    def test_log_verify_progress_logs_at_interval(self) -> None:
+        """Should log at every 100th verified game."""
+        from unittest.mock import patch
+
+        from gamarr.pipeline import _log_verify_progress
+
+        with patch("gamarr.pipeline.logger") as mock_logger:
+            _log_verify_progress(verified=100, max_verify=500, total=5000)
+        mock_logger.info.assert_called_once()
+        args, _ = mock_logger.info.call_args
+        # Loguru: args[0]=format_string, args[1]=verified, args[2]=total
+        assert "games" in str(args[0]), "Should mention games"
+        assert args[1] == 100, f"Expected verified count 100, got {args[1]}"
+
+    def test_log_verify_progress_skips_non_interval(self) -> None:
+        """Should NOT log when verified is not a multiple of 100."""
+        from unittest.mock import patch
+
+        from gamarr.pipeline import _log_verify_progress
+
+        with patch("gamarr.pipeline.logger") as mock_logger:
+            _log_verify_progress(verified=50, max_verify=500, total=5000)
+        mock_logger.info.assert_not_called()
+
+    def test_log_verify_progress_logs_at_zero(self) -> None:
+        """Should log when verified is 0 (starts at first iteration)."""
+        from unittest.mock import patch
+
+        from gamarr.pipeline import _log_verify_progress
+
+        with patch("gamarr.pipeline.logger") as mock_logger:
+            _log_verify_progress(verified=0, max_verify=500, total=5000)
+        mock_logger.info.assert_called_once()
+
+
 class TestProcessAgedGames:
     """Tests for _process_aged_games sweep function."""
 
@@ -4426,4 +4464,44 @@ class TestProcessAgedGames:
         )
         count = _process_aged_games(db, cfg, platform="pc")
         assert count == 0
+        db.close()
+
+    def test_verify_result_touches_pending_even_when_none(self, tmp_path: Path) -> None:
+        """_process_verify_result should set last_checked_at even when result is None.
+
+        Without this, games that fail lookup never get ``last_checked_at`` set,
+        so ``_process_aged_games`` skips them forever and they get re-verified
+        every cycle instead of being aged out.
+        """
+        import datetime
+
+        from gamarr.database import Database, PendingGame
+        from gamarr.pipeline import _process_verify_result
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="unreviewed-game",
+            game_title="Unreviewed Game",
+            platform="pc",
+            metascore=80.0,
+            user_score=7.5,
+            release_date="2010-01-01",
+            expires_at=expires,
+        )
+        game = db.get_pending()[0]
+        thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10}
+
+        # result=None simulates a game with no Metacritic page
+        removed = _process_verify_result(db, game, result=None, thresholds=thresholds)
+        assert removed is False, "Game with no result should stay pending"
+
+        # The game should now have last_checked_at set
+        with db._session() as session:
+            row = session.get(PendingGame, "unreviewed-game")
+            assert row is not None
+            assert row.last_checked_at is not None, (
+                "last_checked_at should be set even when result is None — "
+                "otherwise the game gets re-verified every cycle"
+            )
         db.close()
