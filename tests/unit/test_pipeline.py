@@ -4314,3 +4314,116 @@ class TestProcessByAge:
         stats = db.get_stats()
         assert stats["total"] == 1, "One history record should exist"
         db.close()
+
+
+class TestProcessAgedGames:
+    """Tests for _process_aged_games sweep function."""
+
+    def test_process_aged_games_processes_old_verified_games(self, tmp_path: Path) -> None:
+        """Old games with last_checked_at set should be processed."""
+        import datetime
+
+        from gamarr.database import Database
+        from gamarr.pipeline import AcquisitionConfig, _process_aged_games
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        past = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(hours=1)).isoformat()
+        db.record_pending(
+            slug="old-checked",
+            game_title="Old Checked",
+            platform="pc",
+            metascore=80.0,
+            user_score=7.5,
+            release_date="2010-01-01",
+            expires_at=expires,
+        )
+        with db._session() as session:
+            from gamarr.database import PendingGame
+
+            row = session.get(PendingGame, "old-checked")
+            assert row is not None, "old-checked should exist"
+            row.last_checked_at = past
+            session.commit()
+
+        db.record_pending(
+            slug="old-unchecked",
+            game_title="Old Unchecked",
+            platform="pc",
+            metascore=80.0,
+            user_score=7.5,
+            release_date="2010-01-01",
+            expires_at=expires,
+        )
+
+        cfg = AcquisitionConfig(
+            min_metascore=75,
+            min_metascore_reviews=5,
+            min_user_score=7.5,
+            min_user_reviews=10,
+            age_recheck_weeks=52,
+        )
+        count = _process_aged_games(db, cfg, platform="pc")
+        assert count == 1, f"Expected 1 processed, got {count}"
+        assert not db.is_pending("old-checked"), "Old checked game should be removed"
+        assert db.is_pending("old-unchecked"), "Old unchecked game should remain"
+        stats = db.get_stats()
+        assert stats["total"] == 1, "One history record should exist"
+        db.close()
+
+    def test_process_aged_games_skips_recent_games(self, tmp_path: Path) -> None:
+        """Recent games should NOT be processed by the sweep."""
+        import datetime
+
+        from gamarr.database import Database
+        from gamarr.pipeline import AcquisitionConfig, _process_aged_games
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        recent = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
+        past = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(hours=1)).isoformat()
+        db.record_pending(
+            slug="recent-game",
+            game_title="Recent Game",
+            platform="pc",
+            metascore=80.0,
+            user_score=7.5,
+            release_date=recent,
+            expires_at=expires,
+        )
+        with db._session() as session:
+            from gamarr.database import PendingGame
+
+            row = session.get(PendingGame, "recent-game")
+            assert row is not None, "recent-game should exist"
+            row.last_checked_at = past
+            session.commit()
+
+        cfg = AcquisitionConfig(
+            min_metascore=75,
+            min_metascore_reviews=5,
+            min_user_score=7.5,
+            min_user_reviews=10,
+            age_recheck_weeks=52,
+        )
+        count = _process_aged_games(db, cfg, platform="pc")
+        assert count == 0, "Recent game should not be processed"
+        assert db.is_pending("recent-game"), "Recent game should remain"
+        db.close()
+
+    def test_process_aged_games_disabled_when_none(self, tmp_path: Path) -> None:
+        """When age_recheck_weeks is None, no games should be processed."""
+        from gamarr.database import Database
+        from gamarr.pipeline import AcquisitionConfig, _process_aged_games
+
+        db = Database(str(tmp_path / "test.db"))
+        cfg = AcquisitionConfig(
+            min_metascore=75,
+            min_metascore_reviews=5,
+            min_user_score=7.5,
+            min_user_reviews=10,
+            age_recheck_weeks=None,
+        )
+        count = _process_aged_games(db, cfg, platform="pc")
+        assert count == 0
+        db.close()
