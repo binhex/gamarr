@@ -742,20 +742,21 @@ class MetacriticClient:
         self,
         platform: str,
         *,
-        max_games: int = 1000,
+        max_games: int = 0,
         cache_pages_hours: int = 6,
         cutoff_date: str | None = None,
         cancel_event: threading.Event | None = None,
     ) -> list[dict[str, Any]]:
-        """Return up to *max_games* from Metacritic browse pages.
+        """Collect games from Metacritic browse pages.
 
         Fetches browse pages (newest-first) and collects games until
-        *max_games* is reached or pages run out.  When *cutoff_date*
-        is set and every game on a page is older than the cutoff,
-        fetching stops early to save HTTP requests.
+        *max_games* is reached, pages run out, or *cutoff_date*
+        causes an early stop (when every game on a page is older than
+        the cutoff).  With default max_games=0 (unlimited), the
+        cutoff_date is the primary limiter.
 
         Args:
-            max_games: Maximum number of game entries to collect.
+            max_games: Maximum number of game entries to collect (0 = unlimited).
             cutoff_date: Date string in "YYYY-MM-DD" or "DD-MM-YYYY" format.
                 Pages whose games are all older than this date are skipped.
             cancel_event: Optional threading.Event.  When set, the

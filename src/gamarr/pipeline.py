@@ -105,8 +105,7 @@ class AcquisitionConfig:
     cache_pages_hours: int = 6
     enabled: bool = True
     recheck_days: int = 30
-    max_games: int = 1000
-    cutoff_weeks: int | None = None
+    max_weeks: int | None = None
     reject_genre: list[str] | None = None
     reject_title: list[str] | None = None
     fitgirl_recheck_days: int = 60
@@ -114,8 +113,8 @@ class AcquisitionConfig:
     age_recheck_weeks: int | None = None
 
     def _age_days(self) -> int:
-        """Return the age filter in days, derived from cutoff_weeks."""
-        return (self.cutoff_weeks or 0) * 7
+        """Return the age filter in days, derived from max_weeks."""
+        return (self.max_weeks or 0) * 7
 
 
 def _is_below_threshold(value: float | None, threshold: float) -> bool:
@@ -176,10 +175,9 @@ def run_acquisition(
     cache_pages_hours: int = 6,
     enabled: bool = True,
     recheck_days: int = 30,
-    cutoff_weeks: int | None = None,
+    max_weeks: int | None = None,
     fitgirl_recheck_days: int = 60,
     notify_on_scrape_failure: bool = True,
-    max_games: int = 1000,
     reject_genre: list[str] | None = None,
     reject_title: list[str] | None = None,
     age_recheck_weeks: int | None = None,
@@ -194,11 +192,10 @@ def run_acquisition(
 ) -> list[dict[str, Any]]:
     """Execute one scan cycle.
 
-    Discovers games by browsing Metacritic (newest-first, up to
-    ``max_games`` entries), verifies each game's real
-    Metacritic detail-page scores against the configured thresholds,
-    then matches survivors against the FitGirl sitemap and delivers
-    to qBittorrent.
+    Discovers games by browsing Metacritic (newest-first), verifies
+    each game's real Metacritic detail-page scores against the
+    configured thresholds, then matches survivors against the FitGirl
+    sitemap and delivers to qBittorrent.
     """
     cfg = AcquisitionConfig(
         min_metascore=min_metascore,
@@ -209,10 +206,9 @@ def run_acquisition(
         cache_pages_hours=cache_pages_hours,
         enabled=enabled,
         recheck_days=recheck_days,
-        cutoff_weeks=cutoff_weeks,
+        max_weeks=max_weeks,
         fitgirl_recheck_days=fitgirl_recheck_days,
         notify_on_scrape_failure=notify_on_scrape_failure,
-        max_games=max_games,
         reject_genre=reject_genre,
         reject_title=reject_title,
         age_recheck_weeks=age_recheck_weeks,
@@ -275,16 +271,15 @@ def run_acquisition(
         # only if Metacritic produced games to match against.
         browse_games: list[dict[str, Any]] = []
         if cfg.enabled:
-            # Compute absolute cutoff date from cutoff_weeks (if set and > 0)
+            # Compute absolute cutoff date from max_weeks (if set and > 0)
             cutoff_date: str | None = None
-            if cfg.cutoff_weeks is not None and cfg.cutoff_weeks > 0:
+            if cfg.max_weeks is not None and cfg.max_weeks > 0:
                 cutoff_date = (
-                    datetime.datetime.now(tz=datetime.UTC).date() - datetime.timedelta(weeks=cfg.cutoff_weeks)
+                    datetime.datetime.now(tz=datetime.UTC).date() - datetime.timedelta(weeks=cfg.max_weeks)
                 ).isoformat()
 
             browse_games = mc.scan_recent_games(
                 platform,
-                max_games=cfg.max_games,
                 cache_pages_hours=cfg.cache_pages_hours,
                 cutoff_date=cutoff_date,
                 cancel_event=cancel_event,
@@ -356,7 +351,7 @@ def run_acquisition(
                 platform,
                 thresholds,
                 cache_details_days=cfg.cache_details_days,
-                max_verify=len(pending_games) if cfg.max_games == 0 else min(len(pending_games), cfg.max_games),
+                max_verify=len(pending_games),
                 reject_genre=cfg.reject_genre,
                 reject_title=cfg.reject_title,
                 fitgirl_recheck_days=cfg.fitgirl_recheck_days,
