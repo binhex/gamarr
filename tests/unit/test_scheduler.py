@@ -109,6 +109,16 @@ class TestShutdownEvent:
 class TestBuildKwargs:
     """_build_kwargs config extraction."""
 
+    def test_build_kwargs_includes_max_cycle_weeks(self) -> None:
+        """_build_kwargs should include max_cycle_weeks from config."""
+        from gamarr.config import Config
+        from gamarr.scheduler import _build_kwargs
+
+        config = Config()
+        kwargs = _build_kwargs(config)
+        assert "max_cycle_weeks" in kwargs
+        assert kwargs["max_cycle_weeks"] == 4
+
     def test_build_kwargs_includes_fitgirl_reject_keywords(self) -> None:
         """_build_kwargs should include fitgirl_reject_keywords, not fitgirl_exclude_keywords."""
         from gamarr.scheduler import _build_kwargs

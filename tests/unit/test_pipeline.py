@@ -27,6 +27,27 @@ class TestAcquisitionConfig:
         assert cfg.min_metascore == 75
 
 
+class TestMaxCycleWeeks:
+    """Tests for max_cycle_weeks integration."""
+
+    def test_max_cycle_weeks_lower_than_max_weeks_uses_cycle_cutoff(self, tmp_path: Path) -> None:
+        """When max_cycle_weeks < max_weeks, AcquisitionConfig stores both separately."""
+        from gamarr.pipeline import AcquisitionConfig
+
+        cfg = AcquisitionConfig(
+            min_metascore=75,
+            min_metascore_reviews=5,
+            min_user_score=7.5,
+            min_user_reviews=10,
+            max_weeks=52,
+            max_cycle_weeks=4,
+        )
+        # _age_days() still derives from max_weeks (hard cutoff)
+        assert cfg._age_days() == 52 * 7
+        # The cycle weeks are separate
+        assert cfg.max_cycle_weeks == 4
+
+
 class TestRunAcquisition:
     """End-to-end acquisition pipeline."""
 
