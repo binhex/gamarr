@@ -116,6 +116,7 @@ def _build_kwargs(config: Config) -> dict[str, Any]:
         "cache_pages_hours": mc_cfg.cache_pages_hours,
         "enabled": mc_cfg.enabled,
         "max_weeks": mc_cfg.max_weeks,
+        "max_cycle_weeks": mc_cfg.max_cycle_weeks,
         "reject_genre": mc_cfg.reject_genre,
         "reject_title": mc_cfg.reject_title,
         "age_recheck_weeks": mc_cfg.age_recheck_weeks,

@@ -106,6 +106,7 @@ class AcquisitionConfig:
     enabled: bool = True
     max_queue_days: int = 30
     max_weeks: int | None = None
+    max_cycle_weeks: int | None = None
     reject_genre: list[str] | None = None
     reject_title: list[str] | None = None
     fitgirl_max_queue_days: int = 60
@@ -176,6 +177,7 @@ def run_acquisition(
     enabled: bool = True,
     max_queue_days: int = 30,
     max_weeks: int | None = None,
+    max_cycle_weeks: int | None = None,
     fitgirl_max_queue_days: int = 60,
     notify_on_scrape_failure: bool = True,
     reject_genre: list[str] | None = None,
@@ -207,6 +209,7 @@ def run_acquisition(
         enabled=enabled,
         max_queue_days=max_queue_days,
         max_weeks=max_weeks,
+        max_cycle_weeks=max_cycle_weeks,
         fitgirl_max_queue_days=fitgirl_max_queue_days,
         notify_on_scrape_failure=notify_on_scrape_failure,
         reject_genre=reject_genre,
@@ -271,11 +274,28 @@ def run_acquisition(
         # only if Metacritic produced games to match against.
         browse_games: list[dict[str, Any]] = []
         if cfg.enabled:
-            # Compute absolute cutoff date from max_weeks (if set and > 0)
+            # Compute the effective cutoff for page fetching.
+            # max_cycle_weeks limits per-cycle depth; max_weeks is the
+            # hard cutoff. When max_cycle_weeks > max_weeks, cap to
+            # max_weeks to avoid wasted HTTP requests.
             cutoff_date: str | None = None
+            effective_cycle_weeks = cfg.max_cycle_weeks
             if cfg.max_weeks is not None and cfg.max_weeks > 0:
+                if cfg.max_cycle_weeks and cfg.max_cycle_weeks > cfg.max_weeks:
+                    logger.warning(
+                        "max_cycle_weeks ({}) exceeds max_weeks ({}) — capping to {} to avoid wasted HTTP requests",
+                        cfg.max_cycle_weeks,
+                        cfg.max_weeks,
+                        cfg.max_weeks,
+                    )
+                    effective_cycle_weeks = cfg.max_weeks
                 cutoff_date = (
-                    datetime.datetime.now(tz=datetime.UTC).date() - datetime.timedelta(weeks=cfg.max_weeks)
+                    datetime.datetime.now(tz=datetime.UTC).date()
+                    - datetime.timedelta(weeks=effective_cycle_weeks or cfg.max_weeks)
+                ).isoformat()
+            elif cfg.max_cycle_weeks and cfg.max_cycle_weeks > 0:
+                cutoff_date = (
+                    datetime.datetime.now(tz=datetime.UTC).date() - datetime.timedelta(weeks=cfg.max_cycle_weeks)
                 ).isoformat()
 
             browse_games = mc.scan_recent_games(
