@@ -180,22 +180,40 @@ def _run_daemon(config: Config) -> None:
         EVENT_JOB_EXECUTED | EVENT_JOB_ERROR,
     )
 
-    shutdown_event = _ShutdownEvent(cancel_event=cancel_event)
+    shutdown_event = _ShutdownEvent(
+        cancel_event=cancel_event,
+        pid_path=config.general.pid_path or None,
+    )
     signal.signal(signal.SIGINT, shutdown_event)
     signal.signal(signal.SIGTERM, shutdown_event)
     shutdown_event.wait()
     logger.info("Shutting down scheduler...")
-    scheduler.shutdown(wait=True)
+    scheduler.shutdown(wait=False)
 
 
 class _ShutdownEvent:
     """Simple event for waiting on shutdown signals."""
 
-    def __init__(self, cancel_event: threading.Event | None = None) -> None:
+    def __init__(
+        self,
+        cancel_event: threading.Event | None = None,
+        pid_path: str | None = None,
+    ) -> None:
         self._event = threading.Event()
         self._cancel_event = cancel_event
+        self._pid_path = pid_path
 
     def __call__(self, signum: int, _frame: object) -> None:
+        if self._event.is_set():
+            # Second signal — process is already shutting down.
+            # Force-exit immediately. Clean up PID file first since
+            # os._exit() skips finally blocks.
+            logger.warning(
+                "Received signal {} again — forcing exit (first shutdown still in progress)",
+                signum,
+            )
+            _cleanup_pid_file(self._pid_path)
+            os._exit(128 + signum)
         logger.info("Received signal {}; shutting down...", signum)
         self._event.set()
         if self._cancel_event is not None:

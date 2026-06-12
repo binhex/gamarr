@@ -32,7 +32,7 @@ metacritic:
       cache_pages_hours: 6
       max_queue_days: 30
       enabled: true
-      max_weeks: 16
+      max_weeks: 52
       max_cycle_weeks: 4
       reject_genre:
       - novel
