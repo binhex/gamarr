@@ -314,6 +314,25 @@ class TestConfigModels:
         cfg = MetacriticPlatformConfig()
         assert cfg.age_recheck_weeks is None
 
+    def test_max_cycle_weeks_default(self) -> None:
+        """MetacriticPlatformConfig.max_cycle_weeks defaults to 4."""
+        from gamarr.config import MetacriticPlatformConfig
+
+        cfg = MetacriticPlatformConfig()
+        assert cfg.max_cycle_weeks == 4
+
+    def test_max_cycle_weeks_ge_zero(self) -> None:
+        """max_cycle_weeks must be >= 0 (0 or None = unlimited)."""
+        from pydantic import ValidationError
+
+        from gamarr.config import MetacriticPlatformConfig
+
+        MetacriticPlatformConfig(max_cycle_weeks=0)
+        MetacriticPlatformConfig(max_cycle_weeks=None)
+        MetacriticPlatformConfig(max_cycle_weeks=4)
+        with pytest.raises(ValidationError):
+            MetacriticPlatformConfig(max_cycle_weeks=-1)
+
 
 class TestLoadConfig:
     """Config file loading."""
