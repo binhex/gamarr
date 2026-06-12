@@ -50,15 +50,31 @@ class TestCli:
         assert result.exit_code != 0
         assert "not one of" in result.output.lower() or "invalid value" in result.output.lower()
 
-    def test_resolve_version_returns_installed(self) -> None:
+    def test_resolve_version_matches_pyproject_toml(self) -> None:
+        """_resolve_version should return the version from pyproject.toml, the source of truth."""
+        import tomllib
+
         from gamarr.cli import _resolve_version
+        from gamarr.utils import get_project_root
+
+        pyproject_path = get_project_root() / "pyproject.toml"
+        with pyproject_path.open("rb") as fh:
+            data = tomllib.load(fh)
+        expected = data["project"]["version"]
 
         version = _resolve_version()
-        assert version == "0.1.0"
+        assert version == expected, (
+            f"Version mismatch: _resolve_version() returned {version!r}, "
+            f"but pyproject.toml has {expected!r}. "
+            "The version must come from pyproject.toml, not installed package metadata."
+        )
 
-    def test_resolve_version_fallback(self) -> None:
-        with patch("gamarr.cli._pkg_version") as mock_version:
-            mock_version.side_effect = PackageNotFoundError
+    def test_resolve_version_fallback_on_read_error(self) -> None:
+        """_resolve_version should fall back through pyproject.toml -> importlib.metadata -> unknown."""
+        with (
+            patch("gamarr.cli.tomllib.load", side_effect=OSError("read error")),
+            patch("gamarr.cli._pkg_version", side_effect=PackageNotFoundError),
+        ):
             from gamarr.cli import _resolve_version
 
             assert _resolve_version() == "unknown"
