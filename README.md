@@ -131,6 +131,7 @@ on first run. The file is divided into the sections below.
 | `min_user_score` | Minimum Metacritic user score (0–10). | `7.5` |
 | `min_user_reviews` | Minimum number of user reviews required. | `10` |
 | `max_weeks` | Look-back window in weeks from today. Games released before this are skipped. `null` or `0` = no cutoff. | `null` |
+| `max_cycle_weeks` | How many weeks of Metacritic pages to scan per cycle. Reduces HTTP load by limiting browse depth each cycle. `0` or `null` = unlimited (same as not set). | `4` |
 | `age_recheck_weeks` | Games older than this (weeks since release) are permanently processed once their Metacritic scores pass thresholds. `null` or `0` = disabled. | `null` |
 | `enabled` | Enable or disable the Metacritic browse step. Disabling skips game discovery entirely. | `true` |
 | `max_queue_days` | Days a game stays in the pending queue before expiring. `0` = indefinite pending (no expiry). | `30` |
@@ -225,7 +226,9 @@ flowchart TD
 are collected.
 2. **Browse-page filtering** — Games whose titles match `reject_title` are
    skipped. Games outside the `max_weeks` window
-   are skipped. **Note:** browse scores are on a different scale and always
+   are skipped. `max_cycle_weeks` limits how many weeks of Metacritic pages
+   are fetched per cycle (default 4), reducing HTTP load while ensuring the
+   newest games are always discovered first. **Note:** browse scores are on a different scale and always
    exceed the configured thresholds — score filtering effectively starts
    at the verification step (phase 4), not here.
 3. **Pending queue** — Surviving games enter a `pending_games` queue with a
@@ -329,6 +332,23 @@ Games that are verified but **fail score thresholds**, or **pass but have no Fit
 - Set `age_recheck_weeks` to a reasonable value (e.g. `52` for one year) to automatically retire old games
 - Games with no `release_date` cannot be aged out — this is expected for unreleased or obscure titles
 - The message `0 new + X from previous cycles` means browsing didn't find anything new, and all X are carryovers from earlier cycles
+
+**Q: Why does `max_queue_days` have two separate settings — one for Metacritic and one for FitGirl?**
+
+**A:** There are two waiting rooms. When a game is first discovered, it sits
+in the first waiting room while gamarr checks its Metacritic scores. The
+**metacritic `max_queue_days`** is the time limit for this phase — if scores
+can't be verified in time, the game is removed.
+
+Once scores pass, the game moves to a second waiting room where it waits for
+a FitGirl repack to appear. The **fitgirl `max_queue_days`** starts a
+*fresh countdown* from this point — it doesn't matter how long the game
+spent in the first room. This gives the game a full window to find a match,
+regardless of how long the score-checking took.
+
+So even if both values are the same (say 30 days each), a game that took
+25 days to get scores verified still gets a full 30 days to find a FitGirl
+match — not just 5.
 
 ___
 If you appreciate my work, then please consider buying me a beer  :D
