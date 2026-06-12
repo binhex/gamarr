@@ -69,6 +69,7 @@ class MetacriticPlatformConfig(BaseModel):
     max_queue_days: int = 30
     enabled: bool = True
     max_weeks: int | None = Field(default=13, ge=0)
+    max_cycle_weeks: int | None = Field(default=4, ge=0)
     reject_genre: list[str] = Field(default_factory=list)
     reject_title: list[str] = Field(default_factory=list)  # case-insensitive substrings
     age_recheck_weeks: int | None = Field(default=None, ge=0)
