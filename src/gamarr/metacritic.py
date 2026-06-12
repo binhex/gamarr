@@ -790,7 +790,7 @@ class MetacriticClient:
             # pages (they will be even older).
             if _page_is_before_cutoff(games, cutoff_date):
                 logger.info(
-                    "Metacritic page {} has no games newer than {}; stopping scan",
+                    "Metacritic page {} reached (no games within the scan window, cutoff: {}); stopping scan",
                     page_number,
                     cutoff_date,
                 )

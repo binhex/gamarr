@@ -106,6 +106,15 @@ class SitemapCache(Base):
     cached_at: Mapped[str] = mapped_column(String, nullable=False)
 
 
+class ScanState(Base):
+    """Tracks the last browse cutoff date per platform for max_cycle_weeks."""
+
+    __tablename__ = "scan_state"
+
+    platform: Mapped[str] = mapped_column(String, primary_key=True)
+    last_cutoff_date: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
 class Database:
     """SQLite history database for tracking processed titles."""
 
@@ -223,6 +232,24 @@ class Database:
                 query = query.filter(PendingGame.platform == platform)
             rows = query.all()
             return list(rows)
+
+    def get_last_cutoff(self, platform: str) -> str | None:
+        """Return the last stored cutoff date for *platform*, or None."""
+        with self._session() as session:
+            row = session.get(ScanState, platform)
+        if row is None:
+            return None
+        return str(row.last_cutoff_date) if row.last_cutoff_date else None
+
+    def set_last_cutoff(self, platform: str, cutoff_date: str) -> None:
+        """Store or update the cutoff date for *platform*."""
+        with self._session() as session:
+            row = session.get(ScanState, platform)
+            if row is None:
+                session.add(ScanState(platform=platform, last_cutoff_date=cutoff_date))
+            else:
+                row.last_cutoff_date = cutoff_date
+            session.commit()
 
     def get_expired_pending(self) -> list[PendingGame]:
         now = datetime.datetime.now(tz=datetime.UTC).isoformat()

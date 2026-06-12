@@ -275,28 +275,54 @@ def run_acquisition(
         browse_games: list[dict[str, Any]] = []
         if cfg.enabled:
             # Compute the effective cutoff for page fetching.
-            # max_cycle_weeks limits per-cycle depth; max_weeks is the
-            # hard cutoff. When max_cycle_weeks > max_weeks, cap to
-            # max_weeks to avoid wasted HTTP requests.
+            # max_cycle_weeks advances through the backlog: each cycle
+            # looks max_cycle_weeks weeks beyond the oldest pending game.
+            # max_weeks is the absolute hard cutoff.
             cutoff_date: str | None = None
             effective_cycle_weeks = cfg.max_cycle_weeks
+
+            # Determine the retreating cutoff based on the last stored position.
+            # Each cycle advances max_cycle_weeks weeks further back from the
+            # previous cycle's cutoff, creating a truly advancing window that
+            # does not depend on queue state.
+            if cfg.max_cycle_weeks and cfg.max_cycle_weeks > 0:
+                last_cutoff = db.get_last_cutoff(platform)
+                if last_cutoff:
+                    try:
+                        last_date = datetime.datetime.strptime(last_cutoff.strip(), "%Y-%m-%d").date()
+                    except (ValueError, TypeError):
+                        last_date = None
+                    if last_date:
+                        retreating_cutoff = last_date - datetime.timedelta(weeks=cfg.max_cycle_weeks)
+                        cutoff_date = retreating_cutoff.isoformat()
+                if cutoff_date is None:
+                    # First cycle or unparseable stored date — start from now - max_cycle_weeks
+                    cutoff_date = (
+                        datetime.datetime.now(tz=datetime.UTC).date() - datetime.timedelta(weeks=cfg.max_cycle_weeks)
+                    ).isoformat()
+
+            # Apply hard cutoff: never go past max_weeks
             if cfg.max_weeks is not None and cfg.max_weeks > 0:
-                if cfg.max_cycle_weeks and cfg.max_cycle_weeks > cfg.max_weeks:
-                    logger.warning(
-                        "max_cycle_weeks ({}) exceeds max_weeks ({}) — capping to {} to avoid wasted HTTP requests",
-                        cfg.max_cycle_weeks,
-                        cfg.max_weeks,
-                        cfg.max_weeks,
-                    )
+                hard_cutoff = datetime.datetime.now(tz=datetime.UTC).date() - datetime.timedelta(weeks=cfg.max_weeks)
+                if cutoff_date is None or cutoff_date < hard_cutoff.isoformat():
+                    cutoff_date = hard_cutoff.isoformat()
                     effective_cycle_weeks = cfg.max_weeks
-                cutoff_date = (
-                    datetime.datetime.now(tz=datetime.UTC).date()
-                    - datetime.timedelta(weeks=effective_cycle_weeks or cfg.max_weeks)
+
+            # Log the browse window range so users can track the advancing window.
+            if cutoff_date is not None:
+                window_weeks = effective_cycle_weeks or cfg.max_cycle_weeks or 0
+                window_end = (
+                    datetime.datetime.strptime(cutoff_date, "%Y-%m-%d").date() + datetime.timedelta(weeks=window_weeks)
                 ).isoformat()
-            elif cfg.max_cycle_weeks and cfg.max_cycle_weeks > 0:
-                cutoff_date = (
-                    datetime.datetime.now(tz=datetime.UTC).date() - datetime.timedelta(weeks=cfg.max_cycle_weeks)
-                ).isoformat()
+                limiter = "max_weeks" if effective_cycle_weeks == cfg.max_weeks else "max_cycle_weeks"
+                logger.info(
+                    "Scanning for games between {} and {} ({} is the active limiter, max_cycle_weeks={}, max_weeks={})",
+                    cutoff_date,
+                    window_end,
+                    limiter,
+                    cfg.max_cycle_weeks,
+                    cfg.max_weeks,
+                )
 
             browse_games = mc.scan_recent_games(
                 platform,
@@ -304,6 +330,10 @@ def run_acquisition(
                 cutoff_date=cutoff_date,
                 cancel_event=cancel_event,
             )
+
+            # Store cutoff for next cycle (after scan completes)
+            if cutoff_date is not None:
+                db.set_last_cutoff(platform, cutoff_date)
             if browse_games:
                 thresholds = {
                     "min_metascore": cfg.min_metascore,
@@ -791,12 +821,6 @@ def _should_process_by_age(game: Any, age_recheck_weeks: int | None) -> bool:
     if not release_date:
         return False
     return _is_older_than(release_date, days=age_recheck_weeks * 7)
-    logger.debug(
-        "Processed '{}' \u2014 release date older than {} weeks",
-        game.game_title,
-        age_recheck_weeks,
-    )
-    return True
 
 
 def _process_aged_games(

@@ -276,13 +276,19 @@ class FitGirlSource:
 
         Handles both ``<urlset>`` and ``<sitemapindex>`` sitemap formats.
         Results are cached in ``sitemap_cache`` for ``cache_pages_hours``.
+        Re-fetches even when cache is valid if source_titles is empty
+        (e.g. after an initial fetch that returned no parsed titles).
         """
         if self._cache_pages_hours > 0 and db.get_sitemap_cache("fitgirl", self._cache_pages_hours):
+            if len(db.get_all_source_titles("fitgirl")) > 0:
+                logger.info(
+                    "FitGirl cache is still valid (TTL: {} hours) — skipping fetch",
+                    self._cache_pages_hours,
+                )
+                return
             logger.info(
-                "FitGirl cache is still valid (TTL: {} hours) — skipping fetch",
-                self._cache_pages_hours,
+                "FitGirl cache is valid but no titles indexed — re-fetching sitemap",
             )
-            return
 
         url = "https://fitgirl-repacks.site/sitemap.xml"
         try:

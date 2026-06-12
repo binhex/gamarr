@@ -633,3 +633,30 @@ class TestMigration:
         assert "score_checks_passed" in columns
         assert "verify_attempts" in columns
         db.close()
+
+    def test_get_last_cutoff_returns_none_when_not_set(self, tmp_path: Path) -> None:
+        """get_last_cutoff returns None when no cutoff has been stored."""
+        db = Database(str(tmp_path / "test.db"))
+        result = db.get_last_cutoff("pc")
+        assert result is None
+        db.close()
+
+    def test_set_and_get_last_cutoff(self, tmp_path: Path) -> None:
+        """set_last_cutoff stores and get_last_cutoff retrieves the value."""
+        db = Database(str(tmp_path / "test.db"))
+        db.set_last_cutoff("pc", "2026-04-17")
+        result = db.get_last_cutoff("pc")
+        assert result == "2026-04-17"
+        # Different platform returns None
+        result = db.get_last_cutoff("ps5")
+        assert result is None
+        db.close()
+
+    def test_set_last_cutoff_updates_value(self, tmp_path: Path) -> None:
+        """set_last_cutoff overwrites an existing value."""
+        db = Database(str(tmp_path / "test.db"))
+        db.set_last_cutoff("pc", "2026-04-17")
+        db.set_last_cutoff("pc", "2026-03-20")
+        result = db.get_last_cutoff("pc")
+        assert result == "2026-03-20"
+        db.close()
