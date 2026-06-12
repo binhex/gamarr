@@ -470,36 +470,41 @@ class Database:
         release_date: str | None = None,
         description: str | None = None,
     ) -> None:
-        """Insert or update a game detail cache entry."""
+        """Insert or update a game detail cache entry.
+
+        Uses SQLite ``INSERT OR REPLACE`` (via SQLAlchemy ``text()``)
+        to atomically insert-or-update at the database level,
+        avoiding the TOCTOU race between ``session.get()`` and
+        ``session.add()`` that occurs when concurrent threads
+        (from ``_process_verify_batch``'s ``ThreadPoolExecutor``)
+        both check the same slug before either commits.
+        """
+
         now = datetime.datetime.now(tz=datetime.UTC).isoformat()
         genres_json: str | None = json.dumps(genres) if genres is not None else None
         with self._session() as session:
-            row = session.get(GameDetailCache, slug)
-            if row is None:
-                session.add(
-                    GameDetailCache(
-                        slug=slug,
-                        metascore=metascore,
-                        metascore_reviews=metascore_reviews,
-                        user_score=user_score,
-                        user_reviews=user_reviews,
-                        genres=genres_json,
-                        must_play=must_play,
-                        release_date=release_date,
-                        description=description,
-                        cached_at=now,
-                    )
-                )
-            else:
-                row.metascore = metascore
-                row.metascore_reviews = metascore_reviews
-                row.user_score = user_score
-                row.user_reviews = user_reviews
-                row.genres = genres_json
-                row.must_play = must_play
-                row.release_date = release_date
-                row.description = description
-                row.cached_at = now
+            session.execute(
+                text("""
+                    INSERT OR REPLACE INTO game_detail_cache
+                    (slug, metascore, metascore_reviews, user_score, user_reviews,
+                     genres, must_play, release_date, description, cached_at)
+                    VALUES (:slug, :metascore, :metascore_reviews, :user_score,
+                            :user_reviews, :genres, :must_play, :release_date,
+                            :description, :cached_at)
+                """),
+                {
+                    "slug": slug,
+                    "metascore": metascore,
+                    "metascore_reviews": metascore_reviews,
+                    "user_score": user_score,
+                    "user_reviews": user_reviews,
+                    "genres": genres_json,
+                    "must_play": must_play,
+                    "release_date": release_date,
+                    "description": description,
+                    "cached_at": now,
+                },
+            )
             session.commit()
 
     def get_browse_page_cache(self, platform: str, page_number: int, ttl_hours: int) -> list[dict[str, Any]] | None:

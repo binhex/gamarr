@@ -660,3 +660,44 @@ class TestMigration:
         result = db.get_last_cutoff("pc")
         assert result == "2026-03-20"
         db.close()
+
+
+class TestGameDetailCacheConcurrent:
+    """Concurrent cache writes must not raise IntegrityError."""
+
+    def test_concurrent_same_slug_no_race(self, tmp_path: Path) -> None:
+        """Calling set_game_detail_cache for the same slug from multiple
+        threads must not raise IntegrityError.  The fix uses SQLite
+        ``INSERT OR REPLACE`` to atomically insert-or-update at the
+        database level, eliminating the TOCTOU race that the old
+        ``session.get()`` + ``session.add()`` pattern had.
+        """
+        import threading
+
+        from gamarr.database import Database
+
+        db = Database(str(tmp_path / "test.db"))
+        slug = "race-condition-slug"
+        errors: list[Exception] = []
+        lock = threading.Lock()
+
+        def set_cache() -> None:
+            try:
+                db.set_game_detail_cache(slug, metascore=85.0, user_score=8.0)
+            except Exception as exc:
+                with lock:
+                    errors.append(exc)
+
+        threads = [threading.Thread(target=set_cache) for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"Concurrent cache calls raised {len(errors)} error(s): {errors}"
+
+        # Verify the entry was stored and readable
+        cached = db.get_game_detail_cache(slug, ttl_days=7)
+        assert cached is not None
+        assert cached["metascore"] == 85.0
+        db.close()

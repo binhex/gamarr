@@ -118,45 +118,6 @@ class AcquisitionConfig:
         return (self.max_weeks or 0) * 7
 
 
-def _is_below_threshold(value: float | None, threshold: float) -> bool:
-    """Return True if value is below threshold (or None — missing data fails).
-
-    When value is None the check fails (no data to verify against).
-    """
-    if value is None:
-        return True
-    return value < threshold
-
-
-def _evaluate_scores(
-    mc_result: Any,
-    cfg: AcquisitionConfig,
-) -> str:
-    """Evaluate a game's scores against thresholds.
-
-    Returns:
-        ``"Passed"`` if all checks pass, or a specific failure reason:
-        ``"no_scores"``, ``"metascore_too_low"``, ``"metascore_reviews_too_few"``,
-        ``"user_score_too_low"``, ``"user_reviews_too_few"``, ``"release_date_too_old"``.
-    """
-    if mc_result.metascore is None or mc_result.user_score is None:
-        return "no_scores"
-
-    if _is_below_threshold(mc_result.metascore, cfg.min_metascore):
-        return "metascore_too_low"
-    if _is_below_threshold(mc_result.metascore_review_count, cfg.min_metascore_reviews):
-        return "metascore_reviews_too_few"
-    if _is_below_threshold(mc_result.user_score, cfg.min_user_score):
-        return "user_score_too_low"
-    if _is_below_threshold(mc_result.user_review_count, cfg.min_user_reviews):
-        return "user_reviews_too_few"
-
-    if _is_older_than(getattr(mc_result, "release_date", None), cfg._age_days()):
-        return "release_date_too_old"
-
-    return "Passed"
-
-
 def run_acquisition(
     *,
     fitgirl_rss_url: str,
@@ -273,6 +234,7 @@ def run_acquisition(
         # score thresholds and age filter. The FitGirl sitemap is fetched
         # only if Metacritic produced games to match against.
         browse_games: list[dict[str, Any]] = []
+        new_pending: int = 0
         if cfg.enabled:
             # Compute the effective cutoff for page fetching.
             # max_cycle_weeks advances through the backlog: each cycle
@@ -678,6 +640,31 @@ def _check_score_threshold(
     return value >= threshold
 
 
+def _fails_review_count_check(
+    score_value: float | None,
+    review_count: int | None,
+    threshold: int,
+) -> bool:
+    """Check whether a review count fails its threshold when a score is present.
+
+    When *score_value* is present (> 0) but *review_count* is missing or
+    zero, and *threshold* is > 0, the check fails — missing review data
+    cannot be assumed to pass.
+
+    When *score_value* itself is absent (None or 0), the review count
+    check is skipped — there is no score data in this category to
+    verify reviews for.
+
+    Returns True when the game should be rejected due to insufficient
+    review data.
+    """
+    if threshold <= 0:
+        return False
+    if score_value is None or score_value <= 0.0:
+        return False
+    return bool(review_count is None or review_count <= 0)
+
+
 def _real_scores_pass_thresholds(
     result: Any,
     thresholds: dict[str, Any],
@@ -687,10 +674,31 @@ def _real_scores_pass_thresholds(
     When a score value is None or 0.0 (unreviewed game), that specific
     check is skipped rather than treated as a failure.
 
+    However, when a *review count* is None/0 and the corresponding
+    threshold is > 0, the check **fails** — ``None`` means "no reviews",
+    not "skip the check".  This prevents games with unreviewed pages
+    (e.g. newly released games showing "TBD") from bypassing
+    ``min_user_reviews`` and ``min_metascore_reviews``.
+
     Returns True when the existing checks all pass.
     """
     if result is None:
         return False
+
+    if _fails_review_count_check(
+        score_value=result.user_score,
+        review_count=result.user_review_count,
+        threshold=thresholds.get("min_user_reviews", 0),
+    ):
+        return False
+
+    if _fails_review_count_check(
+        score_value=result.metascore,
+        review_count=result.metascore_review_count,
+        threshold=thresholds.get("min_metascore_reviews", 0),
+    ):
+        return False
+
     checks: list[bool] = [
         c
         for c in [
