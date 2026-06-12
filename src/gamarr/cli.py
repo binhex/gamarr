@@ -198,7 +198,7 @@ def cli(
 
     log_format = "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>"
     effective_log_path = log_path or _DEFAULT_LOGS_PATH
-    effective_log_level = log_level.upper() if log_level else "INFO"
+    effective_log_level = log_level.upper() if log_level else config.general.log_level_console
     create_logger(
         log_format=log_format,
         log_level=effective_log_level,

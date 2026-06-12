@@ -791,27 +791,6 @@ def _should_process_by_age(game: Any, age_recheck_weeks: int | None) -> bool:
     if not release_date:
         return False
     return _is_older_than(release_date, days=age_recheck_weeks * 7)
-
-
-def _record_processed_game(db: Database, game: Any, result: Any, age_recheck_weeks: int) -> bool:
-    """Permanently record *game* as processed and remove from pending.
-
-    Writes a history row with ``result="Processed"`` and removes the
-    pending row.  Returns ``True`` to signal the caller that the game
-    was removed.
-    """
-    db.record_processed(
-        source="metacritic",
-        source_title=str(game.game_title),
-        source_url=f"mc:{game.slug}",
-        game_title=str(game.game_title),
-        platform=str(game.platform),
-        metascore=result.metascore,
-        user_score=result.user_score,
-        result="Processed",
-        result_details=f"Game older than {age_recheck_weeks}-week threshold, not re-checked",
-    )
-    db.remove_pending(str(game.slug))
     logger.debug(
         "Processed '{}' \u2014 release date older than {} weeks",
         game.game_title,
@@ -874,7 +853,9 @@ def _process_aged_games(
 
     if processed:
         logger.info(
-            f"Processed {processed} game(s) older than {cfg.age_recheck_weeks} weeks \u2014 skipping on next run",
+            "Processed {} game(s) older than {} weeks \u2014 skipping on next run",
+            processed,
+            cfg.age_recheck_weeks,
         )
     return processed
 
