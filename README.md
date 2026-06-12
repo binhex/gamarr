@@ -120,9 +120,9 @@ on first run. The file is divided into the sections below.
 | `fitgirl.reject_keywords` | Reject FitGirl repack titles containing any of these keywords (case-insensitive). | `[]` |
 | `fitgirl.max_queue_days` | How many days a game stays in the pending queue *after* its scores are verified (the FitGirl-matching phase). `0` = indefinite pending (no expiry). | `60` |
 
-### `metacritic`
+### `review_sites.metacritic`
 
-#### `metacritic.platform_overrides.<platform>`
+#### `review_sites.metacritic.platform_overrides.<platform>`
 
 | Key | Description | Default |
 | --- | ----------- | ------- |
@@ -232,7 +232,7 @@ are collected.
    exceed the configured thresholds — score filtering effectively starts
    at the verification step (phase 4), not here.
 3. **Pending queue** — Surviving games enter a `pending_games` queue with a
-   configurable expiry (`metacritic.platform_overrides.*.max_queue_days`,
+   configurable expiry (`review_sites.metacritic.platform_overrides.*.max_queue_days`,
    default 30, or `0` for indefinite). They wait for a detail-page
    verification pass.
 4. **Score verification** — Each pending game's real Metacritic detail page
@@ -311,14 +311,14 @@ download sites (Jackett/Prowlarr, Dodi, Ankergames) via the `BaseSource` protoco
 
 **Q: How do I reject specific game genres?**
 
-**A:** Use the `reject_genre` option under `metacritic.platform_overrides.pc`.
+**A:** Use the `reject_genre` option under `review_sites.metacritic.platform_overrides.pc`.
 It uses case-insensitive substring matching. For example:
 
 - `["RPG"]` matches "Action RPG", "Western RPG", "JRPG", "RPG"
 - `["Western RPG"]` only matches genres containing "Western RPG"
 - `["Action"]` matches "Action", "Action RPG", "Open-World Action"
 
-See the [genres section](#metacriticplatform_overridesplatform) for details.
+See the [genres section](#review_sitesmetacriticplatform_overridesplatform) for details.
 
 **Q: Why do I see "X from previous cycles" in the log — why aren't those games leaving the queue?**
 
@@ -337,7 +337,7 @@ Games that are verified but **fail score thresholds**, or **pass but have no Fit
 
 **A:** There are two waiting rooms. When a game is first discovered, it sits
 in the first waiting room while gamarr checks its Metacritic scores. The
-**metacritic `max_queue_days`** is the time limit for this phase — if scores
+**review_sites.metacritic `max_queue_days`** is the time limit for this phase — if scores
 can't be verified in time, the game is removed.
 
 Once scores pass, the game moves to a second waiting room where it waits for
