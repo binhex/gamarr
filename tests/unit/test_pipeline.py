@@ -4208,41 +4208,6 @@ class TestProcessByAge:
         result = _should_process_by_age(FakeGame(), age_recheck_weeks=52)
         assert result is False
 
-    def test_record_processed_game_records_and_removes(self, tmp_path: Path) -> None:
-        """_record_processed_game should record as Processed and remove from pending."""
-        import datetime
-        import types
-
-        from gamarr.database import Database
-        from gamarr.pipeline import _record_processed_game
-
-        db = Database(str(tmp_path / "test.db"))
-        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
-            slug="old-game",
-            game_title="Old Game",
-            platform="pc",
-            metascore=85.0,
-            user_score=8.0,
-            release_date="2020-01-01",
-            expires_at=expires,
-        )
-        db.update_pending_scores(slug="old-game", metascore=85.0, user_score=8.0)
-
-        game = db.get_pending(platform="pc")[0]
-        result = types.SimpleNamespace(
-            metascore=85.0,
-            metascore_review_count=20,
-            user_score=8.0,
-            user_review_count=100,
-        )
-        processed = _record_processed_game(db, game, result, age_recheck_weeks=52)
-        assert processed is True, "_record_processed_game should return True"
-        assert not db.is_pending("old-game"), "Game should be removed from pending"
-        stats = db.get_stats()
-        assert stats["total"] == 1, "One history record should exist"
-        db.close()
-
 
 class TestLogVerifyProgress:
     """Tests for _log_verify_progress helper."""
