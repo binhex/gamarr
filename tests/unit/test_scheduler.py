@@ -64,6 +64,7 @@ def _make_config(acquisition_enabled: bool = False) -> Config:
         MetacriticPlatformConfig,
         NotificationConfig,
         QbittorrentConfig,
+        ReviewSitesConfig,
         ScheduleConfig,
         ScheduleTaskConfig,
         TorrentClientConfig,
@@ -77,8 +78,10 @@ def _make_config(acquisition_enabled: bool = False) -> Config:
         download_sites=DownloadSitesConfig(
             fitgirl=FitGirlSourceConfig(enabled=True, rss_url="http://example.com/feed", platform="pc"),
         ),
-        metacritic=MetacriticConfig(
-            platform_overrides={"pc": MetacriticPlatformConfig()},
+        review_sites=ReviewSitesConfig(
+            metacritic=MetacriticConfig(
+                platform_overrides={"pc": MetacriticPlatformConfig()},
+            ),
         ),
         torrent_client=TorrentClientConfig(
             qbittorrent=QbittorrentConfig(host="localhost", port=8080),
@@ -177,6 +180,7 @@ class TestBuildKwargs:
             MetacriticPlatformConfig,
             NotificationConfig,
             QbittorrentConfig,
+            ReviewSitesConfig,
             ScheduleConfig,
             ScheduleTaskConfig,
             TorrentClientConfig,
@@ -191,8 +195,10 @@ class TestBuildKwargs:
             download_sites=DownloadSitesConfig(
                 fitgirl=FitGirlSourceConfig(enabled=True, rss_url="http://example.com/feed"),
             ),
-            metacritic=MetacriticConfig(
-                platform_overrides={"pc": MetacriticPlatformConfig()},
+            review_sites=ReviewSitesConfig(
+                metacritic=MetacriticConfig(
+                    platform_overrides={"pc": MetacriticPlatformConfig()},
+                ),
             ),
             torrent_client=TorrentClientConfig(
                 qbittorrent=QbittorrentConfig(host="localhost", port=8080),
