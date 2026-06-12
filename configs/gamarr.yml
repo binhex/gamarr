@@ -1,5 +1,5 @@
 general:
-  config_version: 1.17.0
+  config_version: 1.18.0
   daemon_mode: foreground
   log_level_console: INFO
   log_level_file: INFO
@@ -33,6 +33,7 @@ metacritic:
       max_queue_days: 30
       enabled: true
       max_weeks: 16
+      max_cycle_weeks: 4
       reject_genre:
       - novel
       - card
