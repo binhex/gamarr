@@ -1,5 +1,5 @@
 general:
-  config_version: 1.18.0
+  config_version: 1.19.0
   daemon_mode: foreground
   log_level_console: INFO
   log_level_file: INFO
@@ -21,24 +21,25 @@ download_sites:
     reject_keywords:
     - hv
     max_queue_days: 60
-metacritic:
-  platform_overrides:
-    pc:
-      min_metascore: 75
-      min_metascore_reviews: 10
-      min_user_score: 8.0
-      min_user_reviews: 10
-      cache_details_days: 7
-      cache_pages_hours: 6
-      max_queue_days: 30
-      enabled: true
-      max_weeks: 52
-      max_cycle_weeks: 4
-      reject_genre:
-      - novel
-      - card
-      reject_title: []
-      age_recheck_weeks: 4
+review_sites:
+  metacritic:
+    platform_overrides:
+      pc:
+        min_metascore: 75
+        min_metascore_reviews: 10
+        min_user_score: 8.0
+        min_user_reviews: 10
+        cache_details_days: 7
+        cache_pages_hours: 6
+        max_queue_days: 30
+        enabled: true
+        max_weeks: 52
+        max_cycle_weeks: 4
+        reject_genre:
+        - novel
+        - card
+        reject_title: []
+        age_recheck_weeks: 4
 torrent_client:
   selected: qbittorrent
   qbittorrent:

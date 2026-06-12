@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 import yaml
@@ -261,7 +261,6 @@ class TestConfigModels:
 
     def test_migrate_max_verify_attempts_removed(self) -> None:
         """Old max_verify_attempts in metacritic.platform_overrides is removed."""
-        from typing import Any
 
         from gamarr.config import _migrate_config
 
@@ -381,7 +380,6 @@ class TestLoadConfig:
 
     def test_migrate_config_returns_true_on_change(self) -> None:
         """_migrate_config should return True when it makes changes."""
-        from typing import Any
 
         from gamarr.config import _migrate_config
 
@@ -397,7 +395,6 @@ class TestLoadConfig:
 
     def test_migrate_metacritic_to_review_sites(self) -> None:
         """Old top-level metacritic key is moved under review_sites."""
-        from typing import Any
 
         from gamarr.config import _migrate_config
 
@@ -416,7 +413,6 @@ class TestLoadConfig:
 
     def test_migrate_sources_to_download_sites(self) -> None:
         """Old sources key is migrated to download_sites."""
-        from typing import Any
 
         from gamarr.config import _migrate_config
 
@@ -434,7 +430,6 @@ class TestLoadConfig:
 
     def test_migrate_sources_to_download_sites_both_exist(self) -> None:
         """When both old sources and new download_sites exist, merge and drop sources."""
-        from typing import Any
 
         from gamarr.config import _migrate_config
 
@@ -451,7 +446,6 @@ class TestLoadConfig:
 
     def test_migrate_config_returns_false_on_no_change(self) -> None:
         """_migrate_config should return False when nothing to migrate."""
-        from typing import Any
 
         from gamarr.config import _migrate_config
 
@@ -464,7 +458,6 @@ class TestLoadConfig:
 
     def test_migrate_days_since_release_removes_field(self) -> None:
         """Old days_since_release in metacritic.platform_overrides is removed."""
-        from typing import Any
 
         from gamarr.config import _migrate_config
 
@@ -484,7 +477,6 @@ class TestLoadConfig:
 
     def test_migrate_days_since_release_converts_to_max_weeks(self) -> None:
         """days_since_release without max_weeks should be converted."""
-        from typing import Any
 
         from gamarr.config import _migrate_config
 
@@ -504,7 +496,6 @@ class TestLoadConfig:
 
     def test_migrate_pending_days_to_max_queue_days(self) -> None:
         """Old pending_days key is renamed to max_queue_days in metacritic and fitgirl sections."""
-        from typing import Any
 
         from gamarr.config import _migrate_config
 
@@ -531,7 +522,6 @@ class TestLoadConfig:
 
     def test_migrate_pending_days_under_sources_key(self) -> None:
         """Old pending_days under the legacy sources key is also renamed."""
-        from typing import Any
 
         from gamarr.config import _migrate_config
 
@@ -555,7 +545,6 @@ class TestLoadConfig:
 
     def test_migrate_recheck_days_to_max_queue_days(self) -> None:
         """Old recheck_days keys are renamed to max_queue_days."""
-        from typing import Any
 
         from gamarr.config import _migrate_config
 
@@ -580,7 +569,6 @@ class TestLoadConfig:
 
     def test_migrate_metacritic_exclude_keywords_returns_true(self) -> None:
         """_migrate_metacritic_exclude_keywords should return True when it deletes a key."""
-        from typing import Any
 
         from gamarr.config import _migrate_metacritic_exclude_keywords
 
@@ -593,7 +581,6 @@ class TestLoadConfig:
 
     def test_migrate_metacritic_exclude_keywords_returns_false(self) -> None:
         """_migrate_metacritic_exclude_keywords should return False when no key to delete."""
-        from typing import Any
 
         from gamarr.config import _migrate_metacritic_exclude_keywords
 
