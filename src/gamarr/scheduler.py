@@ -94,9 +94,9 @@ def run(config: Config) -> None:
 
 def _build_kwargs(config: Config) -> dict[str, Any]:
     """Extract acquisition pipeline kwargs from the config."""
-    mc_cfg = config.metacritic.platform_overrides.get(
+    mc_cfg = config.review_sites.metacritic.platform_overrides.get(
         config.download_sites.fitgirl.platform,
-        config.metacritic.platform_overrides["pc"],
+        config.review_sites.metacritic.platform_overrides["pc"],
     )
     return {
         "fitgirl_rss_url": config.download_sites.fitgirl.rss_url,

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 import pytest
 import yaml
@@ -98,7 +98,7 @@ class TestConfigModels:
         """_migrate_config should rename cache_ttl_days to cache_details_days."""
         from gamarr.config import _migrate_config
 
-        raw = {
+        raw: dict[str, Any] = {
             "metacritic": {
                 "platform_overrides": {
                     "pc": {
@@ -108,7 +108,7 @@ class TestConfigModels:
             },
         }
         _migrate_config(raw)
-        mc_pc = raw["metacritic"]["platform_overrides"]["pc"]
+        mc_pc = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
         assert "cache_ttl_days" not in mc_pc, "Old key should be removed"
         assert mc_pc["cache_details_days"] == 7, "New key should have the same value"
 
@@ -117,7 +117,7 @@ class TestConfigModels:
         from gamarr.config import _default_config_dict
 
         defaults = _default_config_dict()
-        mc_pc = defaults["metacritic"]["platform_overrides"]["pc"]
+        mc_pc = defaults["review_sites"]["metacritic"]["platform_overrides"]["pc"]
         assert "cache_ttl_days" not in mc_pc, "Old key should not appear in defaults"
         assert mc_pc["cache_details_days"] == 7, "New key should have default 7"
 
@@ -143,7 +143,7 @@ class TestConfigModels:
         """_migrate_config should rename cache_ttl_hours to cache_pages_hours."""
         from gamarr.config import _migrate_config
 
-        raw = {
+        raw: dict[str, Any] = {
             "metacritic": {
                 "platform_overrides": {
                     "pc": {
@@ -153,7 +153,7 @@ class TestConfigModels:
             },
         }
         _migrate_config(raw)
-        mc_pc = raw["metacritic"]["platform_overrides"]["pc"]
+        mc_pc = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
         assert "cache_ttl_hours" not in mc_pc, "Old key should be removed"
         assert mc_pc["cache_pages_hours"] == 6, "New key should have the same value"
 
@@ -178,7 +178,7 @@ class TestConfigModels:
         from gamarr.config import _default_config_dict
 
         defaults = _default_config_dict()
-        mc_pc = defaults["metacritic"]["platform_overrides"]["pc"]
+        mc_pc = defaults["review_sites"]["metacritic"]["platform_overrides"]["pc"]
         assert "cache_ttl_hours" not in mc_pc, "Old key should not appear in defaults"
         assert mc_pc["cache_pages_hours"] == 6, "New key should have default 6"
 
@@ -186,7 +186,7 @@ class TestConfigModels:
         """_migrate_config should rename old browse_* keys and drop deprecated cutoff_date."""
         from gamarr.config import _migrate_config
 
-        raw = {
+        raw: dict[str, Any] = {
             "metacritic": {
                 "platform_overrides": {
                     "pc": {
@@ -199,7 +199,7 @@ class TestConfigModels:
             }
         }
         _migrate_config(raw)
-        mc_pc = raw["metacritic"]["platform_overrides"]["pc"]
+        mc_pc = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
         assert "browse_max_pages" not in mc_pc
         assert "browse_enabled" not in mc_pc
         assert "browse_cutoff_date" not in mc_pc
@@ -212,7 +212,7 @@ class TestConfigModels:
         """_migrate_config should skip platform overrides that are not dicts."""
         from gamarr.config import _migrate_config
 
-        raw = {
+        raw: dict[str, Any] = {
             "metacritic": {
                 "platform_overrides": {
                     "pc": "not-a-dict",
@@ -220,13 +220,13 @@ class TestConfigModels:
             }
         }
         _migrate_config(raw)  # Should not raise
-        assert raw["metacritic"]["platform_overrides"]["pc"] == "not-a-dict"
+        assert raw["review_sites"]["metacritic"]["platform_overrides"]["pc"] == "not-a-dict"
 
     def test_migrate_config_renames_metacritic_keys(self) -> None:
         """_migrate_config should rename metacritic_* keys and drop deprecated cutoff_date."""
         from gamarr.config import _migrate_config
 
-        raw = {
+        raw: dict[str, Any] = {
             "metacritic": {
                 "platform_overrides": {
                     "pc": {
@@ -239,7 +239,7 @@ class TestConfigModels:
             }
         }
         _migrate_config(raw)
-        mc_pc = raw["metacritic"]["platform_overrides"]["pc"]
+        mc_pc = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
         assert "metacritic_enabled" not in mc_pc
         assert "metacritic_max_games" not in mc_pc
         assert "metacritic_cutoff_date" not in mc_pc
@@ -274,7 +274,7 @@ class TestConfigModels:
         }
         result = _migrate_config(raw)
         assert result is True
-        pc = raw["metacritic"]["platform_overrides"]["pc"]
+        pc = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
         assert "max_verify_attempts" not in pc
 
     def test_qbittorrent_config_defaults(self) -> None:
@@ -300,11 +300,20 @@ class TestConfigModels:
         cfg = Config()
         assert cfg.library.paths == []
 
+    def test_config_has_review_sites(self) -> None:
+        """Config().review_sites.metacritic should exist, Config().metacritic should not."""
+        from gamarr.config import Config
+
+        cfg = Config()
+        assert hasattr(cfg, "review_sites"), "Config must have review_sites field"
+        assert cfg.review_sites.metacritic is not None
+        assert not hasattr(cfg, "metacritic"), "Config should not have top-level metacritic field"
+
     def test_root_config_defaults(self) -> None:
         cfg = Config()
         assert cfg.general.daemon_mode == "foreground"
         assert cfg.download_sites.fitgirl.enabled is True
-        assert cfg.metacritic.platform_overrides["pc"].min_metascore == 75
+        assert cfg.review_sites.metacritic.platform_overrides["pc"].min_metascore == 75
         assert cfg.torrent_client.selected == "qbittorrent"
 
     def test_age_recheck_weeks_default(self) -> None:
@@ -386,6 +395,25 @@ class TestLoadConfig:
         assert "reject_keywords" in raw["download_sites"]["fitgirl"]
         assert "exclude_keywords" not in raw["download_sites"]["fitgirl"]
 
+    def test_migrate_metacritic_to_review_sites(self) -> None:
+        """Old top-level metacritic key is moved under review_sites."""
+        from typing import Any
+
+        from gamarr.config import _migrate_config
+
+        raw: dict[str, Any] = {
+            "metacritic": {
+                "platform_overrides": {
+                    "pc": {"min_metascore": 75, "max_weeks": 12},
+                },
+            },
+        }
+        result = _migrate_config(raw)
+        assert result is True
+        assert "metacritic" not in raw, "Old top-level metacritic key should be removed"
+        assert "review_sites" in raw
+        assert raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["min_metascore"] == 75
+
     def test_migrate_sources_to_download_sites(self) -> None:
         """Old sources key is migrated to download_sites."""
         from typing import Any
@@ -429,7 +457,7 @@ class TestLoadConfig:
 
         raw: dict[str, Any] = {
             "download_sites": {"fitgirl": {"reject_keywords": ["hv"]}},
-            "metacritic": {"platform_overrides": {"pc": {}}},
+            "review_sites": {"metacritic": {"platform_overrides": {"pc": {}}}},
         }
         result = _migrate_config(raw)
         assert result is False, "Should return False because no migration needed"
@@ -449,7 +477,7 @@ class TestLoadConfig:
         }
         result = _migrate_config(raw)
         assert result is True
-        pc = raw["metacritic"]["platform_overrides"]["pc"]
+        pc = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
         assert "days_since_release" not in pc
         assert "cutoff_weeks" not in pc, "cutoff_weeks was renamed to max_weeks"
         assert pc["max_weeks"] == 12
@@ -469,7 +497,7 @@ class TestLoadConfig:
         }
         result = _migrate_config(raw)
         assert result is True
-        pc = raw["metacritic"]["platform_overrides"]["pc"]
+        pc = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
         assert "days_since_release" not in pc
         assert "cutoff_weeks" not in pc, "cutoff_weeks was renamed to max_weeks"
         assert pc["max_weeks"] == 17  # 120 / 7 ≈ 17
@@ -492,7 +520,7 @@ class TestLoadConfig:
         }
         result = _migrate_config(raw)
         assert result is True
-        pc = raw["metacritic"]["platform_overrides"]["pc"]
+        pc = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
         assert "pending_days" not in pc
         assert "recheck_days" not in pc, "recheck_days was renamed to max_queue_days"
         assert pc["max_queue_days"] == 30
@@ -520,8 +548,8 @@ class TestLoadConfig:
         result = _migrate_config(raw)
         assert result is True
         assert "sources" not in raw
-        assert "recheck_days" not in raw["metacritic"]["platform_overrides"]["pc"]
-        assert raw["metacritic"]["platform_overrides"]["pc"]["max_queue_days"] == 45
+        assert "recheck_days" not in raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
+        assert raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["max_queue_days"] == 45
         assert "recheck_days" not in raw["download_sites"]["fitgirl"]
         assert raw["download_sites"]["fitgirl"]["max_queue_days"] == 90
 
@@ -543,7 +571,7 @@ class TestLoadConfig:
         }
         result = _migrate_config(raw)
         assert result is True
-        pc = raw["metacritic"]["platform_overrides"]["pc"]
+        pc = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
         assert "recheck_days" not in pc, "recheck_days was renamed to max_queue_days"
         assert pc["max_queue_days"] == 30
         fg = raw["download_sites"]["fitgirl"]
@@ -557,11 +585,11 @@ class TestLoadConfig:
         from gamarr.config import _migrate_metacritic_exclude_keywords
 
         raw: dict[str, Any] = {
-            "metacritic": {"platform_overrides": {"pc": {"exclude_keywords": ["DLC"]}}},
+            "review_sites": {"metacritic": {"platform_overrides": {"pc": {"exclude_keywords": ["DLC"]}}}},
         }
         result = _migrate_metacritic_exclude_keywords(raw)
         assert result is True
-        assert "exclude_keywords" not in raw["metacritic"]["platform_overrides"]["pc"]
+        assert "exclude_keywords" not in raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
 
     def test_migrate_metacritic_exclude_keywords_returns_false(self) -> None:
         """_migrate_metacritic_exclude_keywords should return False when no key to delete."""
@@ -570,7 +598,7 @@ class TestLoadConfig:
         from gamarr.config import _migrate_metacritic_exclude_keywords
 
         raw: dict[str, Any] = {
-            "metacritic": {"platform_overrides": {"pc": {}}},
+            "review_sites": {"metacritic": {"platform_overrides": {"pc": {}}}},
         }
         result = _migrate_metacritic_exclude_keywords(raw)
         assert result is False

@@ -126,13 +126,19 @@ class LibraryConfig(BaseModel):
     paths: list[str] = Field(default_factory=list)
 
 
+class ReviewSitesConfig(BaseModel):
+    """Aggregated review site configurations."""
+
+    metacritic: MetacriticConfig = Field(default_factory=MetacriticConfig)
+
+
 class Config(BaseModel):
     """Root configuration model that aggregates all sub-configs."""
 
     general: GeneralConfig = Field(default_factory=GeneralConfig)
     schedule: ScheduleConfig = Field(default_factory=ScheduleConfig)
     download_sites: DownloadSitesConfig = Field(default_factory=DownloadSitesConfig)
-    metacritic: MetacriticConfig = Field(default_factory=MetacriticConfig)
+    review_sites: ReviewSitesConfig = Field(default_factory=ReviewSitesConfig)
     torrent_client: TorrentClientConfig = Field(default_factory=TorrentClientConfig)
     notification: NotificationConfig = Field(default_factory=NotificationConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
@@ -178,7 +184,7 @@ def _migrate_platform_overrides(raw: dict[str, Any]) -> bool:
     Returns True if any migration was applied.
     """
     changed = False
-    overrides = raw.get("metacritic", {}).get("platform_overrides", {})
+    overrides = raw.get("review_sites", {}).get("metacritic", {}).get("platform_overrides", {})
     for platform_key, mc_pc in overrides.items():
         if not isinstance(mc_pc, dict):
             continue
@@ -291,7 +297,7 @@ def _migrate_days_since_release(raw: dict[str, Any]) -> bool:
     Returns True if a migration was applied.
     """
     changed = False
-    overrides = raw.get("metacritic", {}).get("platform_overrides", {})
+    overrides = raw.get("review_sites", {}).get("metacritic", {}).get("platform_overrides", {})
     for platform_key, mc_pc in overrides.items():
         if isinstance(mc_pc, dict) and "days_since_release" in mc_pc:
             days = mc_pc.pop("days_since_release")
@@ -318,7 +324,7 @@ def _migrate_metacritic_exclude_keywords(raw: dict[str, Any]) -> bool:
     Returns True if a migration was applied.
     """
     changed = False
-    overrides = raw.get("metacritic", {}).get("platform_overrides", {})
+    overrides = raw.get("review_sites", {}).get("metacritic", {}).get("platform_overrides", {})
     for platform_key, mc_pc in overrides.items():
         if isinstance(mc_pc, dict) and "exclude_keywords" in mc_pc:
             logger.info(
@@ -348,9 +354,9 @@ def _migrate_pending_days_to_max_queue_days(raw: dict[str, Any]) -> bool:
     Returns True if a migration was applied.
     """
     changed = False
-    overrides = raw.get("metacritic", {}).get("platform_overrides", {})
+    overrides = raw.get("review_sites", {}).get("metacritic", {}).get("platform_overrides", {})
     for platform_key, mc_pc in overrides.items():
-        if _rename_pending_days(mc_pc, f"metacritic.platform_overrides.{platform_key}"):
+        if _rename_pending_days(mc_pc, f"review_sites.metacritic.platform_overrides.{platform_key}"):
             changed = True
     for parent_key in ("download_sites", "sources"):
         fg = raw.get(parent_key, {}).get("fitgirl", {})
@@ -383,7 +389,7 @@ def _migrate_cutoff_weeks_to_max_weeks(raw: dict[str, Any]) -> bool:
     Returns True if any migration was applied.
     """
     changed = False
-    overrides = raw.get("metacritic", {}).get("platform_overrides", {})
+    overrides = raw.get("review_sites", {}).get("metacritic", {}).get("platform_overrides", {})
     for platform_key, mc_pc in overrides.items():
         if isinstance(mc_pc, dict) and "cutoff_weeks" in mc_pc:
             mc_pc["max_weeks"] = mc_pc.pop("cutoff_weeks")
@@ -402,7 +408,7 @@ def _migrate_remove_max_games(raw: dict[str, Any]) -> bool:
     Returns True if any migration was applied.
     """
     changed = False
-    overrides = raw.get("metacritic", {}).get("platform_overrides", {})
+    overrides = raw.get("review_sites", {}).get("metacritic", {}).get("platform_overrides", {})
     for platform_key, mc_pc in overrides.items():
         if isinstance(mc_pc, dict) and "max_games" in mc_pc:
             del mc_pc["max_games"]
@@ -432,15 +438,33 @@ def _migrate_recheck_days_to_max_queue_days(raw: dict[str, Any]) -> bool:
     Returns True if any migration was applied.
     """
     changed = False
-    overrides = raw.get("metacritic", {}).get("platform_overrides", {})
+    overrides = raw.get("review_sites", {}).get("metacritic", {}).get("platform_overrides", {})
     for platform_key, mc_pc in overrides.items():
-        if _rename_recheck_days_in_dict(mc_pc, f"metacritic.platform_overrides.{platform_key}"):
+        if _rename_recheck_days_in_dict(mc_pc, f"review_sites.metacritic.platform_overrides.{platform_key}"):
             changed = True
     for parent_key in ("download_sites", "sources"):
         ds = raw.get(parent_key, {})
         if _rename_recheck_days_in_dict(ds.get("fitgirl"), f"{parent_key}.fitgirl"):
             changed = True
     return changed
+
+
+def _migrate_metacritic_to_review_sites(raw: dict[str, Any]) -> bool:
+    """Move top-level metacritic key under review_sites.
+
+    Runs early so all downstream migrations see the new path.
+    Returns True if any migration was applied.
+    """
+    if "metacritic" not in raw:
+        return False
+    if "review_sites" not in raw:
+        raw["review_sites"] = {}
+    if "metacritic" not in raw["review_sites"]:
+        raw["review_sites"]["metacritic"] = raw.pop("metacritic")
+        logger.info("Config: migrated 'metacritic' to 'review_sites.metacritic'")
+        return True
+    raw["review_sites"]["metacritic"] = _deep_merge(raw["review_sites"]["metacritic"], raw.pop("metacritic"))
+    return True
 
 
 def _migrate_daemon_mode(raw: dict[str, Any]) -> bool:
@@ -472,6 +496,7 @@ def _migrate_config(raw: dict[str, Any]) -> bool:
         # Run migration functions in order.  sources → download_sites
         # must run first so downstream migrations see the consolidated key.
         _migrations = [
+            _migrate_metacritic_to_review_sites,
             _migrate_download_sites,
             _migrate_platform_overrides,
             _migrate_fitgirl_exclude_keywords,
