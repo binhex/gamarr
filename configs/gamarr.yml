@@ -10,7 +10,7 @@ general:
 schedule:
   acquisition:
     enabled: true
-    schedule_time_mins: 60
+    schedule_time_mins: 30
     run_on_start: true
 download_sites:
   fitgirl:

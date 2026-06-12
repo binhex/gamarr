@@ -47,6 +47,46 @@ class TestMaxCycleWeeks:
         # The cycle weeks are separate
         assert cfg.max_cycle_weeks == 4
 
+    def test_max_cycle_weeks_logs_effective_window(self) -> None:
+        """When max_cycle_weeks < max_weeks, a log message should explain which is the active limiter."""
+        from io import StringIO
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.pipeline import logger, run_acquisition
+
+        # Capture loguru output by adding a custom sink
+        buf = StringIO()
+        sink_id = logger.add(buf, format="{message}", level="INFO")
+
+        try:
+            with (
+                patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+                patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+                patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
+            ):
+                mock_mc = MagicMock()
+                mock_mc.scan_recent_games.return_value = []
+                mock_mc_cls.return_value = mock_mc
+                mock_source = MagicMock()
+                mock_source_cls.return_value = mock_source
+                mock_qbt = MagicMock()
+                mock_qbt.is_connected.return_value = True
+                mock_qbt_cls.return_value = mock_qbt
+
+                run_acquisition(
+                    fitgirl_rss_url="http://example.com/feed",
+                    db_path=":memory:",
+                    max_weeks=52,
+                    max_cycle_weeks=4,
+                )
+        finally:
+            logger.remove(sink_id)
+
+        log_text = buf.getvalue()
+        assert "Scanning for games between" in log_text, (
+            "Expected a log message showing the browse window range, got: " + repr(log_text)
+        )
+
 
 class TestRunAcquisition:
     """End-to-end acquisition pipeline."""

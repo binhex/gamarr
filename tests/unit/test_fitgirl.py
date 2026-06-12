@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from gamarr.sources.fitgirl import FitGirlSource, _clean_title
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class TestTitleCleaning:
@@ -361,3 +366,59 @@ class TestFilterGameUrls:
         assert "https://fitgirl-repacks.site/category/rpg/" not in urls
 
         assert len(filtered) == 3, f"Expected 3 game entries, got {len(filtered)}"
+
+
+class TestSitemapFetchOnEmpty:
+    """fetch_sitemap should re-fetch when source_titles is empty despite valid cache."""
+
+    def test_fetch_sitemap_when_cache_valid_but_titles_empty(self, tmp_path: Path) -> None:
+        """When source_titles is empty, fetch_sitemap should re-fetch even if cache is valid."""
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.database import Database
+        from gamarr.sources.fitgirl import FitGirlSource
+
+        db = Database(str(tmp_path / "test.db"))
+        source = FitGirlSource(
+            rss_url="http://example.com/feed",
+            db=db,
+            cache_pages_hours=6,
+        )
+
+        # Set a valid sitemap cache entry (simulating a previous fetch)
+        db.set_sitemap_cache("fitgirl")
+
+        # Verify source_titles is empty
+        titles_before = db.get_all_source_titles("fitgirl")
+        assert len(titles_before) == 0, "source_titles should start empty"
+
+        # Mock the HTTP request to return a valid sitemap
+        sitemap_xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://fitgirl-repacks.site/elden-ring/</loc>
+  </url>
+  <url>
+    <loc>https://fitgirl-repacks.site/baldurs-gate-3/</loc>
+  </url>
+</urlset>"""
+
+        with patch("gamarr.sources.fitgirl.requests.get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.content = sitemap_xml
+            mock_resp.raise_for_status = MagicMock()
+            mock_get.return_value = mock_resp
+
+            source.fetch_sitemap(db)
+
+        # After the fix, source_titles should be populated (re-fetched)
+        titles_after = db.get_all_source_titles("fitgirl")
+        assert len(titles_after) > 0, (
+            "fetch_sitemap should re-fetch when source_titles is empty, "
+            f"even if cache is valid. Got {len(titles_after)} titles."
+        )
+        titles = {t["title"] for t in titles_after}
+        assert "Elden Ring" in titles
+        assert "Baldurs Gate 3" in titles
+        source.close()
+        db.close()
