@@ -105,6 +105,43 @@ class TestShutdownEvent:
         # After being called, the event is set
         assert evt._event.is_set()
 
+    def test_shutdown_event_second_call_exits(self) -> None:
+        """A second call to _ShutdownEvent should force-exit via os._exit(128 + signum)."""
+        import os
+        import threading
+        from unittest.mock import patch
+
+        from gamarr.scheduler import _ShutdownEvent
+
+        cancel_event = threading.Event()
+        evt = _ShutdownEvent(cancel_event=cancel_event)
+
+        # First call — sets everything
+        evt(2, None)  # SIGINT
+        assert evt._event.is_set()
+        assert cancel_event.is_set()
+
+        # Second call — should trigger os._exit(128 + signum = 130)
+        with patch.object(os, "_exit") as mock_exit:
+            evt(2, None)
+            mock_exit.assert_called_once_with(128 + 2)
+
+    def test_shutdown_event_second_call_sigterm(self) -> None:
+        """Second signal with SIGTERM should use 128 + 15 = 143."""
+        import os
+        import threading
+        from unittest.mock import patch
+
+        from gamarr.scheduler import _ShutdownEvent
+
+        cancel_event = threading.Event()
+        evt = _ShutdownEvent(cancel_event=cancel_event)
+        evt(15, None)  # First call: SIGTERM
+
+        with patch.object(os, "_exit") as mock_exit:
+            evt(15, None)  # Second call: SIGTERM again
+            mock_exit.assert_called_once_with(128 + 15)
+
 
 class TestBuildKwargs:
     """_build_kwargs config extraction."""
@@ -217,7 +254,7 @@ class TestDaemonMode:
                     mock_sched.add_job.assert_called_once()
                     mock_sched.start.assert_called_once()
                     mock_signal.signal.assert_any_call(mock_signal.SIGINT, mock_shutdown_event)
-                    mock_sched.shutdown.assert_called_once_with(wait=True)
+                    mock_sched.shutdown.assert_called_once_with(wait=False)
             mock_sched_cls.return_value = mock_sched
 
     def test_run_daemon_with_run_on_start_false(self) -> None:
