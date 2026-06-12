@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import tomllib
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 from typing import TYPE_CHECKING, Any
@@ -16,7 +17,21 @@ if TYPE_CHECKING:
 
 
 def _resolve_version() -> str:
-    """Return the installed package version, or 'unknown' if not installed."""
+    """Return the gamarr version.
+
+    Reads from pyproject.toml (the source of truth) when available
+    (editable installs), falling back to installed package metadata
+    (wheel/PyPI installs), then ``"unknown"`` as a last resort.
+    """
+    # Priority 1: pyproject.toml — source of truth for dev/editable installs
+    try:
+        pyproject_path = get_project_root() / "pyproject.toml"
+        with pyproject_path.open("rb") as fh:
+            data = tomllib.load(fh)
+        return str(data["project"]["version"])
+    except Exception:
+        pass
+    # Priority 2: importlib.metadata — works for wheel/PyPI installs
     try:
         return _pkg_version("gamarr")
     except PackageNotFoundError:
