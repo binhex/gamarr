@@ -317,8 +317,8 @@ class TestRunAcquisition:
             verify_db.close()
 
 
-class TestEvaluateScores:
-    """_evaluate_scores function edge cases."""
+class TestGamePassesThresholds:
+    """_game_passes_thresholds browse-phase score checks."""
 
     def test_browse_game_passes_thresholds_with_high_browse_scores(self) -> None:
         """Browse-page games with inflated scores should pass the threshold check."""
@@ -394,270 +394,6 @@ class TestEvaluateScores:
             "min_user_reviews": 10,
         }
         assert _game_passes_thresholds(game, thresholds) is False
-
-    def test_both_scores_none_returns_failed(self) -> None:
-        import types
-
-        from gamarr.pipeline import _evaluate_scores
-
-        cfg = AcquisitionConfig(
-            min_metascore=75,
-            min_metascore_reviews=5,
-            min_user_score=7.5,
-            min_user_reviews=10,
-            max_weeks=40,
-        )
-        mc_result = types.SimpleNamespace(metascore=None, user_score=None)
-        assert _evaluate_scores(mc_result, cfg) == "no_scores"
-
-    def test_high_metascore_low_reviews_fails(self) -> None:
-        import types
-
-        from gamarr.pipeline import _evaluate_scores
-
-        cfg = AcquisitionConfig(
-            min_metascore=75,
-            min_metascore_reviews=5,
-            min_user_score=7.5,
-            min_user_reviews=10,
-            max_weeks=40,
-        )
-        mc_result = types.SimpleNamespace(
-            metascore=90.0,
-            metascore_review_count=2,
-            user_score=8.0,
-            user_review_count=100,
-        )
-        assert _evaluate_scores(mc_result, cfg) == "metascore_reviews_too_few"
-
-    def test_good_metascore_low_user_reviews_fails(self) -> None:
-        import types
-
-        from gamarr.pipeline import _evaluate_scores
-
-        cfg = AcquisitionConfig(
-            min_metascore=75,
-            min_metascore_reviews=5,
-            min_user_score=7.5,
-            min_user_reviews=10,
-            max_weeks=40,
-        )
-        mc_result = types.SimpleNamespace(
-            metascore=90.0,
-            metascore_review_count=50,
-            user_score=8.0,
-            user_review_count=3,
-        )
-        assert _evaluate_scores(mc_result, cfg) == "user_reviews_too_few"
-
-    def test_old_game_fails_days_since_release(self) -> None:
-        """A game older than max_weeks should fail."""
-        import types
-
-        from gamarr.pipeline import _evaluate_scores
-
-        cfg = AcquisitionConfig(
-            min_metascore=0,
-            min_metascore_reviews=0,
-            min_user_score=0.0,
-            min_user_reviews=0,
-            max_weeks=4,
-        )
-        mc_result = types.SimpleNamespace(
-            metascore=90.0,
-            metascore_review_count=50,
-            user_score=8.5,
-            user_review_count=100,
-            release_date="2020-01-01",
-        )
-        assert _evaluate_scores(mc_result, cfg) == "release_date_too_old"
-
-    def test_recent_game_passes_days_since_release(self) -> None:
-        """A game within max_weeks should pass (if scores are fine)."""
-        import datetime
-        import types
-
-        from gamarr.pipeline import _evaluate_scores
-
-        recent = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=5)).strftime("%Y-%m-%d")
-
-        cfg = AcquisitionConfig(
-            min_metascore=0,
-            min_metascore_reviews=0,
-            min_user_score=0.0,
-            min_user_reviews=0,
-            max_weeks=40,
-        )
-        mc_result = types.SimpleNamespace(
-            metascore=90.0,
-            metascore_review_count=50,
-            user_score=8.5,
-            user_review_count=100,
-            release_date=recent,
-        )
-        assert _evaluate_scores(mc_result, cfg) == "Passed"
-
-    def test_no_release_date_passes_days_check(self) -> None:
-        """When release_date is None, the game should NOT be failed
-        (we don't know the release date, so assume it's fine)."""
-        import types
-
-        from gamarr.pipeline import _evaluate_scores
-
-        cfg = AcquisitionConfig(
-            min_metascore=0,
-            min_metascore_reviews=0,
-            min_user_score=0.0,
-            min_user_reviews=0,
-            max_weeks=4,
-        )
-        mc_result = types.SimpleNamespace(
-            metascore=90.0,
-            metascore_review_count=50,
-            user_score=8.5,
-            user_review_count=100,
-            release_date=None,
-        )
-        assert _evaluate_scores(mc_result, cfg) == "Passed"
-
-    def test_malformed_release_date_treated_as_recent(self) -> None:
-        """A malformed release date should not cause failure."""
-        import types
-
-        from gamarr.pipeline import _evaluate_scores
-
-        cfg = AcquisitionConfig(
-            min_metascore=0,
-            min_metascore_reviews=0,
-            min_user_score=0.0,
-            min_user_reviews=0,
-            max_weeks=4,
-        )
-        mc_result = types.SimpleNamespace(
-            metascore=90.0,
-            metascore_review_count=50,
-            user_score=8.5,
-            user_review_count=100,
-            release_date="not-a-date",
-        )
-        assert _evaluate_scores(mc_result, cfg) == "Passed"
-
-
-class TestEvaluateScoresTbdBug:
-    """Regression tests for TBD scores bug."""
-
-    def test_missing_metascore_with_good_user_score_fails(self) -> None:
-        """When metascore is None (TBD) but user_score is good, game should fail."""
-        import types
-
-        from gamarr.pipeline import _evaluate_scores
-
-        cfg = AcquisitionConfig(
-            min_metascore=75,
-            min_metascore_reviews=5,
-            min_user_score=7.5,
-            min_user_reviews=10,
-            max_weeks=40,
-        )
-        mc_result = types.SimpleNamespace(
-            metascore=None,
-            metascore_review_count=None,
-            user_score=8.5,
-            user_review_count=200,
-        )
-        assert _evaluate_scores(mc_result, cfg) == "no_scores"
-
-    def test_missing_user_score_with_good_metascore_fails(self) -> None:
-        """When user_score is None (TBD) but metascore is good, game should fail."""
-        import types
-
-        from gamarr.pipeline import _evaluate_scores
-
-        cfg = AcquisitionConfig(
-            min_metascore=75,
-            min_metascore_reviews=5,
-            min_user_score=7.5,
-            min_user_reviews=10,
-            max_weeks=40,
-        )
-        mc_result = types.SimpleNamespace(
-            metascore=85.0,
-            metascore_review_count=50,
-            user_score=None,
-            user_review_count=None,
-        )
-        assert _evaluate_scores(mc_result, cfg) == "no_scores"
-
-
-class TestEvaluateScoresCoverage:
-    """Additional _evaluate_scores coverage."""
-
-    def test_user_score_below_threshold_metascore_good_fails(self) -> None:
-        """When user_score is below threshold but metascore is good, should fail."""
-        import types
-
-        from gamarr.pipeline import _evaluate_scores
-
-        cfg = AcquisitionConfig(
-            min_metascore=75,
-            min_metascore_reviews=5,
-            min_user_score=7.5,
-            min_user_reviews=10,
-            max_weeks=40,
-        )
-        mc_result = types.SimpleNamespace(
-            metascore=85.0,
-            metascore_review_count=50,
-            user_score=5.0,
-            user_review_count=200,
-        )
-        assert _evaluate_scores(mc_result, cfg) == "user_score_too_low"
-
-
-class TestEvaluateScoresNoneReviews:
-    """When review counts are None, the game should fail."""
-
-    def test_none_metascore_reviews_fails(self) -> None:
-        """When metascore_review_count is None, game should fail."""
-        import types
-
-        from gamarr.pipeline import _evaluate_scores
-
-        cfg = AcquisitionConfig(
-            min_metascore=75,
-            min_metascore_reviews=5,
-            min_user_score=7.5,
-            min_user_reviews=10,
-            max_weeks=40,
-        )
-        mc_result = types.SimpleNamespace(
-            metascore=96.0,
-            metascore_review_count=None,
-            user_score=8.4,
-            user_review_count=200,
-        )
-        assert _evaluate_scores(mc_result, cfg) == "metascore_reviews_too_few"
-
-    def test_none_user_reviews_fails(self) -> None:
-        """When user_review_count is None, game should fail."""
-        import types
-
-        from gamarr.pipeline import _evaluate_scores
-
-        cfg = AcquisitionConfig(
-            min_metascore=75,
-            min_metascore_reviews=5,
-            min_user_score=7.5,
-            min_user_reviews=10,
-            max_weeks=40,
-        )
-        mc_result = types.SimpleNamespace(
-            metascore=96.0,
-            metascore_review_count=93,
-            user_score=8.4,
-            user_review_count=None,
-        )
-        assert _evaluate_scores(mc_result, cfg) == "user_reviews_too_few"
 
 
 class TestEscapeMarkup:
@@ -4438,3 +4174,167 @@ class TestProcessAgedGames:
                 "otherwise the game gets re-verified every cycle"
             )
         db.close()
+
+
+class TestRealScoresPassThresholds:
+    """_real_scores_pass_thresholds correctly enforces review counts."""
+
+    def test_rejects_none_user_reviews_when_threshold_set(self) -> None:
+        """When user_review_count is None and min_user_reviews > 0,
+        the check should fail.
+        """
+        import types
+
+        from gamarr.pipeline import _real_scores_pass_thresholds
+
+        result = types.SimpleNamespace(
+            metascore=91.0,
+            metascore_review_count=26,
+            user_score=8.6,
+            user_review_count=None,
+        )
+        thresholds = {
+            "min_metascore": 75,
+            "min_metascore_reviews": 10,
+            "min_user_score": 8.0,
+            "min_user_reviews": 10,
+        }
+        assert _real_scores_pass_thresholds(result, thresholds) is False
+
+    def test_rejects_none_metascore_reviews_when_threshold_set(self) -> None:
+        """When metascore_review_count is None and min_metascore_reviews > 0,
+        the check should fail.
+        """
+        import types
+
+        from gamarr.pipeline import _real_scores_pass_thresholds
+
+        result = types.SimpleNamespace(
+            metascore=91.0,
+            metascore_review_count=None,
+            user_score=8.6,
+            user_review_count=20,
+        )
+        thresholds = {
+            "min_metascore": 75,
+            "min_metascore_reviews": 10,
+            "min_user_score": 8.0,
+            "min_user_reviews": 10,
+        }
+        assert _real_scores_pass_thresholds(result, thresholds) is False
+
+    def test_passes_with_sufficient_reviews(self) -> None:
+        """When review counts are present and meet thresholds, check passes."""
+        import types
+
+        from gamarr.pipeline import _real_scores_pass_thresholds
+
+        result = types.SimpleNamespace(
+            metascore=91.0,
+            metascore_review_count=26,
+            user_score=8.6,
+            user_review_count=15,
+        )
+        thresholds = {
+            "min_metascore": 75,
+            "min_metascore_reviews": 10,
+            "min_user_score": 8.0,
+            "min_user_reviews": 10,
+        }
+        assert _real_scores_pass_thresholds(result, thresholds) is True
+
+    def test_passes_with_zero_thresholds_and_none_reviews(self) -> None:
+        """When min_user_reviews is 0 (no threshold), None review counts pass."""
+        import types
+
+        from gamarr.pipeline import _real_scores_pass_thresholds
+
+        result = types.SimpleNamespace(
+            metascore=91.0,
+            metascore_review_count=26,
+            user_score=8.6,
+            user_review_count=None,
+        )
+        thresholds = {
+            "min_metascore": 75,
+            "min_metascore_reviews": 10,
+            "min_user_score": 8.0,
+            "min_user_reviews": 0,
+        }
+        assert _real_scores_pass_thresholds(result, thresholds) is True
+
+
+class TestFailsReviewCountCheck:
+    """_fails_review_count_check helper edge cases."""
+
+    def test_fails_when_review_count_is_none_with_score(self) -> None:
+        from gamarr.pipeline import _fails_review_count_check
+
+        assert (
+            _fails_review_count_check(
+                score_value=8.0,
+                review_count=None,
+                threshold=5,
+            )
+            is True
+        )
+
+    def test_fails_when_review_count_is_zero_with_score(self) -> None:
+        from gamarr.pipeline import _fails_review_count_check
+
+        assert (
+            _fails_review_count_check(
+                score_value=8.0,
+                review_count=0,
+                threshold=5,
+            )
+            is True
+        )
+
+    def test_passes_when_threshold_is_zero(self) -> None:
+        from gamarr.pipeline import _fails_review_count_check
+
+        assert (
+            _fails_review_count_check(
+                score_value=8.0,
+                review_count=None,
+                threshold=0,
+            )
+            is False
+        )
+
+    def test_passes_when_score_is_none(self) -> None:
+        from gamarr.pipeline import _fails_review_count_check
+
+        assert (
+            _fails_review_count_check(
+                score_value=None,
+                review_count=None,
+                threshold=5,
+            )
+            is False
+        )
+
+    def test_passes_when_score_is_zero(self) -> None:
+        from gamarr.pipeline import _fails_review_count_check
+
+        assert (
+            _fails_review_count_check(
+                score_value=0.0,
+                review_count=None,
+                threshold=5,
+            )
+            is False
+        )
+
+    def test_passes_when_review_count_sufficient(self) -> None:
+        from gamarr.pipeline import _fails_review_count_check
+
+        assert (
+            _fails_review_count_check(
+                score_value=8.0,
+                review_count=20,
+                threshold=5,
+            )
+            is False
+        )
