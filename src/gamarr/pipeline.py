@@ -376,9 +376,6 @@ def run_acquisition(
                     removed,
                 )
 
-        # Process old verified games so they aren't re-checked in future cycles
-        _process_aged_games(db, cfg, platform, cancel_event=cancel_event)
-
         library: Any = None
         if library_paths:
             from gamarr.library import LibraryScanner
@@ -410,6 +407,13 @@ def run_acquisition(
             )
         if matched:
             logger.info("{} queued games found on FitGirl", len(matched))
+
+        # Process old verified games AFTER the FitGirl matching phase.
+        # Games that passed score verification must get a chance to
+        # match against the sitemap before being aged out.  Previously
+        # this ran before matching, silently removing every old game
+        # from pending before it could be delivered.
+        _process_aged_games(db, cfg, platform, cancel_event=cancel_event)
 
         return matched
 

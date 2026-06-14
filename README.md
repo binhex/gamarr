@@ -18,9 +18,10 @@ sitemap, and sends qualifying games to qBittorrent.
   specific keywords.
 - **Relative date cutoff** — set a look-back window in weeks instead of
   maintaining a static date (e.g. `max_weeks: 52` for roughly one year).
-- **Re-verification with retry limit** — games whose real Metacritic detail
+- **Re-verification with expiry** — games whose real Metacritic detail
   page scores don't match the browse page scores are kept in a pending queue
-  for re-verification, up to a configurable maximum number of attempts.
+  for re-verification until they expire (`max_queue_days`). Once scores pass
+  thresholds, a fresh expiry window begins for the FitGirl-matching phase.
 - **Two-phase pending expiry** — games awaiting score review expire after
   `max_queue_days` (under metacritic thresholds). Once scores pass, a fresh
   expiry window (`download_sites.fitgirl.max_queue_days`) starts for the
@@ -100,12 +101,14 @@ on first run. The file is divided into the sections below.
 | `log_level_file` | File logging level. | `INFO` |
 | `log_path` | Directory for log files (`gamarr.log` is created inside). | `logs` |
 | `db_path` | Directory for the SQLite history database (`gamarr.db` is created inside). | `db` |
+| `pid_path` | Directory for the PID file (`gamarr.pid` is created inside). | `pids` |
+| `library_path_list` | Override library paths from CLI (`--library-path`). Mapped to `library.paths` at runtime. | `[]` |
 
 ### `schedule`
 
 | Key | Description | Default |
 | --- | ----------- | ------- |
-| `acquisition.enabled` | Enable or disable the acquisition task. | `true` |
+| `acquisition.enabled` | Enable or disable the acquisition task (scheduled daemon mode). | `false` |
 | `acquisition.schedule_time_mins` | Interval in minutes between acquisition cycles. | `60` |
 | `acquisition.run_on_start` | Run acquisition immediately on start, before the first interval. | `true` |
 
@@ -130,7 +133,7 @@ on first run. The file is divided into the sections below.
 | `min_metascore_reviews` | Minimum number of critic reviews required. | `10` |
 | `min_user_score` | Minimum Metacritic user score (0–10). | `7.5` |
 | `min_user_reviews` | Minimum number of user reviews required. | `10` |
-| `max_weeks` | Look-back window in weeks from today. Games released before this are skipped. `null` or `0` = no cutoff. | `null` |
+| `max_weeks` | Look-back window in weeks from today. Games released before this are skipped. `null` or `0` = no cutoff. | `13` |
 | `max_cycle_weeks` | How many weeks of Metacritic pages to scan per cycle. Reduces HTTP load by limiting browse depth each cycle. `0` or `null` = unlimited (same as not set). | `4` |
 | `age_recheck_weeks` | Games older than this (weeks since release) are permanently processed once their Metacritic scores pass thresholds. `null` or `0` = disabled. | `null` |
 | `enabled` | Enable or disable the Metacritic browse step. Disabling skips game discovery entirely. | `true` |

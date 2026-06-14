@@ -4338,3 +4338,101 @@ class TestFailsReviewCountCheck:
             )
             is False
         )
+
+
+class TestAgedGamesMatchOrder:
+    """Old verified games must be matched against FitGirl BEFORE being aged out."""
+
+    def test_old_verified_game_matches_before_aging(self, tmp_path: Path) -> None:
+        """A pending game with an old release date that passes score
+        verification must be matched against FitGirl BEFORE
+        ``_process_aged_games`` removes it from the queue.
+
+        Reproduces the bug where ``_process_aged_games`` runs BEFORE
+        the FitGirl sitemap fetch and matching phase, causing every
+        old verified game to be silently removed before it can match.
+        """
+        import datetime
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.database import Database
+        from gamarr.pipeline import run_acquisition
+
+        db_path = str(tmp_path / "test.db")
+
+        # Pre-seed the DB with an old verified pending game that has
+        # a matching FitGirl source title.
+        db = Database(db_path)
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="old-but-matchable",
+            game_title="Old But Matchable",
+            platform="pc",
+            metascore=85.0,
+            metascore_reviews=20,
+            user_score=8.0,
+            user_reviews=100,
+            release_date="2025-01-01",  # Old — older than age_recheck_weeks=4
+            expires_at=expires,
+        )
+        # Mark as score-checked so _verify_pending_scores touches it
+        db.update_pending_scores(slug="old-but-matchable", metascore=85.0, user_score=8.0)
+        # Pre-populate FitGirl source titles so matching works even
+        # if the mocked fetch_sitemap does nothing
+        db.rebuild_source_titles(
+            "fitgirl",
+            [{"title": "Old But Matchable", "url": "https://example.com/old-but-matchable"}],
+        )
+        db.close()
+
+        with (
+            patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
+            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+        ):
+            import types
+
+            mock_source = MagicMock()
+            mock_source_cls.return_value = mock_source
+
+            # Metacritic browse returns no new games
+            mock_mc = MagicMock()
+            mock_mc.scan_recent_games.return_value = []
+            # Detail-page lookup returns passing scores so the
+            # game stays in pending during verification
+            mock_mc.lookup_game.return_value = types.SimpleNamespace(
+                metascore=85.0,
+                metascore_review_count=20,
+                user_score=8.0,
+                user_review_count=100,
+                genres=["Action"],
+                must_play=False,
+                release_date="2025-01-01",
+            )
+            mock_mc_cls.return_value = mock_mc
+
+            mock_qbt = MagicMock()
+            mock_qbt.is_connected.return_value = True
+            mock_qbt.add_torrent.return_value = "gamarr-tag"
+            mock_qbt_cls.return_value = mock_qbt
+
+            results = run_acquisition(
+                fitgirl_rss_url="http://example.com/feed",
+                platform="pc",
+                db_path=db_path,
+                qbt_host="localhost",
+                qbt_port=8080,
+                min_metascore=75,
+                min_metascore_reviews=5,
+                min_user_score=7.5,
+                min_user_reviews=10,
+                max_weeks=52,
+                max_cycle_weeks=4,
+                age_recheck_weeks=4,
+            )
+
+            # The old game should be matched and delivered BEFORE
+            # _process_aged_games removes it.  With the bug (aged
+            # before match), results is empty.  After the fix (match
+            # before aged), results contains the match.
+            assert len(results) >= 1, "Old verified game should match FitGirl before being aged out"
