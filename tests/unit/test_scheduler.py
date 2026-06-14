@@ -383,6 +383,57 @@ class TestNextRunTimeLogging:
         assert next_time_str == args[2], f"Expected next time '{next_time_str}', got {args[2]}"
 
 
+class TestRescheduleAcquisition:
+    """_reschedule_acquisition must schedule the next run from job END, not job START."""
+
+    def test_reschedules_from_now_not_from_job_start(self) -> None:
+        """After a cycle completes, the next run should be scheduled
+        ``interval`` minutes from the current time (job end), not from
+        the job start time (which is APScheduler's default IntervalTrigger
+        behavior).
+
+        Verifies that reschedule_job is called with an IntervalTrigger
+        of the correct interval, and that _log_next_run_time is called
+        AFTER the reschedule so the logged wait time is accurate.
+        """
+        from datetime import datetime, timedelta
+        from unittest.mock import MagicMock, PropertyMock
+
+        from apscheduler.triggers.interval import IntervalTrigger
+
+        from gamarr.scheduler import _reschedule_acquisition
+
+        mock_scheduler = MagicMock()
+        mock_job = MagicMock()
+        # Set a real timezone on the mock job so _log_next_run_time
+        # doesn't crash on `datetime.now(tz)`
+        future = datetime.now(UTC) + timedelta(minutes=30)
+        type(mock_job).next_run_time = PropertyMock(return_value=future)
+        mock_scheduler.get_job.return_value = mock_job
+
+        mock_event = MagicMock()
+        mock_event.job_id = "acquisition"
+
+        _reschedule_acquisition(mock_scheduler, mock_event, interval_mins=30)
+
+        # Verify reschedule_job was called with the correct trigger
+        mock_scheduler.reschedule_job.assert_called_once()
+        call_args, call_kwargs = mock_scheduler.reschedule_job.call_args
+        assert call_args[0] == "acquisition", f"Expected job_id 'acquisition', got {call_args[0]}"
+        trigger = call_kwargs.get("trigger")
+        assert trigger is not None, "Expected a trigger argument"
+        assert isinstance(trigger, IntervalTrigger), f"Expected IntervalTrigger, got {type(trigger)}"
+        assert trigger.interval == timedelta(minutes=30), f"Expected 30-minute interval, got {trigger.interval}"
+        # No next_run_time argument — APScheduler ignores it when trigger
+        # is an instance; the IntervalTrigger computes now + interval.
+        assert "next_run_time" not in call_kwargs, (
+            "reschedule_job should NOT receive next_run_time — APScheduler ignores it when trigger is an instance"
+        )
+
+        # Verify _log_next_run_time was called AFTER the reschedule
+        mock_scheduler.get_job.assert_called_once_with("acquisition")
+
+
 class TestCancelEvent:
     """Cancel event wiring in _run_daemon and _ShutdownEvent."""
 

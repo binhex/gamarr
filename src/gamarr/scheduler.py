@@ -58,6 +58,39 @@ def _log_next_run_time(scheduler: Any, job_id: str) -> None:
     )
 
 
+def _reschedule_acquisition(
+    scheduler: Any,
+    event: Any,
+    interval_mins: int,
+) -> None:
+    """Reschedule the acquisition job to run *interval_mins* from now.
+
+    APScheduler's ``IntervalTrigger`` counts intervals from job **start**
+    time, not job **end** time.  For long cycles (e.g. 26 minutes out of
+    a 30-minute interval), this means the next cycle fires only 4 minutes
+    after the previous one finishes.
+
+    By calling ``reschedule_job`` after the job completes, we reset the
+    interval timer to count from the current time (when the job actually
+    finished).
+    """
+    from apscheduler.triggers.interval import IntervalTrigger
+
+    # Reschedule so the next run fires *interval_mins* from now
+    # (job end), not from when the job started.  The IntervalTrigger
+    # computes next_run_time = now + interval, so no explicit
+    # next_run_time is needed (APScheduler ignores it when trigger
+    # is passed as an instance anyway).
+    scheduler.reschedule_job(
+        event.job_id,
+        trigger=IntervalTrigger(minutes=interval_mins),
+    )
+
+    # Log the next run time AFTER rescheduling, so the message
+    # shows the correct wait time (interval from job end).
+    _log_next_run_time(scheduler, event.job_id)
+
+
 def _cleanup_pid_file(pid_path: str | None) -> None:
     """Remove the PID file at *pid_path* if it exists."""
     if pid_path:
@@ -173,10 +206,11 @@ def _run_daemon(config: Config) -> None:
     scheduler.start()
     logger.info("Scheduler started (interval={} min)", acq_cfg.schedule_time_mins)
 
-    # Log the next run time after each cycle completes so users know
-    # when to expect the next acquisition.
+    # Reschedule the next cycle to run *interval* minutes from when
+    # this cycle finishes (not from when it started, which is
+    # APScheduler's default IntervalTrigger behavior).
     scheduler.add_listener(
-        lambda event: _log_next_run_time(scheduler, event.job_id),
+        lambda event: _reschedule_acquisition(scheduler, event, acq_cfg.schedule_time_mins),
         EVENT_JOB_EXECUTED | EVENT_JOB_ERROR,
     )
 
