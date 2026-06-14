@@ -2,3 +2,4 @@
 htmlcov/
 coverage.xml
 pids/
+configs/gamarr.yml
