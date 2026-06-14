@@ -772,7 +772,7 @@ class MetacriticClient:
 
         effective_max = max_games if max_games > 0 else 999999
         page_number = 1
-        while len(all_games) < effective_max and page_number <= 500:
+        while len(all_games) < effective_max and page_number <= 2000:
             games = self._fetch_browse_page(platform, page_number, cache_pages_hours)
             if not games:
                 break

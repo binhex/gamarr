@@ -884,3 +884,59 @@ class TestScanRecentGamesCancellation:
         # page 2 (cancel set inside mock_fetch), then cancel check stops it.
         assert call_count <= 3, f"Expected early stop but fetched {call_count} pages"
         assert len(result) <= 60, f"Expected <=60 games but got {len(result)}"  # 3 pages * 20 games
+
+
+class TestScanRecentGamesPageLimit:
+    """The hardcoded 500-page limit must not prevent scanning older games."""
+
+    def test_scan_recent_games_passes_500_pages(self) -> None:
+        """With a cutoff date far enough back, scan_recent_games must
+        continue past 500 pages to reach the cutoff.  The old hardcoded
+        ``page_number <= 500`` limit prevented ``max_weeks > 52`` from
+        discovering older games (e.g. Satisfactory on page ~600).
+        """
+        import datetime
+        from unittest.mock import patch
+
+        from gamarr.database import Database
+        from gamarr.metacritic import MetacriticClient
+        from gamarr.metacritic_cache import MetacriticCache
+
+        client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
+
+        # Generate 25 games per page.  Page 1 has today's date, and
+        # each subsequent page has dates ~1 day older.  With a cutoff
+        # 600 days ago, the scan must go ~600 pages to reach it.
+        today = datetime.date.today()
+        cutoff = (today - datetime.timedelta(days=600)).isoformat()
+
+        def mock_fetch(
+            _platform: str,
+            page_number: int,
+            _cache_pages_hours: int,
+        ) -> list[dict] | None:
+            page_date = (today - datetime.timedelta(days=page_number)).isoformat()
+            return [
+                {
+                    "title": f"Game {page_number}-{i}",
+                    "slug": f"game-{page_number}-{i}",
+                    "score": 85,
+                    "user_rating": 8.0,
+                    "release_date": page_date,
+                }
+                for i in range(25)
+            ]
+
+        with patch.object(client, "_fetch_browse_page", side_effect=mock_fetch):
+            result = client.scan_recent_games(
+                "pc",
+                max_games=0,
+                cutoff_date=cutoff,
+            )
+
+        # To reach the cutoff (600 days back, ~1 day per page), the
+        # scan must go past 500 pages.  If it only collected 12,500
+        # games (500 pages * 25), the 500-page cap blocked it.
+        assert len(result) > 500 * 25, (
+            f"Expected >{500 * 25} games (beyond 500 pages), got {len(result)} — the 500-page cap blocked the scan"
+        )

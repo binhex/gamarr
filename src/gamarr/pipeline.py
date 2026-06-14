@@ -263,20 +263,29 @@ def run_acquisition(
                         datetime.datetime.now(tz=datetime.UTC).date() - datetime.timedelta(weeks=cfg.max_cycle_weeks)
                     ).isoformat()
 
-            # Apply hard cutoff: never go past max_weeks
+            # Apply hard cutoff: clamp the cutoff to never go past
+            # max_weeks.  Track whether the clamp fired so the log can
+            # accurately report which limiter is active.
+            clamped_by_max_weeks = False
             if cfg.max_weeks is not None and cfg.max_weeks > 0:
                 hard_cutoff = datetime.datetime.now(tz=datetime.UTC).date() - datetime.timedelta(weeks=cfg.max_weeks)
                 if cutoff_date is None or cutoff_date < hard_cutoff.isoformat():
                     cutoff_date = hard_cutoff.isoformat()
-                    effective_cycle_weeks = cfg.max_weeks
+                    clamped_by_max_weeks = True
 
             # Log the browse window range so users can track the advancing window.
             if cutoff_date is not None:
-                window_weeks = effective_cycle_weeks or cfg.max_cycle_weeks or 0
-                window_end = (
-                    datetime.datetime.strptime(cutoff_date, "%Y-%m-%d").date() + datetime.timedelta(weeks=window_weeks)
-                ).isoformat()
-                limiter = "max_weeks" if effective_cycle_weeks == cfg.max_weeks else "max_cycle_weeks"
+                limiter = "max_weeks" if clamped_by_max_weeks else "max_cycle_weeks"
+                if clamped_by_max_weeks:
+                    # When max_weeks clamps, the actual scan range extends
+                    # to today — not just max_cycle_weeks from the cutoff.
+                    window_end = datetime.datetime.now(tz=datetime.UTC).date().isoformat()
+                else:
+                    window_weeks = effective_cycle_weeks or cfg.max_cycle_weeks or 0
+                    window_end = (
+                        datetime.datetime.strptime(cutoff_date, "%Y-%m-%d").date()
+                        + datetime.timedelta(weeks=window_weeks)
+                    ).isoformat()
                 logger.info(
                     "Scanning for games between {} and {} ({} is the active limiter, max_cycle_weeks={}, max_weeks={})",
                     cutoff_date,

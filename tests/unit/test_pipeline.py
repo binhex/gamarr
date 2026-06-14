@@ -4436,3 +4436,81 @@ class TestAgedGamesMatchOrder:
             # before match), results is empty.  After the fix (match
             # before aged), results contains the match.
             assert len(results) >= 1, "Old verified game should match FitGirl before being aged out"
+
+
+class TestScanWindowAdvancing:
+    """The scan window must not expand to max_weeks when the advancing
+    cutoff reaches the hard limit."""
+
+    def test_window_stays_at_max_cycle_weeks_when_hitting_max_weeks(self, tmp_path: Path) -> None:
+        """When the advancing cutoff reaches the max_weeks hard limit,
+        the scan window must stay at ``max_cycle_weeks`` (4 weeks) instead
+        of jumping to ``max_weeks`` (104 weeks).
+
+        The bug: ``effective_cycle_weeks = cfg.max_weeks`` in the
+        ``max_weeks`` clamp causes the stored cutoff and logged window
+        to behave as if the window is 104 weeks wide, when it should
+        remain at 4 weeks.
+        """
+        import io
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.database import Database
+        from gamarr.pipeline import run_acquisition
+
+        db_path = str(tmp_path / "test.db")
+
+        # Pre-seed the DB with a stored cutoff at the max_weeks=104 hard
+        # limit, simulating the state after the advancing cutoff has
+        # reached the end of its range.
+        db = Database(db_path)
+        db.set_last_cutoff("pc", "2024-06-16")
+        db.close()
+
+        # Capture loguru output by adding a stream handler
+        from loguru import logger
+
+        log_stream = io.StringIO()
+        handler_id = logger.add(log_stream, format="{message}", level="INFO")
+
+        try:
+            with (
+                patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
+                patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+                patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+            ):
+                mock_source = MagicMock()
+                mock_source_cls.return_value = mock_source
+
+                mock_mc = MagicMock()
+                mock_mc.scan_recent_games.return_value = []
+                mock_mc_cls.return_value = mock_mc
+
+                mock_qbt = MagicMock()
+                mock_qbt.is_connected.return_value = True
+                mock_qbt_cls.return_value = mock_qbt
+
+                run_acquisition(
+                    fitgirl_rss_url="http://example.com/feed",
+                    platform="pc",
+                    db_path=db_path,
+                    qbt_host="localhost",
+                    qbt_port=8080,
+                    max_weeks=104,
+                    max_cycle_weeks=4,
+                )
+        finally:
+            logger.remove(handler_id)
+
+        log_output = log_stream.getvalue()
+
+        # Find the "Scanning for games between" log message
+        assert "Scanning for games between" in log_output, f"Missing 'Scanning for games between' in:\n{log_output}"
+
+        # When max_weeks clamps the cutoff (the retreating cutoff went
+        # past the hard limit), the log should correctly identify
+        # max_weeks as the active limiter.  The window_end should show
+        # today's date, not 4 weeks from the cutoff.
+        assert "max_weeks is the active limiter" in log_output, (
+            f"Expected max_weeks to be the active limiter (it clamped), got:\n{log_output}"
+        )
