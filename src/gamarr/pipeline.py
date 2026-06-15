@@ -678,13 +678,31 @@ def _fails_review_count_check(
     return bool(review_count is None or review_count <= 0)
 
 
+def _any_thresholded_score_absent(result: Any, thresholds: dict[str, Any]) -> bool:
+    """Return True when any score is None (TBD) while its threshold is > 0.
+
+    Prevents TBD games (where metascore or user_score is None) from
+    silently bypassing score thresholds.  A score of 0.0 means "unrated
+    but exists" and should stay pending for re-verification — only strict
+    None triggers rejection.
+    """
+    return (thresholds.get("min_metascore", 0) > 0 and result.metascore is None) or (
+        thresholds.get("min_user_score", 0) > 0 and result.user_score is None
+    )
+
+
 def _real_scores_pass_thresholds(
     result: Any,
     thresholds: dict[str, Any],
 ) -> bool:
     """Check a ScoreResult (from the detail page) against configured thresholds.
 
-    When a score value is None or 0.0 (unreviewed game), that specific
+    When a score value is ``None`` (TBD — not yet reviewed) and its
+    corresponding threshold is ``> 0``, the check **fails** immediately
+    — this prevents unreviewed games from silently bypassing score
+    thresholds.
+
+    When a score value is ``0.0`` (unrated but present), that specific
     check is skipped rather than treated as a failure.
 
     However, when a *review count* is None/0 and the corresponding
@@ -696,6 +714,13 @@ def _real_scores_pass_thresholds(
     Returns True when the existing checks all pass.
     """
     if result is None:
+        return False
+
+    # Reject when a score value is None (TBD — not reviewed) but a
+    # non-zero threshold is configured.  This prevents TBD games
+    # (metascore=None, like WEBFISHING) from silently bypassing
+    # min_metascore.
+    if _any_thresholded_score_absent(result, thresholds):
         return False
 
     if _fails_review_count_check(

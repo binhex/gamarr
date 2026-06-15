@@ -4263,6 +4263,143 @@ class TestRealScoresPassThresholds:
         }
         assert _real_scores_pass_thresholds(result, thresholds) is True
 
+    def test_rejects_tbd_metascore_when_threshold_set(self) -> None:
+        """When metascore is None (TBD) and min_metascore > 0, fail.
+
+        A game with no metascore (like WEBFISHING which shows "TBD")
+        should be rejected when min_metascore > 0, even if user scores
+        would pass.
+        """
+        import types
+
+        from gamarr.pipeline import _real_scores_pass_thresholds
+
+        result = types.SimpleNamespace(
+            metascore=None,
+            metascore_review_count=None,
+            user_score=8.6,
+            user_review_count=29,
+        )
+        thresholds = {
+            "min_metascore": 75,
+            "min_metascore_reviews": 10,
+            "min_user_score": 7.5,
+            "min_user_reviews": 10,
+        }
+        assert _real_scores_pass_thresholds(result, thresholds) is False
+
+    def test_rejects_when_result_is_none(self) -> None:
+        """When result is None, scores cannot pass."""
+        from gamarr.pipeline import _real_scores_pass_thresholds
+
+        assert _real_scores_pass_thresholds(None, {}) is False
+
+    def test_rejects_when_user_score_is_none_and_threshold_set(self) -> None:
+        """When user_score is None and min_user_score > 0, fail."""
+        import types
+
+        from gamarr.pipeline import _real_scores_pass_thresholds
+
+        result = types.SimpleNamespace(
+            metascore=80.0,
+            metascore_review_count=20,
+            user_score=None,
+            user_review_count=15,
+        )
+        thresholds = {
+            "min_metascore": 75,
+            "min_metascore_reviews": 10,
+            "min_user_score": 7.5,
+            "min_user_reviews": 10,
+        }
+        assert _real_scores_pass_thresholds(result, thresholds) is False
+
+    def test_rejects_when_no_review_data_at_all(self) -> None:
+        """When all scores and review counts are absent, cannot pass."""
+        import types
+
+        from gamarr.pipeline import _real_scores_pass_thresholds
+
+        result = types.SimpleNamespace(
+            metascore=None,
+            metascore_review_count=None,
+            user_score=None,
+            user_review_count=None,
+        )
+        thresholds = {
+            "min_metascore": 0,
+            "min_metascore_reviews": 0,
+            "min_user_score": 0,
+            "min_user_reviews": 0,
+        }
+        assert _real_scores_pass_thresholds(result, thresholds) is False
+
+
+class TestAnyThresholdedScoreAbsent:
+    """_any_thresholded_score_absent helper edge cases."""
+
+    @staticmethod
+    def _make_result(
+        metascore: float | None = 80.0,
+        user_score: float | None = 8.0,
+    ) -> object:
+        import types
+
+        return types.SimpleNamespace(
+            metascore=metascore,
+            metascore_review_count=10,
+            user_score=user_score,
+            user_review_count=10,
+        )
+
+    def test_rejects_absent_metascore_with_active_threshold(self) -> None:
+        from gamarr.pipeline import _any_thresholded_score_absent
+
+        result = self._make_result(metascore=None)
+        assert (
+            _any_thresholded_score_absent(
+                result,
+                {"min_metascore": 75, "min_user_score": 7.5},
+            )
+            is True
+        )
+
+    def test_rejects_absent_user_score_with_active_threshold(self) -> None:
+        from gamarr.pipeline import _any_thresholded_score_absent
+
+        result = self._make_result(user_score=None)
+        assert (
+            _any_thresholded_score_absent(
+                result,
+                {"min_metascore": 75, "min_user_score": 7.5},
+            )
+            is True
+        )
+
+    def test_passes_when_both_scores_present(self) -> None:
+        from gamarr.pipeline import _any_thresholded_score_absent
+
+        result = self._make_result()
+        assert (
+            _any_thresholded_score_absent(
+                result,
+                {"min_metascore": 75, "min_user_score": 7.5},
+            )
+            is False
+        )
+
+    def test_passes_when_all_thresholds_zero(self) -> None:
+        from gamarr.pipeline import _any_thresholded_score_absent
+
+        result = self._make_result(metascore=None, user_score=None)
+        assert (
+            _any_thresholded_score_absent(
+                result,
+                {"min_metascore": 0, "min_user_score": 0},
+            )
+            is False
+        )
+
 
 class TestFailsReviewCountCheck:
     """_fails_review_count_check helper edge cases."""
