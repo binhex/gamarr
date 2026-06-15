@@ -1525,6 +1525,8 @@ def _deliver_match(
         user_reviews=game_user_reviews,
         slug=game_slug,
         genres=game_genres,
+        must_play=game_must_play,
+        release_date=game_release_date,
         add_paused=qbt.add_paused,
     )
     return record_result

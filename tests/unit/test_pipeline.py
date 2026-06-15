@@ -666,6 +666,49 @@ class TestMetacriticBrowse:
         assert r"Game \<Director's\>" in output, f"Title with < > should be escaped: {output}"
         db.close()
 
+    def test_deliver_match_passes_must_play_and_release_to_notify(self) -> None:
+        """_deliver_match should forward must_play and release_date to the notifier."""
+        import datetime
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _deliver_match
+
+        db = Database(":memory:")
+
+        mock_qbt = MagicMock()
+        mock_qbt.add_torrent.return_value = "tag-123"
+        mock_qbt.add_paused = False
+        mock_notifier = MagicMock()
+        mock_magnet = MagicMock(return_value="magnet:?xt=urn:btih:abc")
+
+        best = {"url": "https://fitgirl-repacks.site/game/", "title": "Some Game"}
+
+        result = _deliver_match(
+            db,
+            qbt=mock_qbt,
+            magnet_fetcher=mock_magnet,
+            notifier=mock_notifier,
+            best=best,
+            game_slug="some-game",
+            game_title="Some Game",
+            game_platform="pc",
+            game_metascore=80.0,
+            game_user_score=8.0,
+            game_metascore_reviews=10,
+            game_user_reviews=50,
+            game_genres=["Action"],
+            game_must_play=True,
+            game_release_date="2024-10-11",
+        )
+
+        assert result["result"] == "Passed"
+        # Verify must_play and release_date were passed to the notifier
+        call_kwargs = mock_notifier.send_download_notification.call_args[1]
+        assert call_kwargs.get("must_play") is True
+        assert call_kwargs.get("release_date") == "2024-10-11"
+        db.close()
+
     def test_verify_pending_keeps_game_with_failing_real_scores_for_recheck(self, tmp_path: Path) -> None:
         """A game with failing real scores should stay pending for re-verification."""
         import datetime
@@ -1616,6 +1659,8 @@ class TestMetacriticBrowse:
             slug="elden-ring",
             genres=None,
             add_paused=False,
+            must_play=None,
+            release_date=None,
         )
         db.close()
 
