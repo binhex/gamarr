@@ -58,6 +58,8 @@ class Notifier:
         metascore_reviews: int | None = None,
         user_reviews: int | None = None,
         genres: list[str] | None = None,
+        must_play: bool | None = None,
+        release_date: str | None = None,
     ) -> None:
         if not self._on_download or not self._apprise:
             return
@@ -65,16 +67,23 @@ class Notifier:
         link_slug = slug if slug else "unknown"
         link_platform = platform if platform else "unknown"
         genre_line = f"Genre: {', '.join(genres)}" if genres else None
+        must_play_line = f"Must Play: {'Yes' if must_play else 'No'}" if must_play is not None else None
+        release_line = f"Release: {release_date}" if release_date else None
 
-        parts = [f"Status: {status}", f"Link: https://www.metacritic.com/game/{link_platform}/{link_slug}/"]
-        if genre_line:
-            parts.append(genre_line)
+        parts = [f"Status: {status}"]
         parts.extend(
             [
                 self._format_score_line("Critic Score", metascore, metascore_reviews),
                 self._format_score_line("User Score", user_score, user_reviews),
             ]
         )
+        if must_play_line:
+            parts.append(must_play_line)
+        if genre_line:
+            parts.append(genre_line)
+        if release_line:
+            parts.append(release_line)
+        parts.append(f"Link: https://www.metacritic.com/game/{link_platform}/{link_slug}/")
 
         self._send(f"gamarr - {title} ({platform})", "\n".join(parts))
 

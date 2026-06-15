@@ -128,10 +128,10 @@ class TestNotifierFormat:
                 title="gamarr - PRAGMATA (pc)",
                 body=(
                     "Status: Downloading\n"
-                    "Link: https://www.metacritic.com/game/pc/pragmata/\n"
-                    "Genre: Action, Adventure\n"
                     "Critic Score: 85.0 (50 reviews)\n"
-                    "User Score: 8.8 (100 reviews)"
+                    "User Score: 8.8 (100 reviews)\n"
+                    "Genre: Action, Adventure\n"
+                    "Link: https://www.metacritic.com/game/pc/pragmata/"
                 ),
             )
 
@@ -155,11 +155,63 @@ class TestNotifierFormat:
                 title="gamarr - Elden Ring (ps5)",
                 body=(
                     "Status: Paused\n"
-                    "Link: https://www.metacritic.com/game/ps5/elden-ring/\n"
                     "Critic Score: N/A\n"
-                    "User Score: N/A"
+                    "User Score: N/A\n"
+                    "Link: https://www.metacritic.com/game/ps5/elden-ring/"
                 ),
             )
+
+    def test_download_notification_with_must_play_and_release(self) -> None:
+        """When must_play and release_date are provided, they appear in the body."""
+        mock_apobj = MagicMock()
+        with patch.object(Notifier, "_init_apprise", return_value=mock_apobj):
+            notifier = Notifier(apprise_urls=["json://localhost"])
+            notifier.send_download_notification(
+                title="PRAGMATA",
+                platform="pc",
+                metascore=85.0,
+                metascore_reviews=50,
+                user_score=8.8,
+                user_reviews=100,
+                slug="pragmata",
+                genres=["Action", "Adventure"],
+                must_play=False,
+                release_date="2026-06-15",
+                add_paused=False,
+            )
+            mock_apobj.notify.assert_called_once_with(
+                title="gamarr - PRAGMATA (pc)",
+                body=(
+                    "Status: Downloading\n"
+                    "Critic Score: 85.0 (50 reviews)\n"
+                    "User Score: 8.8 (100 reviews)\n"
+                    "Must Play: No\n"
+                    "Genre: Action, Adventure\n"
+                    "Release: 2026-06-15\n"
+                    "Link: https://www.metacritic.com/game/pc/pragmata/"
+                ),
+            )
+
+    def test_download_notification_must_play_yes(self) -> None:
+        """When must_play is True, shows 'Must Play: Yes'."""
+        mock_apobj = MagicMock()
+        with patch.object(Notifier, "_init_apprise", return_value=mock_apobj):
+            notifier = Notifier(apprise_urls=["json://localhost"])
+            notifier.send_download_notification(
+                title="PRAGMATA",
+                platform="pc",
+                metascore=85.0,
+                metascore_reviews=50,
+                user_score=8.8,
+                user_reviews=100,
+                slug="pragmata",
+                must_play=True,
+                add_paused=False,
+            )
+            mock_apobj.notify.assert_called_once()
+            body = mock_apobj.notify.call_args[1]["body"]
+            assert "Must Play: Yes" in body
+            assert "Must Play: No" not in body
 
     def test_scrape_notification_format(self) -> None:
         """send_scrape_notification should format with gamarr prefix and the message."""
