@@ -63,29 +63,50 @@ class Notifier:
     ) -> None:
         if not self._on_download or not self._apprise:
             return
-        status = "Paused" if add_paused else "Downloading"
-        link_slug = slug if slug else "unknown"
-        link_platform = platform if platform else "unknown"
-        genre_line = f"Genre: {', '.join(genres)}" if genres else None
-        must_play_line = f"Must Play: {'Yes' if must_play else 'No'}" if must_play is not None else None
-        release_line = f"Release: {release_date}" if release_date else None
+        body = self._format_download_body(
+            add_paused=add_paused,
+            metascore=metascore,
+            metascore_reviews=metascore_reviews,
+            user_score=user_score,
+            user_reviews=user_reviews,
+            must_play=must_play,
+            genres=genres,
+            release_date=release_date,
+            slug=slug,
+            platform=platform,
+        )
+        self._send(f"gamarr - {title} ({platform})", body)
 
-        parts = [f"Status: {status}"]
+    @staticmethod
+    def _format_download_body(
+        *,
+        add_paused: bool,
+        metascore: float | None,
+        metascore_reviews: int | None,
+        user_score: float | None,
+        user_reviews: int | None,
+        must_play: bool | None,
+        genres: list[str] | None,
+        release_date: str | None,
+        slug: str,
+        platform: str,
+    ) -> str:
+        """Build the notification body string for a game download."""
+        parts = [f"Status: {'Paused' if add_paused else 'Downloading'}"]
         parts.extend(
             [
-                self._format_score_line("Critic Score", metascore, metascore_reviews),
-                self._format_score_line("User Score", user_score, user_reviews),
+                Notifier._format_score_line("Critic Score", metascore, metascore_reviews),
+                Notifier._format_score_line("User Score", user_score, user_reviews),
             ]
         )
-        if must_play_line:
-            parts.append(must_play_line)
-        if genre_line:
-            parts.append(genre_line)
-        if release_line:
-            parts.append(release_line)
-        parts.append(f"Link: https://www.metacritic.com/game/{link_platform}/{link_slug}/")
-
-        self._send(f"gamarr - {title} ({platform})", "\n".join(parts))
+        if must_play is not None:
+            parts.append(f"Must Play: {'Yes' if must_play else 'No'}")
+        if genres:
+            parts.append(f"Genre: {', '.join(genres)}")
+        if release_date:
+            parts.append(f"Release: {release_date}")
+        parts.append(f"Link: https://www.metacritic.com/game/{platform or 'unknown'}/{slug or 'unknown'}/")
+        return "\n".join(parts)
 
     def send_failure_notification(self, title: str, reason: str) -> None:
         if not self._on_failure or not self._apprise:
