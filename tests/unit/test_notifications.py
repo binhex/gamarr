@@ -105,10 +105,12 @@ class TestNotifierFormat:
         Apprise title: gamarr - <game title> (<platform>)
         Body:
             Status: Downloading (or Paused)
-            Link: https://www.metacritic.com/game/<platform>/<slug>/
-            Genre: <genre1>, <genre2>
             Critic Score: <score> (<reviews> reviews)
             User Score: <score> (<reviews> reviews)
+            Must Play: Yes/No (when provided)
+            Genre: <genre1>, <genre2> (when provided)
+            Release: <YYYY-MM-DD> (when provided)
+            Link: https://www.metacritic.com/game/<platform>/<slug>/
         """
         mock_apobj = MagicMock()
         with patch.object(Notifier, "_init_apprise", return_value=mock_apobj):
