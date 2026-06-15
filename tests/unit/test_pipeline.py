@@ -668,7 +668,6 @@ class TestMetacriticBrowse:
 
     def test_deliver_match_passes_must_play_and_release_to_notify(self) -> None:
         """_deliver_match should forward must_play and release_date to the notifier."""
-        import datetime
         from unittest.mock import MagicMock
 
         from gamarr.database import Database
