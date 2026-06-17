@@ -166,7 +166,8 @@ class TestConfigModels:
             },
         }
         _migrate_config(raw)
-        fg = next(e for e in raw["download_sites"] if e["name"] == "fitgirl")
+        download_sites: Any = raw["download_sites"]
+        fg = next(e for e in download_sites if e["name"] == "fitgirl")
         assert "cache_ttl_hours" not in fg, "Old key should be removed"
         assert fg["cache_pages_hours"] == 12, "New key should have the same value"
 

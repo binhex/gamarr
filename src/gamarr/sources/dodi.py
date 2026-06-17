@@ -35,6 +35,28 @@ def _build_page_url(page: int) -> str:
     return f"https://1337x.to/user/DODI/{page}/"
 
 
+def _extract_page_count(soup: Any) -> int:
+    """Extract the total page count from a parsed 1337x user page.
+
+    Args:
+        soup: A BeautifulSoup object of the user page.
+
+    Returns:
+        The highest page number found in the pagination, or 1 if none.
+    """
+    total_pages = 1
+    pagination = soup.select_one("ul.pagination")
+    if pagination:
+        for link in pagination.find_all("a"):
+            href = str(link.get("href", ""))
+            match = re.search(r"/user/DODI/(\d+)/", href)
+            if match:
+                page_num = int(match.group(1))
+                if page_num > total_pages:
+                    total_pages = page_num
+    return total_pages
+
+
 def _parse_user_page(html: str, base_url: str = "") -> tuple[list[dict[str, str]], int]:
     """Parse a 1337x user page HTML and extract torrent entries + total pages.
 
@@ -59,18 +81,7 @@ def _parse_user_page(html: str, base_url: str = "") -> tuple[list[dict[str, str]
                 href = f"https://1337x.to{href}"
             entries.append({"title": title, "url": href})
 
-    total_pages = 1
-    pagination = soup.select_one("ul.pagination")
-    if pagination:
-        for link in pagination.find_all("a"):
-            href = str(link.get("href", ""))
-            match = re.search(r"/user/DODI/(\d+)/", href)
-            if match:
-                page_num = int(match.group(1))
-                if page_num > total_pages:
-                    total_pages = page_num
-
-    return entries, total_pages
+    return entries, _extract_page_count(soup)
 
 
 def _extract_magnet_from_page(html: str) -> str | None:
@@ -187,6 +198,28 @@ class DODISource:
             time.sleep(1.5)
         return results
 
+    def _fetch_remaining_pages(
+        self,
+        entries: list[dict[str, str]],
+        total_pages: int,
+    ) -> list[dict[str, str]]:
+        """Fetch remaining user pages beyond page 1 and append their entries.
+
+        Args:
+            entries: Entries already collected from page 1.
+            total_pages: Total number of pages to fetch.
+
+        Returns:
+            Combined list of entries from all pages.
+        """
+        for page in range(2, total_pages + 1):
+            page_html = self._fetch_page(_build_page_url(page))
+            if page_html:
+                more_entries, _ = _parse_user_page(page_html)
+                entries.extend(more_entries)
+            time.sleep(1.0)
+        return entries
+
     def fetch_sitemap(self, db: Database) -> None:
         """Scrape 1337x.to/user/DODI/ and rebuild the source_titles index.
 
@@ -215,12 +248,7 @@ class DODISource:
         entries, total_pages = _parse_user_page(html, base_url=first_page_url)
 
         if total_pages > 1:
-            for page in range(2, total_pages + 1):
-                page_html = self._fetch_page(_build_page_url(page))
-                if page_html:
-                    more_entries, _ = _parse_user_page(page_html)
-                    entries.extend(more_entries)
-                time.sleep(1.0)
+            entries = self._fetch_remaining_pages(entries, total_pages)
 
         if not entries:
             logger.warning("No DODI torrent entries found — keeping existing cache")

@@ -1,8 +1,9 @@
 # gamarr
 
 Metadata game downloader — browses Metacritic for newly released games that
-pass configured score thresholds, matches them against the FitGirl repacks
-sitemap, and sends qualifying games to qBittorrent.
+pass configured score thresholds, matches them against download sources
+(FitGirl repacks, DODI repacks), and sends qualifying games to qBittorrent.
+Sources are checked in config-defined priority order.
 
 ## Features
 
@@ -26,8 +27,13 @@ sitemap, and sends qualifying games to qBittorrent.
   `max_queue_days` (under metacritic thresholds). Once scores pass, a fresh
   expiry window (`download_sites.fitgirl.max_queue_days`) starts for the
   FitGirl-matching phase. Set either value to `0` for indefinite pending.
-- **FitGirl sitemap matching** — fetches the FitGirl repacks sitemap only
-  when there are verified games to match against.
+- **Multiple download sources** — supports FitGirl repacks (sitemap-based)
+  and DODI repacks (1337x.to scraping). Sources are configured as an ordered
+  list — position determines priority, and the first source with a match
+  delivers the torrent.
+- **Source priority** — if a game is available on multiple sources, the
+  highest-priority source in the config list is used. Games that don't match
+  any source remain in the pending queue.
 - **Database deduplication** — every processed game is recorded in SQLite;
   previously processed titles are never re-processed.
 - **Configurable cache TTLs** — Metacritic scores and browse pages are cached
@@ -243,8 +249,8 @@ are collected.
    against configured thresholds. Games whose real scores fail the checks
    are kept for re-verification.
    **When scores pass**, the game's expiry is recalculated to
-   `now + download_sites.fitgirl.max_queue_days` (default 60, or `0` for
-   indefinite), giving it a fresh window for the FitGirl-matching phase.
+   `now + <source>.max_queue_days` (default 60 per source, or `0` for
+   indefinite), giving it a fresh window for the source-matching phase.
 5. **Genre rejection** — Before score verification, the game's genres
    (extracted from the detail page) are checked against `reject_genre`.
    Matching games are removed from pending immediately — no score

@@ -125,14 +125,24 @@ def run(config: Config) -> None:
         _cleanup_pid_file(pid_path)
 
 
-def _build_kwargs(config: Config) -> dict[str, Any]:
-    """Extract acquisition pipeline kwargs from the config."""
-    # Find the fitgirl entry from the ordered list
-    fitgirl_entry = None
+def _find_fitgirl_entry(config: Config) -> Any | None:
+    """Find the fitgirl download site entry from the ordered config list.
+
+    Args:
+        config: The application config.
+
+    Returns:
+        The fitgirl source config entry, or None if not found.
+    """
     for entry in config.download_sites:
         if entry.name == "fitgirl":
-            fitgirl_entry = entry
-            break
+            return entry
+    return None
+
+
+def _build_kwargs(config: Config) -> dict[str, Any]:
+    """Extract acquisition pipeline kwargs from the config."""
+    fitgirl_entry = _find_fitgirl_entry(config)
 
     mc_cfg = config.review_sites.metacritic.platform_overrides.get(
         fitgirl_entry.platform if fitgirl_entry else "pc",

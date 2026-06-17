@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import yaml
 from loguru import logger
 from pydantic import BaseModel, Field, RootModel
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
 
 _CONFIG_VERSION = "1.0.0"
 _CONFIG_FILENAME = "gamarr.yml"
@@ -61,7 +65,7 @@ class DownloadSitesConfig(RootModel[list[SourceConfigEntry]]):
 
     root: list[SourceConfigEntry] = [SourceConfigEntry(name="fitgirl")]
 
-    def __iter__(self):  # type: ignore[override]
+    def __iter__(self) -> Iterator[SourceConfigEntry]:  # type: ignore[override]
         return iter(self.root)
 
     def __getitem__(self, idx: int) -> SourceConfigEntry:

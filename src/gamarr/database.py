@@ -366,7 +366,7 @@ class Database:
             session.commit()
 
     def get_all_source_titles(self, source: str) -> list[dict[str, str | None]]:
-        """Return all source title/url pairs for *source*."""
+        """Return all source title/url/magnet pairs for *source*."""
         with self._session() as session:
             rows = session.query(SourceTitle).filter(SourceTitle.source == source).order_by(SourceTitle.url).all()
         return [{"title": str(row.title), "url": str(row.url), "magnet": row.magnet} for row in rows]

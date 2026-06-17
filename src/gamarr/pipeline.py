@@ -1383,11 +1383,11 @@ def _match_pending_games(
     reject_keywords: list[str] | None = None,
     source_name: str = "fitgirl",
 ) -> list[dict[str, Any]]:
-    """Match pending games against torrent source indices.
+    """Match pending games against a torrent source index.
 
     For each non-expired pending game:
       1. Normalize its title
-      2. Search ``source_titles`` for a match (currently FitGirl only)
+      2. Search ``source_titles`` for a match filtered by *source_name*
       3. On match: skip if already in library, otherwise verify the
          game's scores via *mc* before delivering (prevents games with
          wrong browse-only metrics from being downloaded)
@@ -1480,14 +1480,15 @@ def _deliver_match(
 ) -> dict[str, Any]:
     """Deliver a matched pending game to qBittorrent and emit notifications.
 
-    Fetches the magnet link from the source URL, adds the torrent to
-    qBittorrent, and sends a download notification on success or a
-    failure notification on error.  Always returns a result dict and
+    Uses the pre-stored magnet from the source index if available (DODI),
+    otherwise fetches the magnet from the source page (FitGirl). Adds the
+    torrent to qBittorrent, and sends a download notification on success
+    or a failure notification on error.  Always returns a result dict and
     removes the pending row.
 
     Returns:
         A result dict with ``result`` set to ``"Passed"`` on successful
-        delivery, or ``"Error`` on magnet-fetch / qBittorrent failure.
+        delivery, or ``"Error"`` on magnet-fetch / qBittorrent failure.
     """
     source_url: str = str(best["url"])
     # Use pre-stored magnet if available (e.g. from DODI scrape),
