@@ -218,6 +218,7 @@ def run_acquisition(
         entry.cache_pages_hours = fitgirl_cache_pages_hours
         entry.feed_url = fitgirl_rss_url
         entry.reject_keywords = fitgirl_reject_keywords or []
+        entry.max_queue_days = fitgirl_max_queue_days
         return entry
 
     def _run_discovery_phases(
@@ -405,7 +406,7 @@ def run_acquisition(
 
         def _build_source(entry: Any, db: Database) -> Any:
             """Create a source instance from a config entry."""
-            factory = _source_factories.get(entry.name)
+            factory = _source_factories.get(entry.name.casefold())
             if factory is None:
                 raise ValueError(f"Unknown source: {entry.name}")
             kwargs: dict[str, Any] = {
@@ -413,7 +414,7 @@ def run_acquisition(
                 "db": db,
                 "cache_pages_hours": entry.cache_pages_hours,
             }
-            if entry.name == "fitgirl":
+            if entry.name.casefold() == "fitgirl":
                 kwargs["feed_url"] = entry.feed_url or "https://fitgirl-repacks.site/feed/"
             return factory(**kwargs)
 
@@ -1598,7 +1599,7 @@ def _check_reject_keywords(
         return False
 
     # For non-FitGirl sources, skip the page fetch and check the stored title
-    if source_name != "fitgirl":
+    if source_name.casefold() != "fitgirl":
         if _title_contains_keywords(best["title"], reject_keywords):
             logger.info(
                 "Skipping match for '{}' \u2014 {} title '{}' contains rejected keyword",

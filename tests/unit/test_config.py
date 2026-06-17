@@ -833,8 +833,8 @@ def test_default_config_includes_dodi() -> None:
     defaults = _default_config_dict()
     dodi_entry = None
     for entry in defaults.get("download_sites", []):
-        if entry.get("name") == "dodi":
-            dodi_entry = entry
+        if isinstance(entry, dict) and "dodi" in entry:
+            dodi_entry = entry["dodi"]
             break
     assert dodi_entry is not None, "Expected a 'dodi' entry in default download_sites"
     assert dodi_entry.get("enabled") is True

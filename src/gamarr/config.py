@@ -597,26 +597,19 @@ def _migrate_add_dodi_entry(raw: dict[str, Any]) -> bool:
     if not isinstance(ds, list):
         return False
 
-    # Collect entry names from keyed format keys
+    # Collect entry names from both keyed {"fitgirl": {...}} and flat {"name": "fitgirl", ...} formats
     names: set[str] = set()
     for e in ds:
         if isinstance(e, dict):
             names.update(k.casefold() for k in e)
+            if "name" in e:
+                names.add(str(e["name"]).casefold())
 
     if "dodi" in names:
         return False
-    ds.append(
-        {
-            "dodi": {
-                "enabled": True,
-                "feed_url": "https://1337x.to/user/DODI/",
-                "platform": "pc",
-                "cache_pages_hours": 6,
-                "reject_keywords": [],
-                "max_queue_days": 60,
-            }
-        }
-    )
+    # Use SourceConfigEntry defaults so field additions stay in sync
+    dodi_entry = SourceConfigEntry(name="dodi", feed_url="https://1337x.to/user/DODI/").model_dump(exclude={"name"})
+    ds.append({"dodi": dodi_entry})
     logger.info("Config: added DODI entry to download_sites")
     return True
 
@@ -780,7 +773,7 @@ def _default_config_dict() -> dict[str, Any]:
     cfg = Config()
     d = cfg.model_dump()
     # Re-include name in download_sites entries (excluded by Field(exclude=True))
-    d["download_sites"] = [{"name": entry.name, **entry.model_dump(exclude={"name"})} for entry in cfg.download_sites]
+    d["download_sites"] = [{entry.name: entry.model_dump(exclude={"name"})} for entry in cfg.download_sites]
     return d
 
 
