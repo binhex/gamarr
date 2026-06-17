@@ -4853,3 +4853,57 @@ def test_source_fallback() -> None:
     )
     assert result is not None
     assert result["result"] == "Passed"
+
+
+def test_check_reject_keywords_non_fitgirl_source() -> None:
+    """_check_reject_keywords uses stored title for non-FitGirl sources, no HTTP fetch."""
+
+    from gamarr.database import Database
+    from gamarr.pipeline import _check_reject_keywords
+
+    db = Database(":memory:")
+    db.record_pending(
+        slug="game-a",
+        game_title="Game A",
+        platform="pc",
+        metascore=80.0,
+        metascore_reviews=20,
+        user_score=7.5,
+        user_reviews=50,
+        expires_at="2099-01-01T00:00:00",
+    )
+
+    best = {"title": "Game A-DODI", "url": "https://1337x.to/torrent/1/", "magnet": "magnet:?xt=urn:btih:abc"}
+
+    # Non-FitGirl source with matching reject keyword
+    result = _check_reject_keywords(
+        db,
+        best,
+        "Game A",
+        "game-a",
+        ["DODI"],
+        source_name="dodi",
+    )
+    assert result is True  # Should be skipped — title contains "DODI"
+
+    # Non-FitGirl source with non-matching keyword
+    result = _check_reject_keywords(
+        db,
+        best,
+        "Game A",
+        "game-a",
+        ["UPDATE"],
+        source_name="dodi",
+    )
+    assert result is False  # Should not be skipped
+
+    # Empty reject_keywords list
+    result = _check_reject_keywords(
+        db,
+        best,
+        "Game A",
+        "game-a",
+        [],
+        source_name="dodi",
+    )
+    assert result is False  # No keywords = no reject
