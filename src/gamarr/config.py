@@ -185,17 +185,31 @@ def _normalize_date_values(d: Any) -> Any:
 def _rename_config_key(mc_pc: dict[str, Any], old_key: str, new_key: str | None, platform_key: str) -> bool:
     """Rename *old_key* to *new_key* in *mc_pc* if it exists, logging the migration.
 
+    If both old and new keys exist, the existing new-key value is preserved
+    and only the old key is cleaned up (does not overwrite the user's value).
+
     Returns True if a key was renamed or removed.
     """
-    if old_key in mc_pc:
-        if new_key is None:
-            del mc_pc[old_key]
-            logger.info("Config: removed old key '{}' for platform '{}'", old_key, platform_key)
-        else:
-            mc_pc[new_key] = mc_pc.pop(old_key)
-            logger.info("Config: migrated '{}'\u2192'{}' for platform '{}'", old_key, new_key, platform_key)
-        return True
-    return False
+    if old_key not in mc_pc:
+        return False
+    if new_key == old_key:
+        return False
+    if new_key is None:
+        del mc_pc[old_key]
+        logger.info("Config: removed old key '{}' for platform '{}'", old_key, platform_key)
+    elif new_key in mc_pc:
+        # Both exist — clean up old key, preserve the user's new-key value
+        del mc_pc[old_key]
+        logger.info(
+            "Config: old key '{}' already migrated to '{}' for platform '{}' — keeping existing value",
+            old_key,
+            new_key,
+            platform_key,
+        )
+    else:
+        mc_pc[new_key] = mc_pc.pop(old_key)
+        logger.info("Config: migrated '{}'\u2192'{}' for platform '{}'", old_key, new_key, platform_key)
+    return True
 
 
 def _migrate_platform_overrides(raw: dict[str, Any]) -> bool:
@@ -280,6 +294,15 @@ def _migrate_download_sites_to_ordered(raw: dict[str, Any]) -> bool:
         if isinstance(cfg, dict):
             cfg["name"] = name
             ordered.append(cfg)
+        else:
+            logger.warning(
+                "Config: skipping non-dict entry '{}' in download_sites (type: {})",
+                name,
+                type(cfg).__name__,
+            )
+    if not ordered:
+        logger.warning("Config: no valid entries in download_sites — keeping original")
+        return False
     raw["download_sites"] = ordered
     logger.info("Config: migrated flat download_sites to ordered list (%d sources)", len(ordered))
     return True
@@ -292,15 +315,17 @@ def _migrate_download_sites(raw: dict[str, Any]) -> bool:
     """
     if "sources" not in raw:
         return False
-    if "download_sites" not in raw:
+    if "download_sites" not in raw or raw["download_sites"] is None:
         raw["download_sites"] = raw.pop("sources")
         logger.info("Config: migrated 'sources' to 'download_sites'")
         return True
     # Both exist — deep-merge sources into download_sites and drop sources
     old_sources = raw.pop("sources")
-    if isinstance(old_sources, dict):
+    if isinstance(old_sources, dict) and isinstance(raw["download_sites"], dict):
         raw["download_sites"] = _deep_merge(raw["download_sites"], old_sources)
         logger.info("Config: merged 'sources' into 'download_sites'")
+    elif isinstance(old_sources, dict):
+        logger.warning("Config: both 'sources' (dict) and 'download_sites' (list) exist — keeping download_sites")
     else:
         logger.warning("Config: dropped non-dict 'sources' value during migration")
     return True
@@ -397,10 +422,10 @@ def _migrate_pending_days_to_max_queue_days(raw: dict[str, Any]) -> bool:
         if _rename_pending_days(mc_pc, f"review_sites.metacritic.platform_overrides.{platform_key}"):
             changed = True
     for parent_key in ("download_sites", "sources"):
-        slot = raw.get(parent_key, {})
-        if not isinstance(slot, dict):
+        parent = raw.get(parent_key)
+        if not isinstance(parent, dict):
             continue
-        fg = slot.get("fitgirl", {})
+        fg = parent.get("fitgirl", {})
         if _rename_pending_days(fg, f"{parent_key}.fitgirl"):
             changed = True
     return changed
@@ -413,16 +438,23 @@ def _migrate_fitgirl_cache_ttl_hours(raw: dict[str, Any]) -> bool:
     """
     changed = False
     for parent_key in ("download_sites", "sources"):
-        slot = raw.get(parent_key, {})
-        if not isinstance(slot, dict):
+        parent = raw.get(parent_key)
+        if not isinstance(parent, dict):
             continue
-        fg = slot.get("fitgirl", {})
-        if isinstance(fg, dict) and "cache_ttl_hours" in fg and "cache_pages_hours" not in fg:
-            fg["cache_pages_hours"] = fg.pop("cache_ttl_hours")
-            logger.info(
-                "Config: renamed '{}.fitgirl.cache_ttl_hours' to 'cache_pages_hours'",
-                parent_key,
-            )
+        fg = parent.get("fitgirl", {})
+        if isinstance(fg, dict) and "cache_ttl_hours" in fg:
+            if "cache_pages_hours" not in fg:
+                fg["cache_pages_hours"] = fg.pop("cache_ttl_hours")
+                logger.info(
+                    "Config: renamed '{}.fitgirl.cache_ttl_hours' to 'cache_pages_hours'",
+                    parent_key,
+                )
+            else:
+                del fg["cache_ttl_hours"]
+                logger.info(
+                    "Config: removed old '{}.fitgirl.cache_ttl_hours' (already migrated to cache_pages_hours)",
+                    parent_key,
+                )
             changed = True
     return changed
 
@@ -567,12 +599,26 @@ def _migrate_config(raw: dict[str, Any]) -> bool:
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     """Recursively merge *override* into *base* (shallow copy of base)."""
+
+    def _strip_none(value: Any) -> Any:
+        """Strip None leaf values recursively (None dict entries and None list items)."""
+        if isinstance(value, dict):
+            return {k: _strip_none(v) for k, v in value.items() if v is not None}
+        if isinstance(value, list):
+            return [_strip_none(item) for item in value if item is not None]
+        return value
+
     result = dict(base)
     for key, value in override.items():
         if value is None:
             continue
         if key in result and isinstance(result[key], dict) and isinstance(value, dict):
             result[key] = _deep_merge(result[key], value)
+        elif isinstance(value, list):
+            # Strip None items and None dict values recursively so that YAML
+            # ``key: null`` in a list entry does not cause a downstream Pydantic
+            # ValidationError (e.g. ``download_sites: [{reject_keywords: null}]``).
+            result[key] = [v for v in (_strip_none(item) for item in value) if v is not None]
         else:
             result[key] = value
     return result

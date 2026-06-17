@@ -682,7 +682,7 @@ def test_config_migration_flat_to_ordered() -> None:
         os.unlink(f.name)
 
 
-def test_migrate_config_with_list_download_sites_does_not_crash(caplog: Any) -> None:
+def test_migrate_config_with_list_download_sites_does_not_crash() -> None:
     """_migrate_config handles list-format download_sites without crashing.
 
     Regression test: when download_sites is already a list (new format),
@@ -725,11 +725,13 @@ def test_migrate_config_with_list_download_sites_does_not_crash(caplog: Any) -> 
                 "host": "localhost",
                 "port": 8080,
                 "username": "admin",
-                "password": "adminadmin",
+                "password": "<placeholder>",
             }
         },
     }
     from unittest.mock import patch
+
+    expected_ds = raw["download_sites"].copy()
 
     with patch("gamarr.config.logger") as mock_logger:
         result = _migrate_config(raw)
@@ -737,4 +739,43 @@ def test_migrate_config_with_list_download_sites_does_not_crash(caplog: Any) -> 
     warning_calls = [c for c in mock_logger.warning.call_args_list if "Config migration failed" in str(c)]
     assert len(warning_calls) == 0, f"Expected no migration failures, got: {[str(c) for c in warning_calls]}"
     assert result is False  # No migration needed — already in new format
-    assert isinstance(raw["download_sites"], list)  # Still a list after migration
+    assert raw["download_sites"] == expected_ds  # Content preserved unchanged
+
+
+def test_deep_merge_strips_null_from_download_sites_list_entries() -> None:
+    """_deep_merge strips None dict-values from list items so Pydantic validation succeeds.
+
+    When a user writes YAML such as::
+
+        download_sites:
+          - name: fitgirl
+            reject_keywords: null
+
+    yaml.safe_load parses ``null`` as ``None``.  Pydantic requires ``reject_keywords``
+    to be a list, so passing ``None`` raises ValidationError.  _deep_merge must
+    strip ``None`` from dict values inside lists to prevent this.
+    """
+    import os
+    import tempfile
+
+    from gamarr.config import load_config
+
+    config_text = (
+        "general:\n"
+        "  daemon_mode: foreground\n"
+        "download_sites:\n"
+        "  - name: fitgirl\n"
+        "    enabled: true\n"
+        "    rss_url: null\n"
+        "    reject_keywords: null\n"
+    )
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+        f.write(config_text)
+        f.flush()
+        try:
+            cfg = load_config(f.name)
+            fg = next(e for e in cfg.download_sites if e.name == "fitgirl")
+            assert fg.reject_keywords == [], "None should be stripped from reject_keywords"
+            assert fg.rss_url is None  # rss_url is Optional[str], so None is fine
+        finally:
+            os.unlink(f.name)
