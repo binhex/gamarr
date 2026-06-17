@@ -83,8 +83,10 @@ def _reschedule_acquisition(
             trigger=IntervalTrigger(minutes=interval_mins),
         )
     except JobLookupError:
-        # During shutdown, the job is removed from the store before the
-        # completion event fires — nothing to reschedule, safe to ignore.
+        logger.debug(
+            "Acquisition job '{}' not found for rescheduling (expected during shutdown; otherwise the job was removed)",
+            event.job_id,
+        )
         return
 
     # Log the next run time AFTER rescheduling, so the message
@@ -136,7 +138,7 @@ def _find_fitgirl_entry(config: Config) -> Any | None:
         The fitgirl source config entry, or None if not found.
     """
     for entry in config.download_sites:
-        if entry.name == "fitgirl":
+        if entry.name.casefold() == "fitgirl":
             return entry
     return None
 
@@ -208,9 +210,9 @@ def _run_daemon(config: Config) -> None:
     from apscheduler.triggers.interval import IntervalTrigger
 
     if acq_cfg.run_on_start:
-        _next_run = datetime.now()
+        _next_run = datetime.now(UTC)
     else:
-        _next_run = datetime.now() + timedelta(minutes=acq_cfg.schedule_time_mins)
+        _next_run = datetime.now(UTC) + timedelta(minutes=acq_cfg.schedule_time_mins)
 
     cancel_event = threading.Event()
     scheduler.add_job(
@@ -222,16 +224,15 @@ def _run_daemon(config: Config) -> None:
         next_run_time=_next_run,
     )
 
-    scheduler.start()
-    logger.info("Scheduler started (interval={} min)", acq_cfg.schedule_time_mins)
-
-    # Reschedule the next cycle to run *interval* minutes from when
-    # this cycle finishes (not from when it started, which is
-    # APScheduler's default IntervalTrigger behavior).
+    # Register the listener BEFORE starting the scheduler to avoid missing
+    # completion events from a fast first cycle (run_on_start+immediate).
     scheduler.add_listener(
         lambda event: _reschedule_acquisition(scheduler, event, acq_cfg.schedule_time_mins),
         EVENT_JOB_EXECUTED | EVENT_JOB_ERROR,
     )
+
+    scheduler.start()
+    logger.info("Scheduler started (interval={} min)", acq_cfg.schedule_time_mins)
 
     shutdown_event = _ShutdownEvent(
         cancel_event=cancel_event,

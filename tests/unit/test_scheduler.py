@@ -447,6 +447,8 @@ class TestRescheduleAcquisition:
         mock_event.job_id = "acquisition"
         # Should not raise JobLookupError
         _reschedule_acquisition(mock_scheduler, mock_event, interval_mins=30)
+        # Verify _log_next_run_time was skipped (no get_job call after error)
+        mock_scheduler.get_job.assert_not_called()
 
 
 class TestCancelEvent:
