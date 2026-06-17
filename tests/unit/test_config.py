@@ -873,3 +873,71 @@ def test_migrate_does_not_duplicate_dodi() -> None:
         _ = _migrate_config(raw)
     names = [e["name"] for e in raw["download_sites"]]
     assert names.count("dodi") == 1, "Should not duplicate dodi entry"
+
+
+def test_rename_config_key_identical_keys() -> None:
+    """_rename_config_key no-ops when old_key == new_key."""
+    from gamarr.config import _rename_config_key
+
+    mc_pc = {"cache_pages_hours": 6}
+    result = _rename_config_key(mc_pc, "cache_pages_hours", "cache_pages_hours", "pc")
+    assert result is False
+    assert mc_pc["cache_pages_hours"] == 6  # Not deleted
+
+
+def test_rename_config_key_both_old_and_new_present() -> None:
+    """_rename_config_key preserves new-key value when both old and new keys exist."""
+    from gamarr.config import _rename_config_key
+
+    mc_pc = {"exclude_keywords": ["hv"], "reject_keywords": ["update"]}
+    result = _rename_config_key(mc_pc, "exclude_keywords", "reject_keywords", "pc")
+    assert result is True  # Cleanup happened
+    assert "exclude_keywords" not in mc_pc  # Old key deleted
+    assert mc_pc["reject_keywords"] == ["update"]  # New key value preserved
+
+
+def test_rename_config_key_delete_only() -> None:
+    """_rename_config_key deletes key when new_key is None."""
+    from gamarr.config import _rename_config_key
+
+    mc_pc = {"old_browse_max_pages": 100}
+    result = _rename_config_key(mc_pc, "old_browse_max_pages", None, "pc")
+    assert result is True
+    assert "old_browse_max_pages" not in mc_pc
+
+
+def test_deep_merge_list_replaces_dict() -> None:
+    """_deep_merge replaces dict entry with list entry when types differ."""
+    from gamarr.config import _deep_merge
+
+    base = {"download_sites": {"fitgirl": {"enabled": True}}}
+    override = {"download_sites": [{"name": "fitgirl", "enabled": False}]}
+    result = _deep_merge(base, override)
+    assert isinstance(result["download_sites"], list)
+    assert result["download_sites"][0]["enabled"] is False
+
+
+def test_deep_merge_strips_none_nested() -> None:
+    """_deep_merge strips None values from nested dicts within lists."""
+    from gamarr.config import _deep_merge
+
+    base: dict[str, Any] = {"download_sites": []}
+    override = {
+        "download_sites": [
+            {"name": "fitgirl", "reject_keywords": ["hv", None]},
+        ]
+    }
+    result = _deep_merge(base, override)
+    entries = result["download_sites"]
+    assert len(entries) == 1
+    assert entries[0]["reject_keywords"] == ["hv"]
+
+
+def test_deep_merge_override_key_not_in_base() -> None:
+    """_deep_merge adds keys from override that don't exist in base."""
+    from gamarr.config import _deep_merge
+
+    base: dict[str, Any] = {}
+    override = {"new_key": "value"}
+    result = _deep_merge(base, override)
+    assert result["new_key"] == "value"

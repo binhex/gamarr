@@ -616,30 +616,34 @@ def _migrate_config(raw: dict[str, Any]) -> bool:
         return False
 
 
+def _strip_none(value: Any) -> Any:
+    """Strip None leaf values recursively (None dict entries and None list items)."""
+    if isinstance(value, dict):
+        return {k: _strip_none(v) for k, v in value.items() if v is not None}
+    if isinstance(value, list):
+        return [_strip_none(item) for item in value if item is not None]
+    return value
+
+
+def _merge_value(base_value: Any, override_value: Any) -> Any:
+    """Merge a single override value into a base value.
+
+    Recursively deep-merges dicts. Replaces lists after stripping None items.
+    Uses *override_value* directly for all other types.
+    """
+    if isinstance(base_value, dict) and isinstance(override_value, dict):
+        return _deep_merge(base_value, override_value)
+    if isinstance(override_value, list):
+        return [v for v in (_strip_none(item) for item in override_value) if v is not None]
+    return override_value
+
+
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     """Recursively merge *override* into *base* (shallow copy of base)."""
-
-    def _strip_none(value: Any) -> Any:
-        """Strip None leaf values recursively (None dict entries and None list items)."""
-        if isinstance(value, dict):
-            return {k: _strip_none(v) for k, v in value.items() if v is not None}
-        if isinstance(value, list):
-            return [_strip_none(item) for item in value if item is not None]
-        return value
-
     result = dict(base)
     for key, value in override.items():
-        if value is None:
-            continue
-        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-            result[key] = _deep_merge(result[key], value)
-        elif isinstance(value, list):
-            # Strip None items and None dict values recursively so that YAML
-            # ``key: null`` in a list entry does not cause a downstream Pydantic
-            # ValidationError (e.g. ``download_sites: [{reject_keywords: null}]``).
-            result[key] = [v for v in (_strip_none(item) for item in value) if v is not None]
-        else:
-            result[key] = value
+        if value is not None:
+            result[key] = _merge_value(result.get(key), value)
     return result
 
 
