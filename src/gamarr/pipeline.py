@@ -669,7 +669,7 @@ def _log_verify_progress(verified: int, max_verify: int, total: int) -> None:
     """Log periodic progress during score verification."""
     if verified % 100 == 0:
         logger.info(
-            "Fetching Metacritic details for {} of {} games...",
+            "Checking Metacritic scores for {} of {} games...",
             verified,
             max_verify if max_verify < total else total,
         )
