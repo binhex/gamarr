@@ -606,7 +606,17 @@ def _migrate_add_dodi_entry(raw: dict[str, Any]) -> bool:
                 names.add(str(e["name"]).casefold())
 
     if "dodi" in names:
+        # Enhance existing DODI entry with any missing fields
+        dodi_defaults = SourceConfigEntry(name="dodi", feed_url="https://1337x.to/user/DODI/").model_dump(
+            exclude={"name"}
+        )
+        for entry in ds:
+            if isinstance(entry, dict) and "dodi" in entry and isinstance(entry["dodi"], dict):
+                for k, v in dodi_defaults.items():
+                    entry["dodi"].setdefault(k, v)
+                return True
         return False
+
     # Use SourceConfigEntry defaults so field additions stay in sync
     dodi_entry = SourceConfigEntry(name="dodi", feed_url="https://1337x.to/user/DODI/").model_dump(exclude={"name"})
     ds.append({"dodi": dodi_entry})
