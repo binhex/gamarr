@@ -53,7 +53,6 @@ _BARE_VERSION_PATTERN = re.compile(r"(?:,\s*|\s*[–—-]\s*)v?\d[\d.]*.*", re.I
 _MAGNET_PATTERN = re.compile(r"(magnet:\?xt=urn:btih:[a-zA-Z0-9]+[^\s\"'<>]*)")
 
 
-
 def _title_from_url(url: str) -> str:
     """Extract a display title from a FitGirl repack URL slug.
 
