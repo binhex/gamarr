@@ -63,7 +63,7 @@ class DownloadSitesConfig(RootModel[list[SourceConfigEntry]]):
     Position in the list defines priority: earlier = higher priority.
     """
 
-    root: list[SourceConfigEntry] = [SourceConfigEntry(name="fitgirl")]
+    root: list[SourceConfigEntry] = [SourceConfigEntry(name="fitgirl"), SourceConfigEntry(name="dodi")]
 
     def __iter__(self) -> Iterator[SourceConfigEntry]:  # type: ignore[override]
         return iter(self.root)
@@ -156,7 +156,9 @@ class Config(BaseModel):
     general: GeneralConfig = Field(default_factory=GeneralConfig)
     schedule: ScheduleConfig = Field(default_factory=ScheduleConfig)
     download_sites: DownloadSitesConfig = Field(
-        default_factory=lambda: DownloadSitesConfig(root=[SourceConfigEntry(name="fitgirl")])
+        default_factory=lambda: DownloadSitesConfig(
+            root=[SourceConfigEntry(name="fitgirl"), SourceConfigEntry(name="dodi")]
+        )
     )
     review_sites: ReviewSitesConfig = Field(default_factory=ReviewSitesConfig)
     torrent_client: TorrentClientConfig = Field(default_factory=TorrentClientConfig)
@@ -545,6 +547,22 @@ def _migrate_metacritic_to_review_sites(raw: dict[str, Any]) -> bool:
     return True
 
 
+def _migrate_add_dodi_entry(raw: dict[str, Any]) -> bool:
+    """Add a DODI entry to download_sites if one does not already exist.
+
+    Returns True if a DODI entry was added.
+    """
+    ds = raw.get("download_sites")
+    if not isinstance(ds, list):
+        return False
+    names = {e.get("name") for e in ds if isinstance(e, dict)}
+    if "dodi" in names:
+        return False
+    ds.append({"name": "dodi", "enabled": True})
+    logger.info("Config: added DODI entry to download_sites")
+    return True
+
+
 def _migrate_daemon_mode(raw: dict[str, Any]) -> bool:
     """Migrate deprecated general.daemon_mode to schedule.acquisition.enabled.
 
@@ -586,6 +604,7 @@ def _migrate_config(raw: dict[str, Any]) -> bool:
             _migrate_metacritic_exclude_keywords,
             _migrate_remove_max_games,
             _migrate_download_sites_to_ordered,
+            _migrate_add_dodi_entry,
             _migrate_daemon_mode,
         ]
         for fn in _migrations:

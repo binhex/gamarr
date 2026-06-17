@@ -452,7 +452,10 @@ class TestLoadConfig:
         from gamarr.config import _migrate_config
 
         raw: dict[str, Any] = {
-            "download_sites": [{"name": "fitgirl", "reject_keywords": ["hv"]}],
+            "download_sites": [
+                {"name": "fitgirl", "reject_keywords": ["hv"]},
+                {"name": "dodi", "enabled": True},
+            ],
             "review_sites": {"metacritic": {"platform_overrides": {"pc": {}}}},
         }
         result = _migrate_config(raw)
@@ -674,10 +677,12 @@ def test_config_migration_flat_to_ordered() -> None:
     try:
         cfg = load_config(f.name)
         ds = cfg.download_sites
-        assert len(ds) == 1
+        assert len(ds) == 2
         assert ds[0].name == "fitgirl"
         assert ds[0].rss_url == "https://fitgirl-repacks.site/feed/"
         assert ds[0].reject_keywords == ["update"]
+        assert ds[1].name == "dodi"
+        assert ds[1].enabled is True
     finally:
         os.unlink(f.name)
 
@@ -731,15 +736,15 @@ def test_migrate_config_with_list_download_sites_does_not_crash() -> None:
     }
     from unittest.mock import patch
 
-    expected_ds = raw["download_sites"].copy()
-
     with patch("gamarr.config.logger") as mock_logger:
         result = _migrate_config(raw)
     # Verify no migration failure warning was emitted
     warning_calls = [c for c in mock_logger.warning.call_args_list if "Config migration failed" in str(c)]
     assert len(warning_calls) == 0, f"Expected no migration failures, got: {[str(c) for c in warning_calls]}"
-    assert result is False  # No migration needed — already in new format
-    assert raw["download_sites"] == expected_ds  # Content preserved unchanged
+    assert result is True  # DODI was added
+    names = [e["name"] for e in raw["download_sites"]]
+    assert "dodi" in names
+    assert "fitgirl" in names
 
 
 def test_deep_merge_strips_null_from_download_sites_list_entries() -> None:
@@ -779,3 +784,92 @@ def test_deep_merge_strips_null_from_download_sites_list_entries() -> None:
             assert fg.rss_url is None  # rss_url is Optional[str], so None is fine
         finally:
             os.unlink(f.name)
+
+
+def test_default_config_includes_dodi() -> None:
+    """_default_config_dict includes a dodi entry in download_sites."""
+    from gamarr.config import _default_config_dict
+
+    defaults = _default_config_dict()
+    dodi_entry = None
+    for entry in defaults.get("download_sites", []):
+        if entry.get("name") == "dodi":
+            dodi_entry = entry
+            break
+    assert dodi_entry is not None, "Expected a 'dodi' entry in default download_sites"
+    assert dodi_entry.get("enabled") is True
+
+
+def test_migrate_adds_dodi_when_missing() -> None:
+    """_migrate_config adds a dodi entry when download_sites has no dodi entry."""
+    from gamarr.config import _migrate_config
+
+    raw: dict[str, Any] = {
+        "download_sites": [
+            {
+                "name": "fitgirl",
+                "enabled": True,
+                "rss_url": "https://fitgirl-repacks.site/feed/",
+                "platform": "pc",
+                "cache_pages_hours": 6,
+                "reject_keywords": [],
+                "max_queue_days": 60,
+            }
+        ],
+        "review_sites": {
+            "metacritic": {
+                "platform_overrides": {
+                    "pc": {
+                        "min_metascore": 75,
+                        "min_metascore_reviews": 10,
+                        "min_user_score": 7.5,
+                        "min_user_reviews": 10,
+                        "max_queue_days": 30,
+                    }
+                }
+            }
+        },
+        "torrent_client": {
+            "qbittorrent": {
+                "host": "localhost",
+                "port": 8080,
+                "username": "admin",
+                "password": "adminadmin",
+            }
+        },
+    }
+    from unittest.mock import patch
+
+    with patch("gamarr.config.logger") as _:
+        result = _migrate_config(raw)
+    # Verify dodi was added
+    names = [e["name"] for e in raw["download_sites"]]
+    assert "dodi" in names, "Expected 'dodi' to be added to download_sites"
+    assert result is True  # Migration should report True
+    # Verify fitgirl is still there
+    assert "fitgirl" in names
+
+
+def test_migrate_does_not_duplicate_dodi() -> None:
+    """_migrate_config does not add a second dodi entry when one already exists."""
+    from gamarr.config import _migrate_config
+
+    raw: dict[str, Any] = {
+        "download_sites": [
+            {"name": "fitgirl", "enabled": True},
+            {"name": "dodi", "enabled": True},
+        ],
+        "review_sites": {
+            "metacritic": {
+                "platform_overrides": {
+                    "pc": {"min_metascore": 75},
+                }
+            }
+        },
+    }
+    from unittest.mock import patch
+
+    with patch("gamarr.config.logger"):
+        _ = _migrate_config(raw)
+    names = [e["name"] for e in raw["download_sites"]]
+    assert names.count("dodi") == 1, "Should not duplicate dodi entry"
