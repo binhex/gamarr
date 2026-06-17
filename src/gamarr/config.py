@@ -7,7 +7,7 @@ from typing import Any
 
 import yaml
 from loguru import logger
-from pydantic import BaseModel, Field, RootModel, field_validator
+from pydantic import BaseModel, Field, RootModel
 
 _CONFIG_VERSION = "1.0.0"
 _CONFIG_FILENAME = "gamarr.yml"

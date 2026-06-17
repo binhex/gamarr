@@ -4695,3 +4695,161 @@ class TestScanWindowAdvancing:
         assert "max_weeks is the active limiter" in log_output, (
             f"Expected max_weeks to be the active limiter (it clamped), got:\n{log_output}"
         )
+
+
+def test_ordered_sources_matching_priority() -> None:
+    """Games matched by higher-priority source are not re-matched by lower-priority source."""
+    from unittest.mock import MagicMock
+
+    from gamarr.database import Database
+    from gamarr.pipeline import _match_pending_games
+
+    db = Database(":memory:")
+    db.rebuild_source_titles(
+        "fitgirl",
+        [
+            {"title": "Game A", "url": "https://fitgirl/game-a/"},
+            {"title": "Game B", "url": "https://fitgirl/game-b/"},
+        ],
+    )
+    db.rebuild_source_titles(
+        "dodi",
+        [
+            {"title": "Game A-DODI", "url": "https://1337x.to/torrent/1/", "magnet": "magnet:?xt=urn:btih:aaa"},
+            {"title": "Game C-DODI", "url": "https://1337x.to/torrent/2/", "magnet": "magnet:?xt=urn:btih:ccc"},
+        ],
+    )
+
+    for slug, title in [("game-a", "Game A"), ("game-b", "Game B"), ("game-c", "Game C")]:
+        db.record_pending(
+            slug=slug,
+            game_title=title,
+            platform="pc",
+            metascore=80.0,
+            metascore_reviews=20,
+            user_score=7.5,
+            user_reviews=50,
+            expires_at="2099-01-01T00:00:00",
+        )
+        db.update_pending_scores(
+            slug=slug,
+            metascore=80.0,
+            metascore_reviews=20,
+            user_score=7.5,
+            user_reviews=50,
+        )
+
+    mock_qbt = MagicMock()
+    mock_qbt.add_torrent.return_value = "tag-1"
+
+    matched_first = _match_pending_games(
+        db,
+        qbt=mock_qbt,
+        magnet_fetcher=MagicMock(return_value="magnet:?xt=urn:btih:fitgirl"),
+        notifier=MagicMock(),
+        library=None,
+        mc=None,
+        thresholds=None,
+        source_name="fitgirl",
+    )
+    assert len(matched_first) == 2
+    assert matched_first[0]["game_title"] == "Game A"
+    assert matched_first[1]["game_title"] == "Game B"
+
+    matched_second = _match_pending_games(
+        db,
+        qbt=mock_qbt,
+        magnet_fetcher=MagicMock(),
+        notifier=MagicMock(),
+        library=None,
+        mc=None,
+        thresholds=None,
+        source_name="dodi",
+    )
+    assert len(matched_second) == 1
+    assert matched_second[0]["game_title"] == "Game C"
+
+
+def test_source_fallback() -> None:
+    """Game only on source B fails on A, picked up by B."""
+    from unittest.mock import MagicMock
+
+    from gamarr.database import Database
+    from gamarr.pipeline import _process_single_pending_match
+
+    db = Database(":memory:")
+    db.rebuild_source_titles("fitgirl", [])
+    db.rebuild_source_titles(
+        "dodi",
+        [
+            {"title": "Game A-DODI", "url": "https://1337x.to/1/", "magnet": "magnet:?xt=urn:btih:abc"},
+        ],
+    )
+
+    db.record_pending(
+        slug="game-a",
+        game_title="Game A",
+        platform="pc",
+        metascore=80.0,
+        metascore_reviews=20,
+        user_score=7.5,
+        user_reviews=50,
+        expires_at="2099-01-01T00:00:00",
+    )
+    db.update_pending_scores(
+        slug="game-a",
+        metascore=80.0,
+        metascore_reviews=20,
+        user_score=7.5,
+        user_reviews=50,
+    )
+
+    mock_qbt = MagicMock()
+    mock_qbt.add_torrent.return_value = "tag-1"
+
+    # Try fitgirl first — should fail
+    result = _process_single_pending_match(
+        db,
+        mc=None,
+        thresholds=None,
+        qbt=mock_qbt,
+        magnet_fetcher=MagicMock(),
+        notifier=MagicMock(),
+        library=None,
+        can_deliver=True,
+        game_title="Game A",
+        game_slug="game-a",
+        game_platform="pc",
+        game_metascore=80.0,
+        game_metascore_reviews=20,
+        game_user_score=7.5,
+        game_user_reviews=50,
+        game_release_date=None,
+        reject_keywords=None,
+        source_name="fitgirl",
+    )
+    assert result is None  # No match on fitgirl
+
+    # Fall back to dodi
+    result = _process_single_pending_match(
+        db,
+        mc=None,
+        thresholds=None,
+        qbt=mock_qbt,
+        magnet_fetcher=MagicMock(),
+        notifier=MagicMock(),
+        library=None,
+        can_deliver=True,
+        game_title="Game A",
+        game_slug="game-a",
+        game_platform="pc",
+        game_metascore=80.0,
+        game_metascore_reviews=20,
+        game_user_score=7.5,
+        game_user_reviews=50,
+        game_release_date=None,
+        reject_keywords=None,
+        source_name="dodi",
+    )
+    assert result is not None
+    assert result["result"] == "Passed"

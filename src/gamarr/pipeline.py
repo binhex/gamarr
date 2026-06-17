@@ -17,6 +17,7 @@ from gamarr.metacritic import MetacriticClient
 from gamarr.metacritic_cache import MetacriticCache
 from gamarr.notifications import Notifier
 from gamarr.qbittorrent import QBittorrentClient
+from gamarr.sources.dodi import DODISource
 from gamarr.sources.fitgirl import _USER_AGENT, FitGirlSource, _extract_magnet_from_html
 from gamarr.utils import is_cancelled, normalise_for_compare
 
@@ -152,13 +153,14 @@ def run_acquisition(
     fitgirl_cache_pages_hours: int = 6,
     fitgirl_reject_keywords: list[str] | None = None,
     cancel_event: threading.Event | None = None,
+    download_sites: list | None = None,
 ) -> list[dict[str, Any]]:
     """Execute one scan cycle.
 
     Discovers games by browsing Metacritic (newest-first), verifies
     each game's real Metacritic detail-page scores against the
-    configured thresholds, then matches survivors against the FitGirl
-    sitemap and delivers to qBittorrent.
+    configured thresholds, then matches survivors against each
+    configured source's sitemap and delivers to qBittorrent.
     """
     cfg = AcquisitionConfig(
         min_metascore=min_metascore,
@@ -181,12 +183,6 @@ def run_acquisition(
     logger.info("Fetching Metacritic pages for platform '{}', please wait...", platform)
 
     db = Database(db_path)
-    source = FitGirlSource(
-        rss_url=fitgirl_rss_url,
-        platform=platform,
-        db=db,
-        cache_pages_hours=fitgirl_cache_pages_hours,
-    )
     mc = MetacriticClient(cache=MetacriticCache(db))
 
     notifier = Notifier(
@@ -209,25 +205,38 @@ def run_acquisition(
     if not qbt.is_connected():
         logger.warning("qBittorrent is not reachable; skipping scan.")
         notifier.send_error_notification("qBittorrent is not reachable")
-        source.close()
         mc.close()
         db.close()
         return []
 
+    def _make_fitgirl_entry() -> Any:
+        """Build a fallback source entry from legacy parameters."""
+        import types
+
+        entry = types.SimpleNamespace()
+        entry.name = "fitgirl"
+        entry.enabled = True
+        entry.platform = platform
+        entry.cache_pages_hours = fitgirl_cache_pages_hours
+        entry.rss_url = fitgirl_rss_url
+        entry.reject_keywords = fitgirl_reject_keywords or []
+        return entry
+
     def _run_discovery_phases(
-        source: Any,
         mc: Any,
         db: Database,
         cfg: AcquisitionConfig,
         platform: str,
         qbt: Any,
         notifier: Any,
+        *,
+        download_sites: list | None = None,
     ) -> list[dict[str, Any]]:
         """Run Metacritic browse, sitemap fetch (if needed), and pending matching.
 
         Returns combined results from pending-game matching.
 
-        Metacritic-first: browse Metacritic first; only fetch the FitGirl
+        Metacritic-first: browse Metacritic first; only fetch a source's
         sitemap if Metacritic produced at least one game to match.
         """
         # Metacritic-first discovery: browse Metacritic for games that pass
@@ -390,36 +399,70 @@ def run_acquisition(
             from gamarr.library import LibraryScanner
 
             library = LibraryScanner(library_paths)
+        # Source factory map for dispatching source config entries to source classes
+        _source_factories: dict[str, type] = {
+            "fitgirl": FitGirlSource,
+            "dodi": DODISource,
+        }
+
+        def _build_source(entry: Any, db: Database) -> Any:
+            """Create a source instance from a config entry."""
+            factory = _source_factories.get(entry.name)
+            if factory is None:
+                raise ValueError(f"Unknown source: {entry.name}")
+            kwargs: dict[str, Any] = {
+                "platform": entry.platform,
+                "db": db,
+                "cache_pages_hours": entry.cache_pages_hours,
+            }
+            if entry.name == "fitgirl":
+                kwargs["rss_url"] = entry.rss_url or "https://fitgirl-repacks.site/feed/"
+            return factory(**kwargs)
+
         matched: list[dict[str, Any]] = []
-        # Only fetch the FitGirl sitemap if there are score-checked games
-        # to match against it. Games whose real Metacritic scores haven't
-        # been checked yet wait for the next cycle and do NOT trigger the
-        # FitGirl sitemap fetch.
-        if not is_cancelled(cancel_event):
-            if db.has_verified_pending(platform=platform):
-                source.fetch_sitemap(db)
+        sources_to_close: list[Any] = []
+        if not is_cancelled(cancel_event) and db.has_verified_pending(platform=platform):
             match_thresholds = {
                 "min_metascore": cfg.min_metascore,
                 "min_metascore_reviews": cfg.min_metascore_reviews,
                 "min_user_score": cfg.min_user_score,
                 "min_user_reviews": cfg.min_user_reviews,
             }
-            matched = _match_pending_games(
-                db,
-                qbt=qbt,
-                magnet_fetcher=_default_magnet_fetcher,
-                notifier=notifier,
-                library=library,
-                mc=mc,
-                thresholds=match_thresholds,
-                reject_keywords=fitgirl_reject_keywords or None,
-            )
-        if matched:
-            logger.info("{} queued games found on FitGirl", len(matched))
+            # If no download_sites provided, fall back to a default FitGirl entry
+            # using the legacy parameters for backward compatibility.
+            sites = download_sites if download_sites else [_make_fitgirl_entry()]
+            for source_entry in sites:
+                if not source_entry.enabled:
+                    continue
+                source = _build_source(source_entry, db)
+                sources_to_close.append(source)
+                source.fetch_sitemap(db)
 
-        # Process old verified games AFTER the FitGirl matching phase.
+                source_matched = _match_pending_games(
+                    db,
+                    qbt=qbt,
+                    magnet_fetcher=_default_magnet_fetcher,
+                    notifier=notifier,
+                    library=library,
+                    mc=mc,
+                    thresholds=match_thresholds,
+                    reject_keywords=source_entry.reject_keywords or None,
+                    source_name=source_entry.name,
+                )
+                if source_matched:
+                    matched.extend(source_matched)
+                    logger.info("{} queued games found on {}", len(source_matched), source_entry.name)
+
+        if matched:
+            logger.info("Total: {} queued games found across all sources", len(matched))
+
+        # Close all sources we built during this phase
+        for source in sources_to_close:
+            source.close()
+
+        # Process old verified games AFTER the matching phase.
         # Games that passed score verification must get a chance to
-        # match against the sitemap before being aged out.  Previously
+        # match against a sitemap before being aged out.  Previously
         # this ran before matching, silently removing every old game
         # from pending before it could be delivered.
         _process_aged_games(db, cfg, platform, cancel_event=cancel_event)
@@ -428,14 +471,19 @@ def run_acquisition(
 
     try:
         # Metacritic-first acquisition: discover games via Metacritic browse,
-        # match against the FitGirl sitemap, and only then deliver to qBittorrent.
-        # FitGirl RSS entries must NOT drive per-entry Metacritic lookups.
-        return _run_discovery_phases(source, mc, db, cfg, platform, qbt, notifier)
+        # then match against each configured source, and deliver to qBittorrent.
+        return _run_discovery_phases(
+            mc,
+            db,
+            cfg,
+            platform,
+            qbt,
+            notifier,
+            download_sites=download_sites,
+        )
     finally:
-        source.close()  # source._db.close() disposes the shared Database engine
         mc.close()
-        if source._db is not db:  # Only close separately if not shared
-            db.close()
+        db.close()
 
 
 def _cancel_remaining_futures(futures: list[Any], start: int) -> None:
@@ -1333,6 +1381,7 @@ def _match_pending_games(
     mc: Any = None,
     thresholds: dict[str, Any] | None = None,
     reject_keywords: list[str] | None = None,
+    source_name: str = "fitgirl",
 ) -> list[dict[str, Any]]:
     """Match pending games against torrent source indices.
 
@@ -1353,6 +1402,7 @@ def _match_pending_games(
         mc: MetacriticClient instance for just-in-time score verification.
         thresholds: Score thresholds for verification. Required when *mc*
             is provided.
+        source_name: Name of the source to match against (e.g. "fitgirl", "dodi").
 
     Returns a list of result dicts.
     """
@@ -1399,6 +1449,7 @@ def _match_pending_games(
             game_user_reviews=game_user_reviews,
             game_release_date=game_release_date,
             reject_keywords=reject_keywords,
+            source_name=source_name,
         )
         if result is not None:
             results.append(result)
@@ -1439,7 +1490,9 @@ def _deliver_match(
         delivery, or ``"Error`` on magnet-fetch / qBittorrent failure.
     """
     source_url: str = str(best["url"])
-    magnet = magnet_fetcher(source_url)
+    # Use pre-stored magnet if available (e.g. from DODI scrape),
+    # otherwise fetch from the source page (e.g. FitGirl).
+    magnet = best.get("magnet") or magnet_fetcher(source_url)
     if not magnet:
         logger.warning("No magnet found for matched '{}' at {}", game_title, source_url)
         record_result = _record_delivery_error(
@@ -1592,10 +1645,11 @@ def _process_single_pending_match(
     game_user_reviews: int | None,
     game_release_date: str | None,
     reject_keywords: list[str] | None = None,
+    source_name: str = "fitgirl",
 ) -> dict[str, Any] | None:
-    """Match one pending game against FitGirl sitemap and either deliver or touch."""
+    """Match one pending game against a source sitemap and either deliver or touch."""
     normalized = normalise_for_compare(game_title)
-    matches = db.match_source_title("fitgirl", normalized)
+    matches = db.match_source_title(source_name, normalized)
     if not matches:
         db.touch_pending(game_slug)
         logger.info(
@@ -1750,7 +1804,7 @@ def _record_match_only(
     )
     record_result["slug"] = game_slug
     db.remove_pending(game_slug)
-    logger.info("\u2713 '{}' matched to FitGirl \u2014 logged (no downloader configured)", game_title)
+    logger.info("\u2713 '{}' matched \u2014 logged (no downloader configured)", game_title)
     return record_result
 
 

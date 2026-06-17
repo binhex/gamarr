@@ -10,7 +10,6 @@ from pydantic import ValidationError
 
 from gamarr.config import (
     Config,
-    DownloadSitesConfig,
     GeneralConfig,
     LibraryConfig,
     MetacriticPlatformConfig,
