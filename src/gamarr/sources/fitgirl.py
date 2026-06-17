@@ -234,7 +234,7 @@ class FitGirlSource:
     against titles discovered here.  No RSS iteration is performed.
 
     Args:
-        rss_url: URL of the FitGirl RSS feed (unused at runtime, retained
+        feed_url: Feed/source URL for this source (unused at runtime, retained
             for backwards-compatible configuration).
         platform: Platform identifier (default ``"pc"``).
         db_path: Path for the deduplication database.
@@ -243,13 +243,13 @@ class FitGirlSource:
 
     def __init__(
         self,
-        rss_url: str,
+        feed_url: str,
         platform: str = "pc",
         db_path: str = ":memory:",
         db: Database | None = None,
         cache_pages_hours: int = 6,
     ) -> None:
-        self._rss_url = rss_url
+        self._feed_url = feed_url
         self._platform = platform
         self._cache_pages_hours = cache_pages_hours
 

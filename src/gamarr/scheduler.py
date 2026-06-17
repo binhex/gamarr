@@ -178,7 +178,7 @@ def _build_kwargs(config: Config) -> dict[str, Any]:
         "notify_on_failure": config.notification.on_failure,
         "notify_on_error": config.notification.on_error,
         "notify_on_scrape_failure": config.notification.on_scrape_failure,
-        "fitgirl_rss_url": fitgirl_entry.rss_url if fitgirl_entry else "https://fitgirl-repacks.site/feed/",
+        "fitgirl_rss_url": fitgirl_entry.feed_url if fitgirl_entry else "https://fitgirl-repacks.site/feed/",
         "fitgirl_cache_pages_hours": fitgirl_entry.cache_pages_hours if fitgirl_entry else 6,
         "fitgirl_reject_keywords": fitgirl_entry.reject_keywords if fitgirl_entry else [],
         "fitgirl_max_queue_days": fitgirl_entry.max_queue_days if fitgirl_entry else 60,

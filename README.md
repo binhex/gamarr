@@ -120,14 +120,39 @@ on first run. The file is divided into the sections below.
 
 ### `download_sites`
 
-| Key | Description | Default |
-| --- | ----------- | ------- |
-| `fitgirl.enabled` | Enable the FitGirl source. | `true` |
-| `fitgirl.rss_url` | FitGirl repacks RSS feed URL. | `https://fitgirl-repacks.site/feed/` |
-| `fitgirl.platform` | Target platform for matching. | `pc` |
-| `fitgirl.cache_pages_hours` | How long to cache the FitGirl sitemap before re-fetching. | `6` |
-| `fitgirl.reject_keywords` | Reject FitGirl repack titles containing any of these keywords (case-insensitive). | `[]` |
-| `fitgirl.max_queue_days` | How many days a game stays in the pending queue *after* its scores are verified (the FitGirl-matching phase). `0` = indefinite pending (no expiry). | `60` |
+`download_sites` is an ordered list of source configurations. Each
+entry is a single-key dict where the key IS the source name.
+Position in the list determines priority — the first source that has
+a match delivers the torrent.
+
+```yaml
+download_sites:
+  - fitgirl:
+      enabled: true
+      feed_url: https://fitgirl-repacks.site/feed/
+      platform: pc
+      cache_pages_hours: 6
+      reject_keywords: []
+      max_queue_days: 60
+  - dodi:
+      enabled: true
+      feed_url: https://1337x.to/user/DODI/
+      platform: pc
+      cache_pages_hours: 6
+      reject_keywords: []
+      max_queue_days: 60
+```
+
+#### Per-source fields
+
+| Field | Description | Default |
+| ----- | ----------- | ------- |
+| `enabled` | Enable or disable this source. | `true` |
+| `feed_url` | Source URL (RSS feed, user page, etc.). | `None` |
+| `platform` | Target platform for matching. | `pc` |
+| `cache_pages_hours` | How long to cache the source index before re-fetching. | `6` |
+| `reject_keywords` | Reject titles containing any of these keywords (case-insensitive). | `[]` |
+| `max_queue_days` | How many days a game stays in the pending queue *after* its scores are verified (the source-matching phase). `0` = indefinite pending (no expiry). | `60` |
 
 ### `review_sites.metacritic`
 

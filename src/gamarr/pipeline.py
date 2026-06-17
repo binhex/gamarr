@@ -216,7 +216,7 @@ def run_acquisition(
         entry.enabled = True
         entry.platform = platform
         entry.cache_pages_hours = fitgirl_cache_pages_hours
-        entry.rss_url = fitgirl_rss_url
+        entry.feed_url = fitgirl_rss_url
         entry.reject_keywords = fitgirl_reject_keywords or []
         return entry
 
@@ -414,7 +414,7 @@ def run_acquisition(
                 "cache_pages_hours": entry.cache_pages_hours,
             }
             if entry.name == "fitgirl":
-                kwargs["rss_url"] = entry.rss_url or "https://fitgirl-repacks.site/feed/"
+                kwargs["feed_url"] = entry.feed_url or "https://fitgirl-repacks.site/feed/"
             return factory(**kwargs)
 
         matched: list[dict[str, Any]] = []

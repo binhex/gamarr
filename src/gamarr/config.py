@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 from loguru import logger
-from pydantic import BaseModel, Field, RootModel
+from pydantic import BaseModel, Field, RootModel, field_validator
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -45,16 +45,15 @@ class ScheduleConfig(BaseModel):
 
 
 class SourceConfigEntry(BaseModel):
-    """A single download source entry in the priority-ordered list."""
+    """A single download source entry."""
 
-    name: str
+    name: str = Field(exclude=True)  # hidden from YAML, populated from dict key
     enabled: bool = True
     platform: str = "pc"
     cache_pages_hours: int = Field(default=6, gt=0, le=168)
     reject_keywords: list[str] = Field(default_factory=list)
     max_queue_days: int = Field(default=60, ge=0)
-    # FitGirl-specific fields (optional, only used when name="fitgirl")
-    rss_url: str | None = None
+    feed_url: str | None = None
 
 
 class DownloadSitesConfig(RootModel[list[SourceConfigEntry]]):
@@ -63,7 +62,45 @@ class DownloadSitesConfig(RootModel[list[SourceConfigEntry]]):
     Position in the list defines priority: earlier = higher priority.
     """
 
-    root: list[SourceConfigEntry] = [SourceConfigEntry(name="fitgirl"), SourceConfigEntry(name="dodi")]
+    root: list[SourceConfigEntry] = [
+        SourceConfigEntry(name="fitgirl", feed_url="https://fitgirl-repacks.site/feed/"),
+        SourceConfigEntry(name="dodi", feed_url="https://1337x.to/user/DODI/"),
+    ]
+
+    @staticmethod
+    def _rename_feed_url(entry: dict[str, Any]) -> None:
+        """Rename rss_url to feed_url in-place if the old field name is present."""
+        if "feed_url" not in entry and "rss_url" in entry:
+            entry["feed_url"] = entry.pop("rss_url")
+
+    @field_validator("root", mode="before")
+    @classmethod
+    def _parse_keyed_list(cls, v: Any) -> Any:
+        """Convert [{'fitgirl': {...}}, {'dodi': {...}}] into populated list.
+
+        Also handles legacy [{name: ..., rss_url: ...}] format.
+        """
+        if not isinstance(v, list):
+            return v
+        result: list[dict[str, Any]] = []
+        for item in v:
+            if not isinstance(item, dict):
+                result.append(item)
+                continue
+            # Flat format: {"name": "fitgirl", ...}
+            if "name" in item:
+                cls._rename_feed_url(item)
+                result.append(item)
+                continue
+            # Keyed format: {"fitgirl": {...}}
+            for key, val in item.items():
+                if isinstance(val, dict):
+                    val["name"] = key
+                    cls._rename_feed_url(val)
+                    result.append(val)
+                else:
+                    result.append({"name": key})
+        return result
 
     def __iter__(self) -> Iterator[SourceConfigEntry]:  # type: ignore[override]
         return iter(self.root)
@@ -157,7 +194,10 @@ class Config(BaseModel):
     schedule: ScheduleConfig = Field(default_factory=ScheduleConfig)
     download_sites: DownloadSitesConfig = Field(
         default_factory=lambda: DownloadSitesConfig(
-            root=[SourceConfigEntry(name="fitgirl"), SourceConfigEntry(name="dodi")]
+            root=[
+                SourceConfigEntry(name="fitgirl", feed_url="https://fitgirl-repacks.site/feed/"),
+                SourceConfigEntry(name="dodi", feed_url="https://1337x.to/user/DODI/"),
+            ]
         )
     )
     review_sites: ReviewSitesConfig = Field(default_factory=ReviewSitesConfig)
@@ -550,17 +590,74 @@ def _migrate_metacritic_to_review_sites(raw: dict[str, Any]) -> bool:
 def _migrate_add_dodi_entry(raw: dict[str, Any]) -> bool:
     """Add a DODI entry to download_sites if one does not already exist.
 
+    Assumes download_sites is in keyed format [{key: {...}}, ...].
     Returns True if a DODI entry was added.
     """
     ds = raw.get("download_sites")
     if not isinstance(ds, list):
         return False
-    names = {e.get("name", "").casefold() for e in ds if isinstance(e, dict)}
+
+    # Collect entry names from keyed format keys
+    names: set[str] = set()
+    for e in ds:
+        if isinstance(e, dict):
+            names.update(k.casefold() for k in e)
+
     if "dodi" in names:
         return False
-    ds.append({"name": "dodi", "enabled": True})
+    ds.append(
+        {
+            "dodi": {
+                "enabled": True,
+                "feed_url": "https://1337x.to/user/DODI/",
+                "platform": "pc",
+                "cache_pages_hours": 6,
+                "reject_keywords": [],
+                "max_queue_days": 60,
+            }
+        }
+    )
     logger.info("Config: added DODI entry to download_sites")
     return True
+
+
+def _convert_entry_to_keyed(entry: dict[str, Any]) -> dict[str, Any] | None:
+    """Convert a legacy flat entry to keyed format.
+
+    Input:  {"name": "fitgirl", "rss_url": "...", ...}
+    Output: {"fitgirl": {"feed_url": "...", ...}}
+    Returns None if *entry* is not a flat entry (no "name" key).
+    """
+    entry_name = entry.pop("name", None)
+    if entry_name is None:
+        return None
+    if "rss_url" in entry and "feed_url" not in entry:
+        entry["feed_url"] = entry.pop("rss_url")
+    return {str(entry_name): dict(entry.items())}
+
+
+def _migrate_download_sites_to_keyed_list(raw: dict[str, Any]) -> bool:
+    """Convert [{name: ..., rss_url: ...}] to [{key: {feed_url: ...}}] format.
+
+    Renames rss_url to feed_url and moves name into the dict key.
+    Returns True if any migration was applied.
+    """
+    ds = raw.get("download_sites")
+    if not isinstance(ds, list):
+        return False
+
+    changed = False
+    for i, entry in enumerate(ds):
+        if not isinstance(entry, dict):
+            continue
+        keyed = _convert_entry_to_keyed(entry)
+        if keyed is not None:
+            ds[i] = keyed
+            changed = True
+
+    if changed:
+        logger.info("Config: migrated download_sites entries to keyed-list format")
+    return changed
 
 
 def _migrate_daemon_mode(raw: dict[str, Any]) -> bool:
@@ -604,6 +701,7 @@ def _migrate_config(raw: dict[str, Any]) -> bool:
             _migrate_metacritic_exclude_keywords,
             _migrate_remove_max_games,
             _migrate_download_sites_to_ordered,
+            _migrate_download_sites_to_keyed_list,
             _migrate_add_dodi_entry,
             _migrate_daemon_mode,
         ]
@@ -679,7 +777,11 @@ def _next_version(current: str) -> str:
 
 def _default_config_dict() -> dict[str, Any]:
     """Return the default configuration as a plain nested dict."""
-    return Config().model_dump()
+    cfg = Config()
+    d = cfg.model_dump()
+    # Re-include name in download_sites entries (excluded by Field(exclude=True))
+    d["download_sites"] = [{"name": entry.name, **entry.model_dump(exclude={"name"})} for entry in cfg.download_sites]
+    return d
 
 
 def create_default_config(config_path: str | Path) -> None:

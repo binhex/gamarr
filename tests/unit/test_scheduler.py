@@ -76,7 +76,7 @@ def _make_config(acquisition_enabled: bool = False) -> Config:
             acquisition=ScheduleTaskConfig(enabled=acquisition_enabled, schedule_time_mins=60, run_on_start=True),
         ),
         download_sites=DownloadSitesConfig(
-            root=[SourceConfigEntry(name="fitgirl", enabled=True, rss_url="http://example.com/feed", platform="pc")],
+            root=[SourceConfigEntry(name="fitgirl", enabled=True, feed_url="http://example.com/feed", platform="pc")],
         ),
         review_sites=ReviewSitesConfig(
             metacritic=MetacriticConfig(
@@ -193,7 +193,7 @@ class TestBuildKwargs:
                 acquisition=ScheduleTaskConfig(enabled=True, schedule_time_mins=60),
             ),
             download_sites=DownloadSitesConfig(
-                root=[SourceConfigEntry(name="fitgirl", enabled=True, rss_url="http://example.com/feed")],
+                root=[SourceConfigEntry(name="fitgirl", enabled=True, feed_url="http://example.com/feed")],
             ),
             review_sites=ReviewSitesConfig(
                 metacritic=MetacriticConfig(
@@ -237,7 +237,7 @@ class TestDaemonMode:
                 config.review_sites.metacritic.platform_overrides["pc"].max_weeks = 12
                 config.review_sites.metacritic.platform_overrides["pc"].cache_details_days = 7
                 config.review_sites.metacritic.platform_overrides["pc"].cache_pages_hours = 4
-                config.download_sites.fitgirl.rss_url = "http://example.com/feed"
+                config.download_sites.fitgirl.feed_url = "http://example.com/feed"
                 config.download_sites.fitgirl.platform = "pc"
                 config.general.db_path = ":memory:"
                 config.torrent_client.qbittorrent.host = "localhost"
@@ -283,7 +283,7 @@ class TestDaemonMode:
             config.review_sites.metacritic.platform_overrides["pc"].max_weeks = 12
             config.review_sites.metacritic.platform_overrides["pc"].cache_details_days = 7
             config.review_sites.metacritic.platform_overrides["pc"].cache_pages_hours = 4
-            config.download_sites.fitgirl.rss_url = "http://example.com/feed"
+            config.download_sites.fitgirl.feed_url = "http://example.com/feed"
             config.download_sites.fitgirl.platform = "pc"
             config.general.db_path = ":memory:"
             config.torrent_client.qbittorrent.host = "localhost"

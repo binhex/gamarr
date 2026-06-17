@@ -154,7 +154,7 @@ class TestFitGirlSource:
 
         shared_db = Database(":memory:")
         source = FitGirlSource(
-            rss_url="http://example.com/feed.xml",
+            feed_url="http://example.com/feed.xml",
             platform="pc",
             db=shared_db,
         )
@@ -265,7 +265,7 @@ class TestFitGirlSitemap:
   <url><loc>https://fitgirl-repacks.site/baldurs-gate-3/</loc></url>
 </urlset>"""
 
-        source = FitGirlSource(db_path=":memory:", rss_url="http://example.com/feed")
+        source = FitGirlSource(db_path=":memory:", feed_url="http://example.com/feed")
         # Manually create a mock DB that stores what gets indexed
         mock_db = MagicMock()
         mock_db.get_sitemap_cache.return_value = False  # Force cache miss
@@ -380,7 +380,7 @@ class TestSitemapFetchOnEmpty:
 
         db = Database(str(tmp_path / "test.db"))
         source = FitGirlSource(
-            rss_url="http://example.com/feed",
+            feed_url="http://example.com/feed",
             db=db,
             cache_pages_hours=6,
         )

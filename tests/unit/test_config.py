@@ -44,7 +44,7 @@ class TestConfigModels:
         cfg = SourceConfigEntry(name="fitgirl")
         assert cfg.name == "fitgirl"
         assert cfg.enabled is True
-        assert cfg.rss_url is None
+        assert cfg.feed_url is None
         assert cfg.platform == "pc"
         assert cfg.max_queue_days == 60
         assert cfg.reject_keywords == []
@@ -167,7 +167,9 @@ class TestConfigModels:
         }
         _migrate_config(raw)
         download_sites: Any = raw["download_sites"]
-        fg = next(e for e in download_sites if e["name"] == "fitgirl")
+        # After migration, entries are in keyed format: {key: {...}}
+        fg_entry = next(e for e in download_sites if isinstance(e, dict) and "fitgirl" in e)
+        fg = fg_entry["fitgirl"]
         assert "cache_ttl_hours" not in fg, "Old key should be removed"
         assert fg["cache_pages_hours"] == 12, "New key should have the same value"
 
@@ -389,7 +391,9 @@ class TestLoadConfig:
         result = _migrate_config(raw)
         assert result is True, "Should return True because migration ran"
         assert "sources" not in raw, "Old sources key should be removed by sources→download_sites migration"
-        fg = next(e for e in raw["download_sites"] if e["name"] == "fitgirl")
+        # After migration, entries are in keyed format: {key: {...}}
+        fg_entry = next(e for e in raw["download_sites"] if isinstance(e, dict) and "fitgirl" in e)
+        fg = fg_entry["fitgirl"]
         assert "reject_keywords" in fg
         assert "exclude_keywords" not in fg
 
@@ -424,9 +428,11 @@ class TestLoadConfig:
         assert result is True
         assert "sources" not in raw, "Old sources key should be removed"
         assert "download_sites" in raw, "New download_sites key should exist"
-        fg = next(e for e in raw["download_sites"] if e["name"] == "fitgirl")
+        # After migration, entries are in keyed format: {key: {...}}
+        fg_entry = next(e for e in raw["download_sites"] if isinstance(e, dict) and "fitgirl" in e)
+        fg = fg_entry["fitgirl"]
         assert fg["reject_keywords"] == ["hv"]
-        # Other fitgirl defaults (enabled, rss_url, etc.) are added by _deep_merge
+        # Other fitgirl defaults (enabled, feed_url, etc.) are added by _deep_merge
         # with _default_config_dict during load_config, not by the raw migration
 
     def test_migrate_sources_to_download_sites_both_exist(self) -> None:
@@ -442,12 +448,14 @@ class TestLoadConfig:
         result = _migrate_config(raw)
         assert result is True
         assert "sources" not in raw
-        fg = next(e for e in raw["download_sites"] if e["name"] == "fitgirl")
+        # After migration, entries are in keyed format: {key: {...}}
+        fg_entry = next(e for e in raw["download_sites"] if isinstance(e, dict) and "fitgirl" in e)
+        fg = fg_entry["fitgirl"]
         assert fg["existing_key"] == "existing_val"
         assert fg["new_key"] == "old_val"
 
     def test_migrate_config_returns_false_on_no_change(self) -> None:
-        """_migrate_config should return False when nothing to migrate."""
+        """_migrate_config should return True when migrating to keyed-list format."""
 
         from gamarr.config import _migrate_config
 
@@ -459,7 +467,14 @@ class TestLoadConfig:
             "review_sites": {"metacritic": {"platform_overrides": {"pc": {}}}},
         }
         result = _migrate_config(raw)
-        assert result is False, "Should return False because no migration needed"
+        # Migration converts [{name: ...}] to [{key: {...}}] format
+        assert result is True, "Should return True because keyed-list migration runs"
+        # Verify entries are in keyed format
+        assert isinstance(raw["download_sites"], list)
+        for entry in raw["download_sites"]:
+            assert isinstance(entry, dict)
+            # Should NOT have "name" key directly (it's nested under the source key)
+            assert "name" not in entry
 
     def test_migrate_days_since_release_removes_field(self) -> None:
         """Old days_since_release in metacritic.platform_overrides is removed."""
@@ -520,7 +535,9 @@ class TestLoadConfig:
         assert "pending_days" not in pc
         assert "recheck_days" not in pc, "recheck_days was renamed to max_queue_days"
         assert pc["max_queue_days"] == 30
-        fg = next(e for e in raw["download_sites"] if e["name"] == "fitgirl")
+        # After migration, entries are in keyed format: {key: {...}}
+        fg_entry = next(e for e in raw["download_sites"] if isinstance(e, dict) and "fitgirl" in e)
+        fg = fg_entry["fitgirl"]
         assert "pending_days" not in fg
         assert "recheck_days" not in fg, "recheck_days was renamed to max_queue_days"
         assert fg["max_queue_days"] == 60
@@ -545,7 +562,9 @@ class TestLoadConfig:
         assert "sources" not in raw
         assert "recheck_days" not in raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
         assert raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["max_queue_days"] == 45
-        fg = next(e for e in raw["download_sites"] if e["name"] == "fitgirl")
+        # After migration, entries are in keyed format: {key: {...}}
+        fg_entry = next(e for e in raw["download_sites"] if isinstance(e, dict) and "fitgirl" in e)
+        fg = fg_entry["fitgirl"]
         assert "recheck_days" not in fg
         assert fg["max_queue_days"] == 90
 
@@ -569,7 +588,9 @@ class TestLoadConfig:
         pc = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
         assert "recheck_days" not in pc, "recheck_days was renamed to max_queue_days"
         assert pc["max_queue_days"] == 30
-        fg = next(e for e in raw["download_sites"] if e["name"] == "fitgirl")
+        # After migration, entries are in keyed format: {key: {...}}
+        fg_entry = next(e for e in raw["download_sites"] if isinstance(e, dict) and "fitgirl" in e)
+        fg = fg_entry["fitgirl"]
         assert "recheck_days" not in fg, "recheck_days was renamed to max_queue_days"
         assert fg["max_queue_days"] == 60
 
@@ -679,12 +700,28 @@ def test_config_migration_flat_to_ordered() -> None:
         ds = cfg.download_sites
         assert len(ds) == 2
         assert ds[0].name == "fitgirl"
-        assert ds[0].rss_url == "https://fitgirl-repacks.site/feed/"
+        assert ds[0].feed_url == "https://fitgirl-repacks.site/feed/"
         assert ds[0].reject_keywords == ["update"]
         assert ds[1].name == "dodi"
         assert ds[1].enabled is True
     finally:
         os.unlink(f.name)
+
+
+def _find_in_keyed(ds: list[Any], name: str) -> dict[str, Any] | None:
+    """Find an entry by name in a keyed-format download_sites list.
+
+    Handles both keyed format [{key: {...}}] and flat [{name: ..., ...}].
+    """
+    for entry in ds:
+        if not isinstance(entry, dict):
+            continue
+        if name in entry:
+            inner = entry[name]
+            return inner if isinstance(inner, dict) else {}
+        if entry.get("name") == name:
+            return entry
+    return None
 
 
 def test_migrate_config_with_list_download_sites_does_not_crash() -> None:
@@ -741,10 +778,13 @@ def test_migrate_config_with_list_download_sites_does_not_crash() -> None:
     # Verify no migration failure warning was emitted
     warning_calls = [c for c in mock_logger.warning.call_args_list if "Config migration failed" in str(c)]
     assert len(warning_calls) == 0, f"Expected no migration failures, got: {[str(c) for c in warning_calls]}"
-    assert result is True  # DODI was added
-    names = [e["name"] for e in raw["download_sites"]]
-    assert "dodi" in names
-    assert "fitgirl" in names
+    assert result is True  # DODI was added + keyed-list migration
+    # After migration, entries are in keyed format: {key: {...}}
+    fitgirl_entry = _find_in_keyed(raw["download_sites"], "fitgirl")
+    assert fitgirl_entry is not None, "Expected fitgirl entry"
+    dodi_entry = _find_in_keyed(raw["download_sites"], "dodi")
+    assert dodi_entry is not None, "Expected dodi entry"
+    assert dodi_entry.get("enabled") is True
 
 
 def test_deep_merge_strips_null_from_download_sites_list_entries() -> None:
@@ -771,7 +811,7 @@ def test_deep_merge_strips_null_from_download_sites_list_entries() -> None:
         "download_sites:\n"
         "  - name: fitgirl\n"
         "    enabled: true\n"
-        "    rss_url: null\n"
+        "    feed_url: null\n"
         "    reject_keywords: null\n"
     )
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
@@ -781,7 +821,7 @@ def test_deep_merge_strips_null_from_download_sites_list_entries() -> None:
             cfg = load_config(f.name)
             fg = next(e for e in cfg.download_sites if e.name == "fitgirl")
             assert fg.reject_keywords == [], "None should be stripped from reject_keywords"
-            assert fg.rss_url is None  # rss_url is Optional[str], so None is fine
+            assert fg.feed_url is None  # feed_url is Optional[str], so None is fine
         finally:
             os.unlink(f.name)
 
@@ -842,12 +882,13 @@ def test_migrate_adds_dodi_when_missing() -> None:
 
     with patch("gamarr.config.logger") as _:
         result = _migrate_config(raw)
-    # Verify dodi was added
-    names = [e["name"] for e in raw["download_sites"]]
-    assert "dodi" in names, "Expected 'dodi' to be added to download_sites"
-    assert result is True  # Migration should report True
-    # Verify fitgirl is still there
-    assert "fitgirl" in names
+    # Verify dodi was added - entries are now in keyed format
+    assert result is True
+    fitgirl_entry = _find_in_keyed(raw["download_sites"], "fitgirl")
+    assert fitgirl_entry is not None, "Expected 'fitgirl' entry"
+    dodi_entry = _find_in_keyed(raw["download_sites"], "dodi")
+    assert dodi_entry is not None, "Expected 'dodi' to be added"
+    assert dodi_entry.get("enabled") is True
 
 
 def test_migrate_does_not_duplicate_dodi() -> None:
@@ -871,8 +912,12 @@ def test_migrate_does_not_duplicate_dodi() -> None:
 
     with patch("gamarr.config.logger"):
         _ = _migrate_config(raw)
-    names = [e["name"] for e in raw["download_sites"]]
-    assert names.count("dodi") == 1, "Should not duplicate dodi entry"
+    # After migration, entries are in keyed format: {key: {...}}
+    dodi_entry = _find_in_keyed(raw["download_sites"], "dodi")
+    assert dodi_entry is not None, "dodi should exist"
+    fitgirl_entry = _find_in_keyed(raw["download_sites"], "fitgirl")
+    assert fitgirl_entry is not None, "fitgirl should exist"
+    assert len(raw["download_sites"]) == 2, "Should not duplicate dodi entry"
 
 
 def test_rename_config_key_identical_keys() -> None:
@@ -941,3 +986,157 @@ def test_deep_merge_override_key_not_in_base() -> None:
     override = {"new_key": "value"}
     result = _deep_merge(base, override)
     assert result["new_key"] == "value"
+
+
+# --- rss_url → feed_url, name excluded, keyed-list support ---
+
+
+def test_parse_keyed_list() -> None:
+    """DownloadSitesConfig parses [{'fitgirl': {'enabled': True}}] correctly."""
+    from gamarr.config import DownloadSitesConfig
+
+    raw: list[dict[str, Any]] = [
+        {"fitgirl": {"enabled": True, "feed_url": "https://example.com/feed"}},
+        {"dodi": {"enabled": True}},
+    ]
+    cfg = DownloadSitesConfig(root=raw)  # type: ignore[arg-type]
+    assert len(cfg) == 2
+    assert cfg[0].name == "fitgirl"
+    assert cfg[0].enabled is True
+    assert cfg[0].feed_url == "https://example.com/feed"
+    assert cfg[1].name == "dodi"
+    assert cfg[1].enabled is True
+
+
+def test_parse_keyed_list_legacy() -> None:
+    """DownloadSitesConfig still handles old [{name: ..., rss_url: ...}] format."""
+    from gamarr.config import DownloadSitesConfig
+
+    raw: list[dict[str, Any]] = [
+        {"name": "fitgirl", "rss_url": "https://example.com/feed"},
+    ]
+    cfg = DownloadSitesConfig(root=raw)  # type: ignore[arg-type]
+    assert len(cfg) == 1
+    assert cfg[0].name == "fitgirl"
+    assert cfg[0].feed_url == "https://example.com/feed"  # rss_url renamed
+    assert "rss_url" not in cfg[0].model_dump()
+
+
+def test_name_excluded_from_dump() -> None:
+    """SourceConfigEntry.name is excluded from dict serialization."""
+    from gamarr.config import SourceConfigEntry
+
+    entry = SourceConfigEntry(name="fitgirl", feed_url="https://example.com/feed")
+    data = entry.model_dump()
+    assert "name" not in data
+    assert data["feed_url"] == "https://example.com/feed"
+    assert data["enabled"] is True
+
+
+def test_migrate_download_sites_to_keyed_list() -> None:
+    """_migrate_config converts legacy [{name: ..., rss_url: ...}] to keyed format."""
+    from unittest.mock import patch
+
+    from gamarr.config import _migrate_config
+
+    raw: dict[str, Any] = {
+        "download_sites": [
+            {
+                "name": "fitgirl",
+                "enabled": True,
+                "rss_url": "https://fitgirl-repacks.site/feed/",
+                "platform": "pc",
+                "cache_pages_hours": 6,
+                "reject_keywords": [],
+                "max_queue_days": 60,
+            },
+            {"name": "dodi", "enabled": True},
+        ],
+        "review_sites": {"metacritic": {"platform_overrides": {"pc": {}}}},
+        "torrent_client": {
+            "qbittorrent": {"host": "localhost", "port": 8080, "username": "admin", "password": "adminadmin"}
+        },
+    }
+    with patch("gamarr.config.logger"):
+        result = _migrate_config(raw)
+
+    assert result is True
+    ds = raw["download_sites"]
+    assert isinstance(ds, list)
+    # Find fitgirl entry
+    for entry in ds:
+        if isinstance(entry, dict) and "fitgirl" in entry:
+            inner = entry["fitgirl"]
+            assert "rss_url" not in inner
+            assert inner["feed_url"] == "https://fitgirl-repacks.site/feed/"
+            break
+    else:
+        raise AssertionError("fitgirl entry not found in keyed format")
+
+
+def test_migrate_download_sites_to_keyed_list_renames_rss_url() -> None:
+    """_migrate_download_sites_to_keyed_list renames rss_url to feed_url."""
+    from unittest.mock import patch
+
+    from gamarr.config import _migrate_download_sites_to_keyed_list
+
+    raw: dict[str, Any] = {
+        "download_sites": [
+            {"name": "fitgirl", "enabled": True, "rss_url": "https://old-url.com/feed"},
+        ],
+    }
+    with patch("gamarr.config.logger"):
+        result = _migrate_download_sites_to_keyed_list(raw)
+    assert result is True
+    # Find fitgirl in keyed format
+    ds = raw["download_sites"]
+    assert len(ds) == 1
+    entry = ds[0]
+    assert isinstance(entry, dict)
+    assert "fitgirl" in entry
+    inner = entry["fitgirl"]
+    assert inner["feed_url"] == "https://old-url.com/feed"
+    assert "rss_url" not in inner
+
+
+def test_parse_keyed_list_non_dict_val() -> None:
+    """_parse_keyed_list handles non-dict values (e.g. None, str) gracefully."""
+    from gamarr.config import DownloadSitesConfig
+
+    raw: list[dict[str, Any]] = [
+        {"fitgirl": None},
+        {"dodi": "bare_string"},
+    ]
+    cfg = DownloadSitesConfig(root=raw)  # type: ignore[arg-type]
+    assert len(cfg) == 2
+    assert cfg[0].name == "fitgirl"
+    assert cfg[1].name == "dodi"
+
+
+def test_migrate_adds_dodi_with_full_fields() -> None:
+    """_migrate_add_dodi_entry adds a dodi entry with all default fields."""
+    from unittest.mock import patch
+
+    from gamarr.config import _migrate_add_dodi_entry
+
+    raw: dict[str, Any] = {
+        "download_sites": [
+            {"fitgirl": {"enabled": True, "feed_url": "https://example.com/feed"}},
+        ],
+    }
+    with patch("gamarr.config.logger"):
+        result = _migrate_add_dodi_entry(raw)
+    assert result is True
+    # Find dodi in keyed format
+    dodi_entry = None
+    for entry in raw["download_sites"]:
+        if isinstance(entry, dict) and "dodi" in entry:
+            dodi_entry = entry["dodi"]
+            break
+    assert dodi_entry is not None, "DODI entry not found"
+    assert dodi_entry["enabled"] is True
+    assert dodi_entry.get("feed_url") is not None, "DODI should have a feed_url"
+    assert dodi_entry.get("platform") == "pc"
+    assert dodi_entry.get("cache_pages_hours") == 6
+    assert dodi_entry.get("reject_keywords") == []
+    assert dodi_entry.get("max_queue_days") == 60
