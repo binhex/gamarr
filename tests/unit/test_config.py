@@ -680,3 +680,61 @@ def test_config_migration_flat_to_ordered() -> None:
         assert ds[0].reject_keywords == ["update"]
     finally:
         os.unlink(f.name)
+
+
+def test_migrate_config_with_list_download_sites_does_not_crash(caplog: Any) -> None:
+    """_migrate_config handles list-format download_sites without crashing.
+
+    Regression test: when download_sites is already a list (new format),
+    dict-based migration functions must not call .get("fitgirl") on the list.
+
+    Previously these functions did raw.get("download_sites", {}).get("fitgirl")
+    which raises AttributeError on a list. The exception was caught and
+    swallowed, silently failing the migration (#553).
+    """
+
+    from gamarr.config import _migrate_config
+
+    raw: dict[str, Any] = {
+        "download_sites": [
+            {
+                "name": "fitgirl",
+                "enabled": True,
+                "rss_url": "https://fitgirl-repacks.site/feed/",
+                "platform": "pc",
+                "cache_pages_hours": 6,
+                "reject_keywords": [],
+                "max_queue_days": 60,
+            }
+        ],
+        "review_sites": {
+            "metacritic": {
+                "platform_overrides": {
+                    "pc": {
+                        "min_metascore": 75,
+                        "min_metascore_reviews": 10,
+                        "min_user_score": 7.5,
+                        "min_user_reviews": 10,
+                        "max_queue_days": 30,
+                    }
+                }
+            }
+        },
+        "torrent_client": {
+            "qbittorrent": {
+                "host": "localhost",
+                "port": 8080,
+                "username": "admin",
+                "password": "adminadmin",
+            }
+        },
+    }
+    from unittest.mock import patch
+
+    with patch("gamarr.config.logger") as mock_logger:
+        result = _migrate_config(raw)
+    # Verify no migration failure warning was emitted
+    warning_calls = [c for c in mock_logger.warning.call_args_list if "Config migration failed" in str(c)]
+    assert len(warning_calls) == 0, f"Expected no migration failures, got: {[str(c) for c in warning_calls]}"
+    assert result is False  # No migration needed — already in new format
+    assert isinstance(raw["download_sites"], list)  # Still a list after migration

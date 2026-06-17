@@ -313,7 +313,10 @@ def _migrate_fitgirl_exclude_keywords(raw: dict[str, Any]) -> bool:
     Returns True if a migration was applied.
     """
     for parent_key in ("download_sites", "sources"):
-        fg = raw.get(parent_key, {}).get("fitgirl", {})
+        parent = raw.get(parent_key)
+        if not isinstance(parent, dict):
+            continue
+        fg = parent.get("fitgirl", {})
         if not isinstance(fg, dict) or "exclude_keywords" not in fg:
             continue
         if "reject_keywords" not in fg:
@@ -394,7 +397,10 @@ def _migrate_pending_days_to_max_queue_days(raw: dict[str, Any]) -> bool:
         if _rename_pending_days(mc_pc, f"review_sites.metacritic.platform_overrides.{platform_key}"):
             changed = True
     for parent_key in ("download_sites", "sources"):
-        fg = raw.get(parent_key, {}).get("fitgirl", {})
+        slot = raw.get(parent_key, {})
+        if not isinstance(slot, dict):
+            continue
+        fg = slot.get("fitgirl", {})
         if _rename_pending_days(fg, f"{parent_key}.fitgirl"):
             changed = True
     return changed
@@ -407,7 +413,10 @@ def _migrate_fitgirl_cache_ttl_hours(raw: dict[str, Any]) -> bool:
     """
     changed = False
     for parent_key in ("download_sites", "sources"):
-        fg = raw.get(parent_key, {}).get("fitgirl", {})
+        slot = raw.get(parent_key, {})
+        if not isinstance(slot, dict):
+            continue
+        fg = slot.get("fitgirl", {})
         if isinstance(fg, dict) and "cache_ttl_hours" in fg and "cache_pages_hours" not in fg:
             fg["cache_pages_hours"] = fg.pop("cache_ttl_hours")
             logger.info(
@@ -478,8 +487,10 @@ def _migrate_recheck_days_to_max_queue_days(raw: dict[str, Any]) -> bool:
         if _rename_recheck_days_in_dict(mc_pc, f"review_sites.metacritic.platform_overrides.{platform_key}"):
             changed = True
     for parent_key in ("download_sites", "sources"):
-        ds = raw.get(parent_key, {})
-        if _rename_recheck_days_in_dict(ds.get("fitgirl"), f"{parent_key}.fitgirl"):
+        parent = raw.get(parent_key)
+        if not isinstance(parent, dict):
+            continue
+        if _rename_recheck_days_in_dict(parent.get("fitgirl"), f"{parent_key}.fitgirl"):
             changed = True
     return changed
 
