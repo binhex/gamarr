@@ -7,7 +7,7 @@ from typing import Any
 
 import yaml
 from loguru import logger
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, RootModel, field_validator
 
 _CONFIG_VERSION = "1.0.0"
 _CONFIG_FILENAME = "gamarr.yml"
@@ -40,21 +40,35 @@ class ScheduleConfig(BaseModel):
     acquisition: ScheduleTaskConfig = Field(default_factory=lambda: ScheduleTaskConfig(schedule_time_mins=60))
 
 
-class FitGirlSourceConfig(BaseModel):
-    """FitGirl Repacks source settings."""
+class SourceConfigEntry(BaseModel):
+    """A single download source entry in the priority-ordered list."""
 
+    name: str
     enabled: bool = True
-    rss_url: str = "https://fitgirl-repacks.site/feed/"
     platform: str = "pc"
     cache_pages_hours: int = Field(default=6, gt=0, le=168)
     reject_keywords: list[str] = Field(default_factory=list)
     max_queue_days: int = Field(default=60, ge=0)
+    # FitGirl-specific fields (optional, only used when name="fitgirl")
+    rss_url: str | None = None
 
 
-class DownloadSitesConfig(BaseModel):
-    """Aggregated download site configurations."""
+class DownloadSitesConfig(RootModel[list[SourceConfigEntry]]):
+    """Ordered list of download source configurations.
 
-    fitgirl: FitGirlSourceConfig = Field(default_factory=FitGirlSourceConfig)
+    Position in the list defines priority: earlier = higher priority.
+    """
+
+    root: list[SourceConfigEntry] = [SourceConfigEntry(name="fitgirl")]
+
+    def __iter__(self):  # type: ignore[override]
+        return iter(self.root)
+
+    def __getitem__(self, idx: int) -> SourceConfigEntry:
+        return self.root[idx]
+
+    def __len__(self) -> int:
+        return len(self.root)
 
 
 class MetacriticPlatformConfig(BaseModel):
@@ -137,7 +151,9 @@ class Config(BaseModel):
 
     general: GeneralConfig = Field(default_factory=GeneralConfig)
     schedule: ScheduleConfig = Field(default_factory=ScheduleConfig)
-    download_sites: DownloadSitesConfig = Field(default_factory=DownloadSitesConfig)
+    download_sites: DownloadSitesConfig = Field(
+        default_factory=lambda: DownloadSitesConfig(root=[SourceConfigEntry(name="fitgirl")])
+    )
     review_sites: ReviewSitesConfig = Field(default_factory=ReviewSitesConfig)
     torrent_client: TorrentClientConfig = Field(default_factory=TorrentClientConfig)
     notification: NotificationConfig = Field(default_factory=NotificationConfig)
@@ -247,6 +263,21 @@ def _drop_max_verify_attempts(mc_pc: dict[str, Any], platform_key: str) -> bool:
         platform_key,
     )
     del mc_pc["max_verify_attempts"]
+    return True
+
+
+def _migrate_download_sites_to_ordered(raw: dict[str, Any]) -> bool:
+    """Migrate flat download_sites.{name}: {{...}} dict to ordered list."""
+    ds = raw.get("download_sites")
+    if not isinstance(ds, dict):
+        return False
+    ordered: list[dict[str, Any]] = []
+    for name, cfg in ds.items():
+        if isinstance(cfg, dict):
+            cfg["name"] = name
+            ordered.append(cfg)
+    raw["download_sites"] = ordered
+    logger.info("Config: migrated flat download_sites to ordered list (%d sources)", len(ordered))
     return True
 
 
@@ -507,6 +538,7 @@ def _migrate_config(raw: dict[str, Any]) -> bool:
             _migrate_recheck_days_to_max_queue_days,
             _migrate_metacritic_exclude_keywords,
             _migrate_remove_max_games,
+            _migrate_download_sites_to_ordered,
             _migrate_daemon_mode,
         ]
         for fn in _migrations:

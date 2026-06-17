@@ -58,7 +58,6 @@ def _make_config(acquisition_enabled: bool = False) -> Config:
     from gamarr.config import (
         DatabaseConfig,
         DownloadSitesConfig,
-        FitGirlSourceConfig,
         GeneralConfig,
         MetacriticConfig,
         MetacriticPlatformConfig,
@@ -67,6 +66,7 @@ def _make_config(acquisition_enabled: bool = False) -> Config:
         ReviewSitesConfig,
         ScheduleConfig,
         ScheduleTaskConfig,
+        SourceConfigEntry,
         TorrentClientConfig,
     )
 
@@ -76,7 +76,7 @@ def _make_config(acquisition_enabled: bool = False) -> Config:
             acquisition=ScheduleTaskConfig(enabled=acquisition_enabled, schedule_time_mins=60, run_on_start=True),
         ),
         download_sites=DownloadSitesConfig(
-            fitgirl=FitGirlSourceConfig(enabled=True, rss_url="http://example.com/feed", platform="pc"),
+            root=[SourceConfigEntry(name="fitgirl", enabled=True, rss_url="http://example.com/feed", platform="pc")],
         ),
         review_sites=ReviewSitesConfig(
             metacritic=MetacriticConfig(
@@ -174,7 +174,6 @@ class TestBuildKwargs:
             Config,
             DatabaseConfig,
             DownloadSitesConfig,
-            FitGirlSourceConfig,
             GeneralConfig,
             MetacriticConfig,
             MetacriticPlatformConfig,
@@ -183,6 +182,7 @@ class TestBuildKwargs:
             ReviewSitesConfig,
             ScheduleConfig,
             ScheduleTaskConfig,
+            SourceConfigEntry,
             TorrentClientConfig,
         )
         from gamarr.scheduler import _build_kwargs
@@ -193,7 +193,7 @@ class TestBuildKwargs:
                 acquisition=ScheduleTaskConfig(enabled=True, schedule_time_mins=60),
             ),
             download_sites=DownloadSitesConfig(
-                fitgirl=FitGirlSourceConfig(enabled=True, rss_url="http://example.com/feed"),
+                root=[SourceConfigEntry(name="fitgirl", enabled=True, rss_url="http://example.com/feed")],
             ),
             review_sites=ReviewSitesConfig(
                 metacritic=MetacriticConfig(

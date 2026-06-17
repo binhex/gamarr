@@ -380,10 +380,11 @@ class TestSourceTitle:
                 "url": "https://fitgirl-repacks.site/elden-ring/",
             },
         ]
-        db.rebuild_source_titles("fitgirl", titles)
+        db.rebuild_source_titles("fitgirl", titles)  # type: ignore[arg-type]
         normalized = normalise_for_compare("Elden Ring")
         results = db.match_source_title("fitgirl", normalized)
         assert len(results) == 1
+        assert results[0]["title"] is not None
         assert "Elden Ring" in results[0]["title"]
         db.close()
 
@@ -406,7 +407,7 @@ class TestSourceTitle:
                 "url": "https://fitgirl-repacks.site/mouse-p-i-for-hire/",
             },
         ]
-        db.rebuild_source_titles("fitgirl", titles)
+        db.rebuild_source_titles("fitgirl", titles)  # type: ignore[arg-type]
 
         game_title = "MOUSE: P.I. For Hire"
         normalized = normalise_for_compare(game_title)
@@ -414,6 +415,7 @@ class TestSourceTitle:
         assert len(results) == 1, (
             f"Expected match for '{game_title}' against '{fitgirl_title}', got {len(results)} results"
         )
+        assert results[0]["title"] is not None
         assert fitgirl_title in results[0]["title"]
         db.close()
 
@@ -439,7 +441,7 @@ class TestSourceTitle:
                 "url": "https://fitgirl-repacks.site/mouse-p-i-for-hire/",
             },
         ]
-        db.rebuild_source_titles("fitgirl", titles)
+        db.rebuild_source_titles("fitgirl", titles)  # type: ignore[arg-type]
 
         game_title = "MOUSE: P.I. For Hire"
         normalized = normalise_for_compare(game_title)
@@ -447,6 +449,24 @@ class TestSourceTitle:
         assert len(results) == 1, (
             f"Expected match for '{game_title}' against slug-derived title '{slug_title}', got {len(results)} results"
         )
+        db.close()
+
+    def test_source_title_with_magnet(self) -> None:
+        """rebuild_source_titles stores magnets, get_all_source_titles returns them."""
+        db = Database(":memory:")
+        db.rebuild_source_titles(
+            "dodi",
+            [
+                {"title": "Elden Ring", "url": "https://1337x.to/torrent/123/", "magnet": "magnet:?xt=urn:btih:abc"},
+                {"title": "Hades II", "url": "https://1337x.to/torrent/456/"},
+            ],
+        )
+        titles = db.get_all_source_titles("dodi")
+        assert len(titles) == 2
+        assert titles[0]["title"] == "Elden Ring"
+        assert titles[0]["magnet"] == "magnet:?xt=urn:btih:abc"
+        assert titles[1]["title"] == "Hades II"
+        assert titles[1]["magnet"] is None
         db.close()
 
 

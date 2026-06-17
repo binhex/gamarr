@@ -67,6 +67,7 @@ class SourceTitle(Base):
     source: Mapped[str] = mapped_column(String, primary_key=True)
     title: Mapped[str] = mapped_column(String, nullable=False)
     url: Mapped[str] = mapped_column(String, primary_key=True)
+    magnet: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class GameDetailCache(Base):
@@ -350,7 +351,7 @@ class Database:
                 query = query.filter(PendingGame.platform == platform)
             return query.first() is not None
 
-    def rebuild_source_titles(self, source: str, titles: list[dict[str, str]]) -> None:
+    def rebuild_source_titles(self, source: str, titles: list[dict[str, str | None]]) -> None:
         with self._session() as session:
             session.query(SourceTitle).filter(SourceTitle.source == source).delete()
             for entry in titles:
@@ -359,15 +360,16 @@ class Database:
                         source=source,
                         title=entry["title"],
                         url=entry["url"],
+                        magnet=entry.get("magnet"),
                     )
                 )
             session.commit()
 
-    def get_all_source_titles(self, source: str) -> list[dict[str, str]]:
+    def get_all_source_titles(self, source: str) -> list[dict[str, str | None]]:
         """Return all source title/url pairs for *source*."""
         with self._session() as session:
             rows = session.query(SourceTitle).filter(SourceTitle.source == source).order_by(SourceTitle.url).all()
-        return [{"title": str(row.title), "url": str(row.url)} for row in rows]
+        return [{"title": str(row.title), "url": str(row.url), "magnet": row.magnet} for row in rows]
 
     @staticmethod
     def _normalised_title_matches(db_title: str, query: str) -> int:
@@ -392,12 +394,12 @@ class Database:
             return 1
         return 0
 
-    def match_source_title(self, source: str, normalized_title: str) -> list[dict[str, str]]:
+    def match_source_title(self, source: str, normalized_title: str) -> list[dict[str, str | None]]:
         from gamarr.utils import normalise_for_compare
 
         with self._session() as session:
             rows = session.query(SourceTitle).filter(SourceTitle.source == source).all()
-        matched: list[tuple[int, float, str, str]] = []
+        matched: list[tuple[int, float, str, str, str | None]] = []
         for row in rows:
             row_normalised = normalise_for_compare(str(row.title))
             score = self._normalised_title_matches(row_normalised, normalized_title)
@@ -406,11 +408,11 @@ class Database:
                 shorter = min(len(row_normalised), len(normalized_title))
                 longer = max(len(row_normalised), len(normalized_title))
                 ratio = shorter / longer if longer > 0 else 0.0
-                matched.append((score, ratio, row.title, row.url))
+                matched.append((score, ratio, row.title, row.url, row.magnet))
 
         # Sort by score descending, then by ratio descending (better match first)
         matched.sort(key=lambda x: (x[0], x[1]), reverse=True)
-        return [{"title": t, "url": u} for (_, _, t, u) in matched]
+        return [{"title": t, "url": u, "magnet": m} for (_, _, t, u, m) in matched]
 
     def get_sitemap_cache(self, source: str, ttl_hours: int) -> bool:
         """Return True if the sitemap for *source* was cached within *ttl_hours*."""

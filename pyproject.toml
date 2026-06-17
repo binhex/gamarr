@@ -24,6 +24,7 @@ dependencies = [
     "apscheduler",
     "backoff",
     "click",
+    "cloudscraper",
     "loguru",
     "apprise",
     "pyyaml",
@@ -114,6 +115,10 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["bs4", "bs4.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["cloudscraper", "cloudscraper.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

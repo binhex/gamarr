@@ -10,13 +10,14 @@ from pydantic import ValidationError
 
 from gamarr.config import (
     Config,
-    FitGirlSourceConfig,
+    DownloadSitesConfig,
     GeneralConfig,
     LibraryConfig,
     MetacriticPlatformConfig,
     NotificationConfig,
     QbittorrentConfig,
     ScheduleTaskConfig,
+    SourceConfigEntry,
     TorrentClientConfig,
     create_default_config,
     load_config,
@@ -40,19 +41,18 @@ class TestConfigModels:
         assert cfg.schedule_time_mins == 60
         assert cfg.run_on_start is True
 
-    def test_fitgirl_source_config_defaults(self) -> None:
-        cfg = FitGirlSourceConfig()
+    def test_source_config_entry_defaults(self) -> None:
+        cfg = SourceConfigEntry(name="fitgirl")
+        assert cfg.name == "fitgirl"
         assert cfg.enabled is True
-        assert cfg.rss_url == "https://fitgirl-repacks.site/feed/"
+        assert cfg.rss_url is None
         assert cfg.platform == "pc"
-        assert not hasattr(cfg, "pending_days"), "Field was renamed to max_queue_days"
-        assert not hasattr(cfg, "recheck_days"), "Field was renamed to max_queue_days"
         assert cfg.max_queue_days == 60
         assert cfg.reject_keywords == []
 
-    def test_fitgirl_reject_keywords_replaces_exclude_keywords(self) -> None:
-        """FitGirlSourceConfig should have reject_keywords, not exclude_keywords."""
-        cfg = FitGirlSourceConfig(reject_keywords=["hv"])
+    def test_source_config_entry_reject_keywords(self) -> None:
+        """SourceConfigEntry should have reject_keywords, not exclude_keywords."""
+        cfg = SourceConfigEntry(name="fitgirl", reject_keywords=["hv"])
         assert cfg.reject_keywords == ["hv"]
         assert not hasattr(cfg, "exclude_keywords")
 
@@ -66,12 +66,12 @@ class TestConfigModels:
         cfg = MetacriticPlatformConfig()
         assert not hasattr(cfg, "max_verify_attempts")
 
-    def test_fitgirl_max_queue_days_ge_zero(self) -> None:
+    def test_source_config_entry_max_queue_days_ge_zero(self) -> None:
         """max_queue_days must be >= 0 (0 disables expiry extension)."""
         with pytest.raises(ValidationError):
-            FitGirlSourceConfig(max_queue_days=-1)
-        FitGirlSourceConfig(max_queue_days=0)
-        FitGirlSourceConfig(max_queue_days=1)
+            SourceConfigEntry(name="fitgirl", max_queue_days=-1)
+        SourceConfigEntry(name="fitgirl", max_queue_days=0)
+        SourceConfigEntry(name="fitgirl", max_queue_days=1)
 
     def test_metacritic_platform_config_defaults(self) -> None:
         cfg = MetacriticPlatformConfig()
@@ -130,11 +130,9 @@ class TestConfigModels:
         assert hasattr(cfg, "cache_pages_hours"), "New field name should exist"
         assert cfg.cache_pages_hours == 6, "Default should remain 6"
 
-    def test_fitgirl_cache_pages_hours_replaces_cache_ttl_hours(self) -> None:
-        """FitGirlSourceConfig should use cache_pages_hours, not cache_ttl_hours."""
-        from gamarr.config import FitGirlSourceConfig
-
-        cfg = FitGirlSourceConfig()
+    def test_source_config_entry_cache_pages_hours(self) -> None:
+        """SourceConfigEntry should use cache_pages_hours, not cache_ttl_hours."""
+        cfg = SourceConfigEntry(name="fitgirl")
         assert not hasattr(cfg, "cache_ttl_hours"), "Field was renamed to cache_pages_hours"
         assert hasattr(cfg, "cache_pages_hours"), "New field name should exist"
         assert cfg.cache_pages_hours == 6, "Default should remain 6"
@@ -169,7 +167,7 @@ class TestConfigModels:
             },
         }
         _migrate_config(raw)
-        fg = raw["download_sites"]["fitgirl"]
+        fg = next(e for e in raw["download_sites"] if e["name"] == "fitgirl")
         assert "cache_ttl_hours" not in fg, "Old key should be removed"
         assert fg["cache_pages_hours"] == 12, "New key should have the same value"
 
@@ -311,7 +309,8 @@ class TestConfigModels:
     def test_root_config_defaults(self) -> None:
         cfg = Config()
         assert cfg.general.daemon_mode == "foreground"
-        assert cfg.download_sites.fitgirl.enabled is True
+        fitgirl = next(e for e in cfg.download_sites if e.name == "fitgirl")
+        assert fitgirl.enabled is True
         assert cfg.review_sites.metacritic.platform_overrides["pc"].min_metascore == 75
         assert cfg.torrent_client.selected == "qbittorrent"
 
@@ -390,8 +389,9 @@ class TestLoadConfig:
         result = _migrate_config(raw)
         assert result is True, "Should return True because migration ran"
         assert "sources" not in raw, "Old sources key should be removed by sources→download_sites migration"
-        assert "reject_keywords" in raw["download_sites"]["fitgirl"]
-        assert "exclude_keywords" not in raw["download_sites"]["fitgirl"]
+        fg = next(e for e in raw["download_sites"] if e["name"] == "fitgirl")
+        assert "reject_keywords" in fg
+        assert "exclude_keywords" not in fg
 
     def test_migrate_metacritic_to_review_sites(self) -> None:
         """Old top-level metacritic key is moved under review_sites."""
@@ -424,7 +424,8 @@ class TestLoadConfig:
         assert result is True
         assert "sources" not in raw, "Old sources key should be removed"
         assert "download_sites" in raw, "New download_sites key should exist"
-        assert raw["download_sites"]["fitgirl"]["reject_keywords"] == ["hv"]
+        fg = next(e for e in raw["download_sites"] if e["name"] == "fitgirl")
+        assert fg["reject_keywords"] == ["hv"]
         # Other fitgirl defaults (enabled, rss_url, etc.) are added by _deep_merge
         # with _default_config_dict during load_config, not by the raw migration
 
@@ -441,8 +442,9 @@ class TestLoadConfig:
         result = _migrate_config(raw)
         assert result is True
         assert "sources" not in raw
-        assert raw["download_sites"]["fitgirl"]["existing_key"] == "existing_val"
-        assert raw["download_sites"]["fitgirl"]["new_key"] == "old_val"
+        fg = next(e for e in raw["download_sites"] if e["name"] == "fitgirl")
+        assert fg["existing_key"] == "existing_val"
+        assert fg["new_key"] == "old_val"
 
     def test_migrate_config_returns_false_on_no_change(self) -> None:
         """_migrate_config should return False when nothing to migrate."""
@@ -450,7 +452,7 @@ class TestLoadConfig:
         from gamarr.config import _migrate_config
 
         raw: dict[str, Any] = {
-            "download_sites": {"fitgirl": {"reject_keywords": ["hv"]}},
+            "download_sites": [{"name": "fitgirl", "reject_keywords": ["hv"]}],
             "review_sites": {"metacritic": {"platform_overrides": {"pc": {}}}},
         }
         result = _migrate_config(raw)
@@ -515,7 +517,7 @@ class TestLoadConfig:
         assert "pending_days" not in pc
         assert "recheck_days" not in pc, "recheck_days was renamed to max_queue_days"
         assert pc["max_queue_days"] == 30
-        fg = raw["download_sites"]["fitgirl"]
+        fg = next(e for e in raw["download_sites"] if e["name"] == "fitgirl")
         assert "pending_days" not in fg
         assert "recheck_days" not in fg, "recheck_days was renamed to max_queue_days"
         assert fg["max_queue_days"] == 60
@@ -540,8 +542,9 @@ class TestLoadConfig:
         assert "sources" not in raw
         assert "recheck_days" not in raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
         assert raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["max_queue_days"] == 45
-        assert "recheck_days" not in raw["download_sites"]["fitgirl"]
-        assert raw["download_sites"]["fitgirl"]["max_queue_days"] == 90
+        fg = next(e for e in raw["download_sites"] if e["name"] == "fitgirl")
+        assert "recheck_days" not in fg
+        assert fg["max_queue_days"] == 90
 
     def test_migrate_recheck_days_to_max_queue_days(self) -> None:
         """Old recheck_days keys are renamed to max_queue_days."""
@@ -563,7 +566,7 @@ class TestLoadConfig:
         pc = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
         assert "recheck_days" not in pc, "recheck_days was renamed to max_queue_days"
         assert pc["max_queue_days"] == 30
-        fg = raw["download_sites"]["fitgirl"]
+        fg = next(e for e in raw["download_sites"] if e["name"] == "fitgirl")
         assert "recheck_days" not in fg, "recheck_days was renamed to max_queue_days"
         assert fg["max_queue_days"] == 60
 
@@ -597,7 +600,8 @@ class TestLoadConfig:
         config_file.write_text("")
         cfg = load_config(str(config_file))
         assert cfg.general.daemon_mode == "foreground"
-        assert cfg.download_sites.fitgirl.enabled is True
+        fitgirl = next(e for e in cfg.download_sites if e.name == "fitgirl")
+        assert fitgirl.enabled is True
 
     def test_missing_optional_key_uses_default(self, tmp_path: Path) -> None:
         config_dir = tmp_path / "configs"
@@ -632,3 +636,47 @@ class TestLoadConfig:
 
         assert _next_version("bad") == "bad.1.0"
         assert _next_version("1.bad.0") == "1.1.0"
+
+
+def test_config_migration_flat_to_ordered() -> None:
+    """Old flat download_sites.fitgirl.* auto-migrates to ordered list."""
+    import os
+    import tempfile
+
+    import yaml
+
+    from gamarr.config import load_config
+
+    old_config = {
+        "general": {"db_path": ":memory:"},
+        "download_sites": {
+            "fitgirl": {
+                "enabled": True,
+                "rss_url": "https://fitgirl-repacks.site/feed/",
+                "platform": "pc",
+                "cache_pages_hours": 6,
+                "reject_keywords": ["update"],
+                "max_queue_days": 60,
+            }
+        },
+        "torrent_client": {
+            "qbittorrent": {
+                "host": "localhost",
+                "port": 8080,
+                "username": "admin",
+                "password": "adminadmin",
+            }
+        },
+    }
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+        yaml.dump(old_config, f)
+        f.flush()
+    try:
+        cfg = load_config(f.name)
+        ds = cfg.download_sites
+        assert len(ds) == 1
+        assert ds[0].name == "fitgirl"
+        assert ds[0].rss_url == "https://fitgirl-repacks.site/feed/"
+        assert ds[0].reject_keywords == ["update"]
+    finally:
+        os.unlink(f.name)

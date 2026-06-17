@@ -299,7 +299,7 @@ class FitGirlSource:
                 fetcher=lambda url: requests.get(url, timeout=30, headers={"User-Agent": _USER_AGENT}),
             )
             titles = _filter_game_urls(titles)
-            db.rebuild_source_titles("fitgirl", titles)
+            db.rebuild_source_titles("fitgirl", titles)  # type: ignore[arg-type]
             db.set_sitemap_cache("fitgirl")
             logger.info("FitGirl sitemap indexed {} game titles", len(titles))
         except requests.RequestException as exc:
