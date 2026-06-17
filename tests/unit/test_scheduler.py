@@ -433,6 +433,21 @@ class TestRescheduleAcquisition:
         # Verify _log_next_run_time was called AFTER the reschedule
         mock_scheduler.get_job.assert_called_once_with("acquisition")
 
+    def test_reschedule_handles_job_lookup_error_on_shutdown(self) -> None:
+        """_reschedule_acquisition handles JobLookupError gracefully during shutdown."""
+        from unittest.mock import MagicMock
+
+        from apscheduler.jobstores.base import JobLookupError
+
+        from gamarr.scheduler import _reschedule_acquisition
+
+        mock_scheduler = MagicMock()
+        mock_scheduler.reschedule_job.side_effect = JobLookupError("acquisition")
+        mock_event = MagicMock()
+        mock_event.job_id = "acquisition"
+        # Should not raise JobLookupError
+        _reschedule_acquisition(mock_scheduler, mock_event, interval_mins=30)
+
 
 class TestCancelEvent:
     """Cancel event wiring in _run_daemon and _ShutdownEvent."""

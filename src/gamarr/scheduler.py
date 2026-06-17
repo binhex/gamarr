@@ -74,17 +74,18 @@ def _reschedule_acquisition(
     interval timer to count from the current time (when the job actually
     finished).
     """
+    from apscheduler.jobstores.base import JobLookupError
     from apscheduler.triggers.interval import IntervalTrigger
 
-    # Reschedule so the next run fires *interval_mins* from now
-    # (job end), not from when the job started.  The IntervalTrigger
-    # computes next_run_time = now + interval, so no explicit
-    # next_run_time is needed (APScheduler ignores it when trigger
-    # is passed as an instance anyway).
-    scheduler.reschedule_job(
-        event.job_id,
-        trigger=IntervalTrigger(minutes=interval_mins),
-    )
+    try:
+        scheduler.reschedule_job(
+            event.job_id,
+            trigger=IntervalTrigger(minutes=interval_mins),
+        )
+    except JobLookupError:
+        # During shutdown, the job is removed from the store before the
+        # completion event fires — nothing to reschedule, safe to ignore.
+        return
 
     # Log the next run time AFTER rescheduling, so the message
     # shows the correct wait time (interval from job end).
