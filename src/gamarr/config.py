@@ -555,7 +555,7 @@ def _migrate_add_dodi_entry(raw: dict[str, Any]) -> bool:
     ds = raw.get("download_sites")
     if not isinstance(ds, list):
         return False
-    names = {e.get("name") for e in ds if isinstance(e, dict)}
+    names = {e.get("name", "").casefold() for e in ds if isinstance(e, dict)}
     if "dodi" in names:
         return False
     ds.append({"name": "dodi", "enabled": True})
@@ -629,6 +629,8 @@ def _merge_value(base_value: Any, override_value: Any) -> Any:
     """Merge a single override value into a base value.
 
     Recursively deep-merges dicts. Replaces lists after stripping None items.
+    None stripping prevents Pydantic ``ValidationError`` when YAML ``key: null``
+    appears inside list entries (e.g. ``download_sites: [{reject_keywords: null}]``).
     Uses *override_value* directly for all other types.
     """
     if isinstance(base_value, dict) and isinstance(override_value, dict):
