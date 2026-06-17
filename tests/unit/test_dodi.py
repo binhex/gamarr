@@ -51,7 +51,7 @@ SAMPLE_DETAIL_PAGE = """<!DOCTYPE html>
 
 def test_parse_user_page() -> None:
     """Parse 1337x user page and extract torrent entries + page count."""
-    entries, total_pages = _parse_user_page(SAMPLE_USER_PAGE, base_url="https://1337x.to/user/DODI/1/")
+    entries, total_pages = _parse_user_page(SAMPLE_USER_PAGE)
     assert len(entries) == 2
     assert entries[0]["title"] == "Elden Ring-DODI"
     assert entries[0]["url"] == "https://1337x.to/torrent/1111/Elden-Ring-DODI/"
@@ -292,7 +292,7 @@ def test_fetch_sitemap_success() -> None:
 
     titles = db.get_all_source_titles("dodi")
     assert len(titles) == 2
-    assert titles[0]["title"] == "Game A-DODI"
+    assert titles[0]["title"] == "Game A"
     assert titles[0]["magnet"] == "magnet:?xt=urn:btih:abc"
-    assert titles[1]["title"] == "Game B-DODI"
+    assert titles[1]["title"] == "Game B"
     assert titles[1]["magnet"] == "magnet:?xt=urn:btih:abc"

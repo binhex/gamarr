@@ -180,6 +180,7 @@ def _build_kwargs(config: Config) -> dict[str, Any]:
         "fitgirl_reject_keywords": fitgirl_entry.reject_keywords if fitgirl_entry else [],
         "fitgirl_max_queue_days": fitgirl_entry.max_queue_days if fitgirl_entry else 60,
         "library_paths": config.library.paths,
+        "download_sites": list(config.download_sites),
     }
 
 

@@ -211,8 +211,6 @@ def run_acquisition(
 
     def _make_fitgirl_entry() -> Any:
         """Build a fallback source entry from legacy parameters."""
-        import types
-
         entry = types.SimpleNamespace()
         entry.name = "fitgirl"
         entry.enabled = True
@@ -420,7 +418,6 @@ def run_acquisition(
             return factory(**kwargs)
 
         matched: list[dict[str, Any]] = []
-        sources_to_close: list[Any] = []
         if not is_cancelled(cancel_event) and db.has_verified_pending(platform=platform):
             match_thresholds = {
                 "min_metascore": cfg.min_metascore,
@@ -435,7 +432,6 @@ def run_acquisition(
                 if not source_entry.enabled:
                     continue
                 source = _build_source(source_entry, db)
-                sources_to_close.append(source)
                 source.fetch_sitemap(db)
 
                 source_matched = _match_pending_games(
@@ -455,10 +451,6 @@ def run_acquisition(
 
         if matched:
             logger.info("Total: {} queued games found across all sources", len(matched))
-
-        # Close all sources we built during this phase
-        for source in sources_to_close:
-            source.close()
 
         # Process old verified games AFTER the matching phase.
         # Games that passed score verification must get a chance to
@@ -1515,9 +1507,9 @@ def _deliver_match(
 
     # Use the full FitGirl page title (with repack metadata) for the
     # torrent name, falling back to the sitemap title then game title.
-    fitgirl_title = _fitgirl_page_title_cache.pop(source_url, None) or best["title"] or game_title
+    source_title = _fitgirl_page_title_cache.pop(source_url, None) or best["title"] or game_title
 
-    tag = qbt.add_torrent(magnet_url=magnet, title=fitgirl_title)
+    tag = qbt.add_torrent(magnet_url=magnet, title=source_title)
     if not tag:
         record_result = _record_delivery_error(
             db,
@@ -1586,22 +1578,39 @@ def _deliver_match(
     return record_result
 
 
-def _check_fitgirl_reject_keywords(
+def _check_reject_keywords(
     db: Database,
     best: dict[str, Any],
     game_title: str,
     game_slug: str,
     reject_keywords: list[str] | None,
+    source_name: str = "fitgirl",
 ) -> bool:
-    """Check whether a FitGirl match should be skipped due to rejected keywords.
+    """Check whether a match should be skipped due to rejected keywords.
 
     Returns True if the match should be skipped, keeping the game
-    pending for the next cycle.  Checks the HTML <title> tag first;
-    falls back to the URL-derived sitemap title when the page cannot
-    be fetched.
+    pending for the next cycle.  For FitGirl sources, checks the HTML
+    <title> tag first; falls back to the sitemap title when the page
+    cannot be fetched.  For other sources (where the page structure is
+    unknown), uses the stored title directly.
     """
     if not reject_keywords:
         return False
+
+    # For non-FitGirl sources, skip the page fetch and check the stored title
+    if source_name != "fitgirl":
+        if _title_contains_keywords(best["title"], reject_keywords):
+            logger.info(
+                "Skipping match for '{}' \u2014 {} title '{}' contains rejected keyword",
+                game_title,
+                source_name,
+                best["title"],
+            )
+            db.touch_pending(game_slug)
+            return True
+        return False
+
+    # FitGirl: fetch the page title for a more accurate check
     page_title = _fetch_fitgirl_page_title(best["url"])
     if page_title and _title_contains_keywords(page_title, reject_keywords):
         logger.info(
@@ -1654,21 +1663,23 @@ def _process_single_pending_match(
     if not matches:
         db.touch_pending(game_slug)
         logger.info(
-            "'{}' passed Metacritic checks but has no FitGirl match \u2014 staying in queue",
+            "'{}' passed Metacritic checks but has no {} match \u2014 staying in queue",
             game_title,
+            source_name,
         )
         return None
 
     best = matches[0]
     logger.info(
-        "FitGirl match: '{}' \u2192 '{}' ({})",
+        "{} match: '{}' \u2192 '{}' ({})",
+        source_name.title(),
         game_title,
         best["title"],
         best["url"],
     )
 
     # Skip matches whose FitGirl page title contains rejected keywords.
-    if _check_fitgirl_reject_keywords(db, best, game_title, game_slug, reject_keywords):
+    if _check_reject_keywords(db, best, game_title, game_slug, reject_keywords, source_name=source_name):
         return None
 
     # Check library first — skip if already owned
@@ -1718,6 +1729,7 @@ def _process_single_pending_match(
         game_metascore=game_metascore,
         game_user_score=game_user_score,
         best=best,
+        source_name=source_name,
     )
 
 
@@ -1743,7 +1755,7 @@ def _process_expired_games(db: Database) -> list[dict[str, Any]]:
         record_result["slug"] = game_slug
         db.remove_pending(game_slug)
         results.append(record_result)
-        logger.info("'{}' expired \u2014 queued too long, no FitGirl match found", game_title)
+        logger.info("'{}' expired \u2014 queued too long, no match found on any source", game_title)
     return results
 
 
@@ -1789,6 +1801,7 @@ def _record_match_only(
     game_metascore: float | None,
     game_user_score: float | None,
     best: dict[str, Any],
+    source_name: str = "fitgirl",
 ) -> dict[str, Any]:
     """Record a matched game to history without delivering to qBittorrent."""
     record_result = _record_result(
@@ -1801,7 +1814,7 @@ def _record_match_only(
         metascore=game_metascore,
         user_score=game_user_score,
         result="Passed",
-        result_details=f"Matched source: {best['url']}",
+        result_details=f"Matched on {source_name}: {best['url']}",
     )
     record_result["slug"] = game_slug
     db.remove_pending(game_slug)
