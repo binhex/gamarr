@@ -35,7 +35,6 @@ dependencies = [
     "xmltodict",
     "beautifulsoup4",
     "lxml",
-    "curl-cffi>=0.15.0",
 ]
 
 [project.scripts]
@@ -115,10 +114,6 @@ ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
 module = ["bs4", "bs4.*"]
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = ["curl_cffi", "curl_cffi.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

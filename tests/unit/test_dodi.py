@@ -305,19 +305,182 @@ def test_fetch_sitemap_success() -> None:
     assert titles[1]["magnet"] == "magnet:?xt=urn:btih:abc"
 
 
-def test_make_fetcher_uses_curl_cffi() -> None:
-    """_make_fetcher should return a curl_cffi Session.
+def test_make_fetcher_uses_requests_session() -> None:
+    """_make_fetcher should return a requests Session.
 
-    cloudscraper 1.2.71 cannot bypass Cloudflare challenges on
-    1337x.to — it passes through the JS challenge as a 403.
-    curl_cffi uses TLS fingerprint impersonation which is the
-    modern approach to bypass Cloudflare.
+    1377x.to has no Cloudflare protection, so no impersonation
+    library is needed. A plain requests.Session is sufficient.
     """
+    import requests
+
     from gamarr.sources.dodi import DODISource
 
     fetcher = DODISource._make_fetcher()
-    assert "curl_cffi" in type(fetcher).__module__, f"Expected curl_cffi session, got {type(fetcher)}"
-    # Verify the interface matches what _fetch_page expects
-    import curl_cffi.requests.session
+    assert isinstance(fetcher, requests.Session), f"Expected requests.Session, got {type(fetcher)}"
 
-    assert isinstance(fetcher, curl_cffi.requests.session.Session)
+
+def test_dodi_source_custom_feed_url() -> None:
+    """DODISource uses the configured feed_url for page URLs."""
+    from gamarr.database import Database
+    from gamarr.sources.dodi import DODISource, _build_page_url
+
+    # Custom feed_url pointing to a different mirror
+    feed = "https://custom-mirror.to/user/DODI/"
+    db = Database(":memory:")
+    source = DODISource(platform="pc", db=db, cache_pages_hours=0, feed_url=feed)
+
+    # _feed_url should be stored without trailing slash for URL building
+    assert source._feed_url == "https://custom-mirror.to/user/DODI"
+    assert source._base_domain == "https://custom-mirror.to"
+
+    # _build_page_url should use the feed_url
+    url = _build_page_url(feed, 1)
+    assert url == "https://custom-mirror.to/user/DODI/1/", url
+
+    # Verify _fetch_page would hit the custom domain (mock the fetcher)
+    from unittest.mock import MagicMock, patch
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.text = "<html><body><p>test</p></body></html>"
+
+    with patch.object(source, "_fetcher") as mock_fetcher:
+        mock_fetcher.get.return_value = mock_resp
+        html = source._fetch_page(_build_page_url(source._feed_url, 1))
+        assert html == "<html><body><p>test</p></body></html>"
+        # Verify it called the correct URL
+        call_url = mock_fetcher.get.call_args[0][0]
+        assert "custom-mirror.to" in call_url, f"Expected custom mirror, got {call_url}"
+        assert "1337x.to" not in call_url, f"Should not use old domain: {call_url}"
+
+    db.close()
+
+
+def test_fetch_page_retries_on_transient_failure() -> None:
+    """_fetch_page retries on transient failures before giving up.
+
+    1377x.to intermittently returns 502/timeout errors. Without retry
+    logic, a single transient failure permanently stores magnet: None.
+    """
+    from unittest.mock import MagicMock, patch
+
+    from gamarr.database import Database
+    from gamarr.sources.dodi import DODISource
+
+    db = Database(":memory:")
+    source = DODISource(platform="pc", db=db, cache_pages_hours=0)
+    url = "https://1377x.to/torrent/1/"
+
+    from requests import HTTPError
+
+    # Mock the fetcher: fail twice (502), succeed on 3rd attempt
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.text = '<html><body><a href="magnet:?xt=urn:btih:abc">Magnet</a></body></html>'
+
+    err_502 = HTTPError("502 Server Error")
+    err_502.response = MagicMock()
+    err_502.response.status_code = 502
+
+    with patch.object(source, "_fetcher") as mock_fetcher, patch("gamarr.sources.dodi.time.sleep"):
+        mock_fetcher.get.side_effect = [err_502, err_502, mock_resp]
+
+        html = source._fetch_page(url)
+
+        assert mock_fetcher.get.call_count == 3, f"Expected 3 calls, got {mock_fetcher.get.call_count}"
+        assert html is not None
+        assert "magnet:?xt=urn:btih:abc" in html
+
+    db.close()
+
+
+def test_fetch_page_gives_up_after_max_retries() -> None:
+    """_fetch_page returns None after max retries if all fail."""
+    from unittest.mock import MagicMock, patch
+
+    from requests import HTTPError
+
+    from gamarr.database import Database
+    from gamarr.sources.dodi import DODISource
+
+    db = Database(":memory:")
+    source = DODISource(platform="pc", db=db, cache_pages_hours=0)
+
+    err_502 = HTTPError("502 Server Error")
+    err_502.response = MagicMock()
+    err_502.response.status_code = 502
+
+    with patch.object(source, "_fetcher") as mock_fetcher, patch("gamarr.sources.dodi.time.sleep"):
+        mock_fetcher.get.side_effect = [err_502, err_502, err_502]
+
+        html = source._fetch_page("https://1377x.to/torrent/1/")
+
+        assert html is None, "Should return None after all retries fail"
+
+    db.close()
+
+
+def test_fetch_page_does_not_retry_on_404() -> None:
+    """_fetch_page does not retry on 4xx client errors."""
+    from unittest.mock import MagicMock, patch
+
+    from requests import HTTPError
+
+    from gamarr.database import Database
+    from gamarr.sources.dodi import DODISource
+
+    db = Database(":memory:")
+    source = DODISource(platform="pc", db=db, cache_pages_hours=0)
+
+    err_404 = HTTPError("404 Not Found")
+    err_404.response = MagicMock()
+    err_404.response.status_code = 404
+
+    with patch.object(source, "_fetcher") as mock_fetcher, patch("gamarr.sources.dodi.time.sleep"):
+        mock_fetcher.get.side_effect = err_404
+
+        html = source._fetch_page("https://1377x.to/torrent/1/")
+
+        assert html is None, "Should return None"
+        assert mock_fetcher.get.call_count == 1, f"Expected 1 call, got {mock_fetcher.get.call_count}"
+
+    db.close()
+
+
+def test_fetch_page_cancelled_during_retry() -> None:
+    """_fetch_page returns None immediately when cancel_event is set during retry."""
+    import threading
+    from unittest.mock import MagicMock, patch
+
+    from requests import HTTPError
+
+    from gamarr.database import Database
+    from gamarr.sources.dodi import DODISource
+
+    db = Database(":memory:")
+    source = DODISource(platform="pc", db=db, cache_pages_hours=0)
+
+    cancel_event = threading.Event()
+
+    err_502 = HTTPError("502 Server Error")
+    err_502.response = MagicMock()
+    err_502.response.status_code = 502
+
+    with patch.object(source, "_fetcher") as mock_fetcher, patch("gamarr.sources.dodi.logger"):
+        mock_fetcher.get.side_effect = err_502
+
+        # Set cancel_event before calling — should abort immediately
+        cancel_event.set()
+
+        html = source._fetch_page(
+            "https://1377x.to/torrent/1/",
+            max_retries=3,
+            cancel_event=cancel_event,
+        )
+
+        assert html is None, "Should return None when cancelled"
+        assert mock_fetcher.get.call_count == 0, (
+            f"Should not make any requests when cancelled, got {mock_fetcher.get.call_count}"
+        )
+
+    db.close()

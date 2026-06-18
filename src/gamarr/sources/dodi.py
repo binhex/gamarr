@@ -8,7 +8,11 @@ from __future__ import annotations
 
 import re
 import time
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import urlparse
+
+if TYPE_CHECKING:
+    import threading
 
 from loguru import logger
 
@@ -51,11 +55,15 @@ def _build_page_url(feed_url: str, page: int) -> str:
     return f"{base}/{page}/"
 
 
-def _extract_page_count(soup: Any) -> int:
+def _extract_page_count(soup: Any, feed_url: str = "https://1377x.to/user/DODI/") -> int:
     """Extract the total page count from a parsed 1377x user page.
+
+    Derives the pagination path from *feed_url* so that custom feed
+    URLs with different paths work correctly.
 
     Args:
         soup: A BeautifulSoup object of the user page.
+        feed_url: Base feed URL used to derive the pagination pattern.
 
     Returns:
         The highest page number found in the pagination, or 1 if none.
@@ -63,9 +71,12 @@ def _extract_page_count(soup: Any) -> int:
     total_pages = 1
     pagination = soup.select_one("div.pagination")
     if pagination:
+        # Build page pattern from feed_url: https://host/path/ → /path/(\d+)/
+        parsed = urlparse(feed_url.rstrip("/") + "/")
+        path_pattern = re.escape(parsed.path) + r"(\d+)/"
         for link in pagination.find_all("a"):
             href = str(link.get("href", ""))
-            match = re.search(r"/user/DODI/(\d+)/", href)
+            match = re.search(path_pattern, href)
             if match:
                 page_num = int(match.group(1))
                 if page_num > total_pages:
@@ -73,12 +84,17 @@ def _extract_page_count(soup: Any) -> int:
     return total_pages
 
 
-def _parse_user_page(html: str, base_domain: str = "https://1377x.to") -> tuple[list[dict[str, str]], int]:
+def _parse_user_page(
+    html: str,
+    base_domain: str = "https://1377x.to",
+    feed_url: str = "https://1377x.to/user/DODI/",
+) -> tuple[list[dict[str, str]], int]:
     """Parse a 1377x user page HTML and extract torrent entries + total pages.
 
     Args:
         html: Raw HTML content of the user page.
         base_domain: Base domain for prepending to relative URLs.
+        feed_url: Base feed URL for pagination extraction.
 
     Returns:
         Tuple of (entries, total_pages) where each entry has "title" and "url" keys.
@@ -99,7 +115,7 @@ def _parse_user_page(html: str, base_domain: str = "https://1377x.to") -> tuple[
                 href = f"{base_domain}{href}"
             entries.append({"title": title, "url": href})
 
-    return entries, _extract_page_count(soup)
+    return entries, _extract_page_count(soup, feed_url)
 
 
 def _extract_magnet_from_page(html: str) -> str | None:
@@ -161,14 +177,14 @@ class DODISource:
 
     @staticmethod
     def _make_fetcher() -> Any:
-        """Create a curl_cffi session for fetching pages.
+        """Create a requests Session for fetching pages.
 
-        Uses curl's TLS fingerprint impersonation to bypass
-        Cloudflare challenges that cloudscraper cannot handle.
+        1377x.to has no Cloudflare protection, so a plain
+        requests session is sufficient. No impersonation needed.
         """
-        import curl_cffi
+        import requests
 
-        return curl_cffi.Session(impersonate="chrome131")
+        return requests.Session()
 
     @property
     def source_name(self) -> str:
@@ -180,28 +196,89 @@ class DODISource:
         """Return the platform this source targets."""
         return self._platform
 
-    def _fetch_page(self, url: str) -> str | None:
+    @staticmethod
+    def _is_retryable(exc: Exception) -> bool:
+        """Return True if *exc* is a transient error worth retrying.
+
+        Retries on:
+        - Timeouts and connection errors (network issues)
+        - HTTP 5xx status codes (server errors)
+
+        Does NOT retry on:
+        - HTTP 4xx (client errors like 403, 404 — permanent)
+        """
+        exc_name = type(exc).__name__
+        if exc_name in ("Timeout", "ConnectionError", "ConnectTimeout", "ReadTimeout"):
+            return True
+        if hasattr(exc, "response") and exc.response is not None:
+            return bool(exc.response.status_code >= 500)
+        return False
+
+    @staticmethod
+    def _wait_or_cancelled(seconds: float, cancel_event: threading.Event | None) -> bool:
+        """Wait for *seconds* or until *cancel_event* is set.
+
+        Uses ``cancel_event.wait(timeout=seconds)`` when available so
+        that the wait is immediately interruptible on shutdown.
+
+        Returns:
+            True if cancelled (cancel_event was set), False otherwise.
+        """
+        if cancel_event is not None:
+            return cancel_event.wait(timeout=seconds)
+        time.sleep(seconds)
+        return False
+
+    def _fetch_page(
+        self,
+        url: str,
+        max_retries: int = 3,
+        cancel_event: threading.Event | None = None,
+    ) -> str | None:
         """Fetch a page and return its text content, or None on failure.
+
+        Retries up to *max_retries* times with exponential backoff to
+        handle transient HTTP errors (502, timeouts) that 1377x.to
+        intermittently returns.  Permanent errors (403, 404, etc.)
+        are not retried.  Checks *cancel_event* before each attempt
+        and during backoff for prompt shutdown.
 
         Args:
             url: The URL to fetch.
+            max_retries: Max retry attempts (default 3).
+            cancel_event: Optional event to signal cancellation.
 
         Returns:
-            The response text, or None if the request failed.
+            The response text, or None if cancelled or all retries failed.
         """
-        try:
-            resp = self._fetcher.get(url, timeout=30, headers=_BROWSER_HEADERS)
-            resp.raise_for_status()
-            return cast("str", resp.text)
-        except Exception as exc:
-            logger.warning("Failed to fetch '{}': {}", url, exc)
-            return None
+        for attempt in range(max_retries):
+            if cancel_event is not None and cancel_event.is_set():
+                return None
+            try:
+                resp = self._fetcher.get(url, timeout=30, headers=_BROWSER_HEADERS)
+                resp.raise_for_status()
+                return cast("str", resp.text)
+            except Exception as exc:
+                if self._is_retryable(exc) and attempt < max_retries - 1:
+                    wait = 2**attempt
+                    logger.debug("Retry {}/{} for '{}' in {}s: {}", attempt + 1, max_retries, url, wait, exc)
+                    if self._wait_or_cancelled(wait, cancel_event):
+                        return None
+                else:
+                    logger.warning("Failed to fetch '{}' after {} attempt(s): {}", url, attempt + 1, exc)
+                    return None
+        return None  # pragma: no cover (unreachable — all loop paths return)
 
-    def _fetch_magnets_for_entries(self, entries: list[dict[str, str]]) -> list[dict[str, str | None]]:
+    def _fetch_magnets_for_entries(
+        self,
+        entries: list[dict[str, str]],
+        cancel_event: threading.Event | None = None,
+    ) -> list[dict[str, str | None]]:
         """Fetch detail pages for torrent entries and extract magnets.
 
         Args:
             entries: List of dicts with ``\"title\"`` and ``\"url\"`` keys.
+            cancel_event: Optional event to signal cancellation.
 
         Returns:
             Entries with an added ``\"magnet\"`` key (may be None for
@@ -209,7 +286,9 @@ class DODISource:
         """
         results: list[dict[str, str | None]] = []
         for entry in entries:
-            html = self._fetch_page(entry["url"])
+            if cancel_event is not None and cancel_event.is_set():
+                break
+            html = self._fetch_page(entry["url"], cancel_event=cancel_event)
             magnet = _extract_magnet_from_page(html) if html else None
             if magnet is None:
                 logger.warning("No magnet found for '{}' at {}", entry["title"], entry["url"])
@@ -220,39 +299,50 @@ class DODISource:
                     "magnet": magnet,
                 }
             )
-            time.sleep(1.5)
+            if self._wait_or_cancelled(1.5, cancel_event):
+                break
         return results
 
     def _fetch_remaining_pages(
         self,
         entries: list[dict[str, str]],
         total_pages: int,
+        cancel_event: threading.Event | None = None,
     ) -> None:
         """Fetch remaining user pages beyond page 1 and append their entries.
 
         Mutates *entries* in-place by appending entries from subsequent pages.
+        Checks *cancel_event* between pages for prompt shutdown.
 
         Args:
             entries: Entries already collected from page 1 (mutated in-place).
             total_pages: Total number of pages to fetch.
+            cancel_event: Optional event to signal cancellation.
         """
         for page in range(2, total_pages + 1):
-            page_html = self._fetch_page(_build_page_url(self._feed_url, page))
+            if cancel_event is not None and cancel_event.is_set():
+                break
+            page_html = self._fetch_page(_build_page_url(self._feed_url, page), cancel_event=cancel_event)
             if page_html:
-                more_entries, _ = _parse_user_page(page_html, self._base_domain)
+                more_entries, _ = _parse_user_page(page_html, self._base_domain, self._feed_url)
                 entries.extend(more_entries)
-            time.sleep(1.0)
+            if self._wait_or_cancelled(1.0, cancel_event):
+                break
 
-    def fetch_sitemap(self, db: Database) -> None:
+    def fetch_sitemap(self, db: Database, cancel_event: threading.Event | None = None) -> None:
         """Scrape 1377x.to/user/DODI/ and rebuild the source_titles index.
 
         Handles pagination: fetches all pages on first run, checking the
         cache TTL first. When cache is valid and titles exist, skips the
-        fetch entirely.
+        fetch entirely.  Checks *cancel_event* between phases for prompt
+        shutdown.
 
         Args:
             db: The database instance to store results in.
+            cancel_event: Optional event to signal cancellation.
         """
+        if cancel_event is not None and cancel_event.is_set():
+            return
         if self._cache_pages_hours > 0 and db.get_sitemap_cache("dodi", self._cache_pages_hours):
             if len(db.get_all_source_titles("dodi")) > 0:
                 logger.info(
@@ -262,22 +352,30 @@ class DODISource:
                 return
             logger.info("DODI cache is valid but no titles indexed — re-fetching")
 
+        if cancel_event is not None and cancel_event.is_set():
+            return
         first_page_url = _build_page_url(self._feed_url, 1)
-        html = self._fetch_page(first_page_url)
+        html = self._fetch_page(first_page_url, cancel_event=cancel_event)
         if html is None:
             logger.warning("Failed to fetch DODI user page — skipping")
             return
 
-        entries, total_pages = _parse_user_page(html, self._base_domain)
+        if cancel_event is not None and cancel_event.is_set():
+            return
+        entries, total_pages = _parse_user_page(html, self._base_domain, self._feed_url)
 
         if total_pages > 1:
-            self._fetch_remaining_pages(entries, total_pages)
+            self._fetch_remaining_pages(entries, total_pages, cancel_event=cancel_event)
 
         if not entries:
             logger.warning("No DODI torrent entries found — keeping existing cache")
             return
 
-        magnet_entries = self._fetch_magnets_for_entries(entries)
+        if cancel_event is not None and cancel_event.is_set():
+            return
+        magnet_entries = self._fetch_magnets_for_entries(entries, cancel_event=cancel_event)
+        if cancel_event is not None and cancel_event.is_set():
+            return
         db.rebuild_source_titles("dodi", magnet_entries)
         db.set_sitemap_cache("dodi")
         logger.info("DODI index rebuilt: {} torrents indexed", len(magnet_entries))

@@ -433,7 +433,7 @@ def run_acquisition(
                 if not source_entry.enabled:
                     continue
                 source = _build_source(source_entry, db)
-                source.fetch_sitemap(db)
+                source.fetch_sitemap(db, cancel_event=cancel_event)
 
                 source_matched = _match_pending_games(
                     db,
