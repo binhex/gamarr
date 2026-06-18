@@ -1140,3 +1140,58 @@ def test_migrate_adds_dodi_with_full_fields() -> None:
     assert dodi_entry.get("cache_pages_hours") == 6
     assert dodi_entry.get("reject_keywords") == []
     assert dodi_entry.get("max_queue_days") == 60
+
+
+def test_migrate_add_dodi_entry_flat_format() -> None:
+    """_migrate_add_dodi_entry enhances a flat-format DODI entry."""
+    from unittest.mock import patch
+
+    from gamarr.config import _migrate_add_dodi_entry
+
+    # Flat format: {"name": "dodi", ...}
+    raw: dict[str, Any] = {
+        "download_sites": [
+            {"fitgirl": {"enabled": True, "feed_url": "https://example.com/feed"}},
+            {"name": "dodi", "enabled": True},
+        ],
+    }
+    with patch("gamarr.config.logger"):
+        result = _migrate_add_dodi_entry(raw)
+    assert result is True, "Should enhance existing dodi entry"
+    # Find the flat-format dodi entry (still flat in the list)
+    dodi_entry = None
+    for entry in raw["download_sites"]:
+        if isinstance(entry, dict) and "name" in entry and str(entry.get("name", "")).casefold() == "dodi":
+            dodi_entry = entry
+            break
+    assert dodi_entry is not None, "DODI entry not found"
+    assert dodi_entry["enabled"] is True
+    assert dodi_entry.get("feed_url") is not None, "Flat DODI should have feed_url added"
+
+
+def test_migrate_add_dodi_entry_casefold_key() -> None:
+    """_migrate_add_dodi_entry handles uppercase DODI key."""
+    from unittest.mock import patch
+
+    from gamarr.config import _migrate_add_dodi_entry
+
+    # Uppercase DODI key
+    raw: dict[str, Any] = {
+        "download_sites": [
+            {"fitgirl": {"enabled": True, "feed_url": "https://example.com/feed"}},
+            {"DODI": {"enabled": True}},
+        ],
+    }
+    with patch("gamarr.config.logger"):
+        result = _migrate_add_dodi_entry(raw)
+    assert result is True, "Should enhance uppercase DODI entry"
+    dodi_entry = None
+    for entry in raw["download_sites"]:
+        if isinstance(entry, dict):
+            for key, val in entry.items():
+                if key.casefold() == "dodi" and isinstance(val, dict):
+                    dodi_entry = val
+                    break
+    assert dodi_entry is not None, "DODI entry not found"
+    assert dodi_entry["enabled"] is True
+    assert dodi_entry.get("feed_url") is not None, "Uppercase key DODI should have feed_url added"

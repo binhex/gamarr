@@ -552,18 +552,37 @@ def _game_passes_thresholds(game: dict[str, Any], thresholds: dict[str, Any]) ->
     )
 
 
+def _is_game_known(slug: str, db: Database, *, known_slugs: set[str] | None = None) -> bool:
+    """Return True if *slug* is already processed or pending.
+
+    Uses an optional pre-computed set for O(1) lookup, falling back
+    to individual DB queries when no set is provided.
+    """
+    if known_slugs is not None:
+        return slug in known_slugs
+    return db.is_processed("metacritic", f"mc:{slug}") or db.is_pending(slug)
+
+
 def _is_game_eligible(
     game: dict[str, Any],
     db: Database,
     thresholds: dict[str, Any],
     days_since_release: int,
+    *,
+    known_slugs: set[str] | None = None,
 ) -> bool:
-    """Return True if *game* passes all filters and should be added to pending."""
+    """Return True if *game* passes all filters and should be added to pending.
+
+    Args:
+        known_slugs: Pre-computed set of known slugs (processed or pending).
+            When provided, avoids per-game DB round-trips for the is_processed
+            and is_pending checks — a single batch query replaces N+1.
+    """
     slug = game.get("slug", "")
     title = game.get("title", "")
     if not slug or not title:
         return False
-    if db.is_processed("metacritic", f"mc:{slug}") or db.is_pending(slug):
+    if _is_game_known(slug, db, known_slugs=known_slugs):
         return False
     if not _game_passes_thresholds(game, thresholds):
         return False
@@ -608,9 +627,11 @@ def _process_browse_games(
     Returns:
         Number of new pending games added.
     """
+    # Batch-query all known slugs once, instead of N+1 per-game DB calls
+    known_slugs = db.get_known_slugs(source="metacritic", platform=platform)
     new_count = 0
     for game in browse_games:
-        if not _is_game_eligible(game, db, thresholds, days_since_release):
+        if not _is_game_eligible(game, db, thresholds, days_since_release, known_slugs=known_slugs):
             continue
         if _title_matches_reject(game.get("title", ""), reject_title):
             logger.debug("Skipping '{}' — matches reject_title", game.get("title", ""))

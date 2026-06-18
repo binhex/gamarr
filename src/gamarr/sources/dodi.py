@@ -14,9 +14,23 @@ from loguru import logger
 
 from gamarr.database import Database
 
-_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-)
+_BROWSER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate",
+    "Referer": "https://1337x.to/",
+    "DNT": "1",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "same-origin",
+    "Sec-Fetch-User": "?1",
+    "Priority": "u=0, i",
+}
 
 _DODI_SUFFIX_PATTERN = re.compile(r"[-.]DODI\s*$", re.IGNORECASE)
 _DOT_TO_SPACE_PATTERN = re.compile(r"\.")
@@ -162,7 +176,7 @@ class DODISource:
             The response text, or None if the request failed.
         """
         try:
-            resp = self._fetcher.get(url, timeout=30, headers={"User-Agent": _USER_AGENT})
+            resp = self._fetcher.get(url, timeout=30, headers=_BROWSER_HEADERS)
             resp.raise_for_status()
             return cast("str", resp.text)
         except Exception as exc:

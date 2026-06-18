@@ -332,8 +332,7 @@ uv run pytest
 
 **Q: What download sites are supported?**
 
-**A:** Currently FitGirl repacks RSS. The architecture supports adding more
-download sites (Jackett/Prowlarr, Dodi, Ankergames) via the `BaseSource` protocol.
+**A:** Currently FitGirl repacks and DODI repacks.
 
 **Q: Can I add Nintendo Switch games?**
 
@@ -375,13 +374,14 @@ in the first waiting room while gamarr checks its Metacritic scores. The
 can't be verified in time, the game is removed.
 
 Once scores pass, the game moves to a second waiting room where it waits for
-a FitGirl repack to appear. The **fitgirl `max_queue_days`** starts a
+a source match (e.g. FitGirl or DODI repack). The **per-source `max_queue_days`**
+(e.g. ``fitgirl.max_queue_days`` or ``dodi.max_queue_days``) starts a
 *fresh countdown* from this point — it doesn't matter how long the game
 spent in the first room. This gives the game a full window to find a match,
 regardless of how long the score-checking took.
 
 So even if both values are the same (say 30 days each), a game that took
-25 days to get scores verified still gets a full 30 days to find a FitGirl
+25 days to get scores verified still gets a full 30 days to find a source
 match — not just 5.
 
 ___

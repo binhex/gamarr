@@ -721,3 +721,161 @@ class TestGameDetailCacheConcurrent:
         assert cached is not None
         assert cached["metascore"] == 85.0
         db.close()
+
+
+class TestMigrationSourceTitles:
+    """Migration adds magnet column to source_titles."""
+
+    def test_migrate_adds_magnet_column_to_source_titles(self, tmp_path: Path) -> None:
+        """_migrate() should add the magnet column to source_titles if missing.
+
+        Simulates an old database created before the magnet column was added
+        to the SourceTitle ORM model. Without the migration, calling
+        rebuild_source_titles with magnet data raises:
+            sqlite3.OperationalError: table source_titles has no column named magnet
+        """
+        from sqlalchemy import Column, MetaData, String, Table, create_engine
+        from sqlalchemy import inspect as sa_inspect
+
+        # Create a database with the old source_titles schema (no magnet column)
+        db_path = str(tmp_path / "pre_magnet.db")
+        engine = create_engine(f"sqlite:///{db_path}")
+        metadata = MetaData()
+        Table(
+            "source_titles",
+            metadata,
+            Column("source", String, primary_key=True),
+            Column("title", String, nullable=False),
+            Column("url", String, primary_key=True),
+        )
+        metadata.create_all(engine)
+        engine.dispose()
+
+        # Open with Database — _migrate() MUST add the magnet column
+        db = Database(db_path)
+
+        # Verify column was added
+        inspector = sa_inspect(db._engine)
+        columns = [c["name"] for c in inspector.get_columns("source_titles")]
+        assert "magnet" in columns, "Migration should add magnet column to source_titles"
+
+        # Verify rebuild_source_titles works after migration
+        db.rebuild_source_titles(
+            "fitgirl",
+            [
+                {"title": "Test Game", "url": "https://example.com/game", "magnet": None},
+                {"title": "Dodi Game", "url": "https://1337x.to/torrent/1", "magnet": "magnet:?xt=urn:btih:abc"},
+            ],
+        )
+        titles = db.get_all_source_titles("fitgirl")
+        assert len(titles) == 2
+        # get_all_source_titles orders by URL — find entries by title
+        by_title = {t["title"]: t["magnet"] for t in titles}
+        assert by_title["Test Game"] is None
+        assert by_title["Dodi Game"] == "magnet:?xt=urn:btih:abc"
+        db.close()
+
+    def test_migrate_source_titles_already_has_magnet(self, tmp_path: Path) -> None:
+        """_migrate() should not error when magnet column already exists."""
+        from sqlalchemy import inspect as sa_inspect
+
+        db = Database(str(tmp_path / "fresh.db"))
+        inspector = sa_inspect(db._engine)
+        columns = [c["name"] for c in inspector.get_columns("source_titles")]
+        assert "magnet" in columns
+        db.close()
+
+
+class TestKnownSlugs:
+    """Batch slug lookup — replaces N+1 is_processed + is_pending calls."""
+
+    def test_get_known_slugs_returns_processed_and_pending(self, tmp_path: Path) -> None:
+        """get_known_slugs returns slugs from history and pending tables.
+
+        ``_is_game_eligible`` calls ``is_processed`` and ``is_pending`` for
+        every browse game individually — 70K+ DB round-trips for 35K games.
+        ``get_known_slugs`` replaces this with a single batch query.
+        """
+        db = Database(str(tmp_path / "test.db"))
+
+        # Games that are already processed (via record_processed)
+        db.record_processed(
+            source="metacritic",
+            source_title="Game A",
+            source_url="mc:game-a",
+            game_title="Game A",
+            result="Passed",
+        )
+        db.record_processed(
+            source="metacritic",
+            source_title="Game B",
+            source_url="mc:game-b",
+            game_title="Game B",
+            result="Passed",
+        )
+
+        # Game that is pending (not yet processed)
+        db.record_pending(
+            slug="game-c",
+            game_title="Game C",
+            platform="pc",
+            expires_at="2099-01-01T00:00:00",
+        )
+
+        # Game that is BOTH processed and pending (should appear once)
+        db.record_processed(
+            source="metacritic",
+            source_title="Game D",
+            source_url="mc:game-d",
+            game_title="Game D",
+            result="Passed",
+        )
+        db.record_pending(
+            slug="game-d",
+            game_title="Game D",
+            platform="pc",
+            expires_at="2099-01-01T00:00:00",
+        )
+
+        slugs = db.get_known_slugs(source="metacritic", platform="pc")
+        assert "game-a" in slugs, "Should include processed slug"
+        assert "game-b" in slugs, "Should include processed slug"
+        assert "game-c" in slugs, "Should include pending-only slug"
+        assert "game-d" in slugs, "Should include slug in both tables"
+        assert len(slugs) == 4, "Should have 4 unique slugs"
+        db.close()
+
+    def test_get_known_slugs_empty(self, tmp_path: Path) -> None:
+        """get_known_slugs returns empty set when nothing is known."""
+        db = Database(str(tmp_path / "empty.db"))
+        slugs = db.get_known_slugs(source="metacritic", platform="pc")
+        assert isinstance(slugs, set)
+        assert len(slugs) == 0
+        db.close()
+
+    def test_get_known_slugs_includes_all_platforms(self, tmp_path: Path) -> None:
+        """get_known_slugs includes pending slugs regardless of platform.
+
+        Matches old ``is_pending(slug)`` behavior which checked by slug
+        primary key only, without platform filtering.
+        """
+        db = Database(str(tmp_path / "by_platform.db"))
+        # Pending on different platform — should still be returned
+        db.record_pending(
+            slug="ps5-game",
+            game_title="PS5 Game",
+            platform="ps5",
+            expires_at="2099-01-01T00:00:00",
+        )
+        # Pending on matching platform
+        db.record_pending(
+            slug="pc-game",
+            game_title="PC Game",
+            platform="pc",
+            expires_at="2099-01-01T00:00:00",
+        )
+        slugs = db.get_known_slugs(source="metacritic", platform="pc")
+        assert "pc-game" in slugs
+        assert "ps5-game" in slugs, "Should include cross-platform pending slugs"
+        assert len(slugs) == 2
+        db.close()

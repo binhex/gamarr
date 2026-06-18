@@ -587,35 +587,69 @@ def _migrate_metacritic_to_review_sites(raw: dict[str, Any]) -> bool:
     return True
 
 
+def _collect_download_site_names(ds: list) -> set[str]:
+    """Collect entry names from download_sites list entries.
+
+    Handles both keyed format (``{"fitgirl": {...}}``) and
+    flat format (``{"name": "fitgirl", ...}``).
+    """
+    names: set[str] = set()
+    for e in ds:
+        if not isinstance(e, dict):
+            continue
+        # Keyed format: the dict keys ARE the source names
+        if "name" not in e:
+            names.update(k.casefold() for k in e)
+        # Flat format: extract the "name" value only, not all field keys
+        name_val = e.get("name")
+        if isinstance(name_val, str):
+            names.add(name_val.casefold())
+    return names
+
+
+def _apply_dodi_defaults(dodi_config: dict) -> None:
+    """Apply missing default fields to a DODI config dict in-place."""
+    dodi_defaults = SourceConfigEntry(name="dodi", feed_url="https://1337x.to/user/DODI/").model_dump(exclude={"name"})
+    for k, v in dodi_defaults.items():
+        dodi_config.setdefault(k, v)
+
+
+def _enhance_dodi_entry(ds: list) -> bool:
+    """Find and enhance an existing DODI entry with any missing default fields.
+
+    Handles both keyed format (``{"dodi": {...}}`` or ``{"DODI": {...}}``)
+    and flat format (``{"name": "dodi", ...}``).
+    Returns True if a DODI entry was found and enhanced, False otherwise.
+    """
+    for entry in ds:
+        if not isinstance(entry, dict):
+            continue
+        # Keyed format: {Key: {...}} where Key casefolded matches "dodi"
+        for key, val in entry.items():
+            if key.casefold() == "dodi":
+                if isinstance(val, dict):
+                    _apply_dodi_defaults(val)
+                    return True
+                logger.warning("Config: DODI entry has non-dict value — skipping enhancement")
+        # Flat format: {"name": "dodi", ...}
+        if str(entry.get("name", "")).casefold() == "dodi":
+            _apply_dodi_defaults(entry)
+            return True
+    return False
+
+
 def _migrate_add_dodi_entry(raw: dict[str, Any]) -> bool:
     """Add a DODI entry to download_sites if one does not already exist.
 
     Assumes download_sites is in keyed format [{key: {...}}, ...].
-    Returns True if a DODI entry was added.
+    Returns True if a DODI entry was added or enhanced.
     """
     ds = raw.get("download_sites")
     if not isinstance(ds, list):
         return False
 
-    # Collect entry names from both keyed {"fitgirl": {...}} and flat {"name": "fitgirl", ...} formats
-    names: set[str] = set()
-    for e in ds:
-        if isinstance(e, dict):
-            names.update(k.casefold() for k in e)
-            if "name" in e:
-                names.add(str(e["name"]).casefold())
-
-    if "dodi" in names:
-        # Enhance existing DODI entry with any missing fields
-        dodi_defaults = SourceConfigEntry(name="dodi", feed_url="https://1337x.to/user/DODI/").model_dump(
-            exclude={"name"}
-        )
-        for entry in ds:
-            if isinstance(entry, dict) and "dodi" in entry and isinstance(entry["dodi"], dict):
-                for k, v in dodi_defaults.items():
-                    entry["dodi"].setdefault(k, v)
-                return True
-        return False
+    if "dodi" in _collect_download_site_names(ds):
+        return _enhance_dodi_entry(ds)
 
     # Use SourceConfigEntry defaults so field additions stay in sync
     dodi_entry = SourceConfigEntry(name="dodi", feed_url="https://1337x.to/user/DODI/").model_dump(exclude={"name"})

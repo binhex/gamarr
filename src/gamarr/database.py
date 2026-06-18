@@ -145,6 +145,7 @@ class Database:
         """Add columns added in newer versions of gamarr."""
         self._migrate_pending_games()
         self._migrate_game_detail_cache()
+        self._migrate_source_titles()
 
     def _migrate_pending_games(self) -> None:
         """Add columns to pending_games that were added in newer versions."""
@@ -182,6 +183,19 @@ class Database:
                     logger.debug("Added '{}' column to game_detail_cache", col)
         except Exception:
             logger.debug("Migration of game_detail_cache skipped (table may not exist yet)")
+
+    def _migrate_source_titles(self) -> None:
+        """Add magnet column to source_titles if missing."""
+        try:
+            inspector = sa_inspect(self._engine)
+            columns = [c["name"] for c in inspector.get_columns("source_titles")]
+            if "magnet" not in columns:
+                with self._session() as session:
+                    session.execute(text("ALTER TABLE source_titles ADD COLUMN magnet VARCHAR"))
+                    session.commit()
+                logger.debug("Added magnet column to source_titles")
+        except Exception:
+            logger.debug("Migration of source_titles skipped (table may not exist yet)")
 
     def close(self) -> None:
         self._engine.dispose()
@@ -339,6 +353,42 @@ class Database:
     def is_pending(self, slug: str) -> bool:
         with self._session() as session:
             return session.get(PendingGame, slug) is not None
+
+    def get_known_slugs(self, *, source: str, platform: str) -> set[str]:
+        """Return the set of all slugs already processed or pending.
+
+        Replaces N+1 ``is_processed`` + ``is_pending`` calls made per game
+        during browse processing.  Instead of querying the DB for each of
+        35K games individually, two batch queries collect all known slugs.
+
+        Args:
+            source: The source name (e.g. ``"metacritic"``).
+            platform: Target platform to filter pending slugs.
+
+        Returns:
+            Set of slug strings that are already known.
+        """
+
+        known: set[str] = set()
+        with self._session() as session:
+            # Slugs from history table: source_url is "mc:{slug}"
+            rows = (
+                session.query(HistoryRow.source_url)
+                .filter(HistoryRow.source == source, HistoryRow.source_url.isnot(None))
+                .all()
+            )
+            for (source_url,) in rows:
+                slug: str = str(source_url)
+                if slug.startswith("mc:"):
+                    known.add(slug[3:])
+                else:
+                    known.add(slug)
+            # Slugs from pending_games table (no platform filter — matches
+            # old ``is_pending(slug)`` behavior which checked by PK only).
+            pending_rows = session.query(PendingGame.slug).all()
+            for (slug,) in pending_rows:
+                known.add(str(slug))
+        return known
 
     def has_verified_pending(self, *, platform: str | None = None) -> bool:
         """Return True if any score-checked games are waiting in the queue."""
