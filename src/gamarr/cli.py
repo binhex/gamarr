@@ -8,12 +8,34 @@ from importlib.metadata import version as _pkg_version
 from typing import TYPE_CHECKING, Any
 
 import click
+from loguru import logger
 
 from gamarr.logger import create_logger
 from gamarr.utils import get_project_root
 
 if TYPE_CHECKING:
     from gamarr.config import Config
+
+
+def _clear_caches(db_path: str, clear_cache: str) -> None:
+    """Clear cache entries specified by ``--clear-cache`` flag value."""
+    from gamarr.database import Database
+
+    db: Database | None = None
+    try:
+        db = Database(db_path=db_path)
+        sources = [s.strip().casefold() for s in clear_cache.split(",")]
+        for source in sources:
+            if source == "all":
+                for s in ("fitgirl", "dodi", "metacritic"):
+                    db.clear_cache(s)
+            elif source in ("fitgirl", "dodi", "metacritic"):
+                db.clear_cache(source)
+            else:
+                logger.warning("Unknown cache source '{}' — skipping", source)
+    finally:
+        if db is not None:
+            db.close()
 
 
 def _resolve_version() -> str:
@@ -158,6 +180,13 @@ def _apply_cli_overrides(config: Config, **overrides: Any) -> None:
     metavar="<pass>",
     help="Override qBittorrent password from config.",
 )
+@click.option(
+    "--clear-cache",
+    default=None,
+    show_default=False,
+    metavar="<sources>",
+    help="Clear cached data before running. Comma-separated: fitgirl, dodi, metacritic, or all.",
+)
 @click.version_option(version=_VERSION, prog_name="gamarr")
 def cli(
     config_path: str,
@@ -171,6 +200,7 @@ def cli(
     qbt_port: int | None = None,
     qbt_username: str | None = None,
     qbt_password: str | None = None,
+    clear_cache: str | None = None,
 ) -> None:
     """gamarr — Metadata game downloader.
 
@@ -208,6 +238,9 @@ def cli(
     if test:
         click.echo("Configuration loaded successfully. Test mode \u2014 exiting.")
         return
+
+    if clear_cache:
+        _clear_caches(str(config.general.db_path), clear_cache)
 
     from gamarr.scheduler import run
 

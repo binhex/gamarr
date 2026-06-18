@@ -97,6 +97,52 @@ class TestCli:
             result = self.runner.invoke(cli, ["--config-path", "/tmp/configs"])
         assert result.exit_code == 0
 
+    def test_clear_cache_flag_parses_single_source(self) -> None:
+        """--clear-cache fitgirl calls clear_cache once."""
+        import tempfile
+
+        tmp_cfg = tempfile.mkdtemp()
+        with patch("gamarr.database.Database") as mock_db:
+            result = self.runner.invoke(cli, ["--config-path", tmp_cfg, "--clear-cache", "fitgirl"])
+        assert result.exit_code == 0
+        mock_db.return_value.clear_cache.assert_called_once_with("fitgirl")
+
+    def test_clear_cache_flag_parses_multiple_sources(self) -> None:
+        """--clear-cache fitgirl,dodi calls clear_cache for each."""
+        import tempfile
+
+        tmp_cfg = tempfile.mkdtemp()
+        with patch("gamarr.database.Database") as mock_db:
+            result = self.runner.invoke(cli, ["--config-path", tmp_cfg, "--clear-cache", "fitgirl,dodi"])
+        assert result.exit_code == 0
+        assert mock_db.return_value.clear_cache.call_count == 2
+        mock_db.return_value.clear_cache.assert_any_call("fitgirl")
+        mock_db.return_value.clear_cache.assert_any_call("dodi")
+
+    def test_clear_cache_flag_parses_all(self) -> None:
+        """--clear-cache all calls clear_cache for all three sources."""
+        import tempfile
+
+        tmp_cfg = tempfile.mkdtemp()
+        with patch("gamarr.database.Database") as mock_db:
+            result = self.runner.invoke(cli, ["--config-path", tmp_cfg, "--clear-cache", "all"])
+        assert result.exit_code == 0
+        assert mock_db.return_value.clear_cache.call_count == 3
+        mock_db.return_value.clear_cache.assert_any_call("fitgirl")
+        mock_db.return_value.clear_cache.assert_any_call("dodi")
+        mock_db.return_value.clear_cache.assert_any_call("metacritic")
+
+    def test_clear_cache_unknown_source_logs_warning(self) -> None:
+        """Unknown cache source is silently skipped."""
+        import tempfile
+
+        tmp_cfg = tempfile.mkdtemp()
+        with patch("gamarr.database.Database") as mock_db, patch("gamarr.cli.logger") as mock_logger:
+            result = self.runner.invoke(cli, ["--config-path", tmp_cfg, "--clear-cache", "bogus"])
+        assert result.exit_code == 0
+        mock_db.return_value.clear_cache.assert_not_called()
+        mock_logger.warning.assert_any_call("Unknown cache source '{}' — skipping", "bogus")
+
 
 class TestCliOverrides:
     """Tests for CLI override functions."""

@@ -422,3 +422,123 @@ class TestSitemapFetchOnEmpty:
         assert "Baldurs Gate 3" in titles
         source.close()
         db.close()
+
+
+def test_fetch_sitemap_accepts_cancel_event() -> None:
+    """FitGirlSource.fetch_sitemap accepts cancel_event keyword."""
+    import threading
+    from unittest.mock import patch
+
+    from gamarr.database import Database
+    from gamarr.sources.fitgirl import FitGirlSource
+
+    db = Database(":memory:")
+    source = FitGirlSource(
+        feed_url="https://fitgirl-repacks.site/feed/",
+        db=db,
+        cache_pages_hours=0,
+    )
+
+    # The pipeline passes cancel_event=cancel_event — this must not raise
+    cancel_event = threading.Event()
+    from unittest.mock import MagicMock
+
+    with patch("gamarr.sources.fitgirl.requests.get") as mock_get:
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.content = b"<?xml version='1.0' encoding='UTF-8'?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n</urlset>"
+        mock_resp.raise_for_status = MagicMock()
+        mock_get.return_value = mock_resp
+        # Should not raise TypeError
+        source.fetch_sitemap(db, cancel_event=cancel_event)
+
+
+def test_fetch_sitemap_cancelled_returns_early() -> None:
+    """FitGirlSource.fetch_sitemap returns early when cancel_event is set."""
+    import threading
+    from unittest.mock import patch
+
+    from gamarr.database import Database
+    from gamarr.sources.fitgirl import FitGirlSource
+
+    db = Database(":memory:")
+    source = FitGirlSource(
+        feed_url="https://fitgirl-repacks.site/feed/",
+        db=db,
+        cache_pages_hours=0,
+    )
+
+    cancel_event = threading.Event()
+    cancel_event.set()  # Pre-cancel
+
+    with patch("gamarr.sources.fitgirl.requests.get") as mock_get:
+        source.fetch_sitemap(db, cancel_event=cancel_event)
+        # Should NOT make any HTTP requests
+        mock_get.assert_not_called()
+
+
+def test_fetch_and_store_sitemap_stores_titles() -> None:
+    """_fetch_and_store_sitemap fetches sitemap and stores titles."""
+    from unittest.mock import MagicMock, patch
+
+    from gamarr.database import Database
+    from gamarr.sources.fitgirl import FitGirlSource
+
+    db = Database(":memory:")
+    source = FitGirlSource(
+        feed_url="https://fitgirl-repacks.site/feed/",
+        db=db,
+        cache_pages_hours=0,
+    )
+
+    with patch("gamarr.sources.fitgirl.requests.get") as mock_get:
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.content = b"""<?xml version='1.0' encoding='UTF-8'?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://fitgirl-repacks.site/game-a/</loc></url>
+  <url><loc>https://fitgirl-repacks.site/game-b/</loc></url>
+</urlset>"""
+        mock_get.return_value = mock_resp
+
+        source._fetch_and_store_sitemap(db)
+
+    titles = db.get_all_source_titles("fitgirl")
+    assert len(titles) == 2
+    assert titles[0]["title"] == "Game A"
+    assert titles[1]["title"] == "Game B"
+
+    db.close()
+
+
+def test_fetch_sitemap_cancelled_after_cache_check() -> None:
+    """fetch_sitemap returns early when cancel_event is set after cache check."""
+    import threading
+    from unittest.mock import patch
+
+    from gamarr.database import Database
+    from gamarr.sources.fitgirl import FitGirlSource
+
+    db = Database(":memory:")
+    source = FitGirlSource(
+        feed_url="https://fitgirl-repacks.site/feed/",
+        db=db,
+        cache_pages_hours=6,
+    )
+
+    # Pre-populate a cache entry to force cache-hit path
+    db.set_sitemap_cache("fitgirl")
+    db.rebuild_source_titles(
+        "fitgirl",
+        [{"title": "Existing Game", "url": "https://fitgirl-repacks.site/existing-game/", "magnet": None}],
+    )
+
+    cancel_event = threading.Event()
+    # Cancel should be checked after cache check too
+    cancel_event.set()
+
+    with patch("gamarr.sources.fitgirl.requests.get") as mock_get:
+        source.fetch_sitemap(db, cancel_event=cancel_event)
+        mock_get.assert_not_called()
+
+    db.close()

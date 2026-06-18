@@ -1,6 +1,6 @@
 """DODI repacks source for gamarr.
 
-Scrapes 1377x.to/user/DODI/ for magnet links and stores them in the
+Scrapes 1337x.to/user/DODI/ for magnet links and stores them in the
 source_titles database table for Metacritic-first matching.
 """
 
@@ -25,7 +25,7 @@ _BROWSER_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
     "Accept-Encoding": "gzip, deflate",
-    "Referer": "https://1377x.to/",
+    "Referer": "https://1337x.to/",
     "DNT": "1",
     "Connection": "keep-alive",
     "Upgrade-Insecure-Requests": "1",
@@ -45,7 +45,7 @@ def _build_page_url(feed_url: str, page: int) -> str:
     """Build a DODI user page URL for a given page number.
 
     Args:
-        feed_url: Base feed URL (e.g. ``"https://1377x.to/user/DODI/"``).
+        feed_url: Base feed URL (e.g. ``"https://1337x.to/user/DODI/"``).
         page: Page number (1-indexed).
 
     Returns:
@@ -55,8 +55,8 @@ def _build_page_url(feed_url: str, page: int) -> str:
     return f"{base}/{page}/"
 
 
-def _extract_page_count(soup: Any, feed_url: str = "https://1377x.to/user/DODI/") -> int:
-    """Extract the total page count from a parsed 1377x user page.
+def _extract_page_count(soup: Any, feed_url: str = "https://1337x.to/user/DODI/") -> int:
+    """Extract the total page count from a parsed 1337x user page.
 
     Derives the pagination path from *feed_url* so that custom feed
     URLs with different paths work correctly.
@@ -86,10 +86,10 @@ def _extract_page_count(soup: Any, feed_url: str = "https://1377x.to/user/DODI/"
 
 def _parse_user_page(
     html: str,
-    base_domain: str = "https://1377x.to",
-    feed_url: str = "https://1377x.to/user/DODI/",
+    base_domain: str = "https://1337x.to",
+    feed_url: str = "https://1337x.to/user/DODI/",
 ) -> tuple[list[dict[str, str]], int]:
-    """Parse a 1377x user page HTML and extract torrent entries + total pages.
+    """Parse a 1337x user page HTML and extract torrent entries + total pages.
 
     Args:
         html: Raw HTML content of the user page.
@@ -119,7 +119,7 @@ def _parse_user_page(
 
 
 def _extract_magnet_from_page(html: str) -> str | None:
-    """Extract the magnet URI from a 1377x torrent detail page HTML.
+    """Extract the magnet URI from a 1337x torrent detail page HTML.
 
     Args:
         html: Raw HTML content of the torrent detail page.
@@ -156,7 +156,7 @@ class DODISource:
 
     Uses the configured ``feed_url`` to scrape torrent listings and
     magnets.  The feed URL points to a DODI uploader page on a
-    torrent site (e.g. 1377x.to/user/DODI/).
+    torrent site (e.g. 1337x.to/user/DODI/).
     """
 
     def __init__(
@@ -164,7 +164,7 @@ class DODISource:
         platform: str = "pc",
         db: Database | None = None,
         cache_pages_hours: int = 6,
-        feed_url: str = "https://1377x.to/user/DODI/",
+        feed_url: str = "https://1337x.to/user/DODI/",
     ) -> None:
         self._platform = platform
         self._cache_pages_hours = cache_pages_hours
@@ -179,7 +179,7 @@ class DODISource:
     def _make_fetcher() -> Any:
         """Create a requests Session for fetching pages.
 
-        1377x.to has no Cloudflare protection, so a plain
+        1337x.to has no Cloudflare protection, so a plain
         requests session is sufficient. No impersonation needed.
         """
         import requests
@@ -238,7 +238,7 @@ class DODISource:
         """Fetch a page and return its text content, or None on failure.
 
         Retries up to *max_retries* times with exponential backoff to
-        handle transient HTTP errors (502, timeouts) that 1377x.to
+        handle transient HTTP errors (502, timeouts) that 1337x.to
         intermittently returns.  Permanent errors (403, 404, etc.)
         are not retried.  Checks *cancel_event* before each attempt
         and during backoff for prompt shutdown.
@@ -285,7 +285,9 @@ class DODISource:
             torrents whose detail page couldn't be fetched).
         """
         results: list[dict[str, str | None]] = []
-        for entry in entries:
+        total = len(entries)
+        logger.info("Fetching magnets for {} DODI entries...", total)
+        for idx, entry in enumerate(entries, 1):
             if cancel_event is not None and cancel_event.is_set():
                 break
             html = self._fetch_page(entry["url"], cancel_event=cancel_event)
@@ -299,6 +301,8 @@ class DODISource:
                     "magnet": magnet,
                 }
             )
+            if idx % 100 == 0:
+                logger.info("Fetched {} of {} DODI magnets...", idx, total)
             if self._wait_or_cancelled(1.5, cancel_event):
                 break
         return results
@@ -329,13 +333,28 @@ class DODISource:
             if self._wait_or_cancelled(1.0, cancel_event):
                 break
 
+    def _check_dodi_cache(self, db: Database) -> bool:
+        """Check DODI sitemap cache. Returns True if fetch should be skipped."""
+        if self._cache_pages_hours > 0 and db.get_sitemap_cache("dodi", self._cache_pages_hours):
+            if len(db.get_all_source_titles("dodi")) > 0:
+                logger.info(
+                    "DODI cache is still valid (TTL: {} hours) — skipping fetch",
+                    self._cache_pages_hours,
+                )
+                return True
+            logger.info("DODI cache is valid but no titles indexed — re-fetching")
+        return False
+
     def fetch_sitemap(self, db: Database, cancel_event: threading.Event | None = None) -> None:
-        """Scrape 1377x.to/user/DODI/ and rebuild the source_titles index.
+        """Scrape 1337x.to/user/DODI/ and rebuild the source_titles index.
 
         Handles pagination: fetches all pages on first run, checking the
         cache TTL first. When cache is valid and titles exist, skips the
-        fetch entirely.  Checks *cancel_event* between phases for prompt
-        shutdown.
+        fetch entirely.  Checks *cancel_event* at entry for prompt shutdown.
+        Inner methods (``_fetch_page``, ``_fetch_magnets_for_entries``,
+        ``_fetch_remaining_pages``, ``_do_fetch_sitemap``) also check
+        cancellation during their
+        operations.
 
         Args:
             db: The database instance to store results in.
@@ -343,38 +362,53 @@ class DODISource:
         """
         if cancel_event is not None and cancel_event.is_set():
             return
-        if self._cache_pages_hours > 0 and db.get_sitemap_cache("dodi", self._cache_pages_hours):
-            if len(db.get_all_source_titles("dodi")) > 0:
-                logger.info(
-                    "DODI cache is still valid (TTL: {} hours) — skipping fetch",
-                    self._cache_pages_hours,
-                )
-                return
-            logger.info("DODI cache is valid but no titles indexed — re-fetching")
+        if self._check_dodi_cache(db):
+            return
 
         if cancel_event is not None and cancel_event.is_set():
+            logger.info("DODI fetch cancelled after cache check")
             return
+
+        self._do_fetch_sitemap(db, cancel_event=cancel_event)
+
+    def _do_fetch_sitemap(self, db: Database, cancel_event: threading.Event | None = None) -> None:
+        """Execute the page-fetch, magnet-extraction, and rebuild pipeline."""
+        logger.info("Fetching DODI repacks from {}...", self._feed_url)
+
         first_page_url = _build_page_url(self._feed_url, 1)
         html = self._fetch_page(first_page_url, cancel_event=cancel_event)
         if html is None:
             logger.warning("Failed to fetch DODI user page — skipping")
             return
 
-        if cancel_event is not None and cancel_event.is_set():
-            return
         entries, total_pages = _parse_user_page(html, self._base_domain, self._feed_url)
 
         if total_pages > 1:
             self._fetch_remaining_pages(entries, total_pages, cancel_event=cancel_event)
+
+        if cancel_event is not None and cancel_event.is_set():
+            logger.info("DODI fetch cancelled — keeping existing cache")
+            return
+
+        logger.info("Found {} DODI page(s) — {} entries", total_pages, len(entries))
 
         if not entries:
             logger.warning("No DODI torrent entries found — keeping existing cache")
             return
 
         if cancel_event is not None and cancel_event.is_set():
+            logger.info("DODI fetch cancelled before magnet extraction — keeping existing cache")
             return
+
+        self._fetch_and_rebuild(db, entries, cancel_event=cancel_event)
+
+    def _fetch_and_rebuild(
+        self, db: Database, entries: list[dict[str, str]], cancel_event: threading.Event | None = None
+    ) -> None:
+        """Fetch magnets for entries and rebuild the source_titles index."""
         magnet_entries = self._fetch_magnets_for_entries(entries, cancel_event=cancel_event)
         if cancel_event is not None and cancel_event.is_set():
+            logger.info("DODI magnet fetch cancelled — keeping existing cache")
             return
         db.rebuild_source_titles("dodi", magnet_entries)
         db.set_sitemap_cache("dodi")

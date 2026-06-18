@@ -486,6 +486,37 @@ class Database:
                 row.cached_at = now
             session.commit()
 
+    def clear_cache(self, source: str) -> None:
+        """Clear cached data for a given source.
+
+        Args:
+            source: One of ``"fitgirl"``, ``"dodi"``, or ``"metacritic"``.
+        """
+        if source == "fitgirl":
+            self._delete_sitemap_cache("fitgirl")
+        elif source == "dodi":
+            self._delete_sitemap_cache("dodi")
+        elif source == "metacritic":
+            self._delete_browse_cache()
+            self._delete_detail_cache()
+        else:
+            logger.warning("Unknown cache source '{}' \u2014 skipping", source)
+
+    def _delete_sitemap_cache(self, source: str) -> None:
+        with self._session() as session:
+            session.execute(text("DELETE FROM sitemap_cache WHERE source = :source"), {"source": source})
+            session.commit()
+
+    def _delete_browse_cache(self) -> None:
+        with self._session() as session:
+            session.execute(text("DELETE FROM browse_page_cache"))
+            session.commit()
+
+    def _delete_detail_cache(self) -> None:
+        with self._session() as session:
+            session.execute(text("DELETE FROM game_detail_cache"))
+            session.commit()
+
     def get_game_detail_cache(self, slug: str, ttl_days: int) -> dict[str, Any] | None:
         """Return cached game detail dict or None if expired/missing."""
         if ttl_days <= 0:

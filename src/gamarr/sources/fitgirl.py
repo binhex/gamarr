@@ -8,12 +8,15 @@ from __future__ import annotations
 
 import re
 import xml.etree.ElementTree as ET
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import requests
 from loguru import logger
 
 from gamarr.database import Database
+
+if TYPE_CHECKING:
+    import threading
 
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -268,25 +271,8 @@ class FitGirlSource:
         """Return the platform this source targets."""
         return self._platform
 
-    def fetch_sitemap(self, db: Database) -> None:
-        """Fetch the FitGirl sitemap and rebuild the source_titles index.
-
-        Handles both ``<urlset>`` and ``<sitemapindex>`` sitemap formats.
-        Results are cached in ``sitemap_cache`` for ``cache_pages_hours``.
-        Re-fetches even when cache is valid if source_titles is empty
-        (e.g. after an initial fetch that returned no parsed titles).
-        """
-        if self._cache_pages_hours > 0 and db.get_sitemap_cache("fitgirl", self._cache_pages_hours):
-            if len(db.get_all_source_titles("fitgirl")) > 0:
-                logger.info(
-                    "FitGirl cache is still valid (TTL: {} hours) — skipping fetch",
-                    self._cache_pages_hours,
-                )
-                return
-            logger.info(
-                "FitGirl cache is valid but no titles indexed — re-fetching sitemap",
-            )
-
+    def _fetch_and_store_sitemap(self, db: Database) -> None:
+        """Fetch the FitGirl sitemap XML and store results in the DB."""
         url = "https://fitgirl-repacks.site/sitemap.xml"
         try:
             resp = requests.get(url, timeout=30, headers={"User-Agent": _USER_AGENT})
@@ -301,6 +287,35 @@ class FitGirlSource:
             logger.info("FitGirl sitemap indexed {} game titles", len(titles))
         except requests.RequestException as exc:
             logger.warning("Failed to fetch FitGirl sitemap: {}", exc)
+
+    def fetch_sitemap(self, db: Database, cancel_event: threading.Event | None = None) -> None:
+        """Fetch the FitGirl sitemap and rebuild the source_titles index.
+
+        Handles both ``<urlset>`` and ``<sitemapindex>`` sitemap formats.
+        Results are cached in ``sitemap_cache`` for ``cache_pages_hours``.
+        Re-fetches even when cache is valid if source_titles is empty
+        (e.g. after an initial fetch that returned no parsed titles).
+        Checks *cancel_event* at entry for prompt shutdown.
+
+        Args:
+            db: The database instance to store results in.
+            cancel_event: Optional event to signal cancellation.
+        """
+        if cancel_event is not None and cancel_event.is_set():
+            logger.debug("FitGirl sitemap fetch skipped — cancelled")
+            return
+        if self._cache_pages_hours > 0 and db.get_sitemap_cache("fitgirl", self._cache_pages_hours):
+            if len(db.get_all_source_titles("fitgirl")) > 0:
+                logger.info(
+                    "FitGirl cache is still valid (TTL: {} hours) — skipping fetch",
+                    self._cache_pages_hours,
+                )
+                return
+            logger.info(
+                "FitGirl cache is valid but no titles indexed — re-fetching sitemap",
+            )
+
+        self._fetch_and_store_sitemap(db)
 
     def close(self) -> None:
         """Close the underlying database connection."""

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC
 from typing import TYPE_CHECKING
 
 from gamarr.database import Database
@@ -878,4 +879,78 @@ class TestKnownSlugs:
         assert "pc-game" in slugs
         assert "ps5-game" in slugs, "Should include cross-platform pending slugs"
         assert len(slugs) == 2
+        db.close()
+
+
+class TestClearCache:
+    """Database.clear_cache method tests."""
+
+    def test_clear_cache_fitgirl(self, tmp_path: Path) -> None:
+        """clear_cache('fitgirl') deletes only the fitgirl sitemap cache row."""
+        db = Database(str(tmp_path / "test.db"))
+        db.set_sitemap_cache("fitgirl")
+        db.set_sitemap_cache("dodi")
+        db.clear_cache("fitgirl")
+        assert not db.get_sitemap_cache("fitgirl", 9999)
+        assert db.get_sitemap_cache("dodi", 9999)
+        db.close()
+
+    def test_clear_cache_dodi(self, tmp_path: Path) -> None:
+        """clear_cache('dodi') deletes only the dodi sitemap cache row."""
+        db = Database(str(tmp_path / "test.db"))
+        db.set_sitemap_cache("fitgirl")
+        db.set_sitemap_cache("dodi")
+        db.clear_cache("dodi")
+        assert not db.get_sitemap_cache("dodi", 9999)
+        assert db.get_sitemap_cache("fitgirl", 9999)
+        db.close()
+
+    def test_clear_cache_metacritic(self, tmp_path: Path) -> None:
+        """clear_cache('metacritic') clears browse + detail caches, leaves sitemap alone."""
+        from datetime import datetime
+
+        from sqlalchemy import text
+
+        db = Database(str(tmp_path / "test.db"))
+
+        # Insert a browse cache row
+        with db._session() as session:
+            session.execute(
+                text(
+                    "INSERT INTO browse_page_cache (platform, page_number, games_json, cached_at) "
+                    "VALUES (:p, :pn, :j, :ca)"
+                ),
+                {"p": "pc", "pn": 1, "j": "[]", "ca": datetime.now(UTC).isoformat()},
+            )
+            # Insert a detail cache row
+            session.execute(
+                text("INSERT INTO game_detail_cache (slug, metascore, cached_at) VALUES (:s, :m, :ca)"),
+                {"s": "test-game", "m": 85, "ca": datetime.now(UTC).isoformat()},
+            )
+            session.commit()
+
+        db.set_sitemap_cache("fitgirl")
+        db.clear_cache("metacritic")
+
+        # Browse + detail caches cleared
+        with db._session() as session:
+            row = session.execute(text("SELECT COUNT(*) FROM browse_page_cache")).scalar()
+        assert row == 0, f"browse_page_cache has {row} rows"
+
+        with db._session() as session:
+            row = session.execute(text("SELECT COUNT(*) FROM game_detail_cache")).scalar()
+        assert row == 0, f"game_detail_cache has {row} rows"
+
+        # Sitemap cache untouched
+        assert db.get_sitemap_cache("fitgirl", 9999)
+        db.close()
+
+    def test_clear_cache_unknown_source_logs_warning(self, tmp_path: Path) -> None:
+        """clear_cache with an unrecognised source logs a warning."""
+        from unittest.mock import patch
+
+        db = Database(str(tmp_path / "test.db"))
+        with patch("gamarr.database.logger.warning") as mock_warning:
+            db.clear_cache("nonexistent")
+            mock_warning.assert_called_once_with("Unknown cache source '{}' \u2014 skipping", "nonexistent")
         db.close()
