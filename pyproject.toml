@@ -35,6 +35,9 @@ dependencies = [
     "xmltodict",
     "beautifulsoup4",
     "lxml",
+    "curl-cffi>=0.15.0",
+    "cloudscraper>=1.2.71",
+    "playwright>=1.40",
 ]
 
 [project.scripts]
@@ -74,6 +77,10 @@ ignore = [
 
 [tool.ruff.lint.isort]
 known-first-party = ["gamarr"]
+
+[[tool.mypy.overrides]]
+module = ["playwright", "playwright.sync_api"]
+ignore_missing_imports = true
 
 [tool.mypy]
 python_version = "3.12"

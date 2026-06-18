@@ -2,69 +2,9 @@
 
 from __future__ import annotations
 
-from gamarr.sources.dodi import (
-    _build_page_url,
-    _clean_dodi_title,
-    _extract_magnet_from_page,
-    _parse_user_page,
-)
+from gamarr.sources.dodi import _clean_dodi_title
 
-SAMPLE_USER_PAGE = """<!DOCTYPE html>
-<html>
-<body>
-<div class="box-info">
-  <h1>User uploads</h1>
-</div>
-<table>
-  <tbody>
-    <tr>
-      <td class="coll-1 name">
-        <a class="icon" href="/sub/PC Game/1/"><i class="flaticon-apps"></i></a>
-        <a href="/torrent/1111/Elden-Ring-DODI/">Elden Ring-DODI</a>
-      </td>
-    </tr>
-    <tr>
-      <td class="coll-1 name">
-        <a class="icon" href="/sub/PC Game/1/"><i class="flaticon-apps"></i></a>
-        <a href="/torrent/2222/Hades-II-DODI/">Hades II-DODI</a>
-      </td>
-    </tr>
-  </tbody>
-</table>
-<div class="pagination"><ul>
-  <li><a href="/user/DODI/1/">1</a></li>
-  <li><a href="/user/DODI/2/">2</a></li>
-</ul></div>
-</body>
-</html>"""
-
-SAMPLE_DETAIL_PAGE = """<!DOCTYPE html>
-<html>
-<body>
-<div class="torrent-detail-info">
-  <h1>Elden Ring-DODI</h1>
-  <ul class="download-links">
-    <li><a href="magnet:?xt=urn:btih:abc123&amp;dn=Elden+Ring-DODI">Magnet</a></li>
-  </ul></div>
-</div>
-</body>
-</html>"""
-
-
-def test_parse_user_page() -> None:
-    """Parse 1337x user page and extract torrent entries + page count."""
-    entries, total_pages = _parse_user_page(SAMPLE_USER_PAGE)
-    assert len(entries) == 2
-    assert entries[0]["title"] == "Elden Ring-DODI"
-    assert entries[0]["url"] == "https://1337x.to/torrent/1111/Elden-Ring-DODI/"
-    assert entries[1]["title"] == "Hades II-DODI"
-    assert total_pages == 2
-
-
-def test_extract_magnet_from_page() -> None:
-    """Extract magnet URI from 1337x torrent detail page."""
-    magnet = _extract_magnet_from_page(SAMPLE_DETAIL_PAGE)
-    assert magnet == "magnet:?xt=urn:btih:abc123&dn=Elden+Ring-DODI"
+# ── Title cleaning ──
 
 
 def test_clean_dodi_title() -> None:
@@ -74,140 +14,7 @@ def test_clean_dodi_title() -> None:
     assert _clean_dodi_title("Spider-Man.Remastered-DODI") == "Spider-Man Remastered"
 
 
-def test_build_page_url() -> None:
-    """Generate correct DODI page URLs from feed_url."""
-    feed = "https://1337x.to/user/DODI/"
-    url = _build_page_url(feed, 1)
-    assert url == "https://1337x.to/user/DODI/1/", url
-    url = _build_page_url(feed, 3)
-    assert url == "https://1337x.to/user/DODI/3/", url
-    # Test with custom feed URL
-    custom = "https://1337x.to/user/DODI/"
-    url = _build_page_url(custom, 1)
-    assert url == "https://1337x.to/user/DODI/1/", url
-
-
-def test_extract_magnet_no_match() -> None:
-    """_extract_magnet_from_page returns None when no magnet link present."""
-    html = "<html><body><p>No magnet here</p></body></html>"
-    assert _extract_magnet_from_page(html) is None
-
-
-def test_fetch_page_failure_logs_warning() -> None:
-    """_fetch_page returns None and logs warning on request failure."""
-    from unittest.mock import patch
-
-    from gamarr.database import Database
-    from gamarr.sources.dodi import DODISource
-
-    db = Database(":memory:")
-    source = DODISource(platform="pc", db=db)
-
-    with patch.object(source, "_fetcher") as mock_fetcher:
-        mock_fetcher.get.side_effect = Exception("Connection refused")
-        with patch("gamarr.sources.dodi.logger") as mock_logger:
-            result = source._fetch_page("https://1337x.to/user/DODI/1/")
-            assert result is None
-            mock_logger.warning.assert_called_once()
-
-
-def test_fetch_sitemap_cache_valid_skips_fetch() -> None:
-    """DODISource.fetch_sitemap skips fetch when cache is valid and titles exist."""
-    from unittest.mock import patch
-
-    from gamarr.database import Database
-    from gamarr.sources.dodi import DODISource
-
-    db = Database(":memory:")
-    # Pre-populate with a title
-    db.rebuild_source_titles(
-        "dodi",
-        [
-            {"title": "Existing Game", "url": "https://1337x.to/torrent/0/"},
-        ],
-    )
-    # Set cache as valid (recent timestamp)
-    db.set_sitemap_cache("dodi")
-
-    source = DODISource(platform="pc", db=db, cache_pages_hours=6)
-
-    with patch.object(source, "_fetcher") as mock_fetcher:
-        source.fetch_sitemap(db)
-        # fetch_page should NOT be called since cache is valid
-        mock_fetcher.get.assert_not_called()
-
-
-def test_fetch_sitemap_cache_valid_but_empty() -> None:
-    """DODISource re-fetches when cache is valid but no titles exist."""
-    from unittest.mock import MagicMock, patch
-
-    from gamarr.database import Database
-    from gamarr.sources.dodi import DODISource
-
-    db = Database(":memory:")
-    # Set cache as valid but DON'T add titles
-    db.set_sitemap_cache("dodi")
-
-    source = DODISource(platform="pc", db=db, cache_pages_hours=6)
-
-    with patch.object(source, "_fetcher") as mock_fetcher:
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.text = """<html><body>
-<table><tbody>
-<tr><td class="coll-1 name"><a class="icon" href="/sub/PC Game/1/"><i class="flaticon-apps"></i></a><a href="/torrent/1/Test-DODI/">Test-DODI</a></td></tr>
-</tbody></table>
-</body></html>"""
-        mock_detail = MagicMock()
-        mock_detail.status_code = 200
-        mock_detail.text = """<html><body><a href="magnet:?xt=urn:btih:test">Magnet</a></body></html>"""
-        mock_fetcher.get.side_effect = [mock_resp, mock_detail]
-
-        source.fetch_sitemap(db)
-        # Should re-fetch, then get detail page
-        assert mock_fetcher.get.call_count == 2
-
-
-def test_fetch_sitemap_first_page_fails() -> None:
-    """DODISource.fetch_sitemap handles first page fetch failure gracefully."""
-    from unittest.mock import patch
-
-    from gamarr.database import Database
-    from gamarr.sources.dodi import DODISource
-
-    db = Database(":memory:")
-    source = DODISource(platform="pc", db=db)
-
-    with patch.object(source, "_fetcher") as mock_fetcher:
-        mock_fetcher.get.side_effect = Exception("Network error")
-        source.fetch_sitemap(db)
-
-    # No titles should be stored
-    titles = db.get_all_source_titles("dodi")
-    assert len(titles) == 0
-
-
-def test_fetch_sitemap_no_entries_found() -> None:
-    """DODISource.fetch_sitemap handles empty torrent list gracefully."""
-    from unittest.mock import MagicMock, patch
-
-    from gamarr.database import Database
-    from gamarr.sources.dodi import DODISource
-
-    db = Database(":memory:")
-    source = DODISource(platform="pc", db=db)
-
-    with patch.object(source, "_fetcher") as mock_fetcher:
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.text = "<html><body><p>No torrents</p></body></html>"
-        mock_fetcher.get.return_value = mock_resp
-
-        source.fetch_sitemap(db)
-
-    # No titles should be stored
-    titles = db.get_all_source_titles("dodi")
-    assert len(titles) == 0
+# ── Source protocol ──
 
 
 def test_dodi_source_implements_base_source() -> None:
@@ -220,68 +27,6 @@ def test_dodi_source_implements_base_source() -> None:
     assert isinstance(source, BaseSource)
     assert source.source_name == "dodi"
     assert source.platform == "pc"
-
-
-def test_fetch_magnets_no_magnet_warning() -> None:
-    """_fetch_magnets_for_entries logs warning when detail page has no magnet."""
-    from unittest.mock import MagicMock, patch
-
-    from gamarr.database import Database
-    from gamarr.sources.dodi import DODISource
-
-    db = Database(":memory:")
-    source = DODISource(platform="pc", db=db)
-    entries = [{"title": "NoMagnet-DODI", "url": "https://1337x.to/torrent/1/"}]
-
-    with patch.object(source, "_fetcher") as mock_fetcher:
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.text = "<html><body><p>No magnet link here</p></body></html>"
-        mock_fetcher.get.return_value = mock_resp
-
-        with patch("gamarr.sources.dodi.logger") as mock_logger:
-            results = source._fetch_magnets_for_entries(entries)
-            assert len(results) == 1
-            assert results[0]["magnet"] is None
-            mock_logger.warning.assert_called_once()
-
-
-def test_fetch_magnets_logs_batch_progress() -> None:
-    """_fetch_magnets_for_entries logs progress every 100 entries at INFO."""
-    from unittest.mock import MagicMock, patch
-
-    from gamarr.database import Database
-    from gamarr.sources.dodi import DODISource
-
-    db = Database(":memory:")
-    source = DODISource(platform="pc", db=db, cache_pages_hours=0)
-
-    # 150 entries to trigger one batch progress log at idx=100
-    entries = [{"title": f"Game-{i:03d}-DODI", "url": f"https://1337x.to/torrent/{i}/"} for i in range(150)]
-
-    mock_detail = MagicMock()
-    mock_detail.status_code = 200
-    mock_detail.text = """<html><body><a href="magnet:?xt=urn:btih:abc">Magnet</a></body></html>"""
-
-    with (
-        patch.object(source, "_fetcher") as mock_fetcher,
-        patch("gamarr.sources.dodi.logger") as mock_logger,
-        patch("gamarr.sources.dodi.time.sleep"),
-    ):
-        mock_fetcher.get.return_value = mock_detail
-        results = source._fetch_magnets_for_entries(entries)
-
-    assert len(results) == 150
-    all(results[r]["magnet"] == "magnet:?xt=urn:btih:abc" for r in range(150))
-    # Start message
-    mock_logger.info.assert_any_call("Fetching magnets for {} DODI entries...", 150)
-    # Progress at idx=100
-    mock_logger.info.assert_any_call("Fetched {} of {} DODI magnets...", 100, 150)
-    # Only one progress call (idx=100) — not at 200
-    progress_calls = [c for c in mock_logger.info.call_args_list if c[0][0] == "Fetched {} of {} DODI magnets..."]
-    assert len(progress_calls) == 1, f"Expected 1 progress call, got {len(progress_calls)}"
-
-    db.close()
 
 
 def test_dodi_close() -> None:
@@ -297,55 +42,26 @@ def test_dodi_close() -> None:
     db.close.assert_called_once()
 
 
-def test_fetch_sitemap_success() -> None:
-    """DODISource.fetch_sitemap stores scraped entries in the DB."""
-    from unittest.mock import MagicMock, patch
+# ── Default URL ──
 
-    from gamarr.database import Database
+
+def test_dodi_default_url_is_hydralinks() -> None:
+    """DODISource default feed_url now points to hydralinks.cloud JSON."""
     from gamarr.sources.dodi import DODISource
 
-    db = Database(":memory:")
-    source = DODISource(platform="pc", db=db)
-
-    with patch.object(source, "_fetcher") as mock_fetcher:
-        # Mock two pages: page 1 has 1 entry + pagination showing 2 pages
-        mock_resp1 = MagicMock()
-        mock_resp1.status_code = 200
-        mock_resp1.text = """<html><body>
-<table><tbody>
-<tr><td class="coll-1 name"><a class="icon" href="/sub/PC Game/1/"><i class="flaticon-apps"></i></a><a href="/torrent/1/Game-A-DODI/">Game A-DODI</a></td></tr>
-</tbody></table>
-<div class="pagination"><ul><li><a href="/user/DODI/1/">1</a></li><li><a href="/user/DODI/2/">2</a></li></ul></div>
-</body></html>"""
-        mock_resp2 = MagicMock()
-        mock_resp2.status_code = 200
-        mock_resp2.text = """<html><body>
-<table><tbody>
-<tr><td class="coll-1 name"><a class="icon" href="/sub/PC Game/1/"><i class="flaticon-apps"></i></a><a href="/torrent/2/Game-B-DODI/">Game B-DODI</a></td></tr>
-</tbody></table>
-<div class="pagination"><ul><li><a href="/user/DODI/1/">1</a></li><li><a href="/user/DODI/2/">2</a></li></ul></div>
-</body></html>"""
-        # Mock detail pages for magnets
-        mock_resp_detail = MagicMock()
-        mock_resp_detail.status_code = 200
-        mock_resp_detail.text = """<html><body><a href="magnet:?xt=urn:btih:abc">Magnet</a></body></html>"""
-
-        # Call order: page 1, page 2, detail for entry 1, detail for entry 2
-        mock_fetcher.get.side_effect = [mock_resp1, mock_resp2, mock_resp_detail, mock_resp_detail]
-
-        source.fetch_sitemap(db)
-
-    titles = db.get_all_source_titles("dodi")
-    assert len(titles) == 2
-    assert titles[0]["title"] == "Game A"
-    assert titles[0]["magnet"] == "magnet:?xt=urn:btih:abc"
-    assert titles[1]["title"] == "Game B"
-    assert titles[1]["magnet"] == "magnet:?xt=urn:btih:abc"
+    source = DODISource()
+    assert "hydralinks.cloud" in source._feed_url, f"Expected hydralinks.cloud, got {source._feed_url}"
+    assert "1337x.to" not in source._feed_url and "x1337x" not in source._feed_url, (
+        f"Torrent site URL should not be default: {source._feed_url}"
+    )
 
 
-def test_fetch_sitemap_logs_progress_during_scrape() -> None:
-    """fetch_sitemap logs entry, page summary, and final summary at INFO level."""
-    from unittest.mock import MagicMock, patch
+# ── Playwright fetch ──
+
+
+def test_fetch_sitemap_calls_parse_hydra_json() -> None:
+    """fetch_sitemap parses JSON via _parse_hydra_json and stores results."""
+    from unittest.mock import patch
 
     from gamarr.database import Database
     from gamarr.sources.dodi import DODISource
@@ -353,288 +69,158 @@ def test_fetch_sitemap_logs_progress_during_scrape() -> None:
     db = Database(":memory:")
     source = DODISource(platform="pc", db=db, cache_pages_hours=0)
 
-    mock_page1 = MagicMock()
-    mock_page1.status_code = 200
-    mock_page1.text = """<html><body>
-<table><tbody>
-<tr><td class="coll-1 name"><a class="icon" href="/sub/PC Game/1/"><i class="flaticon-apps"></i></a><a href="/torrent/1/Game-A-DODI/">Game A-DODI</a></td></tr>
-</tbody></table>
-<div class="pagination"><ul><li><a href="/user/DODI/1/">1</a></li><li><a href="/user/DODI/2/">2</a></li></ul></div>
-</body></html>"""
-    mock_page2 = MagicMock()
-    mock_page2.status_code = 200
-    mock_page2.text = """<html><body>
-<table><tbody>
-<tr><td class="coll-1 name"><a class="icon" href="/sub/PC Game/1/"><i class="flaticon-apps"></i></a><a href="/torrent/2/Game-B-DODI/">Game B-DODI</a></td></tr>
-</tbody></table>
-</body></html>"""
-    mock_detail = MagicMock()
-    mock_detail.status_code = 200
-    mock_detail.text = """<html><body><a href="magnet:?xt=urn:btih:abc">Magnet</a></body></html>"""
+    mock_json = '{"downloads": [{"title": "Test-DODI", "url": "https://test/t", "uris": ["magnet:?test"]}]}'
 
-    with (
-        patch.object(source, "_fetcher") as mock_fetcher,
-        patch("gamarr.sources.dodi.logger") as mock_logger,
-        patch("gamarr.sources.dodi.time.sleep"),
-    ):
-        mock_fetcher.get.side_effect = [mock_page1, mock_page2, mock_detail, mock_detail]
+    with patch.object(source, "_fetch_json_via_playwright", return_value=mock_json) as mock_fetch:
         source.fetch_sitemap(db)
 
-    # 1. Entry message
-    mock_logger.info.assert_any_call("Fetching DODI repacks from {}...", source._feed_url)
-    # 2. Page summary
-    mock_logger.info.assert_any_call("Found {} DODI page(s) — {} entries", 2, 2)
-    # 3. Final summary
-    mock_logger.info.assert_any_call("DODI index rebuilt: {} torrents indexed", 2)
+        mock_fetch.assert_called_once()
+        titles = db.get_all_source_titles("dodi")
+        assert len(titles) == 1
+        assert titles[0]["title"] == "Test"
+        assert titles[0]["magnet"] == "magnet:?test"
 
     db.close()
 
 
-def test_fetch_sitemap_cancelled_mid_pagination_preserves_cache() -> None:
-    """fetch_sitemap preserves existing cache when cancelled mid-pagination."""
+def test_fetch_sitemap_cancelled_at_entry() -> None:
+    """fetch_sitemap returns early when cancel_event is pre-set."""
     import threading
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import patch
 
     from gamarr.database import Database
     from gamarr.sources.dodi import DODISource
 
     db = Database(":memory:")
-    # Pre-populate cache
-    db.set_sitemap_cache("dodi")
-    db.rebuild_source_titles(
-        "dodi",
-        [{"title": "Existing Game", "url": "https://1337x.to/torrent/0/", "magnet": "magnet:?xt=urn:btih:existing"}],
-    )
-
     source = DODISource(platform="pc", db=db, cache_pages_hours=6)
 
     cancel_event = threading.Event()
+    cancel_event.set()
 
-    with (
-        patch.object(source, "_fetcher") as mock_fetcher,
-        patch("gamarr.sources.dodi.time.sleep"),
-    ):
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.text = """<html><body>
-<table><tbody>
-<tr><td class="coll-1 name"><a class="icon" href="/sub/PC Game/1/"><i class="flaticon-apps"></i></a><a href="/torrent/1/New-Game-DODI/">New Game-DODI</a></td></tr>
-</tbody></table>
-<div class="pagination"><ul><li><a href="/user/DODI/1/">1</a></li><li><a href="/user/DODI/2/">2</a></li></ul></div>
-</body></html>"""
-        mock_fetcher.get.return_value = mock_resp
-
-        # Cancel after _fetch_remaining_pages completes
-        cancel_event.set()
+    with patch.object(source, "_fetch_json_via_playwright") as mock_fetch:
         source.fetch_sitemap(db, cancel_event=cancel_event)
+        mock_fetch.assert_not_called()
 
-    # Existing game should still be in the cache
+    db.close()
+
+
+# ── JSON parsing ──
+
+HYDRA_SAMPLE_JSON = """
+{
+  "downloads": [
+    {
+      "title": "Elden Ring-DODI",
+      "url": "https://dodi-repacks.site/elden-ring",
+      "uris": ["magnet:?xt=urn:btih:abc&dn=Elden+Ring+DODI"],
+      "fileSize": "50 GB",
+      "uploadDate": "2024-06-01T12:00:00.000Z"
+    },
+    {
+      "title": "Hades II-DODI",
+      "url": "https://dodi-repacks.site/hades-2",
+      "uris": ["magnet:?xt=urn:btih:def&dn=Hades+II+DODI"],
+      "fileSize": "15 GB",
+      "uploadDate": "2024-06-15T12:00:00.000Z"
+    }
+  ]
+}
+"""
+
+
+def test_parse_hydra_json_converts_to_source_titles() -> None:
+    """_parse_hydra_json converts hydralinks.cloud JSON to source_titles format."""
+    from gamarr.sources.dodi import _parse_hydra_json
+
+    entries = _parse_hydra_json(HYDRA_SAMPLE_JSON)
+
+    assert len(entries) == 2
+    assert entries[0]["title"] == "Elden Ring"  # DODI suffix stripped
+    assert entries[0]["magnet"] == "magnet:?xt=urn:btih:abc&dn=Elden+Ring+DODI"
+    assert entries[0]["url"] == "https://dodi-repacks.site/elden-ring"
+    assert entries[1]["title"] == "Hades II"
+    assert entries[1]["magnet"] == "magnet:?xt=urn:btih:def&dn=Hades+II+DODI"
+    assert entries[1]["url"] == "https://dodi-repacks.site/hades-2"
+
+
+def test_parse_hydra_json_handles_missing_fields() -> None:
+    """_parse_hydra_json skips entries with missing title and handles missing url/uris."""
+    from gamarr.sources.dodi import _parse_hydra_json
+
+    json_str = """
+    {
+      "downloads": [
+        {"title": "Good Game-DODI", "url": "https://dodi/good", "uris": ["magnet:?good"]},
+        {"url": "https://dodi/no-title", "uris": ["magnet:?no-title"]},
+        {"title": "No URL-DODI", "uris": ["magnet:?no-url"]},
+        {"title": "No Magnet-DODI", "url": "https://dodi/no-magnet"},
+        {},
+        {"title": "Bad URIS-DODI", "url": "https://dodi/bad-uris", "uris": "magnet:?bad"}
+      ]
+    }
+    """
+    entries = _parse_hydra_json(json_str)
+    # 3 skipped: entry with no title, entry with no url, empty object
+    # Bad URIS entry kept but with magnet=None (string uris rejected)
+    assert len(entries) == 3
+    assert entries[0]["title"] == "Good Game"
+    assert entries[0]["url"] == "https://dodi/good"
+    assert entries[0]["magnet"] == "magnet:?good"
+    assert entries[1]["title"] == "No Magnet"
+    assert entries[1]["url"] == "https://dodi/no-magnet"
+    assert entries[1]["magnet"] is None
+    assert entries[2]["title"] == "Bad URIS"
+    assert entries[2]["magnet"] is None
+
+
+def test_parse_hydra_json_returns_empty_for_invalid_input() -> None:
+    """_parse_hydra_json returns [] for invalid JSON, non-dict, or missing downloads."""
+    from gamarr.sources.dodi import _parse_hydra_json
+
+    assert _parse_hydra_json("not valid json") == []
+    assert _parse_hydra_json("[]") == []  # non-dict top-level
+    assert _parse_hydra_json("null") == []
+    assert _parse_hydra_json('{"downloads": null}') == []
+    assert _parse_hydra_json('{"downloads": [null, "string", 42]}') == []
+
+
+def test_fetch_sitemap_cache_hit_skips_fetch() -> None:
+    """fetch_sitemap skips fetching when cache is valid and titles exist."""
+    from unittest.mock import patch
+
+    from gamarr.database import Database
+    from gamarr.sources.dodi import DODISource
+
+    db = Database(":memory:")
+    db.set_sitemap_cache("dodi")
+    db.rebuild_source_titles("dodi", [{"title": "Cached", "url": "https://cached/t", "magnet": None}])
+
+    source = DODISource(platform="pc", db=db, cache_pages_hours=6)
+
+    with patch.object(source, "_fetch_json_via_playwright") as mock_fetch:
+        source.fetch_sitemap(db)
+        mock_fetch.assert_not_called()
+
+    db.close()
+
+
+def test_fetch_sitemap_cache_empty_re_fetches() -> None:
+    """fetch_sitemap re-fetches when cache is valid but titles are empty."""
+    from unittest.mock import patch
+
+    from gamarr.database import Database
+    from gamarr.sources.dodi import DODISource
+
+    db = Database(":memory:")
+    db.set_sitemap_cache("dodi")  # cache valid but no source_titles rows
+
+    source = DODISource(platform="pc", db=db, cache_pages_hours=6)
+
+    mock_json = '{"downloads": [{"title": "Fetched-DODI", "url": "https://fetched/t", "uris": ["magnet:?fetched"]}]}'
+    with patch.object(source, "_fetch_json_via_playwright", return_value=mock_json) as mock_fetch:
+        source.fetch_sitemap(db)
+        mock_fetch.assert_called_once()
     titles = db.get_all_source_titles("dodi")
     assert len(titles) == 1
-    assert titles[0]["title"] == "Existing Game"
-    assert titles[0]["magnet"] == "magnet:?xt=urn:btih:existing"
 
     db.close()
-
-
-def test_make_fetcher_uses_requests_session() -> None:
-    """_make_fetcher should return a requests Session.
-
-    1337x.to has no Cloudflare protection, so no impersonation
-    library is needed. A plain requests.Session is sufficient.
-    """
-    import requests
-
-    from gamarr.sources.dodi import DODISource
-
-    fetcher = DODISource._make_fetcher()
-    assert isinstance(fetcher, requests.Session), f"Expected requests.Session, got {type(fetcher)}"
-
-
-def test_dodi_source_custom_feed_url() -> None:
-    """DODISource uses the configured feed_url for page URLs."""
-    from gamarr.database import Database
-    from gamarr.sources.dodi import DODISource, _build_page_url
-
-    # Custom feed_url pointing to a different mirror
-    feed = "https://custom-mirror.to/user/DODI/"
-    db = Database(":memory:")
-    source = DODISource(platform="pc", db=db, cache_pages_hours=0, feed_url=feed)
-
-    # _feed_url should be stored without trailing slash for URL building
-    assert source._feed_url == "https://custom-mirror.to/user/DODI"
-    assert source._base_domain == "https://custom-mirror.to"
-
-    # _build_page_url should use the feed_url
-    url = _build_page_url(feed, 1)
-    assert url == "https://custom-mirror.to/user/DODI/1/", url
-
-    # Verify _fetch_page would hit the custom domain (mock the fetcher)
-    from unittest.mock import MagicMock, patch
-
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.text = "<html><body><p>test</p></body></html>"
-
-    with patch.object(source, "_fetcher") as mock_fetcher:
-        mock_fetcher.get.return_value = mock_resp
-        html = source._fetch_page(_build_page_url(source._feed_url, 1))
-        assert html == "<html><body><p>test</p></body></html>"
-        # Verify it called the correct URL
-        call_url = mock_fetcher.get.call_args[0][0]
-        assert "custom-mirror.to" in call_url, f"Expected custom mirror, got {call_url}"
-        assert "1337x.to" not in call_url, f"Should not use old domain: {call_url}"
-
-    db.close()
-
-
-def test_fetch_page_retries_on_transient_failure() -> None:
-    """_fetch_page retries on transient failures before giving up.
-
-    1337x.to intermittently returns 502/timeout errors. Without retry
-    logic, a single transient failure permanently stores magnet: None.
-    """
-    from unittest.mock import MagicMock, patch
-
-    from gamarr.database import Database
-    from gamarr.sources.dodi import DODISource
-
-    db = Database(":memory:")
-    source = DODISource(platform="pc", db=db, cache_pages_hours=0)
-    url = "https://1337x.to/torrent/1/"
-
-    from requests import HTTPError
-
-    # Mock the fetcher: fail twice (502), succeed on 3rd attempt
-    mock_resp = MagicMock()
-    mock_resp.status_code = 200
-    mock_resp.text = '<html><body><a href="magnet:?xt=urn:btih:abc">Magnet</a></body></html>'
-
-    err_502 = HTTPError("502 Server Error")
-    err_502.response = MagicMock()
-    err_502.response.status_code = 502
-
-    with patch.object(source, "_fetcher") as mock_fetcher, patch("gamarr.sources.dodi.time.sleep"):
-        mock_fetcher.get.side_effect = [err_502, err_502, mock_resp]
-
-        html = source._fetch_page(url)
-
-        assert mock_fetcher.get.call_count == 3, f"Expected 3 calls, got {mock_fetcher.get.call_count}"
-        assert html is not None
-        assert "magnet:?xt=urn:btih:abc" in html
-
-    db.close()
-
-
-def test_fetch_page_gives_up_after_max_retries() -> None:
-    """_fetch_page returns None after max retries if all fail."""
-    from unittest.mock import MagicMock, patch
-
-    from requests import HTTPError
-
-    from gamarr.database import Database
-    from gamarr.sources.dodi import DODISource
-
-    db = Database(":memory:")
-    source = DODISource(platform="pc", db=db, cache_pages_hours=0)
-
-    err_502 = HTTPError("502 Server Error")
-    err_502.response = MagicMock()
-    err_502.response.status_code = 502
-
-    with patch.object(source, "_fetcher") as mock_fetcher, patch("gamarr.sources.dodi.time.sleep"):
-        mock_fetcher.get.side_effect = [err_502, err_502, err_502]
-
-        html = source._fetch_page("https://1337x.to/torrent/1/")
-
-        assert html is None, "Should return None after all retries fail"
-
-    db.close()
-
-
-def test_fetch_page_does_not_retry_on_404() -> None:
-    """_fetch_page does not retry on 4xx client errors."""
-    from unittest.mock import MagicMock, patch
-
-    from requests import HTTPError
-
-    from gamarr.database import Database
-    from gamarr.sources.dodi import DODISource
-
-    db = Database(":memory:")
-    source = DODISource(platform="pc", db=db, cache_pages_hours=0)
-
-    err_404 = HTTPError("404 Not Found")
-    err_404.response = MagicMock()
-    err_404.response.status_code = 404
-
-    with patch.object(source, "_fetcher") as mock_fetcher, patch("gamarr.sources.dodi.time.sleep"):
-        mock_fetcher.get.side_effect = err_404
-
-        html = source._fetch_page("https://1337x.to/torrent/1/")
-
-        assert html is None, "Should return None"
-        assert mock_fetcher.get.call_count == 1, f"Expected 1 call, got {mock_fetcher.get.call_count}"
-
-    db.close()
-
-
-def test_fetch_page_cancelled_during_retry() -> None:
-    """_fetch_page returns None immediately when cancel_event is set during retry."""
-    import threading
-    from unittest.mock import MagicMock, patch
-
-    from requests import HTTPError
-
-    from gamarr.database import Database
-    from gamarr.sources.dodi import DODISource
-
-    db = Database(":memory:")
-    source = DODISource(platform="pc", db=db, cache_pages_hours=0)
-
-    cancel_event = threading.Event()
-
-    err_502 = HTTPError("502 Server Error")
-    err_502.response = MagicMock()
-    err_502.response.status_code = 502
-
-    with patch.object(source, "_fetcher") as mock_fetcher, patch("gamarr.sources.dodi.logger"):
-        mock_fetcher.get.side_effect = err_502
-
-        # Set cancel_event before calling — should abort immediately
-        cancel_event.set()
-
-        html = source._fetch_page(
-            "https://1337x.to/torrent/1/",
-            max_retries=3,
-            cancel_event=cancel_event,
-        )
-
-        assert html is None, "Should return None when cancelled"
-        assert mock_fetcher.get.call_count == 0, (
-            f"Should not make any requests when cancelled, got {mock_fetcher.get.call_count}"
-        )
-
-    db.close()
-
-
-def test_dodi_defaults_to_legitimate_domain() -> None:
-    """DODISource default feed_url uses the legitimate 1337x.to, not the copycat 1377x.to."""
-    import inspect
-
-    from gamarr.sources.dodi import DODISource, _extract_page_count, _parse_user_page
-
-    source = DODISource()
-    assert "1337x.to" in source._feed_url, f"Expected 1337x.to, got {source._feed_url}"
-    assert "1377x.to" not in source._feed_url, f"Copycat domain must not be present: {source._feed_url}"
-
-    # Also check module-level function defaults
-    sig = inspect.signature(_extract_page_count)
-    default_feed = sig.parameters["feed_url"].default
-    assert "1337x.to" in default_feed, f"_extract_page_count defaults to {default_feed}"
-    assert "1377x.to" not in default_feed
-
-    sig = inspect.signature(_parse_user_page)
-    default_feed = sig.parameters["feed_url"].default
-    assert "1337x.to" in default_feed, f"_parse_user_page defaults to {default_feed}"
-    assert "1377x.to" not in default_feed

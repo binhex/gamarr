@@ -64,7 +64,7 @@ class DownloadSitesConfig(RootModel[list[SourceConfigEntry]]):
 
     root: list[SourceConfigEntry] = [
         SourceConfigEntry(name="fitgirl", feed_url="https://fitgirl-repacks.site/feed/"),
-        SourceConfigEntry(name="dodi", feed_url="https://1337x.to/user/DODI/"),
+        SourceConfigEntry(name="dodi", feed_url="https://hydralinks.cloud/sources/dodi.json"),
     ]
 
     @staticmethod
@@ -196,7 +196,7 @@ class Config(BaseModel):
         default_factory=lambda: DownloadSitesConfig(
             root=[
                 SourceConfigEntry(name="fitgirl", feed_url="https://fitgirl-repacks.site/feed/"),
-                SourceConfigEntry(name="dodi", feed_url="https://1337x.to/user/DODI/"),
+                SourceConfigEntry(name="dodi", feed_url="https://hydralinks.cloud/sources/dodi.json"),
             ]
         )
     )
@@ -609,7 +609,9 @@ def _collect_download_site_names(ds: list) -> set[str]:
 
 def _apply_dodi_defaults(dodi_config: dict) -> None:
     """Apply missing default fields to a DODI config dict in-place."""
-    dodi_defaults = SourceConfigEntry(name="dodi", feed_url="https://1337x.to/user/DODI/").model_dump(exclude={"name"})
+    dodi_defaults = SourceConfigEntry(name="dodi", feed_url="https://hydralinks.cloud/sources/dodi.json").model_dump(
+        exclude={"name"}
+    )
     for k, v in dodi_defaults.items():
         dodi_config.setdefault(k, v)
 
@@ -652,10 +654,65 @@ def _migrate_add_dodi_entry(raw: dict[str, Any]) -> bool:
         return _enhance_dodi_entry(ds)
 
     # Use SourceConfigEntry defaults so field additions stay in sync
-    dodi_entry = SourceConfigEntry(name="dodi", feed_url="https://1337x.to/user/DODI/").model_dump(exclude={"name"})
+    dodi_entry = SourceConfigEntry(name="dodi", feed_url="https://hydralinks.cloud/sources/dodi.json").model_dump(
+        exclude={"name"}
+    )
     ds.append({"dodi": dodi_entry})
     logger.info("Config: added DODI entry to download_sites")
     return True
+
+
+_KNOWN_BAD_DODI_HOSTS = {
+    "1337x.to",
+    "1377x.to",
+    "x1337x.cc",
+}
+
+
+def _replace_bad_dodi_url(dodi_config: dict[str, Any]) -> bool:
+    """Replace a DODI entry's feed_url if it uses a known-bad host.
+
+    Returns True if the URL was replaced.
+    """
+    from urllib.parse import urlparse
+
+    current = dodi_config.get("feed_url")
+    if not isinstance(current, str):
+        return False
+    parsed = urlparse(current)
+    if parsed.hostname and parsed.hostname.casefold() in _KNOWN_BAD_DODI_HOSTS:
+        dodi_config["feed_url"] = "https://hydralinks.cloud/sources/dodi.json"
+        logger.info(
+            "Config: migrated DODI feed URL from '{}' to hydralinks.cloud",
+            current,
+        )
+        return True
+    return False
+
+
+def _migrate_dodi_feed_url(raw: dict[str, Any]) -> bool:
+    """Replace known-bad DODI feed URLs with the correct hydralinks.cloud endpoint.
+
+    Scans ``download_sites`` for a DODI entry whose feed_url contains any
+    known copycat or impersonation domain for 1337x.to and replaces it with
+    ``https://hydralinks.cloud/sources/dodi.json``.
+
+    Returns True if any URL was replaced.
+    """
+    ds = raw.get("download_sites")
+    if not isinstance(ds, list):
+        return False
+
+    changed = False
+    for entry in ds:
+        if not isinstance(entry, dict):
+            continue
+        for key, val in entry.items():
+            if key.casefold() != "dodi" or not isinstance(val, dict):
+                continue
+            if _replace_bad_dodi_url(val):
+                changed = True
+    return changed
 
 
 def _convert_entry_to_keyed(entry: dict[str, Any]) -> dict[str, Any] | None:
@@ -740,6 +797,7 @@ def _migrate_config(raw: dict[str, Any]) -> bool:
             _migrate_download_sites_to_ordered,
             _migrate_download_sites_to_keyed_list,
             _migrate_add_dodi_entry,
+            _migrate_dodi_feed_url,
             _migrate_daemon_mode,
         ]
         for fn in _migrations:

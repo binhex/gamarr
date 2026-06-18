@@ -28,7 +28,7 @@ Sources are checked in config-defined priority order.
   expiry window (`download_sites.fitgirl.max_queue_days`) starts for the
   FitGirl-matching phase. Set either value to `0` for indefinite pending.
 - **Multiple download sources** — supports FitGirl repacks (sitemap-based)
-  and DODI repacks (1337x.to scraping). Sources are configured as an ordered
+  and DODI repacks (hydralinks.cloud JSON via headless browser). Sources are configured as an ordered
   list — position determines priority, and the first source with a match
   delivers the torrent.
 - **Source priority** — if a game is available on multiple sources, the
@@ -51,6 +51,7 @@ Sources are checked in config-defined priority order.
 - [Python 3.12+](https://www.python.org/downloads/)
 - [Astral uv](https://github.com/astral-sh/uv#installation)
 - [qBittorrent](https://www.qbittorrent.org/) with WebUI enabled
+- Playwright with Chromium (for DODI source) — installed automatically via ``uv sync && uv run playwright install chromium``
 
 ## Quick start
 
@@ -61,6 +62,7 @@ git clone https://github.com/binhex/gamarr
 cd gamarr
 uv venv --quiet
 uv sync
+uv run playwright install chromium
 ```
 
 ### Usage
@@ -137,7 +139,7 @@ download_sites:
       max_queue_days: 60
   - dodi:
       enabled: true
-      feed_url: https://1337x.to/user/DODI/
+      feed_url: https://hydralinks.cloud/sources/dodi.json
       platform: pc
       cache_pages_hours: 6
       reject_keywords: []

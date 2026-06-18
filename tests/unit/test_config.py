@@ -1195,3 +1195,49 @@ def test_migrate_add_dodi_entry_casefold_key() -> None:
     assert dodi_entry is not None, "DODI entry not found"
     assert dodi_entry["enabled"] is True
     assert dodi_entry.get("feed_url") is not None, "Uppercase key DODI should have feed_url added"
+
+
+def test_migrate_dodi_feed_url_replaces_known_bad_urls() -> None:
+    """_migrate_dodi_feed_url replaces x1337x.cc, 1337x.to, 1377x.to with hydralinks.cloud."""
+    from gamarr.config import _migrate_dodi_feed_url
+
+    # Each known-bad URL should be replaced
+    for bad_url in [
+        "https://x1337x.cc/user/DODI/",
+        "https://1337x.to/user/DODI/",
+        "https://1377x.to/user/DODI/",
+    ]:
+        raw = {
+            "download_sites": [
+                {"fitgirl": {"feed_url": "https://fitgirl-repacks.site/feed/"}},
+                {"dodi": {"feed_url": bad_url, "enabled": True}},
+            ]
+        }
+        result = _migrate_dodi_feed_url(raw)
+        assert result is True, f"Should return True for bad URL: {bad_url}"
+        # Find the dodi entry
+        for entry in raw["download_sites"]:
+            if isinstance(entry, dict) and "dodi" in entry:
+                dodi_url = entry["dodi"]["feed_url"]
+                assert dodi_url == "https://hydralinks.cloud/sources/dodi.json", (
+                    f"Expected hydralinks.cloud for {bad_url}, got {dodi_url}"
+                )
+                break
+
+    # Good URL should NOT be changed
+    raw = {
+        "download_sites": [
+            {"dodi": {"feed_url": "https://hydralinks.cloud/sources/dodi.json", "enabled": True}},
+        ]
+    }
+    result = _migrate_dodi_feed_url(raw)
+    assert result is False, "Should return False when no change needed"
+    for entry in raw["download_sites"]:
+        if isinstance(entry, dict) and "dodi" in entry:
+            assert entry["dodi"]["feed_url"] == "https://hydralinks.cloud/sources/dodi.json"
+            break
+
+    # No DODI entry should return False
+    raw = {"download_sites": [{"fitgirl": {"feed_url": "https://fitgirl-repacks.site/feed/"}}]}
+    result = _migrate_dodi_feed_url(raw)
+    assert result is False, "Should return False when no DODI entry exists"
