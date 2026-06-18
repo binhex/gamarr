@@ -414,8 +414,8 @@ def run_acquisition(
                 "db": db,
                 "cache_pages_hours": entry.cache_pages_hours,
             }
-            if entry.name.casefold() == "fitgirl":
-                kwargs["feed_url"] = entry.feed_url or "https://fitgirl-repacks.site/feed/"
+            if entry.feed_url:
+                kwargs["feed_url"] = entry.feed_url
             return factory(**kwargs)
 
         matched: list[dict[str, Any]] = []

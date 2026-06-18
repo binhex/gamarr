@@ -19,20 +19,22 @@ SAMPLE_USER_PAGE = """<!DOCTYPE html>
   <tbody>
     <tr>
       <td class="coll-1 name">
+        <a class="icon" href="/sub/PC Game/1/"><i class="flaticon-apps"></i></a>
         <a href="/torrent/1111/Elden-Ring-DODI/">Elden Ring-DODI</a>
       </td>
     </tr>
     <tr>
       <td class="coll-1 name">
+        <a class="icon" href="/sub/PC Game/1/"><i class="flaticon-apps"></i></a>
         <a href="/torrent/2222/Hades-II-DODI/">Hades II-DODI</a>
       </td>
     </tr>
   </tbody>
 </table>
-<ul class="pagination">
+<div class="pagination"><ul>
   <li><a href="/user/DODI/1/">1</a></li>
   <li><a href="/user/DODI/2/">2</a></li>
-</ul>
+</ul></div>
 </body>
 </html>"""
 
@@ -43,7 +45,7 @@ SAMPLE_DETAIL_PAGE = """<!DOCTYPE html>
   <h1>Elden Ring-DODI</h1>
   <ul class="download-links">
     <li><a href="magnet:?xt=urn:btih:abc123&amp;dn=Elden+Ring-DODI">Magnet</a></li>
-  </ul>
+  </ul></div>
 </div>
 </body>
 </html>"""
@@ -54,7 +56,7 @@ def test_parse_user_page() -> None:
     entries, total_pages = _parse_user_page(SAMPLE_USER_PAGE)
     assert len(entries) == 2
     assert entries[0]["title"] == "Elden Ring-DODI"
-    assert entries[0]["url"] == "https://1337x.to/torrent/1111/Elden-Ring-DODI/"
+    assert entries[0]["url"] == "https://1377x.to/torrent/1111/Elden-Ring-DODI/"
     assert entries[1]["title"] == "Hades II-DODI"
     assert total_pages == 2
 
@@ -73,11 +75,16 @@ def test_clean_dodi_title() -> None:
 
 
 def test_build_page_url() -> None:
-    """Generate correct 1337x page URLs."""
-    url = _build_page_url(1)
-    assert url == "https://1337x.to/user/DODI/1/"
-    url = _build_page_url(3)
-    assert url == "https://1337x.to/user/DODI/3/"
+    """Generate correct DODI page URLs from feed_url."""
+    feed = "https://1377x.to/user/DODI/"
+    url = _build_page_url(feed, 1)
+    assert url == "https://1377x.to/user/DODI/1/", url
+    url = _build_page_url(feed, 3)
+    assert url == "https://1377x.to/user/DODI/3/", url
+    # Test with custom feed URL
+    custom = "https://1337x.to/user/DODI/"
+    url = _build_page_url(custom, 1)
+    assert url == "https://1337x.to/user/DODI/1/", url
 
 
 def test_extract_magnet_no_match() -> None:
@@ -99,7 +106,7 @@ def test_fetch_page_failure_logs_warning() -> None:
     with patch.object(source, "_fetcher") as mock_fetcher:
         mock_fetcher.get.side_effect = Exception("Connection refused")
         with patch("gamarr.sources.dodi.logger") as mock_logger:
-            result = source._fetch_page("https://1337x.to/user/DODI/1/")
+            result = source._fetch_page("https://1377x.to/user/DODI/1/")
             assert result is None
             mock_logger.warning.assert_called_once()
 
@@ -116,7 +123,7 @@ def test_fetch_sitemap_cache_valid_skips_fetch() -> None:
     db.rebuild_source_titles(
         "dodi",
         [
-            {"title": "Existing Game", "url": "https://1337x.to/torrent/0/"},
+            {"title": "Existing Game", "url": "https://1377x.to/torrent/0/"},
         ],
     )
     # Set cache as valid (recent timestamp)
@@ -148,7 +155,7 @@ def test_fetch_sitemap_cache_valid_but_empty() -> None:
         mock_resp.status_code = 200
         mock_resp.text = """<html><body>
 <table><tbody>
-<tr><td class="coll-1 name"><a href="/torrent/1/Test-DODI/">Test-DODI</a></td></tr>
+<tr><td class="coll-1 name"><a class="icon" href="/sub/PC Game/1/"><i class="flaticon-apps"></i></a><a href="/torrent/1/Test-DODI/">Test-DODI</a></td></tr>
 </tbody></table>
 </body></html>"""
         mock_detail = MagicMock()
@@ -224,7 +231,7 @@ def test_fetch_magnets_no_magnet_warning() -> None:
 
     db = Database(":memory:")
     source = DODISource(platform="pc", db=db)
-    entries = [{"title": "NoMagnet-DODI", "url": "https://1337x.to/torrent/1/"}]
+    entries = [{"title": "NoMagnet-DODI", "url": "https://1377x.to/torrent/1/"}]
 
     with patch.object(source, "_fetcher") as mock_fetcher:
         mock_resp = MagicMock()
@@ -268,17 +275,17 @@ def test_fetch_sitemap_success() -> None:
         mock_resp1.status_code = 200
         mock_resp1.text = """<html><body>
 <table><tbody>
-<tr><td class="coll-1 name"><a href="/torrent/1/Game-A-DODI/">Game A-DODI</a></td></tr>
+<tr><td class="coll-1 name"><a class="icon" href="/sub/PC Game/1/"><i class="flaticon-apps"></i></a><a href="/torrent/1/Game-A-DODI/">Game A-DODI</a></td></tr>
 </tbody></table>
-<ul class="pagination"><li><a href="/user/DODI/1/">1</a></li><li><a href="/user/DODI/2/">2</a></li></ul>
+<div class="pagination"><ul><li><a href="/user/DODI/1/">1</a></li><li><a href="/user/DODI/2/">2</a></li></ul></div>
 </body></html>"""
         mock_resp2 = MagicMock()
         mock_resp2.status_code = 200
         mock_resp2.text = """<html><body>
 <table><tbody>
-<tr><td class="coll-1 name"><a href="/torrent/2/Game-B-DODI/">Game B-DODI</a></td></tr>
+<tr><td class="coll-1 name"><a class="icon" href="/sub/PC Game/1/"><i class="flaticon-apps"></i></a><a href="/torrent/2/Game-B-DODI/">Game B-DODI</a></td></tr>
 </tbody></table>
-<ul class="pagination"><li><a href="/user/DODI/1/">1</a></li><li><a href="/user/DODI/2/">2</a></li></ul>
+<div class="pagination"><ul><li><a href="/user/DODI/1/">1</a></li><li><a href="/user/DODI/2/">2</a></li></ul></div>
 </body></html>"""
         # Mock detail pages for magnets
         mock_resp_detail = MagicMock()

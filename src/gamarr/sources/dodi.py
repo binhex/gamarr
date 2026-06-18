@@ -1,6 +1,6 @@
 """DODI repacks source for gamarr.
 
-Scrapes 1337x.to/user/DODI/ for magnet links and stores them in the
+Scrapes 1377x.to/user/DODI/ for magnet links and stores them in the
 source_titles database table for Metacritic-first matching.
 """
 
@@ -21,7 +21,7 @@ _BROWSER_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
     "Accept-Encoding": "gzip, deflate",
-    "Referer": "https://1337x.to/",
+    "Referer": "https://1377x.to/",
     "DNT": "1",
     "Connection": "keep-alive",
     "Upgrade-Insecure-Requests": "1",
@@ -37,20 +37,22 @@ _DOT_TO_SPACE_PATTERN = re.compile(r"\.")
 _MAGNET_PATTERN = re.compile(r'href="(magnet:\?xt=urn:btih:[^"]+)"')
 
 
-def _build_page_url(page: int) -> str:
-    """Build the 1337x user page URL for a given page number.
+def _build_page_url(feed_url: str, page: int) -> str:
+    """Build a DODI user page URL for a given page number.
 
     Args:
+        feed_url: Base feed URL (e.g. ``"https://1377x.to/user/DODI/"``).
         page: Page number (1-indexed).
 
     Returns:
-        The full URL to the 1337x user page for DODI at the given page.
+        The full URL to the user page for DODI at the given page.
     """
-    return f"https://1337x.to/user/DODI/{page}/"
+    base = feed_url.rstrip("/")
+    return f"{base}/{page}/"
 
 
 def _extract_page_count(soup: Any) -> int:
-    """Extract the total page count from a parsed 1337x user page.
+    """Extract the total page count from a parsed 1377x user page.
 
     Args:
         soup: A BeautifulSoup object of the user page.
@@ -59,7 +61,7 @@ def _extract_page_count(soup: Any) -> int:
         The highest page number found in the pagination, or 1 if none.
     """
     total_pages = 1
-    pagination = soup.select_one("ul.pagination")
+    pagination = soup.select_one("div.pagination")
     if pagination:
         for link in pagination.find_all("a"):
             href = str(link.get("href", ""))
@@ -71,11 +73,12 @@ def _extract_page_count(soup: Any) -> int:
     return total_pages
 
 
-def _parse_user_page(html: str) -> tuple[list[dict[str, str]], int]:
-    """Parse a 1337x user page HTML and extract torrent entries + total pages.
+def _parse_user_page(html: str, base_domain: str = "https://1377x.to") -> tuple[list[dict[str, str]], int]:
+    """Parse a 1377x user page HTML and extract torrent entries + total pages.
 
     Args:
         html: Raw HTML content of the user page.
+        base_domain: Base domain for prepending to relative URLs.
 
     Returns:
         Tuple of (entries, total_pages) where each entry has "title" and "url" keys.
@@ -86,19 +89,21 @@ def _parse_user_page(html: str) -> tuple[list[dict[str, str]], int]:
     entries: list[dict[str, str]] = []
 
     for row in soup.select("table tbody tr"):
-        name_cell = row.select_one("td.coll-1.name a")
+        # The name cell has two links: first is the category icon,
+        # second is the actual torrent link (href contains /torrent/).
+        name_cell = row.select_one("td.coll-1.name a[href*='/torrent/']")
         if name_cell and name_cell.get("href"):
             href = str(name_cell["href"])
             title = name_cell.get_text(strip=True)
             if href.startswith("/"):
-                href = f"https://1337x.to{href}"
+                href = f"{base_domain}{href}"
             entries.append({"title": title, "url": href})
 
     return entries, _extract_page_count(soup)
 
 
 def _extract_magnet_from_page(html: str) -> str | None:
-    """Extract the magnet URI from a 1337x torrent detail page HTML.
+    """Extract the magnet URI from a 1377x torrent detail page HTML.
 
     Args:
         html: Raw HTML content of the torrent detail page.
@@ -133,9 +138,9 @@ def _clean_dodi_title(raw_title: str) -> str:
 class DODISource:
     """DODI repacks source implementation.
 
-    Scrapes 1337x.to/user/DODI/ for torrent listings, fetches each
-    torrent's detail page to extract magnet links, and stores the
-    results in the source_titles table for Metacritic-first matching.
+    Uses the configured ``feed_url`` to scrape torrent listings and
+    magnets.  The feed URL points to a DODI uploader page on a
+    torrent site (e.g. 1377x.to/user/DODI/).
     """
 
     def __init__(
@@ -143,9 +148,14 @@ class DODISource:
         platform: str = "pc",
         db: Database | None = None,
         cache_pages_hours: int = 6,
+        feed_url: str = "https://1377x.to/user/DODI/",
     ) -> None:
         self._platform = platform
         self._cache_pages_hours = cache_pages_hours
+        self._feed_url = feed_url.rstrip("/")
+        self._base_domain = (
+            self._feed_url[: self._feed_url.index("/", 9)] if "/" in self._feed_url[9:] else self._feed_url
+        )
         self._fetcher = self._make_fetcher()
         self._db = db if db is not None else Database(":memory:")
 
@@ -227,14 +237,14 @@ class DODISource:
             total_pages: Total number of pages to fetch.
         """
         for page in range(2, total_pages + 1):
-            page_html = self._fetch_page(_build_page_url(page))
+            page_html = self._fetch_page(_build_page_url(self._feed_url, page))
             if page_html:
-                more_entries, _ = _parse_user_page(page_html)
+                more_entries, _ = _parse_user_page(page_html, self._base_domain)
                 entries.extend(more_entries)
             time.sleep(1.0)
 
     def fetch_sitemap(self, db: Database) -> None:
-        """Scrape 1337x.to/user/DODI/ and rebuild the source_titles index.
+        """Scrape 1377x.to/user/DODI/ and rebuild the source_titles index.
 
         Handles pagination: fetches all pages on first run, checking the
         cache TTL first. When cache is valid and titles exist, skips the
@@ -252,13 +262,13 @@ class DODISource:
                 return
             logger.info("DODI cache is valid but no titles indexed — re-fetching")
 
-        first_page_url = _build_page_url(1)
+        first_page_url = _build_page_url(self._feed_url, 1)
         html = self._fetch_page(first_page_url)
         if html is None:
             logger.warning("Failed to fetch DODI user page — skipping")
             return
 
-        entries, total_pages = _parse_user_page(html)
+        entries, total_pages = _parse_user_page(html, self._base_domain)
 
         if total_pages > 1:
             self._fetch_remaining_pages(entries, total_pages)
