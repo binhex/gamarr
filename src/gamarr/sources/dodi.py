@@ -151,10 +151,14 @@ class DODISource:
 
     @staticmethod
     def _make_fetcher() -> Any:
-        """Create a cloudscraper session for fetching pages."""
-        import cloudscraper
+        """Create a curl_cffi session for fetching pages.
 
-        return cloudscraper.create_scraper()
+        Uses curl's TLS fingerprint impersonation to bypass
+        Cloudflare challenges that cloudscraper cannot handle.
+        """
+        import curl_cffi
+
+        return curl_cffi.Session(impersonate="chrome131")
 
     @property
     def source_name(self) -> str:

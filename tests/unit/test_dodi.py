@@ -296,3 +296,21 @@ def test_fetch_sitemap_success() -> None:
     assert titles[0]["magnet"] == "magnet:?xt=urn:btih:abc"
     assert titles[1]["title"] == "Game B"
     assert titles[1]["magnet"] == "magnet:?xt=urn:btih:abc"
+
+
+def test_make_fetcher_uses_curl_cffi() -> None:
+    """_make_fetcher should return a curl_cffi Session.
+
+    cloudscraper 1.2.71 cannot bypass Cloudflare challenges on
+    1337x.to — it passes through the JS challenge as a 403.
+    curl_cffi uses TLS fingerprint impersonation which is the
+    modern approach to bypass Cloudflare.
+    """
+    from gamarr.sources.dodi import DODISource
+
+    fetcher = DODISource._make_fetcher()
+    assert "curl_cffi" in type(fetcher).__module__, f"Expected curl_cffi session, got {type(fetcher)}"
+    # Verify the interface matches what _fetch_page expects
+    import curl_cffi.requests.session
+
+    assert isinstance(fetcher, curl_cffi.requests.session.Session)

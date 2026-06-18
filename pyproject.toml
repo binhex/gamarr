@@ -24,7 +24,6 @@ dependencies = [
     "apscheduler",
     "backoff",
     "click",
-    "cloudscraper",
     "loguru",
     "apprise",
     "pyyaml",
@@ -36,6 +35,7 @@ dependencies = [
     "xmltodict",
     "beautifulsoup4",
     "lxml",
+    "curl-cffi>=0.15.0",
 ]
 
 [project.scripts]
@@ -118,7 +118,7 @@ module = ["bs4", "bs4.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
-module = ["cloudscraper", "cloudscraper.*"]
+module = ["curl_cffi", "curl_cffi.*"]
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
