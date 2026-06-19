@@ -64,7 +64,6 @@ class DownloadSitesConfig(RootModel[list[SourceConfigEntry]]):
 
     root: list[SourceConfigEntry] = [
         SourceConfigEntry(name="fitgirl", feed_url="https://fitgirl-repacks.site/feed/"),
-        SourceConfigEntry(name="dodi", feed_url="https://hydralinks.cloud/sources/dodi.json"),
     ]
 
     @staticmethod
@@ -76,7 +75,7 @@ class DownloadSitesConfig(RootModel[list[SourceConfigEntry]]):
     @field_validator("root", mode="before")
     @classmethod
     def _parse_keyed_list(cls, v: Any) -> Any:
-        """Convert [{'fitgirl': {...}}, {'dodi': {...}}] into populated list.
+        """Convert [{'fitgirl': {...}}] into populated list.
 
         Also handles legacy [{name: ..., rss_url: ...}] format.
         """
@@ -196,7 +195,6 @@ class Config(BaseModel):
         default_factory=lambda: DownloadSitesConfig(
             root=[
                 SourceConfigEntry(name="fitgirl", feed_url="https://fitgirl-repacks.site/feed/"),
-                SourceConfigEntry(name="dodi", feed_url="https://hydralinks.cloud/sources/dodi.json"),
             ]
         )
     )
@@ -587,134 +585,6 @@ def _migrate_metacritic_to_review_sites(raw: dict[str, Any]) -> bool:
     return True
 
 
-def _collect_download_site_names(ds: list) -> set[str]:
-    """Collect entry names from download_sites list entries.
-
-    Handles both keyed format (``{"fitgirl": {...}}``) and
-    flat format (``{"name": "fitgirl", ...}``).
-    """
-    names: set[str] = set()
-    for e in ds:
-        if not isinstance(e, dict):
-            continue
-        # Keyed format: the dict keys ARE the source names
-        if "name" not in e:
-            names.update(k.casefold() for k in e)
-        # Flat format: extract the "name" value only, not all field keys
-        name_val = e.get("name")
-        if isinstance(name_val, str):
-            names.add(name_val.casefold())
-    return names
-
-
-def _apply_dodi_defaults(dodi_config: dict) -> None:
-    """Apply missing default fields to a DODI config dict in-place."""
-    dodi_defaults = SourceConfigEntry(name="dodi", feed_url="https://hydralinks.cloud/sources/dodi.json").model_dump(
-        exclude={"name"}
-    )
-    for k, v in dodi_defaults.items():
-        dodi_config.setdefault(k, v)
-
-
-def _enhance_dodi_entry(ds: list) -> bool:
-    """Find and enhance an existing DODI entry with any missing default fields.
-
-    Handles both keyed format (``{"dodi": {...}}`` or ``{"DODI": {...}}``)
-    and flat format (``{"name": "dodi", ...}``).
-    Returns True if a DODI entry was found and enhanced, False otherwise.
-    """
-    for entry in ds:
-        if not isinstance(entry, dict):
-            continue
-        # Keyed format: {Key: {...}} where Key casefolded matches "dodi"
-        for key, val in entry.items():
-            if key.casefold() == "dodi":
-                if isinstance(val, dict):
-                    _apply_dodi_defaults(val)
-                    return True
-                logger.warning("Config: DODI entry has non-dict value — skipping enhancement")
-        # Flat format: {"name": "dodi", ...}
-        if str(entry.get("name", "")).casefold() == "dodi":
-            _apply_dodi_defaults(entry)
-            return True
-    return False
-
-
-def _migrate_add_dodi_entry(raw: dict[str, Any]) -> bool:
-    """Add a DODI entry to download_sites if one does not already exist.
-
-    Assumes download_sites is in keyed format [{key: {...}}, ...].
-    Returns True if a DODI entry was added or enhanced.
-    """
-    ds = raw.get("download_sites")
-    if not isinstance(ds, list):
-        return False
-
-    if "dodi" in _collect_download_site_names(ds):
-        return _enhance_dodi_entry(ds)
-
-    # Use SourceConfigEntry defaults so field additions stay in sync
-    dodi_entry = SourceConfigEntry(name="dodi", feed_url="https://hydralinks.cloud/sources/dodi.json").model_dump(
-        exclude={"name"}
-    )
-    ds.append({"dodi": dodi_entry})
-    logger.info("Config: added DODI entry to download_sites")
-    return True
-
-
-_KNOWN_BAD_DODI_HOSTS = {
-    "1337x.to",
-    "1377x.to",
-    "x1337x.cc",
-}
-
-
-def _replace_bad_dodi_url(dodi_config: dict[str, Any]) -> bool:
-    """Replace a DODI entry's feed_url if it uses a known-bad host.
-
-    Returns True if the URL was replaced.
-    """
-    from urllib.parse import urlparse
-
-    current = dodi_config.get("feed_url")
-    if not isinstance(current, str):
-        return False
-    parsed = urlparse(current)
-    if parsed.hostname and parsed.hostname.casefold() in _KNOWN_BAD_DODI_HOSTS:
-        dodi_config["feed_url"] = "https://hydralinks.cloud/sources/dodi.json"
-        logger.info(
-            "Config: migrated DODI feed URL from '{}' to hydralinks.cloud",
-            current,
-        )
-        return True
-    return False
-
-
-def _migrate_dodi_feed_url(raw: dict[str, Any]) -> bool:
-    """Replace known-bad DODI feed URLs with the correct hydralinks.cloud endpoint.
-
-    Scans ``download_sites`` for a DODI entry whose feed_url contains any
-    known copycat or impersonation domain for 1337x.to and replaces it with
-    ``https://hydralinks.cloud/sources/dodi.json``.
-
-    Returns True if any URL was replaced.
-    """
-    ds = raw.get("download_sites")
-    if not isinstance(ds, list):
-        return False
-
-    changed = False
-    for entry in ds:
-        if not isinstance(entry, dict):
-            continue
-        for key, val in entry.items():
-            if key.casefold() != "dodi" or not isinstance(val, dict):
-                continue
-            if _replace_bad_dodi_url(val):
-                changed = True
-    return changed
-
-
 def _convert_entry_to_keyed(entry: dict[str, Any]) -> dict[str, Any] | None:
     """Convert a legacy flat entry to keyed format.
 
@@ -751,6 +621,40 @@ def _migrate_download_sites_to_keyed_list(raw: dict[str, Any]) -> bool:
 
     if changed:
         logger.info("Config: migrated download_sites entries to keyed-list format")
+    return changed
+
+
+def _migrate_remove_dodi(raw: dict[str, Any]) -> bool:
+    """Remove DODI entries from download_sites (DODI support removed).
+
+    Scans ``download_sites`` for any DODI entry (keyed or flat format)
+    and removes it.  Returns True if any entry was removed.
+    """
+    ds = raw.get("download_sites")
+    if not isinstance(ds, list):
+        return False
+
+    changed = False
+    # Remove in reverse order to preserve index correctness
+    for i in range(len(ds) - 1, -1, -1):
+        entry = ds[i]
+        if not isinstance(entry, dict):
+            continue
+        removed_this = False
+        # Check keyed format: key casefolded matches "dodi"
+        for key in entry:
+            if key.casefold() == "dodi":
+                ds.pop(i)
+                changed = True
+                removed_this = True
+                break
+        # Check flat format: name field matches "dodi"
+        if not removed_this and str(entry.get("name", "")).casefold() == "dodi":
+            ds.pop(i)
+            changed = True
+
+    if changed:
+        logger.info("Config: removed DODI entries from download_sites")
     return changed
 
 
@@ -796,8 +700,7 @@ def _migrate_config(raw: dict[str, Any]) -> bool:
             _migrate_remove_max_games,
             _migrate_download_sites_to_ordered,
             _migrate_download_sites_to_keyed_list,
-            _migrate_add_dodi_entry,
-            _migrate_dodi_feed_url,
+            _migrate_remove_dodi,
             _migrate_daemon_mode,
         ]
         for fn in _migrations:

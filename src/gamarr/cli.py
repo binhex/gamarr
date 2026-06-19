@@ -27,9 +27,9 @@ def _clear_caches(db_path: str, clear_cache: str) -> None:
         sources = [s.strip().casefold() for s in clear_cache.split(",")]
         for source in sources:
             if source == "all":
-                for s in ("fitgirl", "dodi", "metacritic"):
+                for s in ("fitgirl", "metacritic"):
                     db.clear_cache(s)
-            elif source in ("fitgirl", "dodi", "metacritic"):
+            elif source in ("fitgirl", "metacritic"):
                 db.clear_cache(source)
             else:
                 logger.warning("Unknown cache source '{}' — skipping", source)
@@ -185,7 +185,7 @@ def _apply_cli_overrides(config: Config, **overrides: Any) -> None:
     default=None,
     show_default=False,
     metavar="<sources>",
-    help="Clear cached data before running. Comma-separated: fitgirl, dodi, metacritic, or all.",
+    help="Clear cached data before running. Comma-separated: fitgirl, metacritic, or all.",
 )
 @click.version_option(version=_VERSION, prog_name="gamarr")
 def cli(

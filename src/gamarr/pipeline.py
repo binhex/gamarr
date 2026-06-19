@@ -17,7 +17,6 @@ from gamarr.metacritic import MetacriticClient
 from gamarr.metacritic_cache import MetacriticCache
 from gamarr.notifications import Notifier
 from gamarr.qbittorrent import QBittorrentClient
-from gamarr.sources.dodi import DODISource
 from gamarr.sources.fitgirl import _USER_AGENT, FitGirlSource, _extract_magnet_from_html
 from gamarr.utils import is_cancelled, normalise_for_compare
 
@@ -401,7 +400,6 @@ def run_acquisition(
         # Source factory map for dispatching source config entries to source classes
         _source_factories: dict[str, type] = {
             "fitgirl": FitGirlSource,
-            "dodi": DODISource,
         }
 
         def _build_source(entry: Any, db: Database) -> Any:
@@ -1418,7 +1416,7 @@ def _match_pending_games(
         mc: MetacriticClient instance for just-in-time score verification.
         thresholds: Score thresholds for verification. Required when *mc*
             is provided.
-        source_name: Name of the source to match against (e.g. "fitgirl", "dodi").
+        source_name: Name of the source to match against ("fitgirl").
 
     Returns a list of result dicts.
     """
@@ -1496,8 +1494,8 @@ def _deliver_match(
 ) -> dict[str, Any]:
     """Deliver a matched pending game to qBittorrent and emit notifications.
 
-    Uses the pre-stored magnet from the source index if available (DODI),
-    otherwise fetches the magnet from the source page (FitGirl). Adds the
+    Uses the pre-stored magnet from the source index if available,
+    otherwise fetches the magnet from the source page.  Adds the
     torrent to qBittorrent, and sends a download notification on success
     or a failure notification on error.  Always returns a result dict and
     removes the pending row.
@@ -1507,8 +1505,7 @@ def _deliver_match(
         delivery, or ``"Error"`` on magnet-fetch / qBittorrent failure.
     """
     source_url: str = str(best["url"])
-    # Use pre-stored magnet if available (e.g. from DODI scrape),
-    # otherwise fetch from the source page (e.g. FitGirl).
+    # Use pre-stored magnet if available, otherwise fetch from the source page.
     magnet = best.get("magnet") or magnet_fetcher(source_url)
     if not magnet:
         logger.warning("No magnet found for matched '{}' at {}", game_title, source_url)
@@ -1608,33 +1605,18 @@ def _check_reject_keywords(
     game_title: str,
     game_slug: str,
     reject_keywords: list[str] | None,
-    source_name: str = "fitgirl",
 ) -> bool:
     """Check whether a match should be skipped due to rejected keywords.
 
     Returns True if the match should be skipped, keeping the game
-    pending for the next cycle.  For FitGirl sources, checks the HTML
-    <title> tag first; falls back to the sitemap title when the page
-    cannot be fetched.  For other sources (where the page structure is
-    unknown), uses the stored title directly.
+    pending for the next cycle.  Fetches the HTML <title> tag and
+    checks it against *reject_keywords*; falls back to the stored
+    title when the page cannot be fetched.
     """
     if not reject_keywords:
         return False
 
-    # For non-FitGirl sources, skip the page fetch and check the stored title
-    if source_name.casefold() != "fitgirl":
-        if _title_contains_keywords(best["title"], reject_keywords):
-            logger.info(
-                "Skipping match for '{}' \u2014 {} title '{}' contains rejected keyword",
-                game_title,
-                source_name,
-                best["title"],
-            )
-            db.touch_pending(game_slug)
-            return True
-        return False
-
-    # FitGirl: fetch the page title for a more accurate check
+    # Fetch the page title for the most accurate check
     page_title = _fetch_fitgirl_page_title(best["url"])
     if page_title and _title_contains_keywords(page_title, reject_keywords):
         logger.info(
@@ -1703,7 +1685,7 @@ def _process_single_pending_match(
     )
 
     # Skip matches whose FitGirl page title contains rejected keywords.
-    if _check_reject_keywords(db, best, game_title, game_slug, reject_keywords, source_name=source_name):
+    if _check_reject_keywords(db, best, game_title, game_slug, reject_keywords):
         return None
 
     # Check library first — skip if already owned

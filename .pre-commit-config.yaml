@@ -28,6 +28,7 @@ repos:
       - id: mypy
         args: [--config-file=pyproject.toml]
         additional_dependencies:
+          - apprise
           - types-requests
           - types-pyyaml
           - pydantic>=2.0.0

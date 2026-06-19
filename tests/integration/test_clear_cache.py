@@ -23,7 +23,6 @@ def test_clear_cache_via_cli_sitemap(tmp_path: Path) -> None:
     # Pre-populate sitemap cache entries
     db = Database(str(db_path))
     db.set_sitemap_cache("fitgirl")
-    db.set_sitemap_cache("dodi")
     db.close()
 
     # Create a minimal gamarr config dir with gamarr.yml pointing at the temp db
@@ -51,8 +50,6 @@ schedule:
         timeout=30,
     )
 
-    # Verify: dodi still cached, fitgirl cleared
     db2 = Database(str(db_path))
     assert not db2.get_sitemap_cache("fitgirl", 9999), f"fitgirl should be cleared\n{result.stdout}\n{result.stderr}"
-    assert db2.get_sitemap_cache("dodi", 9999), f"dodi should remain\n{result.stdout}\n{result.stderr}"
     db2.close()

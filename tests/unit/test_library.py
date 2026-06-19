@@ -17,7 +17,7 @@ class TestNormaliseName:
         assert _normalise_name("Elden Ring") == "elden ring"
 
     def test_normalise_with_underscores(self) -> None:
-        assert _normalise_name("elden_ring_[dodi]") == "elden ring"
+        assert _normalise_name("elden_ring") == "elden ring"
 
     def test_normalise_file_extension(self) -> None:
         assert _normalise_name("cyberpunk-2077.iso") == "cyberpunk 2077"

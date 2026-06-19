@@ -35,9 +35,6 @@ dependencies = [
     "xmltodict",
     "beautifulsoup4",
     "lxml",
-    "curl-cffi>=0.15.0",
-    "cloudscraper>=1.2.71",
-    "playwright>=1.40",
 ]
 
 [project.scripts]
@@ -78,10 +75,6 @@ ignore = [
 [tool.ruff.lint.isort]
 known-first-party = ["gamarr"]
 
-[[tool.mypy.overrides]]
-module = ["playwright", "playwright.sync_api"]
-ignore_missing_imports = true
-
 [tool.mypy]
 python_version = "3.12"
 warn_return_any = true
@@ -95,85 +88,15 @@ warn_unused_ignores = true
 strict_equality = true
 mypy_path = "src"
 
+
+
+
+
+
+
+
+
+
 [[tool.mypy.overrides]]
-module = ["backoff"]
+module = ["apscheduler", "apscheduler.*", "apprise", "qbittorrentapi"]
 ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = ["qbittorrentapi", "qbittorrentapi.*"]
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = ["apprise", "apprise.*"]
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = ["xmltodict"]
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = ["yaml"]
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = ["apscheduler", "apscheduler.*"]
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = ["bs4", "bs4.*"]
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = ["sqlalchemy", "sqlalchemy.*"]
-ignore_missing_imports = true
-
-[[tool.mypy.overrides]]
-module = ["gamarr.notifications"]
-warn_unused_ignores = false
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-minversion = "7.0"
-addopts = """
-    -ra
-    --strict-markers
-    --strict-config
-    --cov=src/gamarr
-    --cov-report=term-missing
-    --cov-report=html
-    --cov-report=xml
-    --cov-fail-under=95
-"""
-markers = [
-    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
-    "integration: marks tests as integration tests",
-    "unit: marks tests as unit tests",
-]
-
-[tool.coverage.run]
-source = ["src"]
-omit = ["tests/*"]
-
-[tool.coverage.report]
-exclude_lines = [
-    "pragma: no cover",
-    "def __repr__",
-    "raise AssertionError",
-    "raise NotImplementedError",
-    "if __name__ == .__main__.:",
-    "if TYPE_CHECKING:",
-    "@abstractmethod",
-]
-
-[dependency-groups]
-dev = [
-    "pytest>=9.0.3",
-    "pytest-cov>=7.1.0",
-    "pytest-mock>=3.15.1",
-    "pytest-crap @ git+https://github.com/binhex/pytest-crap.git@v0.3.1",
-    "types-requests>=2.31.0",
-    "types-pyyaml>=6.0.0",
-    "pre-commit",
-    "mypy",
-    "ruff"
-]

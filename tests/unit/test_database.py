@@ -456,13 +456,17 @@ class TestSourceTitle:
         """rebuild_source_titles stores magnets, get_all_source_titles returns them."""
         db = Database(":memory:")
         db.rebuild_source_titles(
-            "dodi",
+            "fitgirl",
             [
-                {"title": "Elden Ring", "url": "https://1337x.to/torrent/123/", "magnet": "magnet:?xt=urn:btih:abc"},
-                {"title": "Hades II", "url": "https://1337x.to/torrent/456/"},
+                {
+                    "title": "Elden Ring",
+                    "url": "https://fitgirl-repacks.site/elden-ring/",
+                    "magnet": "magnet:?xt=urn:btih:abc",
+                },
+                {"title": "Hades II", "url": "https://fitgirl-repacks.site/hades-ii/"},
             ],
         )
-        titles = db.get_all_source_titles("dodi")
+        titles = db.get_all_source_titles("fitgirl")
         assert len(titles) == 2
         assert titles[0]["title"] == "Elden Ring"
         assert titles[0]["magnet"] == "magnet:?xt=urn:btih:abc"
@@ -765,7 +769,11 @@ class TestMigrationSourceTitles:
             "fitgirl",
             [
                 {"title": "Test Game", "url": "https://example.com/game", "magnet": None},
-                {"title": "Dodi Game", "url": "https://1337x.to/torrent/1", "magnet": "magnet:?xt=urn:btih:abc"},
+                {
+                    "title": "Fetched Game",
+                    "url": "https://fitgirl-repacks.site/game-1",
+                    "magnet": "magnet:?xt=urn:btih:abc",
+                },
             ],
         )
         titles = db.get_all_source_titles("fitgirl")
@@ -773,7 +781,7 @@ class TestMigrationSourceTitles:
         # get_all_source_titles orders by URL — find entries by title
         by_title = {t["title"]: t["magnet"] for t in titles}
         assert by_title["Test Game"] is None
-        assert by_title["Dodi Game"] == "magnet:?xt=urn:btih:abc"
+        assert by_title["Fetched Game"] == "magnet:?xt=urn:btih:abc"
         db.close()
 
     def test_migrate_source_titles_already_has_magnet(self, tmp_path: Path) -> None:
@@ -886,23 +894,11 @@ class TestClearCache:
     """Database.clear_cache method tests."""
 
     def test_clear_cache_fitgirl(self, tmp_path: Path) -> None:
-        """clear_cache('fitgirl') deletes only the fitgirl sitemap cache row."""
+        """clear_cache('fitgirl') deletes the fitgirl sitemap cache row."""
         db = Database(str(tmp_path / "test.db"))
         db.set_sitemap_cache("fitgirl")
-        db.set_sitemap_cache("dodi")
         db.clear_cache("fitgirl")
         assert not db.get_sitemap_cache("fitgirl", 9999)
-        assert db.get_sitemap_cache("dodi", 9999)
-        db.close()
-
-    def test_clear_cache_dodi(self, tmp_path: Path) -> None:
-        """clear_cache('dodi') deletes only the dodi sitemap cache row."""
-        db = Database(str(tmp_path / "test.db"))
-        db.set_sitemap_cache("fitgirl")
-        db.set_sitemap_cache("dodi")
-        db.clear_cache("dodi")
-        assert not db.get_sitemap_cache("dodi", 9999)
-        assert db.get_sitemap_cache("fitgirl", 9999)
         db.close()
 
     def test_clear_cache_metacritic(self, tmp_path: Path) -> None:

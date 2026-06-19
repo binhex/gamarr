@@ -2,7 +2,7 @@
 
 Metadata game downloader — browses Metacritic for newly released games that
 pass configured score thresholds, matches them against download sources
-(FitGirl repacks, DODI repacks), and sends qualifying games to qBittorrent.
+(FitGirl repacks), and sends qualifying games to qBittorrent.
 Sources are checked in config-defined priority order.
 
 ## Features
@@ -27,8 +27,8 @@ Sources are checked in config-defined priority order.
   `max_queue_days` (under metacritic thresholds). Once scores pass, a fresh
   expiry window (`download_sites.fitgirl.max_queue_days`) starts for the
   FitGirl-matching phase. Set either value to `0` for indefinite pending.
-- **Multiple download sources** — supports FitGirl repacks (sitemap-based)
-  and DODI repacks (hydralinks.cloud JSON via headless browser). Sources are configured as an ordered
+- **Multiple download sources** — supports FitGirl repacks (sitemap-based).
+  Sources are configured as an ordered
   list — position determines priority, and the first source with a match
   delivers the torrent.
 - **Source priority** — if a game is available on multiple sources, the
@@ -51,7 +51,6 @@ Sources are checked in config-defined priority order.
 - [Python 3.12+](https://www.python.org/downloads/)
 - [Astral uv](https://github.com/astral-sh/uv#installation)
 - [qBittorrent](https://www.qbittorrent.org/) with WebUI enabled
-- Playwright with Chromium (for DODI source) — installed automatically via ``uv sync && uv run playwright install chromium``
 
 ## Quick start
 
@@ -62,7 +61,6 @@ git clone https://github.com/binhex/gamarr
 cd gamarr
 uv venv --quiet
 uv sync
-uv run playwright install chromium
 ```
 
 ### Usage
@@ -89,7 +87,7 @@ gamarr
 | `--qbt-port <port>` | Override qBittorrent WebUI port from config |
 | `--qbt-username <user>` | Override qBittorrent username from config |
 | `--qbt-password <pass>` | Override qBittorrent password from config |
-| `--clear-cache <sources>` | Clear cached data. Comma-separated: `fitgirl`, `dodi`, `metacritic`, or `all` |
+| `--clear-cache <sources>` | Clear cached data. Comma-separated: `fitgirl`, `metacritic`, or `all` |
 | `--test` | Validate configuration and exit |
 | `--version` | Show version and exit |
 | `--help` | Show help message and exit |
@@ -133,13 +131,6 @@ download_sites:
   - fitgirl:
       enabled: true
       feed_url: https://fitgirl-repacks.site/feed/
-      platform: pc
-      cache_pages_hours: 6
-      reject_keywords: []
-      max_queue_days: 60
-  - dodi:
-      enabled: true
-      feed_url: https://hydralinks.cloud/sources/dodi.json
       platform: pc
       cache_pages_hours: 6
       reject_keywords: []
@@ -335,7 +326,7 @@ uv run pytest
 
 **Q: What download sites are supported?**
 
-**A:** Currently FitGirl repacks and DODI repacks.
+**A:** Currently FitGirl repacks.
 
 **Q: Can I add Nintendo Switch games?**
 
@@ -377,8 +368,8 @@ in the first waiting room while gamarr checks its Metacritic scores. The
 can't be verified in time, the game is removed.
 
 Once scores pass, the game moves to a second waiting room where it waits for
-a source match (e.g. FitGirl or DODI repack). The **per-source `max_queue_days`**
-(e.g. ``fitgirl.max_queue_days`` or ``dodi.max_queue_days``) starts a
+a source match (e.g. FitGirl repack). The **per-source `max_queue_days`**
+(e.g. ``fitgirl.max_queue_days``) starts a
 *fresh countdown* from this point — it doesn't matter how long the game
 spent in the first room. This gives the game a full window to find a match,
 regardless of how long the score-checking took.
