@@ -703,14 +703,13 @@ def _check_score_threshold(
     value: float | None,
     threshold: float,
 ) -> bool | None:
-    """Compare a score value against a threshold if the value is meaningful (> 0).
+    """Compare a score value against a threshold.
 
     Returns True/False when the value passes/fails, or None when the
-    value is absent or zero (no review data to check).
+    value is absent (no review data to check).  A score of ``0.0`` is
+    treated as a real value that should be checked against the threshold.
     """
     if value is None:
-        return None
-    if isinstance(value, (int, float)) and value <= 0:
         return None
     return value >= threshold
 
@@ -726,16 +725,18 @@ def _fails_review_count_check(
     zero, and *threshold* is > 0, the check fails — missing review data
     cannot be assumed to pass.
 
-    When *score_value* itself is absent (None or 0), the review count
+    When *score_value* itself is absent (None), the review count
     check is skipped — there is no score data in this category to
-    verify reviews for.
+    verify reviews for.  A score of ``0.0`` does NOT skip the check —
+    it means the data exists (zero score) and the review count should
+    still be verified.
 
     Returns True when the game should be rejected due to insufficient
     review data.
     """
     if threshold <= 0:
         return False
-    if score_value is None or score_value <= 0.0:
+    if score_value is None:
         return False
     return bool(review_count is None or review_count <= 0)
 
@@ -764,8 +765,9 @@ def _real_scores_pass_thresholds(
     — this prevents unreviewed games from silently bypassing score
     thresholds.
 
-    When a score value is ``0.0`` (unrated but present), that specific
-    check is skipped rather than treated as a failure.
+    A score value of ``0.0`` is treated as real data and is checked against
+    its threshold.  Unlike ``None`` (TBD), a ``0.0`` score will fail if it
+    does not meet the configured minimum.
 
     However, when a *review count* is None/0 and the corresponding
     threshold is > 0, the check **fails** — ``None`` means "no reviews",

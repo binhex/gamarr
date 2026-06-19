@@ -913,8 +913,8 @@ class TestMetacriticBrowse:
         assert unreviewed.score_checks_passed is None or unreviewed.score_checks_passed is False
         db.close()
 
-    def test_verify_pending_keeps_game_with_mixed_zero_metascore(self, tmp_path: Path) -> None:
-        """A game with metascore=0 but user_score > 0 should stay (user score passes)."""
+    def test_verify_pending_removes_game_when_metascore_absent(self, tmp_path: Path) -> None:
+        """A game with metascore=None and min_metascore > 0 should be rejected."""
         import datetime
         from unittest.mock import MagicMock
 
@@ -936,7 +936,7 @@ class TestMetacriticBrowse:
         import types
 
         mock_mc.lookup_game.return_value = types.SimpleNamespace(
-            metascore=0.0,  # no critic score yet
+            metascore=None,  # no critic score yet
             metascore_review_count=None,
             user_score=8.0,  # user score passes (>= 7.5)
             user_review_count=100,
@@ -957,13 +957,9 @@ class TestMetacriticBrowse:
                 "min_user_reviews": 10,
             },
         )
-        assert removed == 0, "Game with passing user score should stay"
+        # Game stays pending for re-verification (not permanently removed)
+        assert removed == 0
         assert db.is_pending("mixed-scores-game") is True
-        # Scores should be updated with real values
-        pending_list = db.get_pending(platform="pc")
-        assert len(pending_list) == 1
-        assert pending_list[0].metascore == 0.0  # updated even though 0
-        assert pending_list[0].user_score == 8.0
         db.close()
 
     def test_verify_pending_respects_max_verify_limit(self, tmp_path: Path) -> None:
@@ -4378,6 +4374,31 @@ class TestRealScoresPassThresholds:
         }
         assert _real_scores_pass_thresholds(result, thresholds) is False
 
+    def test_rejects_zero_user_score_with_no_reviews_and_thresholds(self) -> None:
+        """User score 0.0 with 0 reviews should be rejected when thresholds are set.
+
+        A game with ``user_score=0.0`` and ``user_review_count=0`` has NO
+        meaningful user score data. It should fail both ``min_user_score``
+        and ``min_user_reviews`` checks instead of being silently skipped.
+        """
+        import types
+
+        from gamarr.pipeline import _real_scores_pass_thresholds
+
+        result = types.SimpleNamespace(
+            metascore=82.0,
+            metascore_review_count=37,
+            user_score=0.0,
+            user_review_count=0,
+        )
+        thresholds = {
+            "min_metascore": 75,
+            "min_metascore_reviews": 10,
+            "min_user_score": 8.0,
+            "min_user_reviews": 10,
+        }
+        assert _real_scores_pass_thresholds(result, thresholds) is False
+
 
 class TestAnyThresholdedScoreAbsent:
     """_any_thresholded_score_absent helper edge cases."""
@@ -4496,7 +4517,8 @@ class TestFailsReviewCountCheck:
             is False
         )
 
-    def test_passes_when_score_is_zero(self) -> None:
+    def test_fails_when_score_is_zero_with_no_reviews(self) -> None:
+        """A score of 0.0 with no reviews should fail the review count check."""
         from gamarr.pipeline import _fails_review_count_check
 
         assert (
@@ -4505,7 +4527,7 @@ class TestFailsReviewCountCheck:
                 review_count=None,
                 threshold=5,
             )
-            is False
+            is True
         )
 
     def test_passes_when_review_count_sufficient(self) -> None:
