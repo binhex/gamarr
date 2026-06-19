@@ -159,7 +159,7 @@ download_sites:
 | `min_user_score` | Minimum Metacritic user score (0–10). | `7.5` |
 | `min_user_reviews` | Minimum number of user reviews required. | `10` |
 | `max_weeks` | Look-back window in weeks from today. Games released before this are skipped. `null` or `0` = no cutoff. | `13` |
-| `max_cycle_weeks` | How many weeks of Metacritic pages to scan per cycle. Reduces HTTP load by limiting browse depth each cycle. `0` or `null` = unlimited (same as not set). | `4` |
+| `max_cycle_weeks` | Size of the rolling scan window in weeks. Each cycle scans this many weeks of recent releases. Staged backlog catch-up: each cycle retreats up to `max_weeks`, then locks into steady-state scanning only the most recent `max_cycle_weeks`. Reduces HTTP load by limiting browse depth each cycle. `0` or `null` = unlimited (retreats through the full `max_weeks` window each time). | `4` |
 | `age_recheck_weeks` | Games older than this (weeks since release) are permanently processed once their Metacritic scores pass thresholds. `null` or `0` = disabled. | `null` |
 | `enabled` | Enable or disable the Metacritic browse step. Disabling skips game discovery entirely. | `true` |
 | `max_queue_days` | Days a game stays in the pending queue before expiring. `0` = indefinite pending (no expiry). | `30` |
@@ -254,9 +254,10 @@ flowchart TD
 are collected.
 2. **Browse-page filtering** — Games whose titles match `reject_title` are
    skipped. Games outside the `max_weeks` window
-   are skipped. `max_cycle_weeks` limits how many weeks of Metacritic pages
-   are fetched per cycle (default 4), reducing HTTP load while ensuring the
-   newest games are always discovered first. **Note:** browse scores are on a different scale and always
+   are skipped. `max_cycle_weeks` controls the per-cycle scan window size
+   (default 4 weeks). Each cycle retreats up to `max_weeks`, then switches
+   to steady-state — always scanning the most recent `max_cycle_weeks`.
+   **Note:** browse scores are on a different scale and always
    exceed the configured thresholds — score filtering effectively starts
    at the verification step (phase 4), not here.
 3. **Pending queue** — Surviving games enter a `pending_games` queue with a

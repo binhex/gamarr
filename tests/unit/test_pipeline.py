@@ -4729,3 +4729,118 @@ class TestScanWindowAdvancing:
         assert cutoff_date == expected_cutoff, (
             f"Expected cutoff_date={expected_cutoff} (4 weeks from today), got {cutoff_date}"
         )
+
+    def test_max_cycle_weeks_steady_state_persists_across_cycles(self, tmp_path: Path) -> None:
+        """After the retreating cutoff hits max_weeks, the steady-state window
+        must persist across subsequent cycles — the cutoff must NOT retreat again
+        on the next cycle.
+
+        This test reproduces Bug A: the clamp resets to now - max_cycle_weeks,
+        stores that value, and the next cycle retreats from it again, creating
+        an infinite retreat loop.
+        """
+        import datetime
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.database import Database
+        from gamarr.pipeline import run_acquisition
+
+        db_path = str(tmp_path / "test.db")
+
+        # Pre-seed scan_state with a cutoff far in the past (beyond max_weeks),
+        # simulating the state after the retreating window has passed the
+        # hard cutoff boundary.
+        db = Database(db_path)
+        db.set_last_cutoff("pc", "2024-01-01")
+        db.close()
+
+        today = datetime.datetime.now(tz=datetime.UTC).date()
+        hard_cutoff = (today - datetime.timedelta(weeks=8)).isoformat()
+        wrong_cutoff_if_bug = (today - datetime.timedelta(weeks=4)).isoformat()
+
+        with (
+            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+        ):
+            mock_mc = MagicMock()
+            mock_mc.scan_recent_games.return_value = []
+            mock_mc_cls.return_value = mock_mc
+
+            mock_qbt = MagicMock()
+            mock_qbt.is_connected.return_value = True
+            mock_qbt_cls.return_value = mock_qbt
+
+            run_acquisition(
+                fitgirl_rss_url="http://example.com/feed",
+                platform="pc",
+                db_path=db_path,
+                qbt_host="localhost",
+                qbt_port=8080,
+                max_weeks=8,
+                max_cycle_weeks=4,
+            )
+
+        # After first cycle: the stored last_cutoff must be hard_cutoff
+        # (now - 8w), NOT now - max_cycle_weeks (which would allow retreat).
+        db = Database(db_path)
+        stored_cutoff = db.get_last_cutoff("pc")
+        db.close()
+
+        assert stored_cutoff == hard_cutoff, (
+            f"After clamp, stored last_cutoff should be hard_cutoff ({hard_cutoff}), "
+            f"got {stored_cutoff}. If the value is {wrong_cutoff_if_bug}, "
+            f"Bug A is present: the reset value was stored instead of hard_cutoff."
+        )
+
+        # Run a second cycle to verify steady state is maintained
+        with (
+            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls2,
+            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls2,
+        ):
+            mock_mc2 = MagicMock()
+            mock_mc2.scan_recent_games.return_value = []
+            mock_mc_cls2.return_value = mock_mc2
+
+            mock_qbt2 = MagicMock()
+            mock_qbt2.is_connected.return_value = True
+            mock_qbt_cls2.return_value = mock_qbt2
+
+            run_acquisition(
+                fitgirl_rss_url="http://example.com/feed",
+                platform="pc",
+                db_path=db_path,
+                qbt_host="localhost",
+                qbt_port=8080,
+                max_weeks=8,
+                max_cycle_weeks=4,
+            )
+
+        # After second cycle: the cutoff should STILL be hard_cutoff,
+        # not retreated further back.
+        db = Database(db_path)
+        stored_cutoff2 = db.get_last_cutoff("pc")
+        db.close()
+
+        assert stored_cutoff2 == hard_cutoff, (
+            f"Second cycle must maintain steady state. Stored last_cutoff should "
+            f"still be hard_cutoff ({hard_cutoff}), got {stored_cutoff2}. "
+            f"This means the cutoff retreated after resetting."
+        )
+
+        # Also verify the scan_recent_games received the right cutoff
+        # on both cycles (now - max_cycle_weeks, not retreated)
+        for i, call_info in enumerate(mock_mc.scan_recent_games.call_args_list):
+            _call_args, call_kwargs = call_info
+            cutoff = call_kwargs.get("cutoff_date")
+            expected = (today - datetime.timedelta(weeks=4)).isoformat()
+            assert cutoff == expected, (
+                f"Cycle 1, call {i}: expected cutoff_date={expected} (4w from today), got {cutoff}"
+            )
+
+        for i, call_info in enumerate(mock_mc2.scan_recent_games.call_args_list):
+            _call_args, call_kwargs = call_info
+            cutoff = call_kwargs.get("cutoff_date")
+            expected = (today - datetime.timedelta(weeks=4)).isoformat()
+            assert cutoff == expected, (
+                f"Cycle 2, call {i}: expected cutoff_date={expected} (4w from today), got {cutoff}"
+            )

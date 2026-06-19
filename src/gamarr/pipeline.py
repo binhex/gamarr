@@ -274,8 +274,10 @@ def run_acquisition(
             # max_weeks.  Track whether the clamp fired so the log can
             # accurately report which limiter is active.
             clamped_by_max_weeks = False
+            hard_cutoff_date: datetime.date | None = None
             if cfg.max_weeks is not None and cfg.max_weeks > 0:
                 hard_cutoff = datetime.datetime.now(tz=datetime.UTC).date() - datetime.timedelta(weeks=cfg.max_weeks)
+                hard_cutoff_date = hard_cutoff
                 if cutoff_date is None or cutoff_date < hard_cutoff.isoformat():
                     clamped_by_max_weeks = True
                     # When the backlog is fully caught up (retreating cutoff
@@ -322,9 +324,15 @@ def run_acquisition(
                 cancel_event=cancel_event,
             )
 
-            # Store cutoff for next cycle (after scan completes)
+            # Store cutoff for next cycle (after scan completes).
+            # When the clamp fired (backlog caught up), store hard_cutoff
+            # instead of cutoff_date so the next cycle's retreat is also
+            # clamped and the window stays in steady-state mode.
             if cutoff_date is not None:
-                db.set_last_cutoff(platform, cutoff_date)
+                if clamped_by_max_weeks and hard_cutoff_date is not None:
+                    db.set_last_cutoff(platform, hard_cutoff_date.isoformat())
+                else:
+                    db.set_last_cutoff(platform, cutoff_date)
             if browse_games:
                 thresholds = {
                     "min_metascore": cfg.min_metascore,
