@@ -624,6 +624,18 @@ def _migrate_download_sites_to_keyed_list(raw: dict[str, Any]) -> bool:
     return changed
 
 
+def _is_dodi_entry(entry: dict[str, Any]) -> bool:
+    """Check if a download_sites entry matches DODI in keyed or flat format.
+
+    Keyed format: ``{"dodi": {...}}`` or ``{"DODI": {...}}``
+    Flat format: ``{"name": "dodi", ...}``
+    """
+    for key in entry:
+        if key.casefold() == "dodi":
+            return True
+    return str(entry.get("name", "")).casefold() == "dodi"
+
+
 def _migrate_remove_dodi(raw: dict[str, Any]) -> bool:
     """Remove DODI entries from download_sites (DODI support removed).
 
@@ -638,18 +650,7 @@ def _migrate_remove_dodi(raw: dict[str, Any]) -> bool:
     # Remove in reverse order to preserve index correctness
     for i in range(len(ds) - 1, -1, -1):
         entry = ds[i]
-        if not isinstance(entry, dict):
-            continue
-        removed_this = False
-        # Check keyed format: key casefolded matches "dodi"
-        for key in entry:
-            if key.casefold() == "dodi":
-                ds.pop(i)
-                changed = True
-                removed_this = True
-                break
-        # Check flat format: name field matches "dodi"
-        if not removed_this and str(entry.get("name", "")).casefold() == "dodi":
+        if isinstance(entry, dict) and _is_dodi_entry(entry):
             ds.pop(i)
             changed = True
 

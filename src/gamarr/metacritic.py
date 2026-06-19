@@ -800,6 +800,17 @@ class MetacriticClient:
             games = games[: effective_max - len(all_games)]
 
             all_games.extend(games)
+
+            # Log progress every 100 pages so the user can see the scan is
+            # making progress during long cold-cache scans (e.g. first
+            # cycle after a restart with max_weeks=104).
+            if page_number % 100 == 0:
+                logger.info(
+                    "Fetched {} Metacritic pages — {} games collected",
+                    page_number,
+                    len(all_games),
+                )
+
             page_number += 1
 
         n_pages = max(page_number - 1, 0)

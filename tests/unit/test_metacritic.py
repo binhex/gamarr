@@ -940,3 +940,49 @@ class TestScanRecentGamesPageLimit:
         assert len(result) > 500 * 25, (
             f"Expected >{500 * 25} games (beyond 500 pages), got {len(result)} — the 500-page cap blocked the scan"
         )
+
+
+class TestScanRecentGamesLogging:
+    """Progress logging during scan_recent_games."""
+
+    def test_scan_recent_games_logs_batch_progress(self) -> None:
+        """scan_recent_games should log intermediate progress at regular
+        intervals so users can see the scan is making progress."""
+        import io
+        from unittest.mock import patch
+
+        from gamarr.database import Database
+        from gamarr.metacritic import MetacriticClient
+        from gamarr.metacritic_cache import MetacriticCache
+
+        client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
+
+        # Generate 150 pages * 20 games per page = 3000 games
+        # Add a final empty page to signal end-of-list
+        pages = [
+            [{"title": f"Game {p}-{g}", "slug": f"game-{p}-{g}", "score": 85, "user_rating": 8.0} for g in range(20)]
+            for p in range(1, 151)
+        ]
+        pages.append([])  # empty page = no more games
+
+        from loguru import logger
+
+        log_stream = io.StringIO()
+        handler_id = logger.add(log_stream, format="{message}", level="INFO")
+        try:
+            with patch.object(client, "_fetch_browse_page", side_effect=pages):
+                client.scan_recent_games("pc", max_games=0)
+        finally:
+            logger.remove(handler_id)
+
+        log_output = log_stream.getvalue()
+
+        # Should have the final summary
+        assert "Scanned 150 Metacritic page(s) — collected 3000 games" in log_output, (
+            f"Expected final summary in:\n{log_output}"
+        )
+
+        # Should have an intermediate 'page 100' progress log (every 100 pages)
+        assert "Fetched 100 Metacritic pages —" in log_output, (
+            f"Expected intermediate 'Fetched 100...' progress log, got:\n{log_output}"
+        )

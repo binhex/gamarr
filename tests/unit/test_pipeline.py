@@ -4655,6 +4655,7 @@ class TestScanWindowAdvancing:
         to behave as if the window is 104 weeks wide, when it should
         remain at 4 weeks.
         """
+        import datetime
         import io
         from unittest.mock import MagicMock, patch
 
@@ -4710,10 +4711,21 @@ class TestScanWindowAdvancing:
         # Find the "Scanning for games between" log message
         assert "Scanning for games between" in log_output, f"Missing 'Scanning for games between' in:\n{log_output}"
 
-        # When max_weeks clamps the cutoff (the retreating cutoff went
-        # past the hard limit), the log should correctly identify
-        # max_weeks as the active limiter.  The window_end should show
-        # today's date, not 4 weeks from the cutoff.
-        assert "max_weeks is the active limiter" in log_output, (
-            f"Expected max_weeks to be the active limiter (it clamped), got:\n{log_output}"
+        # The active limiter should be max_cycle_weeks (4 weeks), not max_weeks.
+        # Once the backlog is caught up (retreating cutoff hit the hard limit),
+        # the scan window should be capped to max_cycle_weeks from today.
+        assert "max_cycle_weeks is the active limiter" in log_output, (
+            f"Expected max_cycle_weeks to be the active limiter, got:\n{log_output}"
+        )
+
+        # Verify the cutoff_date passed to scan_recent_games is ~4 weeks
+        # from today, not 104 weeks ago (the hard_cutoff).
+        assert mock_mc.scan_recent_games.call_count == 1
+        cutoff_date = mock_mc.scan_recent_games.call_args[1].get("cutoff_date")
+        assert cutoff_date is not None, "cutoff_date should be passed to scan_recent_games"
+
+        today = datetime.datetime.now(tz=datetime.UTC).date()
+        expected_cutoff = (today - datetime.timedelta(weeks=4)).isoformat()
+        assert cutoff_date == expected_cutoff, (
+            f"Expected cutoff_date={expected_cutoff} (4 weeks from today), got {cutoff_date}"
         )

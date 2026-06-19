@@ -903,4 +903,113 @@ def test_parse_keyed_list_non_dict_val() -> None:
     assert len(cfg) == 2
     assert cfg[0].name == "fitgirl"
     assert cfg[1].name == "fitgirl"
-    assert cfg[0].name == "fitgirl"
+
+
+class TestMigrateRemoveDodi:
+    """Tests for _migrate_remove_dodi."""
+
+    @staticmethod
+    def _make_fitgirl_entry() -> dict[str, Any]:
+        return {"fitgirl": {"feed_url": "https://fitgirl-repacks.site/feed/"}}
+
+    def test_removes_keyed_dodi_entry(self) -> None:
+        """A keyed-format DODI entry {"dodi": {...}} should be removed."""
+        from gamarr.config import _migrate_remove_dodi
+
+        raw: dict[str, Any] = {
+            "download_sites": [
+                self._make_fitgirl_entry(),
+                {"dodi": {"feed_url": "https://1337x.to/user/DODI/"}},
+            ]
+        }
+        result = _migrate_remove_dodi(raw)
+        assert result is True
+        assert len(raw["download_sites"]) == 1
+        assert "fitgirl" in raw["download_sites"][0]
+
+    def test_removes_casefold_keyed_dodi(self) -> None:
+        """A keyed-format DODI entry with uppercase key should be removed."""
+        from gamarr.config import _migrate_remove_dodi
+
+        raw: dict[str, Any] = {
+            "download_sites": [
+                self._make_fitgirl_entry(),
+                {"DODI": {"feed_url": "https://1337x.to/user/DODI/"}},
+            ]
+        }
+        result = _migrate_remove_dodi(raw)
+        assert result is True
+        assert len(raw["download_sites"]) == 1
+
+    def test_removes_flat_dodi_entry(self) -> None:
+        """A flat-format DODI entry with name="dodi" should be removed."""
+        from gamarr.config import _migrate_remove_dodi
+
+        raw: dict[str, Any] = {
+            "download_sites": [
+                self._make_fitgirl_entry(),
+                {"name": "dodi", "feed_url": "https://1337x.to/user/DODI/"},
+            ]
+        }
+        result = _migrate_remove_dodi(raw)
+        assert result is True
+        assert len(raw["download_sites"]) == 1
+
+    def test_removes_multiple_dodi_entries(self) -> None:
+        """Multiple DODI entries should all be removed."""
+        from gamarr.config import _migrate_remove_dodi
+
+        raw: dict[str, Any] = {
+            "download_sites": [
+                self._make_fitgirl_entry(),
+                {"dodi": {"feed_url": "https://1337x.to/user/DODI/"}},
+                {"name": "dodi", "feed_url": "https://hydralinks.cloud/sources/dodi.json"},
+            ]
+        }
+        result = _migrate_remove_dodi(raw)
+        assert result is True
+        assert len(raw["download_sites"]) == 1
+
+    def test_no_dodi_returns_false(self) -> None:
+        """When no DODI entry exists, should return False."""
+        from gamarr.config import _migrate_remove_dodi
+
+        raw: dict[str, Any] = {
+            "download_sites": [
+                self._make_fitgirl_entry(),
+            ]
+        }
+        result = _migrate_remove_dodi(raw)
+        assert result is False
+        assert len(raw["download_sites"]) == 1
+
+    def test_empty_download_sites_returns_false(self) -> None:
+        """Empty download_sites list should return False."""
+        from gamarr.config import _migrate_remove_dodi
+
+        raw: dict[str, Any] = {"download_sites": []}
+        result = _migrate_remove_dodi(raw)
+        assert result is False
+
+    def test_not_a_list_returns_false(self) -> None:
+        """download_sites that is not a list should return False."""
+        from gamarr.config import _migrate_remove_dodi
+
+        raw: dict[str, Any] = {"download_sites": "not_a_list"}
+        result = _migrate_remove_dodi(raw)
+        assert result is False
+
+    def test_skips_non_dict_entry(self) -> None:
+        """Non-dict entries in download_sites should be skipped gracefully."""
+        from gamarr.config import _migrate_remove_dodi
+
+        raw: dict[str, Any] = {
+            "download_sites": [
+                "string_entry",
+                {"dodi": {"feed_url": "https://1337x.to/user/DODI/"}},
+            ]
+        }
+        result = _migrate_remove_dodi(raw)
+        assert result is True
+        assert len(raw["download_sites"]) == 1
+        assert raw["download_sites"][0] == "string_entry"

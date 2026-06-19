@@ -277,17 +277,30 @@ def run_acquisition(
             if cfg.max_weeks is not None and cfg.max_weeks > 0:
                 hard_cutoff = datetime.datetime.now(tz=datetime.UTC).date() - datetime.timedelta(weeks=cfg.max_weeks)
                 if cutoff_date is None or cutoff_date < hard_cutoff.isoformat():
-                    cutoff_date = hard_cutoff.isoformat()
                     clamped_by_max_weeks = True
+                    # When the backlog is fully caught up (retreating cutoff
+                    # hit the max_weeks boundary), switch to steady-state
+                    # mode: scan only max_cycle_weeks from today instead of
+                    # the full max_weeks range.
+                    if cfg.max_cycle_weeks and cfg.max_cycle_weeks > 0:
+                        cutoff_date = (
+                            datetime.datetime.now(tz=datetime.UTC).date()
+                            - datetime.timedelta(weeks=cfg.max_cycle_weeks)
+                        ).isoformat()
+                    else:
+                        cutoff_date = hard_cutoff.isoformat()
 
             # Log the browse window range so users can track the advancing window.
             if cutoff_date is not None:
-                limiter = "max_weeks" if clamped_by_max_weeks else "max_cycle_weeks"
-                if clamped_by_max_weeks:
-                    # When max_weeks clamps, the actual scan range extends
-                    # to today — not just max_cycle_weeks from the cutoff.
+                if clamped_by_max_weeks and cfg.max_cycle_weeks and cfg.max_cycle_weeks > 0:
+                    # Backlog caught up — max_cycle_weeks is the effective limiter
+                    limiter = "max_cycle_weeks"
+                    window_end = datetime.datetime.now(tz=datetime.UTC).date().isoformat()
+                elif clamped_by_max_weeks:
+                    limiter = "max_weeks"
                     window_end = datetime.datetime.now(tz=datetime.UTC).date().isoformat()
                 else:
+                    limiter = "max_cycle_weeks"
                     window_weeks = effective_cycle_weeks or cfg.max_cycle_weeks or 0
                     window_end = (
                         datetime.datetime.strptime(cutoff_date, "%Y-%m-%d").date()
