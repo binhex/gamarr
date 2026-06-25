@@ -429,18 +429,20 @@ class Database:
 
         Returns a score where higher values indicate a better match:
         - ``2``: exact match (best possible)
-        - ``1``: substring match, shorter string >= 5 chars
+        - ``1``: *query* is a substring of *db_title* and both are >= 5 chars.
+          This direction handles FitGirl titles that have version/bonus info
+          appended (e.g. ``"MOUSE: P.I. For Hire – v1.0.1.8044 + 2 Bonus
+          DLCs"``). The reverse direction (db_title inside a longer query)
+          is NOT a match, to prevent false positives when a Metacritic game
+          title happens to contain a shorter FitGirl title as a prefix
+          (e.g. ``"DAVE THE DIVER: In the Jungle"`` vs ``"Dave The Diver"``).
         - ``0``: no match
-
-        The substring fallback handles FitGirl sitemap titles that have
-        version/bonus info appended (e.g.
-        ``"MOUSE: P.I. For Hire – v1.0.1.8044 + 2 Bonus DLCs"``).
         """
         if db_title == query:
             return 2
         if len(db_title) < 5 or len(query) < 5:
             return 0
-        if db_title in query or query in db_title:
+        if query in db_title:
             return 1
         return 0
 

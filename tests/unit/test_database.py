@@ -452,6 +452,43 @@ class TestSourceTitle:
         )
         db.close()
 
+    def test_no_substring_match_when_metacritic_title_is_longer(self, tmp_path: Path) -> None:
+        """FitGirl title that is a prefix of a longer Metacritic title should NOT match.
+
+        Regression test for a bug where "DAVE THE DIVER: In the Jungle" (new
+        standalone game on Metacritic) matched "Dave The Diver" (original game
+        on FitGirl) because the normalised FitGirl title "davethediver" is a
+        substring of the normalised Metacritic title "davethediverinthejungle".
+
+        The substring fallback should only match when the FitGirl title *contains*
+        the query (i.e. FitGirl has version/bonus metadata appended), not the
+        reverse where a shorter FitGirl title is inside a longer Metacritic title.
+        """
+        from gamarr.utils import normalise_for_compare
+
+        db = Database(str(tmp_path / "test.db"))
+        fitgirl_title = "Dave The Diver"
+        titles = [
+            {
+                "source": "fitgirl",
+                "title": fitgirl_title,
+                "url": "https://fitgirl-repacks.site/dave-the-diver/",
+            },
+        ]
+        db.rebuild_source_titles("fitgirl", titles)  # type: ignore[arg-type]
+
+        # The Metacritic game has a longer title that contains the FitGirl
+        # title as a prefix — this should NOT match.
+        game_title = "DAVE THE DIVER: In the Jungle"
+        normalized = normalise_for_compare(game_title)
+        results = db.match_source_title("fitgirl", normalized)
+        assert len(results) == 0, (
+            f"Substring match should NOT trigger when FitGirl title "
+            f"'{fitgirl_title}' is a prefix of Metacritic title '{game_title}', "
+            f"got {len(results)} match(es)"
+        )
+        db.close()
+
     def test_source_title_with_magnet(self) -> None:
         """rebuild_source_titles stores magnets, get_all_source_titles returns them."""
         db = Database(":memory:")
