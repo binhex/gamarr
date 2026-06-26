@@ -1927,10 +1927,12 @@ class TestMetacriticBrowse:
                 return_value="magnet:?xt=urn:btih:abc",
             ),
         ):
-            result = _default_magnet_fetcher("https://example.com/game")
+            result = _default_magnet_fetcher("https://fitgirl-repacks.site/game")
 
         assert result == "magnet:?xt=urn:btih:abc"
-        assert _fitgirl_page_title_cache.get("https://example.com/game") == "Crimson Desert [FitGirl HV Repack]"
+        assert (
+            _fitgirl_page_title_cache.get("https://fitgirl-repacks.site/game") == "Crimson Desert [FitGirl HV Repack]"
+        )
         _fitgirl_page_title_cache.clear()
 
     def test_default_magnet_fetcher_caches_none_when_no_title(self) -> None:
@@ -1951,10 +1953,10 @@ class TestMetacriticBrowse:
                 return_value="magnet:?xt=urn:btih:abc",
             ),
         ):
-            result = _default_magnet_fetcher("https://example.com/no-title")
+            result = _default_magnet_fetcher("https://fitgirl-repacks.site/no-title")
 
         assert result == "magnet:?xt=urn:btih:abc"
-        assert _fitgirl_page_title_cache.get("https://example.com/no-title") is None
+        assert _fitgirl_page_title_cache.get("https://fitgirl-repacks.site/no-title") is None
         _fitgirl_page_title_cache.clear()
 
     def test_default_magnet_fetcher_returns_none_when_no_magnet(self) -> None:
@@ -1967,9 +1969,26 @@ class TestMetacriticBrowse:
         mock_resp.text = "<html><title>Game</title><p>no magnet here</p></html>"
 
         with patch("gamarr.pipeline.requests.get", return_value=mock_resp):
-            result = _default_magnet_fetcher("https://example.com/no-magnet")
+            result = _default_magnet_fetcher("https://fitgirl-repacks.site/no-magnet")
 
         assert result is None
+
+    def test_default_magnet_fetcher_passes_verify_false(self) -> None:
+        """_default_magnet_fetcher must pass verify=False to bypass self-signed cert."""
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.pipeline import _default_magnet_fetcher
+
+        mock_resp = MagicMock()
+        mock_resp.text = "<html><title>Game</title>"
+
+        with (
+            patch("gamarr.pipeline.requests.get", return_value=mock_resp) as mock_get,
+            patch("gamarr.pipeline._extract_magnet_from_html", return_value=None),
+        ):
+            _default_magnet_fetcher("https://fitgirl-repacks.site/game")
+
+        assert mock_get.call_args[1].get("verify") is False, f"Expected verify=False, got {mock_get.call_args[1]}"
 
     def test_fetch_fitgirl_page_title_rejects_non_https(self) -> None:
         """_fetch_fitgirl_page_title returns None for non-HTTPS URLs."""
@@ -1987,7 +2006,7 @@ class TestMetacriticBrowse:
         from gamarr.pipeline import _fetch_fitgirl_page_title
 
         with patch("gamarr.pipeline.requests.get", side_effect=requests.exceptions.ConnectionError("nope")):
-            result = _fetch_fitgirl_page_title("https://example.com/game")
+            result = _fetch_fitgirl_page_title("https://fitgirl-repacks.site/game")
         assert result is None
 
     def test_fetch_fitgirl_page_title_returns_title(self) -> None:
@@ -2000,7 +2019,7 @@ class TestMetacriticBrowse:
         mock_resp.text = "<html><title>Elden Ring [FitGirl HV Repack]</title><body>...</body></html>"
 
         with patch("gamarr.pipeline.requests.get", return_value=mock_resp):
-            result = _fetch_fitgirl_page_title("https://example.com/elden-ring")
+            result = _fetch_fitgirl_page_title("https://fitgirl-repacks.site/elden-ring")
 
         assert result == "Elden Ring [FitGirl HV Repack]"
 
@@ -2014,9 +2033,23 @@ class TestMetacriticBrowse:
         mock_resp.text = "<html><body>No title here</body></html>"
 
         with patch("gamarr.pipeline.requests.get", return_value=mock_resp):
-            result = _fetch_fitgirl_page_title("https://example.com/no-title")
+            result = _fetch_fitgirl_page_title("https://fitgirl-repacks.site/no-title")
 
         assert result is None
+
+    def test_fetch_fitgirl_page_title_passes_verify_false(self) -> None:
+        """_fetch_fitgirl_page_title must pass verify=False to bypass self-signed cert."""
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.pipeline import _fetch_fitgirl_page_title
+
+        mock_resp = MagicMock()
+        mock_resp.text = "<html><title>Game</title>"
+
+        with patch("gamarr.pipeline.requests.get", return_value=mock_resp) as mock_get:
+            _fetch_fitgirl_page_title("https://fitgirl-repacks.site/game")
+
+        assert mock_get.call_args[1].get("verify") is False, f"Expected verify=False, got {mock_get.call_args[1]}"
 
     def test_browse_skips_below_threshold(self, tmp_path: Path) -> None:
         """Games below score thresholds should NOT be inserted as pending."""
