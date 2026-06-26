@@ -11,9 +11,14 @@ import xml.etree.ElementTree as ET
 from typing import TYPE_CHECKING, Any
 
 import requests
+import urllib3
 from loguru import logger
 
 from gamarr.database import Database
+
+# FitGirl uses a self-signed certificate. Disable SSL verification warnings process-wide
+# so log output is not spammed with InsecureRequestWarning on every request.
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 if TYPE_CHECKING:
     import threading
@@ -275,11 +280,11 @@ class FitGirlSource:
         """Fetch the FitGirl sitemap XML and store results in the DB."""
         url = "https://fitgirl-repacks.site/sitemap.xml"
         try:
-            resp = requests.get(url, timeout=30, headers={"User-Agent": _USER_AGENT})
+            resp = requests.get(url, timeout=30, headers={"User-Agent": _USER_AGENT}, verify=False)
             resp.raise_for_status()
             titles = _resolve_sitemap(
                 resp.content,
-                fetcher=lambda url: requests.get(url, timeout=30, headers={"User-Agent": _USER_AGENT}),
+                fetcher=lambda url: requests.get(url, timeout=30, headers={"User-Agent": _USER_AGENT}, verify=False),
             )
             titles = _filter_game_urls(titles)
             db.rebuild_source_titles("fitgirl", [{"magnet": None, **t} for t in titles])

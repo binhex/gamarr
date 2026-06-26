@@ -20,6 +20,8 @@ from gamarr.qbittorrent import QBittorrentClient
 from gamarr.sources.fitgirl import _USER_AGENT, FitGirlSource, _extract_magnet_from_html
 from gamarr.utils import is_cancelled, normalise_for_compare
 
+# urllib3 warnings for FitGirl self-signed cert are suppressed in gamarr.sources.fitgirl
+
 if TYPE_CHECKING:
     import threading
     from collections.abc import Callable
@@ -2001,12 +2003,14 @@ def _fetch_fitgirl_page_title(url: str) -> str | None:
     or None if the page could not be fetched.
     """
     try:
-        if not url.startswith("https://"):
+        # Only fetch from FitGirl (uses self-signed cert — verify=False is intentional)
+        if not url.startswith("https://fitgirl-repacks.site"):
             return None
         resp = requests.get(
             url,
             headers={"User-Agent": _USER_AGENT},
             timeout=_SITEMAP_TIMEOUT,
+            verify=False,
         )
         resp.raise_for_status()
     except requests.RequestException:
@@ -2025,13 +2029,15 @@ def _default_magnet_fetcher(url: str) -> str | None:
     so callers can retrieve it without a second HTTP request.
     """
     try:
-        if not url.startswith("https://"):
-            logger.warning("Skipping non-HTTPS magnet source: {}", url)
+        # Only fetch from FitGirl (uses self-signed cert — verify=False is intentional)
+        if not url.startswith("https://fitgirl-repacks.site"):
+            logger.warning("Skipping non-FitGirl magnet source: {}", url)
             return None
         resp = requests.get(
             url,
             headers={"User-Agent": _USER_AGENT},
             timeout=_SITEMAP_TIMEOUT,
+            verify=False,
         )
         resp.raise_for_status()
     except requests.RequestException as exc:

@@ -542,3 +542,158 @@ def test_fetch_sitemap_cancelled_after_cache_check() -> None:
         mock_get.assert_not_called()
 
     db.close()
+
+
+def test_fetch_and_store_sitemap_passes_verify_false() -> None:
+    """_fetch_and_store_sitemap must pass verify=False to bypass self-signed cert."""
+    from unittest.mock import MagicMock, patch
+
+    from gamarr.database import Database
+    from gamarr.sources.fitgirl import FitGirlSource
+
+    db = Database(":memory:")
+    source = FitGirlSource(
+        feed_url="https://fitgirl-repacks.site/feed/",
+        db=db,
+        cache_pages_hours=0,
+    )
+
+    with patch("gamarr.sources.fitgirl.requests.get") as mock_get:
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.content = b"""<?xml version='1.0' encoding='UTF-8'?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://fitgirl-repacks.site/game-a/</loc></url>
+</urlset>"""
+        mock_get.return_value = mock_resp
+
+        source._fetch_and_store_sitemap(db)
+
+    # The main sitemap request must pass verify=False
+    assert mock_get.call_count >= 1, f"Expected at least 1 call to requests.get, got {mock_get.call_count}"
+    first_call_kwargs = mock_get.call_args_list[0][1]
+    assert first_call_kwargs.get("verify") is False, (
+        f"Expected verify=False in sitemap request, got {first_call_kwargs}"
+    )
+
+    db.close()
+
+
+def test_fetch_child_sitemaps_handles_exception() -> None:
+    """_fetch_child_sitemaps logs warning when one child sitemap fetch fails."""
+    from unittest.mock import MagicMock, patch
+
+    from gamarr.sources.fitgirl import _fetch_child_sitemaps
+
+    child_xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://fitgirl-repacks.site/game-a/</loc></url>
+</urlset>"""
+
+    # Fetcher that fails for the first URL, succeeds for the second
+    class PartialFetcher:
+        def __init__(self) -> None:
+            self.call_count = 0
+
+        def __call__(self, url: str) -> MagicMock:
+            self.call_count += 1
+            if self.call_count == 1:
+                raise ConnectionError("timeout")
+            resp = MagicMock()
+            resp.content = child_xml
+            resp.raise_for_status = MagicMock()
+            return resp
+
+    with patch("gamarr.sources.fitgirl.logger") as mock_logger:
+        results = _fetch_child_sitemaps(["http://fail.com", "http://ok.com"], PartialFetcher())
+
+    # Should still get results from the successful child sitemap
+    assert len(results) == 1
+    assert results[0]["url"] == "https://fitgirl-repacks.site/game-a/"
+    # Should have logged the failure warning
+    mock_logger.warning.assert_called_once()
+    assert "Failed to fetch child sitemap" in mock_logger.warning.call_args[0][0]
+
+
+def test_resolve_sitemap_index_without_fetcher() -> None:
+    """_resolve_sitemap returns [] for sitemapindex when fetcher is None."""
+    from gamarr.sources.fitgirl import _resolve_sitemap
+
+    index_xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>https://example.com/child.xml</loc></sitemap>
+</sitemapindex>"""
+    results = _resolve_sitemap(index_xml, fetcher=None)
+    assert results == []
+
+
+def test_resolve_sitemap_unrecognized_root_tag() -> None:
+    """_resolve_sitemap returns [] when the root tag is unrecognized."""
+    from gamarr.sources.fitgirl import _resolve_sitemap
+
+    xml = b"""<?xml version="1.0" encoding="UTF-8"?>
+<notasitemap xmlns="http://example.com/ns">
+  <something/>
+</notasitemap>"""
+    results = _resolve_sitemap(xml)
+    assert results == []
+
+
+def test_fetch_and_store_sitemap_handles_request_exception() -> None:
+    """_fetch_and_store_sitemap logs warning when requests.get fails."""
+    from unittest.mock import patch
+
+    import requests
+
+    from gamarr.database import Database
+    from gamarr.sources.fitgirl import FitGirlSource
+
+    db = Database(":memory:")
+    source = FitGirlSource(
+        feed_url="https://fitgirl-repacks.site/feed/",
+        db=db,
+        cache_pages_hours=0,
+    )
+
+    with (
+        patch("gamarr.sources.fitgirl.requests.get", side_effect=requests.exceptions.ConnectionError("nope")),
+        patch("gamarr.sources.fitgirl.logger") as mock_logger,
+    ):
+        source._fetch_and_store_sitemap(db)
+
+    # Should log the warning
+    mock_logger.warning.assert_called_once()
+    assert "Failed to fetch FitGirl sitemap" in mock_logger.warning.call_args[0][0]
+    # No titles should have been stored
+    assert len(db.get_all_source_titles("fitgirl")) == 0
+
+    db.close()
+
+
+def test_fetch_sitemap_cache_hit_skips() -> None:
+    """fetch_sitemap returns early when cache is valid and titles exist."""
+    from unittest.mock import patch
+
+    from gamarr.database import Database
+    from gamarr.sources.fitgirl import FitGirlSource
+
+    db = Database(":memory:")
+    source = FitGirlSource(
+        feed_url="https://fitgirl-repacks.site/feed/",
+        db=db,
+        cache_pages_hours=6,
+    )
+
+    # Pre-populate cache and titles
+    db.set_sitemap_cache("fitgirl")
+    db.rebuild_source_titles(
+        "fitgirl",
+        [{"title": "Existing Game", "url": "https://fitgirl-repacks.site/existing-game/", "magnet": None}],
+    )
+
+    with patch("gamarr.sources.fitgirl.requests.get") as mock_get:
+        source.fetch_sitemap(db)
+        # Should NOT make any HTTP requests — cache hit
+        mock_get.assert_not_called()
+
+    db.close()
