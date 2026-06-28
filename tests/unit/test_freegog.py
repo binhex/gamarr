@@ -1,0 +1,396 @@
+"""Tests for gamarr FreeGOG source."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+
+class TestFreeGOGSource:
+    """FreeGOGSource construction and protocol conformance."""
+
+    def test_implements_base_source(self) -> None:
+        from gamarr.sources import BaseSource
+        from gamarr.sources.freegog import FreeGOGSource
+
+        source = FreeGOGSource()
+        assert isinstance(source, BaseSource)
+
+    def test_source_name(self) -> None:
+        from gamarr.sources.freegog import FreeGOGSource
+
+        source = FreeGOGSource()
+        assert source.source_name == "freegog"
+
+    def test_platform(self) -> None:
+        from gamarr.sources.freegog import FreeGOGSource
+
+        source = FreeGOGSource(platform="pc")
+        assert source.platform == "pc"
+
+    def test_accepts_shared_database(self) -> None:
+        from gamarr.database import Database
+        from gamarr.sources.freegog import FreeGOGSource
+
+        shared_db = Database(":memory:")
+        source = FreeGOGSource(db=shared_db)
+        assert source._db is shared_db
+        source.close()
+        shared_db.close()
+
+
+class TestCleanFreeGOGTitle:
+    """Title cleaning for FreeGOG titles."""
+
+    def test_clean_gothic_1_remake(self) -> None:
+        from gamarr.sources.freegog import _clean_freegog_title
+
+        result = _clean_freegog_title("Gothic 1 Remake v1.0.2a")
+        assert result == "Gothic 1 Remake"
+
+    def test_clean_sea_of_stars(self) -> None:
+        from gamarr.sources.freegog import _clean_freegog_title
+
+        result = _clean_freegog_title("Sea of Stars: Sunset Edition v3.0.60151 +3DLC")
+        assert result == "Sea of Stars"
+
+    def test_clean_kena_bridge_of_spirits(self) -> None:
+        from gamarr.sources.freegog import _clean_freegog_title
+
+        result = _clean_freegog_title("Kena: Bridge of Spirits 2022(rc3)")
+        assert result == "Kena: Bridge of Spirits"
+
+    def test_clean_blades_of_fire(self) -> None:
+        from gamarr.sources.freegog import _clean_freegog_title
+
+        result = _clean_freegog_title("Blades of Fire v2.0.0.10")
+        assert result == "Blades of Fire"
+
+    def test_clean_elden_ring(self) -> None:
+        from gamarr.sources.freegog import _clean_freegog_title
+
+        result = _clean_freegog_title("Elden Ring")
+        assert result == "Elden Ring"
+
+    def test_clean_empty_string(self) -> None:
+        from gamarr.sources.freegog import _clean_freegog_title
+
+        result = _clean_freegog_title("")
+        assert result == ""
+
+    def test_clean_edition_with_en_dash(self) -> None:
+        from gamarr.sources.freegog import _clean_freegog_title
+
+        result = _clean_freegog_title("Cyberpunk 2077 \u2013 Complete Edition")
+        assert result == "Cyberpunk 2077"
+
+    def test_clean_preserves_colon_in_name(self) -> None:
+        from gamarr.sources.freegog import _clean_freegog_title
+
+        result = _clean_freegog_title("Kena: Bridge of Spirits")
+        assert result == "Kena: Bridge of Spirits"
+
+    def test_clean_dlc_only(self) -> None:
+        from gamarr.sources.freegog import _clean_freegog_title
+
+        result = _clean_freegog_title("Some Game + DLCs")
+        assert result == "Some Game"
+
+    def test_clean_already_clean_title(self) -> None:
+        from gamarr.sources.freegog import _clean_freegog_title
+
+        result = _clean_freegog_title("Half-Life 2")
+        assert result == "Half-Life 2"
+
+
+class TestParseFreeGOGAZPage:
+    """FreeGOG A-Z page HTML parser."""
+
+    def test_parse_multiple_entries(self) -> None:
+        from gamarr.sources.freegog import _parse_freegog_az_page
+
+        html = """<div class="gd-az-letter-section">
+    <a href="https://freegogpcgames.com/33511/gothic-1-remake/">Gothic 1 Remake v1.0.2a</a>
+    <a href="https://freegogpcgames.com/12345/sea-of-stars/">Sea of Stars: Sunset Edition v3.0.60151 +3DLC</a>
+</div>
+<div class="gd-az-letter-section">
+    <a href="https://freegogpcgames.com/67890/kena/">Kena: Bridge of Spirits 2022(rc3)</a>
+</div>"""
+        result = _parse_freegog_az_page(html)
+        assert len(result) == 3
+        assert result[0]["title"] == "Gothic 1 Remake"
+        assert result[0]["url"] == "https://freegogpcgames.com/33511/gothic-1-remake/"
+        assert result[1]["title"] == "Sea of Stars"
+        assert result[1]["url"] == "https://freegogpcgames.com/12345/sea-of-stars/"
+        assert result[2]["title"] == "Kena: Bridge of Spirits"
+        assert result[2]["url"] == "https://freegogpcgames.com/67890/kena/"
+
+    def test_parse_empty_page(self) -> None:
+        from gamarr.sources.freegog import _parse_freegog_az_page
+
+        result = _parse_freegog_az_page("")
+        assert result == []
+
+    def test_parse_uses_cleaned_titles(self) -> None:
+        from gamarr.sources.freegog import _parse_freegog_az_page
+
+        html = """<div class="gd-az-letter-section">
+    <a href="https://freegogpcgames.com/33511/gothic-1-remake/">Gothic 1 Remake v1.0.2a</a>
+</div>"""
+        result = _parse_freegog_az_page(html)
+        assert len(result) == 1
+        # Title should be cleaned, not the raw "Gothic 1 Remake v1.0.2a"
+        assert result[0]["title"] == "Gothic 1 Remake"
+
+
+class TestExtractMagnetFromFreeGOGPage:
+    """Magnet extraction from FreeGOG game pages."""
+
+    ENCODED_MAGNET = (
+        "bWFnbmV0Oj94dD11cm46YnRpaDo0Mjc4OEFGQjEwNzE0MzQ4OENCNTc2MDg1QkQ1QTVERUYxNjVGQzM3"
+        "JnRyPWh0dHAlM0ElMkYlMkZidDMudC1ydS5vcmclMkZhbm4lM0ZtYWduZXQmZG49JTVCREwlNUQlMjBH"
+        "b3RoaWMlMjAxJTIwUmVtYWtl"
+    )
+
+    def test_extract_real_magnet(self) -> None:
+        from gamarr.sources.freegog import _extract_magnet_from_freegog_page
+
+        html = (
+            '<a href="https://gdl.freegogpcgames.xyz/download-gen.php?url=v1.'
+            f'{self.ENCODED_MAGNET}.sig" data-type="magnet">Magnet</a>'
+        )
+        result = _extract_magnet_from_freegog_page(html)
+        assert result is not None
+        assert result.startswith("magnet:")
+
+    def test_extract_no_magnet(self) -> None:
+        from gamarr.sources.freegog import _extract_magnet_from_freegog_page
+
+        html = "<p>No magnet here</p>"
+        result = _extract_magnet_from_freegog_page(html)
+        assert result is None
+
+    def test_extract_empty_html(self) -> None:
+        from gamarr.sources.freegog import _extract_magnet_from_freegog_page
+
+        result = _extract_magnet_from_freegog_page("")
+        assert result is None
+
+    def test_extract_bad_base64(self) -> None:
+        from gamarr.sources.freegog import _extract_magnet_from_freegog_page
+
+        html = (
+            '<a href="https://gdl.freegogpcgames.xyz/download-gen.php?url=v1.'
+            '!!!invalid!!!.sig" data-type="magnet">Magnet</a>'
+        )
+        result = _extract_magnet_from_freegog_page(html)
+        assert result is None
+
+
+class TestFreeGOGFetchSitemap:
+    """FreeGOG sitemap (A-Z page) indexing."""
+
+    ENCODED_MAGNET = (
+        "bWFnbmV0Oj94dD11cm46YnRpaDo0Mjc4OEFGQjEwNzE0MzQ4OENCNTc2MDg1QkQ1QTVERUYxNjVGQzM3"
+        "JnRyPWh0dHAlM0ElMkYlMkZidDMudC1ydS5vcmclMkZhbm4lM0ZtYWduZXQmZG49JTVCREwlNUQlMjBH"
+        "b3RoaWMlMjAxJTIwUmVtYWtl"
+    )
+
+    def test_indexes_new_games(self, tmp_path: Path) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.database import Database
+        from gamarr.sources.freegog import FreeGOGSource
+
+        db = Database(str(tmp_path / "test.db"))
+        source = FreeGOGSource(db=db, cache_pages_hours=0)
+
+        az_html = """<div class="gd-az-letter-section">
+    <a href="https://freegogpcgames.com/33511/gothic-1-remake/">Gothic 1 Remake v1.0.2a</a>
+</div>"""
+        game_html = (
+            '<a href="https://gdl.freegogpcgames.xyz/download-gen.php?url=v1.'
+            f'{self.ENCODED_MAGNET}.sig" data-type="magnet">Magnet</a>'
+        )
+
+        with patch("gamarr.sources.freegog.requests.get") as mock_get:
+
+            def side_effect(url: str, **kwargs: object) -> MagicMock:
+                resp = MagicMock()
+                resp.raise_for_status = MagicMock()
+                if "game-list" in url:
+                    resp.text = az_html
+                else:
+                    resp.text = game_html
+                return resp
+
+            mock_get.side_effect = side_effect
+
+            source.fetch_sitemap(db)
+
+        titles = db.get_all_source_titles("freegog")
+        assert len(titles) == 1
+        assert titles[0]["title"] == "Gothic 1 Remake"
+        assert titles[0]["url"] == "https://freegogpcgames.com/33511/gothic-1-remake/"
+        assert titles[0]["magnet"] is not None
+        assert titles[0]["magnet"].startswith("magnet:")
+
+        source.close()
+        db.close()
+
+    def test_skips_known_games(self, tmp_path: Path) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.database import Database, SourceTitle
+        from gamarr.sources.freegog import FreeGOGSource
+
+        db = Database(str(tmp_path / "test.db"))
+        source = FreeGOGSource(db=db, cache_pages_hours=0)
+
+        # Pre-populate a known title
+        with db._session() as session:
+            session.add(
+                SourceTitle(
+                    source="freegog",
+                    title="Existing Game",
+                    url="https://freegogpcgames.com/00000/existing-game/",
+                    magnet=None,
+                )
+            )
+            session.commit()
+
+        az_html = """<div class="gd-az-letter-section">
+    <a href="https://freegogpcgames.com/00000/existing-game/">Existing Game v1.0</a>
+    <a href="https://freegogpcgames.com/33511/gothic-1-remake/">Gothic 1 Remake v1.0.2a</a>
+</div>"""
+        game_html = (
+            '<a href="https://gdl.freegogpcgames.xyz/download-gen.php?url=v1.'
+            f'{self.ENCODED_MAGNET}.sig" data-type="magnet">Magnet</a>'
+        )
+
+        with patch("gamarr.sources.freegog.requests.get") as mock_get:
+            call_count = 0
+
+            def side_effect(url: str, **kwargs: object) -> MagicMock:
+                nonlocal call_count
+                call_count += 1
+                resp = MagicMock()
+                resp.raise_for_status = MagicMock()
+                if "game-list" in url:
+                    resp.text = az_html
+                else:
+                    resp.text = game_html
+                return resp
+
+            mock_get.side_effect = side_effect
+
+            source.fetch_sitemap(db)
+
+        # A-Z page (1 call) + 1 new game page = 2 calls
+        assert call_count == 2, f"Expected 2 HTTP requests, got {call_count}"
+
+        # Should have the existing + one new title
+        titles = db.get_all_source_titles("freegog")
+        assert len(titles) == 2
+
+        source.close()
+        db.close()
+
+    def test_cache_hit_skips(self, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        from gamarr.database import Database, SourceTitle
+        from gamarr.sources.freegog import FreeGOGSource
+
+        db = Database(str(tmp_path / "test.db"))
+        source = FreeGOGSource(db=db, cache_pages_hours=6)
+
+        # Pre-populate cache and titles
+        db.set_sitemap_cache("freegog")
+        with db._session() as session:
+            session.add(
+                SourceTitle(
+                    source="freegog",
+                    title="Existing Game",
+                    url="https://freegogpcgames.com/00000/existing-game/",
+                    magnet=None,
+                )
+            )
+            session.commit()
+
+        with patch("gamarr.sources.freegog.requests.get") as mock_get:
+            source.fetch_sitemap(db)
+            mock_get.assert_not_called()
+
+        source.close()
+        db.close()
+
+    def test_handles_az_failure(self, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        import requests
+
+        from gamarr.database import Database
+        from gamarr.sources.freegog import FreeGOGSource
+
+        db = Database(str(tmp_path / "test.db"))
+        source = FreeGOGSource(db=db, cache_pages_hours=0)
+
+        with patch(
+            "gamarr.sources.freegog.requests.get",
+            side_effect=requests.exceptions.ConnectionError("nope"),
+        ):
+            source.fetch_sitemap(db)
+
+        # Cache should be set even on failure (prevents retry loop)
+        assert db.get_sitemap_cache("freegog", 6) is True
+        # No titles should be stored
+        assert len(db.get_all_source_titles("freegog")) == 0
+
+        source.close()
+        db.close()
+
+    def test_skips_on_cancel(self) -> None:
+        import threading
+        from unittest.mock import patch
+
+        from gamarr.database import Database
+        from gamarr.sources.freegog import FreeGOGSource
+
+        db = Database(":memory:")
+        source = FreeGOGSource(db=db, cache_pages_hours=0)
+
+        cancel_event = threading.Event()
+        cancel_event.set()
+
+        with patch("gamarr.sources.freegog.requests.get") as mock_get:
+            source.fetch_sitemap(db, cancel_event=cancel_event)
+            mock_get.assert_not_called()
+
+        source.close()
+        db.close()
+
+    def test_accepts_cancel_event_kwarg(self) -> None:
+        import threading
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.database import Database
+        from gamarr.sources.freegog import FreeGOGSource
+
+        db = Database(":memory:")
+        source = FreeGOGSource(db=db, cache_pages_hours=0)
+
+        cancel_event = threading.Event()
+
+        with patch("gamarr.sources.freegog.requests.get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.text = ""
+            mock_resp.raise_for_status = MagicMock()
+            mock_get.return_value = mock_resp
+            # Should not raise TypeError
+            source.fetch_sitemap(db, cancel_event=cancel_event)
+
+        source.close()
+        db.close()
