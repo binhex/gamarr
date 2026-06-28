@@ -63,6 +63,7 @@ class DownloadSitesConfig(RootModel[list[SourceConfigEntry]]):
     """
 
     root: list[SourceConfigEntry] = [
+        SourceConfigEntry(name="freegog"),
         SourceConfigEntry(name="fitgirl", feed_url="https://fitgirl-repacks.site/feed/"),
     ]
 
@@ -194,6 +195,7 @@ class Config(BaseModel):
     download_sites: DownloadSitesConfig = Field(
         default_factory=lambda: DownloadSitesConfig(
             root=[
+                SourceConfigEntry(name="freegog"),
                 SourceConfigEntry(name="fitgirl", feed_url="https://fitgirl-repacks.site/feed/"),
             ]
         )

@@ -401,6 +401,29 @@ class Database:
                 query = query.filter(PendingGame.platform == platform)
             return query.first() is not None
 
+    def store_source_title(self, *, source: str, title: str, url: str, magnet: str | None) -> None:
+        """Insert a single source title entry.
+
+        Used for incremental indexing where individual entries are added
+        without replacing the entire source index (unlike rebuild_source_titles).
+
+        Args:
+            source: Source identifier (e.g. "freegog").
+            title: Cleaned game title.
+            url: Full game page URL.
+            magnet: Magnet URI or None.
+        """
+        with self._session() as session:
+            session.add(
+                SourceTitle(
+                    source=source,
+                    title=title,
+                    url=url,
+                    magnet=magnet,
+                )
+            )
+            session.commit()
+
     def rebuild_source_titles(self, source: str, titles: list[dict[str, str | None]]) -> None:
         with self._session() as session:
             session.query(SourceTitle).filter(SourceTitle.source == source).delete()

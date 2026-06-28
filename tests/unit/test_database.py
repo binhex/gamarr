@@ -511,6 +511,36 @@ class TestSourceTitle:
         assert titles[1]["magnet"] is None
         db.close()
 
+    def test_store_source_title_inserts_single_entry(self) -> None:
+        """store_source_title should insert a single SourceTitle row."""
+        db = Database(":memory:")
+        db.store_source_title(
+            source="freegog",
+            title="Test Game",
+            url="https://example.com/game/",
+            magnet="magnet:?xt=urn:btih:abc",
+        )
+        titles = db.get_all_source_titles("freegog")
+        assert len(titles) == 1
+        assert titles[0]["title"] == "Test Game"
+        assert titles[0]["url"] == "https://example.com/game/"
+        assert titles[0]["magnet"] == "magnet:?xt=urn:btih:abc"
+        db.close()
+
+    def test_store_source_title_with_none_magnet(self) -> None:
+        """store_source_title should accept magnet=None."""
+        db = Database(":memory:")
+        db.store_source_title(
+            source="freegog",
+            title="Test",
+            url="https://example.com/game/",
+            magnet=None,
+        )
+        titles = db.get_all_source_titles("freegog")
+        assert len(titles) == 1
+        assert titles[0]["magnet"] is None
+        db.close()
+
 
 class TestDatabaseAlreadyOwned:
     """Already owned stats tracking."""

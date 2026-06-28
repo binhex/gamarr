@@ -18,6 +18,7 @@ from gamarr.metacritic_cache import MetacriticCache
 from gamarr.notifications import Notifier
 from gamarr.qbittorrent import QBittorrentClient
 from gamarr.sources.fitgirl import _USER_AGENT, FitGirlSource, _extract_magnet_from_html
+from gamarr.sources.freegog import FreeGOGSource
 from gamarr.utils import is_cancelled, normalise_for_compare
 
 # urllib3 warnings for FitGirl self-signed cert are suppressed in gamarr.sources.fitgirl
@@ -423,6 +424,7 @@ def run_acquisition(
         # Source factory map for dispatching source config entries to source classes
         _source_factories: dict[str, type] = {
             "fitgirl": FitGirlSource,
+            "freegog": FreeGOGSource,
         }
 
         def _build_source(entry: Any, db: Database) -> Any:
