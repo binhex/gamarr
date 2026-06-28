@@ -2,7 +2,7 @@
 
 Metadata game downloader — browses Metacritic for newly released games that
 pass configured score thresholds, matches them against download sources
-(FitGirl repacks), and sends qualifying games to qBittorrent.
+(FreeGOGPCGames and FitGirl repacks), and sends qualifying games to qBittorrent.
 Sources are checked in config-defined priority order.
 
 ## Features
@@ -27,8 +27,8 @@ Sources are checked in config-defined priority order.
   `max_queue_days` (under metacritic thresholds). Once scores pass, a fresh
   expiry window (`download_sites.fitgirl.max_queue_days`) starts for the
   FitGirl-matching phase. Set either value to `0` for indefinite pending.
-- **Multiple download sources** — supports FitGirl repacks (sitemap-based).
-  Sources are configured as an ordered
+- **Multiple download sources** — supports FreeGOGPCGames (A-Z list-based)
+  and FitGirl repacks (sitemap-based). Sources are configured as an ordered
   list — position determines priority, and the first source with a match
   delivers the torrent.
 - **Source priority** — if a game is available on multiple sources, the
@@ -128,6 +128,12 @@ a match delivers the torrent.
 
 ```yaml
 download_sites:
+  - freegog:
+      enabled: true
+      platform: pc
+      cache_pages_hours: 6
+      reject_keywords: []
+      max_queue_days: 60
   - fitgirl:
       enabled: true
       feed_url: https://fitgirl-repacks.site/feed/
@@ -275,11 +281,12 @@ are collected.
    (extracted from the detail page) are checked against `reject_genre`.
    Matching games are removed from pending immediately — no score
    evaluation or re-verification (genres never change).
-6. **FitGirl sitemap fetch** — Only when there are verified games in the
-   queue. The FitGirl repacks sitemap is fetched and indexed.
-7. **Source matching** — Verified games are matched against the FitGirl
-   sitemap by title. The best-matching repack title gets its magnet link
-   fetched.
+6. **Source indexing** — Only when there are verified games in the
+   queue. Each enabled source's index is fetched (FreeGOG A-Z list,
+   FitGirl sitemap) and new titles are stored for matching.
+7. **Source matching** — Verified games are matched against the source
+   index by title. The best-matching title gets its magnet link
+   fetched (pre-stored for FreeGOG, on-demand for FitGirl).
 8. **Delivery** — Matched games are added to qBittorrent with a `gamarr-*`
    tag. The result is recorded in the history database.
 9. **Notifications** — Optional Apprise notifications on download, failure,
@@ -290,7 +297,8 @@ are collected.
 The codebase is structured as a **Metacritic-first** pipeline:
 
 ```text
-metacritic.py  →  pipeline.py  →  sources/fitgirl.py  →  qbittorrent.py
+metacritic.py  →  pipeline.py  →  sources/freegog.py  →  qbittorrent.py
+                sources/fitgirl.py
 _(Note: `sources/` is the Python package name for download site implementations — distinct from the config key.)
        ↓              ↓                   ↓                    ↓
    Browse new    Score filter +      Sitemap match         Add torrent
@@ -327,7 +335,7 @@ uv run pytest
 
 **Q: What download sites are supported?**
 
-**A:** Currently FitGirl repacks.
+**A:** FreeGOGPCGames and FitGirl repacks.
 
 **Q: Can I add Nintendo Switch games?**
 

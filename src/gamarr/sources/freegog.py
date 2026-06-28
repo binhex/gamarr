@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 import requests
 from loguru import logger
 
-from gamarr.database import Database, SourceTitle
+from gamarr.database import Database
 
 if TYPE_CHECKING:
     import threading
@@ -50,11 +50,11 @@ _YEAR_PATTERN = re.compile(r"\s+\d{4}\(rc\d+\)")
 
 # A-Z page section and link extraction patterns
 _SECTION_PATTERN = re.compile(
-    r'<div[^>]*class="[^"]*\bgd-az-letter-section\b[^"]*"[^>]*>(.*?)</div>',
+    r'<section[^>]*\bid="gd-az-([^"]+)"[^>]*\bclass="[^"]*\bgd-az-section\b[^"]*"[^>]*>(.*?)</section>',
     re.DOTALL | re.IGNORECASE,
 )
 _AZ_LINK_PATTERN = re.compile(
-    r'<a\s+href="(https://freegogpcgames\.com/\d+/[^"/]+/)"[^>]*>([^<]+)</a>',
+    r'<a\s+href="(https://freegogpcgames\.com/\d+/[^"/]+/)"[^>]*>\s*<span[^>]*>([^<]+)</span>',
 )
 
 # Pattern to extract base64-encoded magnet URL from game page
@@ -85,20 +85,23 @@ def _clean_freegog_title(raw_title: str) -> str:
 def _parse_freegog_az_page(html: str) -> list[dict[str, str]]:
     """Parse the FreeGOG /game-list/ A-Z page HTML.
 
-    Extracts game title and URL from ``<a>`` tags inside
-    ``gd-az-letter-section`` divs.
+    Extracts game title from the first ``<span>`` inside ``<a>`` tags
+    within ``<section class="gd-az-section">`` elements.
 
     Args:
         html: Raw HTML content of the A-Z page.
 
     Returns:
-        List of ``{"title": ..., "url": ...}`` dicts, deduplicated by URL.
-        Titles are cleaned via ``_clean_freegog_title``.
+        List of ``{"title": ..., "url": ..., "letter": ...}`` dicts,
+        deduplicated by URL.  *letter* is the section id (e.g. ``"a"``,
+        ``"num"``).  Titles are cleaned via ``_clean_freegog_title``.
     """
     results: list[dict[str, str]] = []
     seen_urls: set[str] = set()
 
-    for section_html in _SECTION_PATTERN.findall(html):
+    for letter_id, section_html in _SECTION_PATTERN.findall(html):
+        # Normalize: "a", "b", ..., "z", "num" for #
+        letter = letter_id.casefold()
         for match in _AZ_LINK_PATTERN.finditer(section_html):
             href = match.group(1)
             if href in seen_urls:
@@ -106,7 +109,7 @@ def _parse_freegog_az_page(html: str) -> list[dict[str, str]]:
             seen_urls.add(href)
             raw_title = match.group(2)
             cleaned = _clean_freegog_title(raw_title)
-            results.append({"title": cleaned, "url": href})
+            results.append({"title": cleaned, "url": href, "letter": letter})
 
     return results
 
@@ -214,11 +217,34 @@ class FreeGOGSource:
 
             new_count = 0
             known_count = 0
+            letter_count = 0
+            current_letter: str | None = None
 
             for entry in az_entries:
+                # Log progress when we start a new letter section
+                letter = entry.get("letter", "?")
+                if letter != current_letter:
+                    if current_letter is not None:
+                        logger.info(
+                            "FreeGOG: letter '{}' complete ({} games in this section)",
+                            current_letter.upper() if current_letter != "num" else "#",
+                            letter_count,
+                        )
+                    current_letter = letter
+                    letter_count = 0
+                    letter_total = sum(1 for e in az_entries if e.get("letter") == letter)
+                    logger.info(
+                        "FreeGOG: processing letter '{}' ({} games)",
+                        letter.upper() if letter != "num" else "#",
+                        letter_total,
+                    )
+
                 if entry["url"] in existing_urls:
                     known_count += 1
+                    letter_count += 1
                     continue
+
+                letter_count += 1
 
                 # Fetch individual game page
                 try:
@@ -238,17 +264,20 @@ class FreeGOGSource:
                     continue
 
                 # Store the source title with the magnet
-                with db._session() as session:
-                    session.add(
-                        SourceTitle(
-                            source="freegog",
-                            title=entry["title"],
-                            url=entry["url"],
-                            magnet=magnet,
-                        )
-                    )
-                    session.commit()
+                db.store_source_title(
+                    source="freegog",
+                    title=entry["title"],
+                    url=entry["url"],
+                    magnet=magnet,
+                )
                 new_count += 1
+
+            if current_letter is not None:
+                logger.info(
+                    "FreeGOG: letter '{}' complete ({} games in this section)",
+                    current_letter.upper() if current_letter != "num" else "#",
+                    letter_count,
+                )
 
             db.set_sitemap_cache("freegog")
             logger.info(

@@ -182,6 +182,78 @@ class TestConfigModels:
         assert "cache_ttl_hours" not in mc_pc, "Old key should not appear in defaults"
         assert mc_pc["cache_pages_hours"] == 6, "New key should have default 6"
 
+    def test_migrate_config_adds_freegog_to_download_sites(self) -> None:
+        """_migrate_config should prepend freegog to download_sites when missing."""
+        from gamarr.config import _migrate_config
+
+        # Simulate existing config with only fitgirl in download_sites
+        raw: dict[str, Any] = {
+            "download_sites": [
+                {"fitgirl": {"enabled": True, "feed_url": "https://example.com/feed/"}},
+            ],
+        }
+        result = _migrate_config(raw)
+        assert result is True, "Migration should return True when freegog is added"
+        ds: Any = raw["download_sites"]
+        assert len(ds) >= 2, f"Expected at least 2 download_sites entries, got {len(ds)}"
+        names = [list(e.keys())[0] for e in ds]
+        assert "freegog" in names, "freegog should be in download_sites after migration"
+        assert "fitgirl" in names, "fitgirl should remain in download_sites"
+        # freegog should come first (default order)
+        assert names[0] == "freegog", f"freegog should be first, got {names}"
+        # freegog entry should have full defaults, not just "enabled: true"
+        fg_entry = next(e["freegog"] for e in ds if isinstance(e, dict) and "freegog" in e)
+        assert fg_entry["enabled"] is True
+        assert fg_entry["platform"] == "pc"
+        assert fg_entry["cache_pages_hours"] == 6
+        assert fg_entry["reject_keywords"] == []
+        assert fg_entry["max_queue_days"] == 60
+
+    def test_migrate_config_upgrades_sparse_freegog_entry(self) -> None:
+        """_migrate_config should populate missing fields in an existing sparse freegog entry."""
+        from gamarr.config import _migrate_config
+
+        # Simulate a stale sparse entry left by the first version of the migration
+        raw: dict[str, Any] = {
+            "download_sites": [
+                {"freegog": {"enabled": True}},  # only 'enabled', no defaults
+                {"fitgirl": {"enabled": True, "feed_url": "https://example.com/feed/"}},
+            ],
+        }
+        result = _migrate_config(raw)
+        assert result is True, "Migration should return True when upgrading sparse entry"
+        ds: Any = raw["download_sites"]
+        fg_entry = next(e["freegog"] for e in ds if isinstance(e, dict) and "freegog" in e)
+        assert fg_entry["enabled"] is True
+        assert fg_entry["platform"] == "pc", "platform should be populated"
+        assert fg_entry["cache_pages_hours"] == 6, "cache_pages_hours should be populated"
+        assert fg_entry["reject_keywords"] == [], "reject_keywords should be populated"
+        assert fg_entry["max_queue_days"] == 60, "max_queue_days should be populated"
+
+    def test_migrate_config_does_not_duplicate_freegog(self) -> None:
+        """_migrate_config should not add freegog if it already exists with full defaults."""
+        from gamarr.config import _migrate_config
+
+        raw: dict[str, Any] = {
+            "download_sites": [
+                {
+                    "freegog": {
+                        "enabled": True,
+                        "platform": "pc",
+                        "cache_pages_hours": 6,
+                        "reject_keywords": [],
+                        "max_queue_days": 60,
+                    }
+                },
+                {"fitgirl": {"enabled": True, "feed_url": "https://example.com/feed/"}},
+            ],
+        }
+        result = _migrate_config(raw)
+        assert result is False, "Migration should return False when freegog already complete"
+        ds: Any = raw["download_sites"]
+        names = [list(e.keys())[0] for e in ds]
+        assert names.count("freegog") == 1, "freegog should appear exactly once"
+
     def test_migrate_config_renames_browse_keys(self) -> None:
         """_migrate_config should rename old browse_* keys and drop deprecated cutoff_date."""
         from gamarr.config import _migrate_config

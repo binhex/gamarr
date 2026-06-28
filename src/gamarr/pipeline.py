@@ -2025,21 +2025,26 @@ def _fetch_fitgirl_page_title(url: str) -> str | None:
 
 
 def _default_magnet_fetcher(url: str) -> str | None:
-    """Fetch a FitGirl page and extract its magnet link.
+    """Fetch a source page and extract its magnet link.
 
-    Also caches the HTML <title> tag in ``_fitgirl_page_title_cache``
-    so callers can retrieve it without a second HTTP request.
+    Handles both FitGirl (self-signed cert, verify=False) and
+    FreeGOG (standard HTTPS) pages.  Caches the HTML <title> tag in
+    ``_fitgirl_page_title_cache`` so callers can retrieve it without
+    a second HTTP request.
     """
     try:
-        # Only fetch from FitGirl (uses self-signed cert — verify=False is intentional)
-        if not url.startswith("https://fitgirl-repacks.site"):
-            logger.warning("Skipping non-FitGirl magnet source: {}", url)
+        if url.startswith("https://fitgirl-repacks.site"):
+            verify = False
+        elif url.startswith("https://freegogpcgames.com"):
+            verify = True
+        else:
+            logger.warning("Skipping unknown magnet source: {}", url)
             return None
         resp = requests.get(
             url,
             headers={"User-Agent": _USER_AGENT},
             timeout=_SITEMAP_TIMEOUT,
-            verify=False,
+            verify=verify,
         )
         resp.raise_for_status()
     except requests.RequestException as exc:

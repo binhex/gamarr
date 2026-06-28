@@ -115,8 +115,9 @@ class TestCli:
         with patch("gamarr.database.Database") as mock_db:
             result = self.runner.invoke(cli, ["--config-path", tmp_cfg, "--clear-cache", "all"])
         assert result.exit_code == 0
-        assert mock_db.return_value.clear_cache.call_count == 2
+        assert mock_db.return_value.clear_cache.call_count == 3
         mock_db.return_value.clear_cache.assert_any_call("fitgirl")
+        mock_db.return_value.clear_cache.assert_any_call("freegog")
         mock_db.return_value.clear_cache.assert_any_call("metacritic")
 
     def test_clear_cache_unknown_source_logs_warning(self) -> None:

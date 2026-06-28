@@ -680,6 +680,43 @@ def _migrate_daemon_mode(raw: dict[str, Any]) -> bool:
     return False
 
 
+def _migrate_add_freegog_to_download_sites(raw: dict[str, Any]) -> bool:
+    """Ensure freegog is present in download_sites with full defaults.
+
+    Adds freegog if missing, or upgrades an existing sparse entry.
+    Returns True if freegog was added or upgraded.
+    """
+    ds = raw.get("download_sites")
+    if not isinstance(ds, list):
+        return False
+
+    _freegog_defaults = {
+        "enabled": True,
+        "platform": "pc",
+        "cache_pages_hours": 6,
+        "reject_keywords": [],
+        "max_queue_days": 60,
+    }
+
+    for entry in ds:
+        if isinstance(entry, dict) and entry:
+            name = list(entry.keys())[0]
+            if name.casefold() == "freegog":
+                fg = entry[name]
+                missing = [k for k in _freegog_defaults if k not in fg]
+                if not missing:
+                    return False  # Already complete
+                for k in missing:
+                    fg[k] = _freegog_defaults[k]
+                logger.info("Config: upgraded freegog entry with {} missing fields", len(missing))
+                return True
+
+    # Not present at all — add it
+    ds.insert(0, {"freegog": dict(_freegog_defaults)})
+    logger.info("Config: added freegog to download_sites")
+    return True
+
+
 def _migrate_config(raw: dict[str, Any]) -> bool:
     """Migrate renamed config keys in-place for all platforms.
 
@@ -705,6 +742,7 @@ def _migrate_config(raw: dict[str, Any]) -> bool:
             _migrate_download_sites_to_keyed_list,
             _migrate_remove_dodi,
             _migrate_daemon_mode,
+            _migrate_add_freegog_to_download_sites,
         ]
         for fn in _migrations:
             if fn(raw):

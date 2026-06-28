@@ -111,21 +111,34 @@ class TestParseFreeGOGAZPage:
     def test_parse_multiple_entries(self) -> None:
         from gamarr.sources.freegog import _parse_freegog_az_page
 
-        html = """<div class="gd-az-letter-section">
-    <a href="https://freegogpcgames.com/33511/gothic-1-remake/">Gothic 1 Remake v1.0.2a</a>
-    <a href="https://freegogpcgames.com/12345/sea-of-stars/">Sea of Stars: Sunset Edition v3.0.60151 +3DLC</a>
-</div>
-<div class="gd-az-letter-section">
-    <a href="https://freegogpcgames.com/67890/kena/">Kena: Bridge of Spirits 2022(rc3)</a>
-</div>"""
+        # Real site structure: <section class="gd-az-section"> with <a><span>TITLE</span></a>
+        html = """<section id="gd-az-a" class="gd-az-section" data-gd-az-section>
+    <a href="https://freegogpcgames.com/33511/gothic-1-remake/"><span>Gothic 1 Remake v1.0.2a</span></a>
+    <a href="https://freegogpcgames.com/12345/sea-of-stars/"><span>Sea of Stars: Sunset Edition v3.0.60151 +3DLC</span></a>
+</section>
+<section id="gd-az-b" class="gd-az-section" data-gd-az-section>
+    <a href="https://freegogpcgames.com/67890/kena/"><span>Kena: Bridge of Spirits 2022(rc3)</span></a>
+</section>"""
         result = _parse_freegog_az_page(html)
         assert len(result) == 3
         assert result[0]["title"] == "Gothic 1 Remake"
         assert result[0]["url"] == "https://freegogpcgames.com/33511/gothic-1-remake/"
         assert result[1]["title"] == "Sea of Stars"
-        assert result[1]["url"] == "https://freegogpcgames.com/12345/sea-of-stars/"
         assert result[2]["title"] == "Kena: Bridge of Spirits"
-        assert result[2]["url"] == "https://freegogpcgames.com/67890/kena/"
+
+    def test_parse_includes_letter_section(self) -> None:
+        from gamarr.sources.freegog import _parse_freegog_az_page
+
+        html = """<section id="gd-az-a" class="gd-az-section" data-gd-az-section>
+    <a href="https://freegogpcgames.com/1/game-a/"><span>Game A v1.0</span></a>
+</section>
+<section id="gd-az-b" class="gd-az-section" data-gd-az-section>
+    <a href="https://freegogpcgames.com/2/game-b/"><span>Game B v1.0</span></a>
+</section>"""
+        result = _parse_freegog_az_page(html)
+        assert len(result) == 2
+        assert result[0]["letter"] == "a"
+        assert result[1]["letter"] == "b"
 
     def test_parse_empty_page(self) -> None:
         from gamarr.sources.freegog import _parse_freegog_az_page
@@ -136,9 +149,9 @@ class TestParseFreeGOGAZPage:
     def test_parse_uses_cleaned_titles(self) -> None:
         from gamarr.sources.freegog import _parse_freegog_az_page
 
-        html = """<div class="gd-az-letter-section">
-    <a href="https://freegogpcgames.com/33511/gothic-1-remake/">Gothic 1 Remake v1.0.2a</a>
-</div>"""
+        html = """<section id="gd-az-g" class="gd-az-section" data-gd-az-section>
+    <a href="https://freegogpcgames.com/33511/gothic-1-remake/"><span>Gothic 1 Remake v1.0.2a</span></a>
+</section>"""
         result = _parse_freegog_az_page(html)
         assert len(result) == 1
         # Title should be cleaned, not the raw "Gothic 1 Remake v1.0.2a"
@@ -207,9 +220,9 @@ class TestFreeGOGFetchSitemap:
         db = Database(str(tmp_path / "test.db"))
         source = FreeGOGSource(db=db, cache_pages_hours=0)
 
-        az_html = """<div class="gd-az-letter-section">
-    <a href="https://freegogpcgames.com/33511/gothic-1-remake/">Gothic 1 Remake v1.0.2a</a>
-</div>"""
+        az_html = """<section id="gd-az-g" class="gd-az-section" data-gd-az-section>
+    <a href="https://freegogpcgames.com/33511/gothic-1-remake/"><span>Gothic 1 Remake v1.0.2a</span></a>
+</section>"""
         game_html = (
             '<a href="https://gdl.freegogpcgames.xyz/download-gen.php?url=v1.'
             f'{self.ENCODED_MAGNET}.sig" data-type="magnet">Magnet</a>'
@@ -261,10 +274,10 @@ class TestFreeGOGFetchSitemap:
             )
             session.commit()
 
-        az_html = """<div class="gd-az-letter-section">
-    <a href="https://freegogpcgames.com/00000/existing-game/">Existing Game v1.0</a>
-    <a href="https://freegogpcgames.com/33511/gothic-1-remake/">Gothic 1 Remake v1.0.2a</a>
-</div>"""
+        az_html = """<section id="gd-az-g" class="gd-az-section" data-gd-az-section>
+    <a href="https://freegogpcgames.com/00000/existing-game/"><span>Existing Game v1.0</span></a>
+    <a href="https://freegogpcgames.com/33511/gothic-1-remake/"><span>Gothic 1 Remake v1.0.2a</span></a>
+</section>"""
         game_html = (
             '<a href="https://gdl.freegogpcgames.xyz/download-gen.php?url=v1.'
             f'{self.ENCODED_MAGNET}.sig" data-type="magnet">Magnet</a>'

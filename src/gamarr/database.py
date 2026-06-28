@@ -515,10 +515,12 @@ class Database:
         """Clear cached data for a given source.
 
         Args:
-            source: One of ``"fitgirl"`` or ``"metacritic"``.
+            source: One of ``"fitgirl"``, ``"freegog"``, or ``"metacritic"``.
         """
         if source == "fitgirl":
             self._delete_sitemap_cache("fitgirl")
+        elif source == "freegog":
+            self._delete_sitemap_cache("freegog")
         elif source == "metacritic":
             self._delete_browse_cache()
             self._delete_detail_cache()
