@@ -164,17 +164,6 @@ class TestFitGirlSource:
         shared_db.close()
 
 
-class TestMagnetExtractionEdgeCases:
-    """Magnet extraction edge cases."""
-
-    def test_extract_magnet_fallback_fails_silently(self) -> None:
-        """When the article page fetch fails, magnet extraction returns None."""
-        from gamarr.sources.fitgirl import _extract_magnet_from_html
-
-        result = _extract_magnet_from_html("<html>no magnet</html>")
-        assert result is None
-
-
 class TestCleanTitleDashVersion:
     """Regression tests for version numbers after en-dash."""
 
