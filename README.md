@@ -87,7 +87,7 @@ gamarr
 | `--qbt-port <port>` | Override qBittorrent WebUI port from config |
 | `--qbt-username <user>` | Override qBittorrent username from config |
 | `--qbt-password <pass>` | Override qBittorrent password from config |
-| `--clear-cache <sources>` | Clear cached data. Comma-separated: `fitgirl`, `metacritic`, or `all` |
+| `--clear-cache <sources>` | Clear cached data. Comma-separated: `freegog`, `fitgirl`, `metacritic`, or `all` |
 | `--test` | Validate configuration and exit |
 | `--version` | Show version and exit |
 | `--help` | Show help message and exit |

@@ -110,7 +110,7 @@ class TestNotifierFormat:
             Must Play: Yes/No (when provided)
             Genre: <genre1>, <genre2> (when provided)
             Release: <YYYY-MM-DD> (when provided)
-            Link: https://www.metacritic.com/game/<platform>/<slug>/
+            Link: https://www.metacritic.com/game/<slug>/
         """
         mock_apobj = MagicMock()
         with patch.object(Notifier, "_init_apprise", return_value=mock_apobj):
@@ -133,7 +133,7 @@ class TestNotifierFormat:
                     "Critic Score: 85.0 (50 reviews)\n"
                     "User Score: 8.8 (100 reviews)\n"
                     "Genre: Action, Adventure\n"
-                    "Link: https://www.metacritic.com/game/pc/pragmata/"
+                    "Link: https://www.metacritic.com/game/pragmata/"
                 ),
             )
 
@@ -159,7 +159,7 @@ class TestNotifierFormat:
                     "Status: Paused\n"
                     "Critic Score: N/A\n"
                     "User Score: N/A\n"
-                    "Link: https://www.metacritic.com/game/ps5/elden-ring/"
+                    "Link: https://www.metacritic.com/game/elden-ring/"
                 ),
             )
 
@@ -190,7 +190,7 @@ class TestNotifierFormat:
                     "Must Play: No\n"
                     "Genre: Action, Adventure\n"
                     "Release: 2026-06-15\n"
-                    "Link: https://www.metacritic.com/game/pc/pragmata/"
+                    "Link: https://www.metacritic.com/game/pragmata/"
                 ),
             )
 

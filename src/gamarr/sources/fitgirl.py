@@ -1,6 +1,6 @@
-"""FitGirl repacks RSS source for gamarr.
+"""FitGirl repacks sitemap source for gamarr.
 
-Fetches the FitGirl RSS feed, parses new entries, cleans game titles,
+Fetches the FitGirl sitemap, parses game entries, cleans game titles,
 and extracts magnet links.
 """
 
@@ -234,9 +234,9 @@ def _extract_magnet_from_html(html_content: str) -> str | None:
     return None
 
 
-# Hard-coded feed URL — consistent with FreeGOG which has no configurable URL.
+# Hard-coded sitemap URL — consistent with FreeGOG which has no configurable URL.
 # This was formerly the configurable `feed_url` field on SourceConfigEntry.
-FEED_URL: str = "https://fitgirl-repacks.site/feed/"
+SITEMAP_URL: str = "https://fitgirl-repacks.site/sitemap.xml"
 
 
 class FitGirlSource:
@@ -246,7 +246,7 @@ class FitGirlSource:
     Metacritic-first matching: pending Metacritic games are matched
     against titles discovered here.  No RSS iteration is performed.
 
-    The feed URL is hard-coded (module-level ``FEED_URL`` constant)
+    The sitemap URL is hard-coded (module-level ``SITEMAP_URL`` constant)
     for consistency with the FreeGOG source pattern.
 
     Args:
@@ -282,7 +282,7 @@ class FitGirlSource:
 
     def _fetch_and_store_sitemap(self, db: Database) -> None:
         """Fetch the FitGirl sitemap XML and store results in the DB."""
-        url = "https://fitgirl-repacks.site/sitemap.xml"
+        url = SITEMAP_URL
         try:
             resp = requests.get(url, timeout=30, headers={"User-Agent": _USER_AGENT}, verify=False)
             resp.raise_for_status()

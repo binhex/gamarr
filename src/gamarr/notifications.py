@@ -105,7 +105,7 @@ class Notifier:
             parts.append(f"Genre: {', '.join(genres)}")
         if release_date:
             parts.append(f"Release: {release_date}")
-        parts.append(f"Link: https://www.metacritic.com/game/{platform or 'unknown'}/{slug or 'unknown'}/")
+        parts.append(f"Link: https://www.metacritic.com/game/{slug or 'unknown'}/")
         return "\n".join(parts)
 
     def send_failure_notification(self, title: str, reason: str) -> None:

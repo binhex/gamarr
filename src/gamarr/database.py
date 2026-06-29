@@ -13,6 +13,9 @@ from sqlalchemy import Boolean, Float, Integer, String, Text, create_engine, tex
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
+# Days to use for indefinite pending expiry (when max_queue_days is 0 or negative).
+_INDEFINITE_DAYS: int = 9999
+
 
 class Base(DeclarativeBase):
     """SQLAlchemy declarative base."""
@@ -307,7 +310,7 @@ class Database:
         When *max_queue_days* is 0 or negative, the expiry is set to a far
         future date (~27 years), making the game pend indefinitely.
         """
-        days = 9999 if max_queue_days <= 0 else max_queue_days
+        days = _INDEFINITE_DAYS if max_queue_days <= 0 else max_queue_days
         expires_at = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=days)).isoformat()
         with self._session() as session:
             row = session.get(PendingGame, slug)
