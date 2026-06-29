@@ -130,15 +130,15 @@ class TestFitGirlSource:
     def test_implements_base_source(self) -> None:
         from gamarr.sources import BaseSource
 
-        source = FitGirlSource("http://example.com/feed.xml", db_path=":memory:")
+        source = FitGirlSource(db_path=":memory:")
         assert isinstance(source, BaseSource)
 
     def test_source_name(self) -> None:
-        source = FitGirlSource("http://example.com/feed.xml", db_path=":memory:")
+        source = FitGirlSource(db_path=":memory:")
         assert source.source_name == "fitgirl"
 
     def test_platform(self) -> None:
-        source = FitGirlSource("http://example.com/feed.xml", platform="pc", db_path=":memory:")
+        source = FitGirlSource(platform="pc", db_path=":memory:")
         assert source.platform == "pc"
 
     def test_accepts_shared_database(self) -> None:
@@ -154,7 +154,6 @@ class TestFitGirlSource:
 
         shared_db = Database(":memory:")
         source = FitGirlSource(
-            feed_url="http://example.com/feed.xml",
             platform="pc",
             db=shared_db,
         )
@@ -254,7 +253,9 @@ class TestFitGirlSitemap:
   <url><loc>https://fitgirl-repacks.site/baldurs-gate-3/</loc></url>
 </urlset>"""
 
-        source = FitGirlSource(db_path=":memory:", feed_url="http://example.com/feed")
+        source = FitGirlSource(
+            db_path=":memory:",
+        )
         # Manually create a mock DB that stores what gets indexed
         mock_db = MagicMock()
         mock_db.get_sitemap_cache.return_value = False  # Force cache miss
@@ -369,7 +370,6 @@ class TestSitemapFetchOnEmpty:
 
         db = Database(str(tmp_path / "test.db"))
         source = FitGirlSource(
-            feed_url="http://example.com/feed",
             db=db,
             cache_pages_hours=6,
         )
@@ -423,7 +423,6 @@ def test_fetch_sitemap_accepts_cancel_event() -> None:
 
     db = Database(":memory:")
     source = FitGirlSource(
-        feed_url="https://fitgirl-repacks.site/feed/",
         db=db,
         cache_pages_hours=0,
     )
@@ -452,7 +451,6 @@ def test_fetch_sitemap_cancelled_returns_early() -> None:
 
     db = Database(":memory:")
     source = FitGirlSource(
-        feed_url="https://fitgirl-repacks.site/feed/",
         db=db,
         cache_pages_hours=0,
     )
@@ -475,7 +473,6 @@ def test_fetch_and_store_sitemap_stores_titles() -> None:
 
     db = Database(":memory:")
     source = FitGirlSource(
-        feed_url="https://fitgirl-repacks.site/feed/",
         db=db,
         cache_pages_hours=0,
     )
@@ -510,7 +507,6 @@ def test_fetch_sitemap_cancelled_after_cache_check() -> None:
 
     db = Database(":memory:")
     source = FitGirlSource(
-        feed_url="https://fitgirl-repacks.site/feed/",
         db=db,
         cache_pages_hours=6,
     )
@@ -542,7 +538,6 @@ def test_fetch_and_store_sitemap_passes_verify_false() -> None:
 
     db = Database(":memory:")
     source = FitGirlSource(
-        feed_url="https://fitgirl-repacks.site/feed/",
         db=db,
         cache_pages_hours=0,
     )
@@ -639,7 +634,6 @@ def test_fetch_and_store_sitemap_handles_request_exception() -> None:
 
     db = Database(":memory:")
     source = FitGirlSource(
-        feed_url="https://fitgirl-repacks.site/feed/",
         db=db,
         cache_pages_hours=0,
     )
@@ -668,7 +662,6 @@ def test_fetch_sitemap_cache_hit_skips() -> None:
 
     db = Database(":memory:")
     source = FitGirlSource(
-        feed_url="https://fitgirl-repacks.site/feed/",
         db=db,
         cache_pages_hours=6,
     )
@@ -686,3 +679,25 @@ def test_fetch_sitemap_cache_hit_skips() -> None:
         mock_get.assert_not_called()
 
     db.close()
+
+
+# --- feed_url removal: FitGirlSource uses hard-coded URL ---
+
+
+def test_fitgirl_source_has_hardcoded_url() -> None:
+    """FitGirlSource defines FEED_URL as a module-level constant."""
+    from gamarr.sources import fitgirl as fg_module
+
+    assert hasattr(fg_module, "FEED_URL"), "FitGirl module should define FEED_URL constant"
+    assert fg_module.FEED_URL == "https://fitgirl-repacks.site/feed/"
+    assert isinstance(fg_module.FEED_URL, str)
+
+
+def test_fitgirl_source_no_feed_url_param() -> None:
+    """FitGirlSource.__init__ should NOT accept feed_url parameter."""
+    import inspect
+
+    from gamarr.sources.fitgirl import FitGirlSource
+
+    sig = inspect.signature(FitGirlSource.__init__)
+    assert "feed_url" not in sig.parameters, "FitGirlSource.__init__ should not accept feed_url"

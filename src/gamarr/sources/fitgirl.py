@@ -234,6 +234,11 @@ def _extract_magnet_from_html(html_content: str) -> str | None:
     return None
 
 
+# Hard-coded feed URL — consistent with FreeGOG which has no configurable URL.
+# This was formerly the configurable `feed_url` field on SourceConfigEntry.
+FEED_URL: str = "https://fitgirl-repacks.site/feed/"
+
+
 class FitGirlSource:
     """FitGirl sitemap source implementation.
 
@@ -241,9 +246,10 @@ class FitGirlSource:
     Metacritic-first matching: pending Metacritic games are matched
     against titles discovered here.  No RSS iteration is performed.
 
+    The feed URL is hard-coded (module-level ``FEED_URL`` constant)
+    for consistency with the FreeGOG source pattern.
+
     Args:
-        feed_url: Feed/source URL for this source (unused at runtime, retained
-            for backwards-compatible configuration).
         platform: Platform identifier (default ``"pc"``).
         db_path: Path for the deduplication database.
             ``":memory:"`` uses an in-memory SQLite DB.
@@ -251,13 +257,11 @@ class FitGirlSource:
 
     def __init__(
         self,
-        feed_url: str,
         platform: str = "pc",
         db_path: str = ":memory:",
         db: Database | None = None,
         cache_pages_hours: int = 6,
     ) -> None:
-        self._feed_url = feed_url
         self._platform = platform
         self._cache_pages_hours = cache_pages_hours
 

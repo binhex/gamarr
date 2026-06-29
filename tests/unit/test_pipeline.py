@@ -74,7 +74,6 @@ class TestMaxCycleWeeks:
                 mock_qbt_cls.return_value = mock_qbt
 
                 run_acquisition(
-                    fitgirl_rss_url="http://example.com/feed",
                     db_path=":memory:",
                     max_weeks=52,
                     max_cycle_weeks=4,
@@ -111,7 +110,6 @@ class TestRunAcquisition:
             mock_qbt_cls.return_value = mock_qbt
 
             results = run_acquisition(
-                fitgirl_rss_url="http://example.com/feed",
                 platform="pc",
                 qbt_host="localhost",
                 qbt_port=8080,
@@ -131,7 +129,6 @@ class TestRunAcquisition:
             mock_qbt_cls.return_value = mock_qbt
 
             results = run_acquisition(
-                fitgirl_rss_url="http://example.com/feed",
                 platform="pc",
                 qbt_host="localhost",
                 qbt_port=8080,
@@ -184,7 +181,6 @@ class TestRunAcquisition:
             mock_qbt_cls.return_value = mock_qbt
 
             results = run_acquisition(
-                fitgirl_rss_url="http://example.com/feed",
                 platform="pc",
                 qbt_host="localhost",
                 qbt_port=8080,
@@ -217,7 +213,6 @@ class TestRunAcquisition:
             mock_qbt_cls.return_value = mock_qbt
 
             run_acquisition(
-                fitgirl_rss_url="http://example.com/feed",
                 platform="pc",
                 qbt_host="localhost",
                 qbt_port=8080,
@@ -291,7 +286,6 @@ class TestRunAcquisition:
             mock_qbt_cls.return_value = mock_qbt
 
             results = run_acquisition(
-                fitgirl_rss_url="http://example.com/feed",
                 platform="pc",
                 db_path=db_path,
                 qbt_host="localhost",
@@ -2205,7 +2199,6 @@ class TestRunAcquisitionMetacritic:
             mock_get.return_value = sitemap_resp
 
             results = run_acquisition(
-                fitgirl_rss_url="http://example.com/feed",
                 db_path=str(tmp_path / "gamarr.db"),
                 qbt_host="localhost",
                 qbt_port=8080,
@@ -2246,7 +2239,6 @@ class TestRunAcquisitionMetacritic:
             mock_qbt_cls.return_value = mock_qbt
 
             run_acquisition(
-                fitgirl_rss_url="http://example.com/feed",
                 platform="pc",
                 qbt_host="localhost",
                 qbt_port=8080,
@@ -2332,7 +2324,6 @@ class TestRunAcquisitionMetacritic:
             mock_qbt_cls.return_value = mock_qbt
 
             run_acquisition(
-                fitgirl_rss_url="http://example.com/feed",
                 platform="pc",
                 qbt_host="localhost",
                 qbt_port=8080,
@@ -3850,7 +3841,6 @@ class TestCancellation:
             mock_qbt_cls.return_value = mock_qbt
 
             results = run_acquisition(
-                fitgirl_rss_url="http://example.com/feed",
                 platform="pc",
                 qbt_host="localhost",
                 qbt_port=8080,
@@ -4653,7 +4643,6 @@ class TestAgedGamesMatchOrder:
             mock_qbt_cls.return_value = mock_qbt
 
             results = run_acquisition(
-                fitgirl_rss_url="http://example.com/feed",
                 platform="pc",
                 db_path=db_path,
                 qbt_host="localhost",
@@ -4728,7 +4717,6 @@ class TestScanWindowAdvancing:
                 mock_qbt_cls.return_value = mock_qbt
 
                 run_acquisition(
-                    fitgirl_rss_url="http://example.com/feed",
                     platform="pc",
                     db_path=db_path,
                     qbt_host="localhost",
@@ -4804,7 +4792,6 @@ class TestScanWindowAdvancing:
             mock_qbt_cls.return_value = mock_qbt
 
             run_acquisition(
-                fitgirl_rss_url="http://example.com/feed",
                 platform="pc",
                 db_path=db_path,
                 qbt_host="localhost",
@@ -4839,7 +4826,6 @@ class TestScanWindowAdvancing:
             mock_qbt_cls2.return_value = mock_qbt2
 
             run_acquisition(
-                fitgirl_rss_url="http://example.com/feed",
                 platform="pc",
                 db_path=db_path,
                 qbt_host="localhost",

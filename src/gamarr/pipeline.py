@@ -123,7 +123,6 @@ class AcquisitionConfig:
 
 def run_acquisition(
     *,
-    fitgirl_rss_url: str,
     platform: str = "pc",
     db_path: str = ":memory:",
     qbt_host: str = "localhost",
@@ -218,7 +217,6 @@ def run_acquisition(
         entry.enabled = True
         entry.platform = platform
         entry.cache_pages_hours = fitgirl_cache_pages_hours
-        entry.feed_url = fitgirl_rss_url
         entry.reject_keywords = fitgirl_reject_keywords or []
         entry.max_queue_days = fitgirl_max_queue_days
         return entry
@@ -437,8 +435,6 @@ def run_acquisition(
                 "db": db,
                 "cache_pages_hours": entry.cache_pages_hours,
             }
-            if entry.feed_url:
-                kwargs["feed_url"] = entry.feed_url
             return factory(**kwargs)
 
         matched: list[dict[str, Any]] = []

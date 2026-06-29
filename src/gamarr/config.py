@@ -53,7 +53,6 @@ class SourceConfigEntry(BaseModel):
     cache_pages_hours: int = Field(default=6, gt=0, le=168)
     reject_keywords: list[str] = Field(default_factory=list)
     max_queue_days: int = Field(default=60, ge=0)
-    feed_url: str | None = None
 
 
 class DownloadSitesConfig(RootModel[list[SourceConfigEntry]]):
@@ -64,14 +63,8 @@ class DownloadSitesConfig(RootModel[list[SourceConfigEntry]]):
 
     root: list[SourceConfigEntry] = [
         SourceConfigEntry(name="freegog"),
-        SourceConfigEntry(name="fitgirl", feed_url="https://fitgirl-repacks.site/feed/"),
+        SourceConfigEntry(name="fitgirl"),
     ]
-
-    @staticmethod
-    def _rename_feed_url(entry: dict[str, Any]) -> None:
-        """Rename rss_url to feed_url in-place if the old field name is present."""
-        if "feed_url" not in entry and "rss_url" in entry:
-            entry["feed_url"] = entry.pop("rss_url")
 
     @field_validator("root", mode="before")
     @classmethod
@@ -89,14 +82,12 @@ class DownloadSitesConfig(RootModel[list[SourceConfigEntry]]):
                 continue
             # Flat format: {"name": "fitgirl", ...}
             if "name" in item:
-                cls._rename_feed_url(item)
                 result.append(item)
                 continue
             # Keyed format: {"fitgirl": {...}}
             for key, val in item.items():
                 if isinstance(val, dict):
                     val["name"] = key
-                    cls._rename_feed_url(val)
                     result.append(val)
                 else:
                     result.append({"name": key})
@@ -196,7 +187,7 @@ class Config(BaseModel):
         default_factory=lambda: DownloadSitesConfig(
             root=[
                 SourceConfigEntry(name="freegog"),
-                SourceConfigEntry(name="fitgirl", feed_url="https://fitgirl-repacks.site/feed/"),
+                SourceConfigEntry(name="fitgirl"),
             ]
         )
     )
@@ -661,6 +652,37 @@ def _migrate_remove_dodi(raw: dict[str, Any]) -> bool:
     return changed
 
 
+def _migrate_remove_fitgirl_feed_url(raw: dict[str, Any]) -> bool:
+    """Remove feed_url from all download_sites entries.
+
+    The FitGirl sitemap URL is now hard-coded in fitgirl.py (FEED_URL
+    constant), making this config field obsolete.  Stripping it keeps
+    the config clean and consistent with FreeGOG which never had a URL
+    field.
+
+    Returns True if any feed_url entries were removed.
+    """
+    ds = raw.get("download_sites")
+    if not isinstance(ds, list):
+        return False
+
+    changed = False
+    for entry in ds:
+        if not isinstance(entry, dict):
+            continue
+        # Keyed format: {"fitgirl": {"feed_url": "...", ...}}
+        for inner in entry.values():
+            if isinstance(inner, dict):
+                if inner.pop("feed_url", None) is not None:
+                    changed = True
+                # Also strip any lingering rss_url (legacy edge case)
+                if inner.pop("rss_url", None) is not None:
+                    changed = True
+    if changed:
+        logger.info("Config: removed obsolete feed_url from download_sites")
+    return changed
+
+
 def _migrate_daemon_mode(raw: dict[str, Any]) -> bool:
     """Migrate deprecated general.daemon_mode to schedule.acquisition.enabled.
 
@@ -748,6 +770,7 @@ def _migrate_config(raw: dict[str, Any]) -> bool:
             _migrate_download_sites_to_ordered,
             _migrate_download_sites_to_keyed_list,
             _migrate_remove_dodi,
+            _migrate_remove_fitgirl_feed_url,
             _migrate_daemon_mode,
             _migrate_add_freegog_to_download_sites,
         ]

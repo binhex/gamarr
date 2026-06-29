@@ -136,7 +136,6 @@ download_sites:
       max_queue_days: 60
   - fitgirl:
       enabled: true
-      feed_url: https://fitgirl-repacks.site/feed/
       platform: pc
       cache_pages_hours: 6
       reject_keywords: []
@@ -148,7 +147,6 @@ download_sites:
 | Field | Description | Default |
 | ----- | ----------- | ------- |
 | `enabled` | Enable or disable this source. | `true` |
-| `feed_url` | Source URL (RSS feed, user page, etc.). | `None` |
 | `platform` | Target platform for matching. | `pc` |
 | `cache_pages_hours` | How long to cache the source index before re-fetching. | `6` |
 | `reject_keywords` | Reject titles containing any of these keywords (case-insensitive). | `[]` |
@@ -363,11 +361,15 @@ See the [genres section](#review_sitesmetacriticplatform_overridesplatform) for 
 1. **Downloaded** — scores pass thresholds AND a matching torrent is found on FitGirl
 2. **Aged out** — `age_recheck_weeks` is set and the game's release date is old enough
 
-Games that are verified but **fail score thresholds**, or **pass but have no FitGirl match**, stay in the queue. They get re-verified each cycle because their scores could change or a new FitGirl repack could appear. If you find the queue growing indefinitely:
+Games that are verified but **fail score thresholds**, or **pass but have no
+FitGirl match**, stay in the queue. They get re-verified each cycle because
+their scores could change or a new FitGirl repack could appear. If you find
+the queue growing indefinitely:
 
 - Set `age_recheck_weeks` to a reasonable value (e.g. `52` for one year) to automatically retire old games
 - Games with no `release_date` cannot be aged out — this is expected for unreleased or obscure titles
-- The message `0 new + X from previous cycles` means browsing didn't find anything new, and all X are carryovers from earlier cycles
+- The message `0 new + X from previous cycles` means browsing found nothing
+  new, and all X are carryovers from earlier cycles
 
 **Q: Why does `max_queue_days` have two separate settings — one for Metacritic and one for FitGirl?**
 

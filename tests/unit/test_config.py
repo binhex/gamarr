@@ -44,7 +44,6 @@ class TestConfigModels:
         cfg = SourceConfigEntry(name="fitgirl")
         assert cfg.name == "fitgirl"
         assert cfg.enabled is True
-        assert cfg.feed_url is None
         assert cfg.platform == "pc"
         assert cfg.max_queue_days == 60
         assert cfg.reject_keywords == []
@@ -245,11 +244,20 @@ class TestConfigModels:
                         "max_queue_days": 60,
                     }
                 },
-                {"fitgirl": {"enabled": True, "feed_url": "https://example.com/feed/"}},
+                {
+                    "fitgirl": {
+                        "enabled": True,
+                        "platform": "pc",
+                        "cache_pages_hours": 6,
+                        "reject_keywords": [],
+                        "max_queue_days": 60,
+                    }
+                },
             ],
         }
         result = _migrate_config(raw)
-        assert result is False, "Migration should return False when freegog already complete"
+        # Migration returns False because nothing was changed (both entries already complete)
+        assert result is False, "Migration should return False when nothing needs changing"
         ds: Any = raw["download_sites"]
         names = [list(e.keys())[0] for e in ds]
         assert names.count("freegog") == 1, "freegog should appear exactly once"
@@ -773,7 +781,6 @@ def test_deep_merge_strips_null_from_download_sites_list_entries() -> None:
         "download_sites:\n"
         "  - name: fitgirl\n"
         "    enabled: true\n"
-        "    feed_url: null\n"
         "    reject_keywords: null\n"
     )
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
@@ -783,7 +790,6 @@ def test_deep_merge_strips_null_from_download_sites_list_entries() -> None:
             cfg = load_config(f.name)
             fg = next(e for e in cfg.download_sites if e.name == "fitgirl")
             assert fg.reject_keywords == [], "None should be stripped from reject_keywords"
-            assert fg.feed_url is None  # feed_url is Optional[str], so None is fine
         finally:
             os.unlink(f.name)
 
@@ -864,13 +870,14 @@ def test_parse_keyed_list() -> None:
     from gamarr.config import DownloadSitesConfig
 
     raw: list[dict[str, Any]] = [
-        {"fitgirl": {"enabled": True, "feed_url": "https://example.com/feed"}},
+        {"fitgirl": {"enabled": True, "platform": "pc"}},
     ]
     cfg = DownloadSitesConfig(root=raw)  # type: ignore[arg-type]
     assert len(cfg) == 1
     assert cfg[0].name == "fitgirl"
     assert cfg[0].enabled is True
-    assert cfg[0].feed_url == "https://example.com/feed"
+    # feed_url is no longer a field — stripped during parsing
+    assert "feed_url" not in cfg[0].model_dump()
 
 
 def test_parse_keyed_list_legacy() -> None:
@@ -883,7 +890,8 @@ def test_parse_keyed_list_legacy() -> None:
     cfg = DownloadSitesConfig(root=raw)  # type: ignore[arg-type]
     assert len(cfg) == 1
     assert cfg[0].name == "fitgirl"
-    assert cfg[0].feed_url == "https://example.com/feed"  # rss_url renamed
+    # feed_url is no longer a field — rss_url is ignored during parsing
+    assert "feed_url" not in cfg[0].model_dump()
     assert "rss_url" not in cfg[0].model_dump()
 
 
@@ -891,11 +899,10 @@ def test_name_excluded_from_dump() -> None:
     """SourceConfigEntry.name is excluded from dict serialization."""
     from gamarr.config import SourceConfigEntry
 
-    entry = SourceConfigEntry(name="fitgirl", feed_url="https://example.com/feed")
+    entry = SourceConfigEntry(name="fitgirl")
     data = entry.model_dump()
     assert "name" not in data
-    assert data["feed_url"] == "https://example.com/feed"
-    assert data["enabled"] is True
+    assert "enabled" in data
 
 
 def test_migrate_download_sites_to_keyed_list() -> None:
@@ -932,7 +939,8 @@ def test_migrate_download_sites_to_keyed_list() -> None:
         if isinstance(entry, dict) and "fitgirl" in entry:
             inner = entry["fitgirl"]
             assert "rss_url" not in inner
-            assert inner["feed_url"] == "https://fitgirl-repacks.site/feed/"
+            # feed_url is stripped by _migrate_remove_fitgirl_feed_url
+            assert "feed_url" not in inner
             break
     else:
         raise AssertionError("fitgirl entry not found in keyed format")
@@ -1085,3 +1093,65 @@ class TestMigrateRemoveDodi:
         assert result is True
         assert len(raw["download_sites"]) == 1
         assert raw["download_sites"][0] == "string_entry"
+
+
+# --- feed_url removal from fitgirl (consistency with freegog) ---
+
+
+def test_migrate_removes_fitgirl_feed_url() -> None:
+    """_migrate_config strips feed_url from fitgirl entries in download_sites."""
+    from unittest.mock import patch
+
+    from gamarr.config import _migrate_config
+
+    raw: dict[str, Any] = {
+        "download_sites": [
+            {"fitgirl": {"enabled": True, "feed_url": "https://fitgirl-repacks.site/feed/", "platform": "pc"}},
+            {"freegog": {"enabled": True, "platform": "pc"}},
+        ],
+        "review_sites": {"metacritic": {"platform_overrides": {"pc": {}}}},
+        "torrent_client": {
+            "qbittorrent": {"host": "localhost", "port": 8080, "username": "admin", "password": "adminadmin"}
+        },
+    }
+    with patch("gamarr.config.logger"):
+        result = _migrate_config(raw)
+
+    assert result is True
+    ds = raw["download_sites"]
+    fitgirl_entry = ds[0]["fitgirl"]
+    assert "feed_url" not in fitgirl_entry, "feed_url should be stripped from fitgirl entry"
+
+
+def test_source_config_entry_no_feed_url_field() -> None:
+    """SourceConfigEntry should not accept or store feed_url."""
+    from gamarr.config import SourceConfigEntry
+
+    entry = SourceConfigEntry(name="fitgirl")
+    assert not hasattr(entry, "feed_url"), "feed_url should not exist on SourceConfigEntry"
+
+    data = entry.model_dump()
+    assert "feed_url" not in data, "feed_url should not appear in serialized output"
+
+
+def test_download_sites_default_has_no_feed_url() -> None:
+    """Default DownloadSitesConfig must not include feed_url for any source."""
+    from gamarr.config import DownloadSitesConfig
+
+    cfg = DownloadSitesConfig()
+    for entry in cfg:
+        data = entry.model_dump()
+        assert "feed_url" not in data, f"{entry.name} should not have feed_url in output"
+
+
+def test_parse_keyed_list_strips_feed_url() -> None:
+    """_parse_keyed_list strips feed_url from keyed entries during parsing."""
+    from gamarr.config import DownloadSitesConfig
+
+    raw: list[dict[str, Any]] = [
+        {"fitgirl": {"enabled": True, "feed_url": "https://example.com/feed", "platform": "pc"}},
+    ]
+    cfg = DownloadSitesConfig(root=raw)  # type: ignore[arg-type]
+    assert len(cfg) == 1
+    data = cfg[0].model_dump()
+    assert "feed_url" not in data, "feed_url should be stripped during parsing"
