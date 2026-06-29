@@ -388,7 +388,7 @@ def run_acquisition(
                     "cycle" if carryover == 1 else "cycles",
                 )
             logger.info(
-                "Proceeding to verify {} pending games against real Metacritic scores",
+                "Verifying {} pending games against cached scores and Metacritic",
                 total_pending,
             )
             thresholds = {
@@ -703,10 +703,10 @@ def _process_browse_games(
 
 
 def _log_verify_progress(verified: int, max_verify: int, total: int) -> None:
-    """Log periodic progress during score verification."""
+    """Log periodic progress during score verification (DEBUG level only)."""
     if verified % 100 == 0:
-        logger.info(
-            "Checking Metacritic scores for {} of {} games...",
+        logger.debug(
+            "Verifying pending scores for {} of {} games...",
             verified,
             max_verify if max_verify < total else total,
         )
@@ -1147,7 +1147,10 @@ def _process_verify_batch(
         logger.info("Verify cancelled by shutdown signal; skipping batch")
         return removed, any_success
 
+    mc.reset_cache_hits()  # Reset per-batch cache-hit counter (thread-safe)
+
     pool = ThreadPoolExecutor(max_workers=10)
+    checked = 0
     try:
         futures = [
             pool.submit(
@@ -1171,6 +1174,7 @@ def _process_verify_batch(
                 _cancel_remaining_futures(futures, verified)
                 break
 
+            checked = verified + 1
             _log_verify_progress(verified, max_verify, total_pending)
             result = fut.result()
             if result is not None:
@@ -1185,6 +1189,17 @@ def _process_verify_batch(
                 fitgirl_max_queue_days=fitgirl_max_queue_days,
             ):
                 removed += 1
+
+        # Single summary line per batch instead of per-100-game progress spam.
+        # Clamp subtraction: on cancellation, cache_hits from still-running
+        # futures may exceed the count of consumed results.
+        if checked > 0:
+            logger.info(
+                "Score verification: {} checked \u2014 {} from cache, {} attempted",
+                checked,
+                mc.cache_hits,
+                max(0, checked - int(mc.cache_hits)),
+            )
     finally:
         pool.shutdown(wait=False)
 

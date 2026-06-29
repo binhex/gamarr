@@ -172,7 +172,7 @@ class TestExtractMagnetFromFreeGOGPage:
 
         html = (
             '<a href="https://gdl.freegogpcgames.xyz/download-gen.php?url=v1.'
-            f'{self.ENCODED_MAGNET}.sig" data-type="magnet">Magnet</a>'
+            f'{self.ENCODED_MAGNET}.dummy123" data-type="magnet">Magnet</a>'
         )
         result = _extract_magnet_from_freegog_page(html)
         assert result is not None
@@ -196,7 +196,7 @@ class TestExtractMagnetFromFreeGOGPage:
 
         html = (
             '<a href="https://gdl.freegogpcgames.xyz/download-gen.php?url=v1.'
-            '!!!invalid!!!.sig" data-type="magnet">Magnet</a>'
+            '!!!invalid!!!.dummy123" data-type="magnet">Magnet</a>'
         )
         result = _extract_magnet_from_freegog_page(html)
         assert result is None
@@ -225,7 +225,7 @@ class TestFreeGOGFetchSitemap:
 </section>"""
         game_html = (
             '<a href="https://gdl.freegogpcgames.xyz/download-gen.php?url=v1.'
-            f'{self.ENCODED_MAGNET}.sig" data-type="magnet">Magnet</a>'
+            f'{self.ENCODED_MAGNET}.dummy123" data-type="magnet">Magnet</a>'
         )
 
         with patch("gamarr.sources.freegog.requests.get") as mock_get:
@@ -262,14 +262,14 @@ class TestFreeGOGFetchSitemap:
         db = Database(str(tmp_path / "test.db"))
         source = FreeGOGSource(db=db, cache_pages_hours=0)
 
-        # Pre-populate a known title
+        # Pre-populate a known title with a real magnet
         with db._session() as session:
             session.add(
                 SourceTitle(
                     source="freegog",
                     title="Existing Game",
                     url="https://freegogpcgames.com/00000/existing-game/",
-                    magnet=None,
+                    magnet="magnet:?xt=urn:btih:existing",
                 )
             )
             session.commit()
@@ -280,7 +280,7 @@ class TestFreeGOGFetchSitemap:
 </section>"""
         game_html = (
             '<a href="https://gdl.freegogpcgames.xyz/download-gen.php?url=v1.'
-            f'{self.ENCODED_MAGNET}.sig" data-type="magnet">Magnet</a>'
+            f'{self.ENCODED_MAGNET}.dummy123" data-type="magnet">Magnet</a>'
         )
 
         with patch("gamarr.sources.freegog.requests.get") as mock_get:
@@ -307,6 +307,65 @@ class TestFreeGOGFetchSitemap:
         # Should have the existing + one new title
         titles = db.get_all_source_titles("freegog")
         assert len(titles) == 2
+
+        source.close()
+        db.close()
+
+    def test_re_fetches_missing_magnet(self, tmp_path: Path) -> None:
+        """Entries with magnet=None should be re-fetched, not skipped."""
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.database import Database, SourceTitle
+        from gamarr.sources.freegog import FreeGOGSource
+
+        db = Database(str(tmp_path / "test.db"))
+        source = FreeGOGSource(db=db, cache_pages_hours=0)
+
+        # Pre-populate an entry with magnet=None (broken from earlier indexing)
+        with db._session() as session:
+            session.add(
+                SourceTitle(
+                    source="freegog",
+                    title="Existing Game",
+                    url="https://freegogpcgames.com/00000/existing-game/",
+                    magnet=None,
+                )
+            )
+            session.commit()
+
+        az_html = """<section id="gd-az-g" class="gd-az-section" data-gd-az-section>
+    <a href="https://freegogpcgames.com/00000/existing-game/"><span>Existing Game v1.0</span></a>
+</section>"""
+        game_html = (
+            '<a href="https://gdl.freegogpcgames.xyz/download-gen.php?url=v1.'
+            f'{self.ENCODED_MAGNET}.dummy123" data-type="magnet">Magnet</a>'
+        )
+
+        with patch("gamarr.sources.freegog.requests.get") as mock_get:
+            call_count = 0
+
+            def side_effect(url: str, **kwargs: object) -> MagicMock:
+                nonlocal call_count
+                call_count += 1
+                resp = MagicMock()
+                resp.raise_for_status = MagicMock()
+                if "game-list" in url:
+                    resp.text = az_html
+                else:
+                    resp.text = game_html
+                return resp
+
+            mock_get.side_effect = side_effect
+            source.fetch_sitemap(db)
+
+        # A-Z page (1) + re-fetch of game page (1) = 2 calls
+        assert call_count == 2, f"Expected 2 HTTP requests, got {call_count}"
+
+        # The entry should now have a magnet
+        titles = db.get_all_source_titles("freegog")
+        assert len(titles) == 1
+        assert titles[0]["magnet"] is not None, "magnet should be re-fetched"
+        assert titles[0]["magnet"].startswith("magnet:")
 
         source.close()
         db.close()
@@ -404,6 +463,94 @@ class TestFreeGOGFetchSitemap:
             mock_get.return_value = mock_resp
             # Should not raise TypeError
             source.fetch_sitemap(db, cancel_event=cancel_event)
+
+        source.close()
+        db.close()
+
+    def test_logs_batch_progress_instead_of_per_letter(self, tmp_path: Path) -> None:
+        """Should log batch progress every 500 entries, not per-letter."""
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.database import Database, SourceTitle
+        from gamarr.sources.freegog import FreeGOGSource
+
+        db = Database(str(tmp_path / "test.db"))
+        source = FreeGOGSource(db=db, cache_pages_hours=0)
+
+        # Create 550 known entries across 2 letters (260 in A, 290 in B)
+        total_entries = 550
+        entries_a = 260
+        entries_b = total_entries - entries_a
+
+        def _make_html(letter: str, count: int, start_id: int = 0) -> str:
+            section_id = f"gd-az-{letter}"
+            links = []
+            for i in range(count):
+                game_id = start_id + i
+                links.append(
+                    f'    <a href="https://freegogpcgames.com/{game_id:05d}/game-{i}/">'
+                    f"<span>Game {letter.upper()}{i} v1.0</span></a>"
+                )
+            return (
+                f'<section id="{section_id}" class="gd-az-section" data-gd-az-section">\n'
+                + "\n".join(links)
+                + "\n</section>"
+            )
+
+        az_html = _make_html("a", entries_a) + "\n" + _make_html("b", entries_b, start_id=entries_a)
+
+        # Pre-populate all entries as known (with magnets) so they get skipped
+        with db._session() as session:
+            for letter, count, offset in [("a", entries_a, 0), ("b", entries_b, entries_a)]:
+                for i in range(count):
+                    game_id = offset + i
+                    session.add(
+                        SourceTitle(
+                            source="freegog",
+                            title=f"Game {letter.upper()}{i}",
+                            url=f"https://freegogpcgames.com/{game_id:05d}/game-{i}/",
+                            magnet=f"magnet:?xt=urn:btih:{game_id:040d}",
+                        )
+                    )
+            session.commit()
+
+        with (
+            patch("gamarr.sources.freegog.logger") as mock_logger,
+            patch("gamarr.sources.freegog.requests.get") as mock_get,
+        ):
+            mock_resp = MagicMock()
+            mock_resp.text = az_html
+            mock_resp.raise_for_status = MagicMock()
+            mock_get.return_value = mock_resp
+
+            source.fetch_sitemap(db)
+
+        # Collect all info-level log calls
+        info_calls = mock_logger.info.call_args_list
+
+        # ── OLD per-letter messages MUST be absent ──
+        for call in info_calls:
+            fmt = str(call.args[0])
+            assert "letter '" not in fmt, f"Per-letter log should be absent, found: {fmt}"
+            assert "complete (" not in fmt, f"Per-letter complete log should be absent, found: {fmt}"
+
+        # ── NEW batch progress messages MUST be present ──
+        batch_calls = [call for call in info_calls if "entries" in str(call.args[0]) and "of" in str(call.args[0])]
+        assert len(batch_calls) >= 1, f"Expected batch progress logs, got none. Info calls: {info_calls}"
+        # First batch: entries 1-500 of 550
+        assert any(call.args[1] == 1 and call.args[2] == 500 for call in batch_calls), (
+            f"Expected batch 1-500 message, got args: {[(c.args[1], c.args[2]) for c in batch_calls]}"
+        )
+        # Second batch: entries 501-550 of 550
+        assert any(call.args[1] == 501 and call.args[2] == total_entries for call in batch_calls), (
+            f"Expected batch 501-{total_entries} message, got args: {[(c.args[1], c.args[2]) for c in batch_calls]}"
+        )
+
+        # ── Summary MUST still be present ──
+        summary_calls = [
+            call for call in info_calls if "indexed" in str(call.args[0]) and "skipped" in str(call.args[0])
+        ]
+        assert len(summary_calls) == 1, f"Expected one summary log, got: {summary_calls}"
 
         source.close()
         db.close()

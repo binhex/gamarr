@@ -4069,8 +4069,8 @@ class TestLogVerifyProgress:
 
         with patch("gamarr.pipeline.logger") as mock_logger:
             _log_verify_progress(verified=100, max_verify=500, total=5000)
-        mock_logger.info.assert_called_once()
-        args, _ = mock_logger.info.call_args
+        mock_logger.debug.assert_called_once()
+        args, _ = mock_logger.debug.call_args
         # Loguru: args[0]=format_string, args[1]=verified, args[2]=total
         assert "games" in str(args[0]), "Should mention games"
         assert args[1] == 100, f"Expected verified count 100, got {args[1]}"
@@ -4083,7 +4083,7 @@ class TestLogVerifyProgress:
 
         with patch("gamarr.pipeline.logger") as mock_logger:
             _log_verify_progress(verified=50, max_verify=500, total=5000)
-        mock_logger.info.assert_not_called()
+        mock_logger.debug.assert_not_called()
 
     def test_log_verify_progress_logs_at_zero(self) -> None:
         """Should log when verified is 0 (starts at first iteration)."""
@@ -4093,7 +4093,7 @@ class TestLogVerifyProgress:
 
         with patch("gamarr.pipeline.logger") as mock_logger:
             _log_verify_progress(verified=0, max_verify=500, total=5000)
-        mock_logger.info.assert_called_once()
+        mock_logger.debug.assert_called_once()
 
 
 class TestProcessAgedGames:

@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 import requests
 from loguru import logger
 
-from gamarr.database import Database
+from gamarr.database import Database, SourceTitle
 
 if TYPE_CHECKING:
     import threading
@@ -58,7 +58,7 @@ _AZ_LINK_PATTERN = re.compile(
 )
 
 # Pattern to extract base64-encoded magnet URL from game page
-_MAGNET_URL_PATTERN = re.compile(r"url=v1\.([A-Za-z0-9\-_=]+)\.sig")
+_MAGNET_URL_PATTERN = re.compile(r"url=v1\.([A-Za-z0-9\-_=]+)\.[A-Za-z0-9\-_]+")
 
 
 def _clean_freegog_title(raw_title: str) -> str:
@@ -196,6 +196,65 @@ class FreeGOGSource:
         """Close the underlying database connection."""
         self._db.close()
 
+    @staticmethod
+    def _build_existing_urls(
+        db: Database,
+    ) -> dict[str, str | None]:
+        """Build a URL-to-magnet dict from existing source_titles."""
+        existing = db.get_all_source_titles("freegog")
+        existing_urls: dict[str, str | None] = {}
+        for e in existing:
+            e_url = e.get("url")
+            if e_url is not None:
+                existing_urls[e_url] = e.get("magnet")
+        return existing_urls
+
+    @staticmethod
+    def _fetch_and_store_game(
+        db: Database,
+        entry: dict[str, str],
+        existing_urls: dict[str, str | None],
+    ) -> bool:
+        """Fetch a single FreeGOG game page and store its magnet.
+
+        Returns True if a new game was indexed, False otherwise.
+        """
+        try:
+            game_resp = requests.get(
+                entry["url"],
+                timeout=30,
+                headers={"User-Agent": _USER_AGENT},
+            )
+            game_resp.raise_for_status()
+            magnet = _extract_magnet_from_freegog_page(game_resp.text)
+        except requests.RequestException as exc:
+            logger.warning(
+                "Failed to fetch FreeGOG game page '{}': {}",
+                entry["url"],
+                exc,
+            )
+            return False
+
+        # Atomically delete old row and insert new row in a single transaction.
+        # Uses db._session() directly (rather than store_source_title) to avoid
+        # a crash window between two separate commits.
+        with db._session() as session:
+            if entry["url"] in existing_urls:
+                session.query(SourceTitle).filter(
+                    SourceTitle.source == "freegog",
+                    SourceTitle.url == entry["url"],
+                ).delete()
+            session.add(
+                SourceTitle(
+                    source="freegog",
+                    title=entry["title"],
+                    url=entry["url"],
+                    magnet=magnet,
+                )
+            )
+            session.commit()
+        return True
+
     def _index_az_page(self, db: Database) -> None:
         """Fetch the FreeGOG A-Z page and index new games.
 
@@ -211,73 +270,32 @@ class FreeGOGSource:
             resp.raise_for_status()
             az_entries = _parse_freegog_az_page(resp.text)
 
-            # Get existing titles for cross-reference
-            existing = db.get_all_source_titles("freegog")
-            existing_urls = {e["url"] for e in existing}
+            existing_urls = self._build_existing_urls(db)
 
             new_count = 0
             known_count = 0
-            letter_count = 0
-            current_letter: str | None = None
+            total_entries = len(az_entries)
 
             for entry in az_entries:
-                # Log progress when we start a new letter section
-                letter = entry.get("letter", "?")
-                if letter != current_letter:
-                    if current_letter is not None:
-                        logger.info(
-                            "FreeGOG: letter '{}' complete ({} games in this section)",
-                            current_letter.upper() if current_letter != "num" else "#",
-                            letter_count,
-                        )
-                    current_letter = letter
-                    letter_count = 0
-                    letter_total = sum(1 for e in az_entries if e.get("letter") == letter)
+                entry_idx = known_count + new_count  # 0-based index; excludes fetch failures
+                if entry_idx % 500 == 0:
+                    batch_start = entry_idx + 1
+                    batch_end = min(entry_idx + 500, total_entries)
                     logger.info(
-                        "FreeGOG: processing letter '{}' ({} games)",
-                        letter.upper() if letter != "num" else "#",
-                        letter_total,
+                        "FreeGOG: processing entries {}-{} of {}...",
+                        batch_start,
+                        batch_end,
+                        total_entries,
                     )
 
-                if entry["url"] in existing_urls:
+                if entry["url"] in existing_urls and existing_urls[entry["url"]] is not None:
+                    # Skip only if we already have a valid magnet for this URL.
+                    # Re-fetch entries with magnet=None (broken from earlier buggy indexing).
                     known_count += 1
-                    letter_count += 1
                     continue
 
-                letter_count += 1
-
-                # Fetch individual game page
-                try:
-                    game_resp = requests.get(
-                        entry["url"],
-                        timeout=30,
-                        headers={"User-Agent": _USER_AGENT},
-                    )
-                    game_resp.raise_for_status()
-                    magnet = _extract_magnet_from_freegog_page(game_resp.text)
-                except requests.RequestException as exc:
-                    logger.warning(
-                        "Failed to fetch FreeGOG game page '{}': {}",
-                        entry["url"],
-                        exc,
-                    )
-                    continue
-
-                # Store the source title with the magnet
-                db.store_source_title(
-                    source="freegog",
-                    title=entry["title"],
-                    url=entry["url"],
-                    magnet=magnet,
-                )
-                new_count += 1
-
-            if current_letter is not None:
-                logger.info(
-                    "FreeGOG: letter '{}' complete ({} games in this section)",
-                    current_letter.upper() if current_letter != "num" else "#",
-                    letter_count,
-                )
+                if self._fetch_and_store_game(db, entry, existing_urls):
+                    new_count += 1
 
             db.set_sitemap_cache("freegog")
             logger.info(

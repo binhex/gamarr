@@ -702,18 +702,25 @@ def _migrate_add_freegog_to_download_sites(raw: dict[str, Any]) -> bool:
         if isinstance(entry, dict) and entry:
             name = list(entry.keys())[0]
             if name.casefold() == "freegog":
-                fg = entry[name]
-                missing = [k for k in _freegog_defaults if k not in fg]
-                if not missing:
-                    return False  # Already complete
-                for k in missing:
-                    fg[k] = _freegog_defaults[k]
-                logger.info("Config: upgraded freegog entry with {} missing fields", len(missing))
-                return True
+                return _upgrade_freegog_entry(entry[name], _freegog_defaults)
 
     # Not present at all — add it
     ds.insert(0, {"freegog": dict(_freegog_defaults)})
     logger.info("Config: added freegog to download_sites")
+    return True
+
+
+def _upgrade_freegog_entry(fg: dict[str, Any], defaults: dict[str, Any]) -> bool:
+    """Upgrade a sparse freegog entry with missing default keys.
+
+    Returns True if any keys were added.
+    """
+    missing = [k for k in defaults if k not in fg]
+    if not missing:
+        return False
+    for k in missing:
+        fg[k] = defaults[k]
+    logger.info("Config: upgraded freegog entry with {} missing fields", len(missing))
     return True
 
 

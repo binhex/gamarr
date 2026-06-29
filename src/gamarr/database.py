@@ -521,6 +521,7 @@ class Database:
             self._delete_sitemap_cache("fitgirl")
         elif source == "freegog":
             self._delete_sitemap_cache("freegog")
+            self._delete_source_titles("freegog")
         elif source == "metacritic":
             self._delete_browse_cache()
             self._delete_detail_cache()
@@ -530,6 +531,11 @@ class Database:
     def _delete_sitemap_cache(self, source: str) -> None:
         with self._session() as session:
             session.execute(text("DELETE FROM sitemap_cache WHERE source = :source"), {"source": source})
+            session.commit()
+
+    def _delete_source_titles(self, source: str) -> None:
+        with self._session() as session:
+            session.query(SourceTitle).filter(SourceTitle.source == source).delete()
             session.commit()
 
     def _delete_browse_cache(self) -> None:

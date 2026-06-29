@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime
 import json
 import re
+import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -18,8 +19,6 @@ from bs4 import BeautifulSoup
 from loguru import logger
 
 if TYPE_CHECKING:
-    import threading
-
     from gamarr.metacritic_cache import MetacriticCache
 
 from gamarr.utils import is_cancelled, normalise_for_compare
@@ -557,10 +556,17 @@ class MetacriticClient:
         """
         self.user_agent = user_agent
         self._cache = cache
+        self._cache_hits_lock = threading.Lock()
+        self.cache_hits = 0
 
     def close(self) -> None:
         """Release cache resources (no-op; DB lifecycle owned by the pipeline)."""
         self._cache.close()
+
+    def reset_cache_hits(self) -> None:
+        """Reset the cache-hits counter (thread-safe)."""
+        with self._cache_hits_lock:
+            self.cache_hits = 0
 
     def lookup_game(
         self,
@@ -611,6 +617,8 @@ class MetacriticClient:
     ) -> ScoreResult | None:
         cached = self._cache.get_game_detail(slug, ttl_days=cache_details_days)
         if cached is not None:
+            with self._cache_hits_lock:
+                self.cache_hits += 1
             logger.debug("Metacritic detail cache hit for '{}' (TTL: {} days)", slug, cache_details_days)
             return ScoreResult(
                 title=original_title or slug.replace("-", " ").title(),
