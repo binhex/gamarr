@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gamarr"
-version = "1.1.1"
+version = "1.1.2"
 description = "Metadata game downloader - torrent metadata harvester"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -22,7 +22,6 @@ classifiers = [
 
 dependencies = [
     "apscheduler",
-    "backoff",
     "click",
     "loguru",
     "apprise",
@@ -32,9 +31,7 @@ dependencies = [
     "urllib3",
     "pydantic>=2.0.0",
     "qbittorrent-api",
-    "xmltodict",
     "beautifulsoup4",
-    "lxml",
 ]
 
 [project.scripts]

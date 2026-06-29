@@ -685,12 +685,12 @@ def test_fetch_sitemap_cache_hit_skips() -> None:
 
 
 def test_fitgirl_source_has_hardcoded_url() -> None:
-    """FitGirlSource defines FEED_URL as a module-level constant."""
+    """FitGirlSource defines SITEMAP_URL as a module-level constant."""
     from gamarr.sources import fitgirl as fg_module
 
-    assert hasattr(fg_module, "FEED_URL"), "FitGirl module should define FEED_URL constant"
-    assert fg_module.FEED_URL == "https://fitgirl-repacks.site/feed/"
-    assert isinstance(fg_module.FEED_URL, str)
+    assert hasattr(fg_module, "SITEMAP_URL"), "FitGirl module should define SITEMAP_URL constant"
+    assert fg_module.SITEMAP_URL == "https://fitgirl-repacks.site/sitemap.xml"
+    assert isinstance(fg_module.SITEMAP_URL, str)
 
 
 def test_fitgirl_source_no_feed_url_param() -> None:

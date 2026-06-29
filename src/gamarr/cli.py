@@ -204,7 +204,7 @@ def cli(
 ) -> None:
     """gamarr — Metadata game downloader.
 
-    Monitors FitGirl repacks RSS feed for new game releases, checks
+    Monitors download sources for new game releases, checks
     them against Metacritic scores, and adds qualifying games to
     qBittorrent.
 
@@ -214,6 +214,7 @@ def cli(
     import loguru
 
     from gamarr.config import load_config
+
     loguru.logger.remove()
     loguru.logger.add(
         sink=lambda message: print(message, end=""),

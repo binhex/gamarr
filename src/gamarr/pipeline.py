@@ -23,6 +23,9 @@ from gamarr.utils import is_cancelled, normalise_for_compare
 
 # urllib3 warnings for FitGirl self-signed cert are suppressed in gamarr.sources.fitgirl
 
+# Days to use for indefinite pending expiry (when max_queue_days is 0 or negative).
+_INDEFINITE_DAYS = 9999
+
 if TYPE_CHECKING:
     import threading
     from collections.abc import Callable
@@ -494,8 +497,10 @@ def run_acquisition(
             download_sites=download_sites,
         )
     finally:
-        mc.close()
-        db.close()
+        try:
+            mc.close()
+        finally:
+            db.close()
 
 
 def _cancel_remaining_futures(futures: list[Any], start: int) -> None:
@@ -672,7 +677,9 @@ def _process_browse_games(
         g_slug = game.get("slug", "")
         g_title = game.get("title", "")
         if max_queue_days <= 0:
-            expires_at = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=9999)).isoformat()
+            expires_at = (
+                datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=_INDEFINITE_DAYS)
+            ).isoformat()
         else:
             expires_at = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=max_queue_days)).isoformat()
 
@@ -1543,6 +1550,8 @@ def _deliver_match(
     source_url: str = str(best["url"])
     # Use pre-stored magnet if available, otherwise fetch from the source page.
     magnet = best.get("magnet") or magnet_fetcher(source_url)
+    # Always consume the cached page title (avoids unbounded growth on failed fetches).
+    source_title = _fitgirl_page_title_cache.pop(source_url, None) or best["title"] or game_title
     if not magnet:
         logger.warning("No magnet found for matched '{}' at {}", game_title, source_url)
         record_result = _record_delivery_error(
@@ -1561,10 +1570,6 @@ def _deliver_match(
             reason=f"No magnet found at {source_url}",
         )
         return record_result
-
-    # Use the full FitGirl page title (with repack metadata) for the
-    # torrent name, falling back to the sitemap title then game title.
-    source_title = _fitgirl_page_title_cache.pop(source_url, None) or best["title"] or game_title
 
     tag = qbt.add_torrent(magnet_url=magnet, title=source_title)
     if not tag:
