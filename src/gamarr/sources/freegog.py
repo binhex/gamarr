@@ -328,9 +328,10 @@ class FreeGOGSource:
             return
         if self._cache_pages_hours > 0 and db.get_sitemap_cache("freegog", self._cache_pages_hours):
             if len(db.get_all_source_titles("freegog")) > 0:
+                expiry = db.get_sitemap_cache_expiry("freegog", self._cache_pages_hours) or "unknown"
                 logger.info(
-                    "FreeGOG cache is still valid (TTL: {} hours) \u2014 skipping fetch",
-                    self._cache_pages_hours,
+                    "FreeGOG cache is still valid \u2014 expires at {} \u2014 skipping fetch",
+                    expiry,
                 )
                 return
             logger.info(

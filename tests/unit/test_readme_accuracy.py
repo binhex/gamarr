@@ -91,30 +91,30 @@ class TestReadmeGeneralConfig:
 
 
 class TestReadmeScheduleConfig:
-    """README `schedule` table must match ScheduleTaskConfig defaults."""
+    """README `schedule` table must match ScheduleConfig defaults."""
 
-    def test_acquisition_enabled_default(self) -> None:
-        """schedule.acquisition.enabled default is false, not true."""
-        from gamarr.config import ScheduleTaskConfig
+    def test_schedule_enabled_default(self) -> None:
+        """schedule.enabled default is false, not true."""
+        from gamarr.config import ScheduleConfig
 
-        cfg = ScheduleTaskConfig()
+        cfg = ScheduleConfig()
         assert cfg.enabled is False, "Code default is False"
 
-    def test_acquisition_enabled_readme_default(self) -> None:
-        """Verify the README documents the correct default for acquisition.enabled."""
+    def test_schedule_enabled_readme_default(self) -> None:
+        """Verify the README documents the correct default for schedule.enabled."""
         with open(README_PATH, encoding="utf-8") as f:
             content = f.read()
 
-        # Find the schedule table entry for acquisition.enabled
+        # Find the schedule table entry for enabled
         import re
 
         # Look for the row in the schedule table
-        pattern = r"\|\s*`acquisition\.enabled`\s*\|.*?\|\s*(.*?)\s*\|"
+        pattern = r"\|\s*`(?:schedule\.)?enabled`\s*\|.*?\|\s*(.*?)\s*\|"
         match = re.search(pattern, content)
-        assert match is not None, "Could not find acquisition.enabled in schedule table"
+        assert match is not None, "Could not find schedule.enabled in schedule table"
         readme_default = match.group(1).strip().strip("`")
         assert readme_default == "false", (
-            f"README says acquisition.enabled default is '{readme_default}', expected 'false' (code default is False)"
+            f"README says schedule.enabled default is '{readme_default}', expected 'false' (code default is False)"
         )
 
 
@@ -195,13 +195,13 @@ class TestReadmeYamlDefaults:
             actual = general.get(key)
             assert str(actual) == expected_val, f"general.{key}: README expected '{expected_val}', code has '{actual}'"
 
-    def test_schedule_acquisition_defaults_match(self) -> None:
+    def test_schedule_defaults_match(self) -> None:
         """Compare schedule section defaults against the default config dict."""
         from gamarr.config import _default_config_dict
 
         defaults = _default_config_dict()
-        acq = defaults.get("schedule", {}).get("acquisition", {})
+        schedule = defaults.get("schedule", {})
 
-        assert acq.get("enabled") is False, f"schedule.acquisition.enabled: expected False, got {acq.get('enabled')}"
-        assert acq.get("schedule_time_mins") == 60
-        assert acq.get("run_on_start") is True
+        assert schedule.get("enabled") is False, f"schedule.enabled: expected False, got {schedule.get('enabled')}"
+        assert schedule.get("schedule_time_mins") == 60
+        assert schedule.get("run_on_start") is True

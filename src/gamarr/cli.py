@@ -208,10 +208,19 @@ def cli(
     them against Metacritic scores, and adds qualifying games to
     qBittorrent.
 
-    Runs in scheduled mode when ``schedule.acquisition.enabled`` is
+    Runs in scheduled mode when ``schedule.enabled`` is
     ``true`` in the config file, or as a single pass otherwise.
     """
+    import loguru
+
     from gamarr.config import load_config
+    loguru.logger.remove()
+    loguru.logger.add(
+        sink=lambda message: print(message, end=""),
+        level=log_level.upper() if log_level else "INFO",
+        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>",
+        colorize=True,
+    )
 
     config = load_config(config_path)
 

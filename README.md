@@ -103,7 +103,7 @@ on first run. The file is divided into the sections below.
 | Key | Description | Default |
 | --- | ----------- | ------- |
 | `config_version` | Schema version — managed automatically; do not edit. | *(current)* |
-| `daemon_mode` | `foreground` or `background`. Scheduling is controlled by `schedule.acquisition.enabled`. This field is deprecated. | `foreground` |
+| `daemon_mode` | `foreground` or `background`. Scheduling is controlled by `schedule.enabled`. This field is deprecated. | `foreground` |
 | `log_level_console` | Console logging level. | `INFO` |
 | `log_level_file` | File logging level. | `INFO` |
 | `log_path` | Directory for log files (`gamarr.log` is created inside). | `logs` |
@@ -115,9 +115,9 @@ on first run. The file is divided into the sections below.
 
 | Key | Description | Default |
 | --- | ----------- | ------- |
-| `acquisition.enabled` | Enable or disable the acquisition task (scheduled daemon mode). | `false` |
-| `acquisition.schedule_time_mins` | Interval in minutes between acquisition cycles. | `60` |
-| `acquisition.run_on_start` | Run acquisition immediately on start, before the first interval. | `true` |
+| `enabled` | Enable or disable scheduled background mode. | `false` |
+| `schedule_time_mins` | Interval in minutes between scheduled cycles. | `60` |
+| `run_on_start` | Run immediately on start, before the first interval. | `true` |
 
 ### `download_sites`
 
@@ -306,7 +306,7 @@ _(Note: `sources/` is the Python package name for download site implementations 
 All configuration is driven by a YAML file (`configs/gamarr.yml`) validated
 with Pydantic. The scheduler (`scheduler.py`) runs in single-pass mode by
 default, or in continuous scheduled mode when
-``schedule.acquisition.enabled`` is ``true``.
+``schedule.enabled`` is ``true``.
 
 ## Development
 

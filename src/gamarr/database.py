@@ -500,6 +500,18 @@ class Database:
                 return False
             return row.cached_at > cutoff
 
+    def get_sitemap_cache_expiry(self, source: str, ttl_hours: int) -> str | None:
+        """Return the cache expiry time as a formatted string, or None if not cached."""
+        if ttl_hours <= 0:
+            return None
+        with self._session() as session:
+            row = session.get(SitemapCache, source)
+            if row is None:
+                return None
+            cached = datetime.datetime.fromisoformat(row.cached_at)
+            expiry = cached + datetime.timedelta(hours=ttl_hours)
+            return expiry.strftime("%Y-%m-%d %H:%M:%S")
+
     def set_sitemap_cache(self, source: str) -> None:
         """Update the sitemap cache timestamp for *source* to now."""
         now = datetime.datetime.now(tz=datetime.UTC).isoformat()

@@ -15,7 +15,7 @@ from gamarr.config import (
     MetacriticPlatformConfig,
     NotificationConfig,
     QbittorrentConfig,
-    ScheduleTaskConfig,
+    ScheduleConfig,
     SourceConfigEntry,
     TorrentClientConfig,
     create_default_config,
@@ -35,7 +35,8 @@ class TestConfigModels:
         assert cfg.log_level_console == "INFO"
 
     def test_schedule_task_config_defaults(self) -> None:
-        cfg = ScheduleTaskConfig()
+        """ScheduleConfig defaults are correct (flattened format)."""
+        cfg = ScheduleConfig()
         assert cfg.enabled is False
         assert cfg.schedule_time_mins == 60
         assert cfg.run_on_start is True
@@ -1155,3 +1156,81 @@ def test_parse_keyed_list_strips_feed_url() -> None:
     assert len(cfg) == 1
     data = cfg[0].model_dump()
     assert "feed_url" not in data, "feed_url should be stripped during parsing"
+
+
+# --- schedule flattening: remove acquisition wrapper ---
+
+
+def test_schedule_config_no_acquisition_field() -> None:
+    """ScheduleConfig must not have an 'acquisition' sub-field."""
+    from gamarr.config import ScheduleConfig
+
+    cfg = ScheduleConfig()
+    assert not hasattr(cfg, "acquisition"), "ScheduleConfig should not have acquisition"
+    assert cfg.enabled is False
+    assert cfg.schedule_time_mins == 60
+    assert cfg.run_on_start is True
+
+
+def test_migrate_flattens_schedule_acquisition() -> None:
+    """_migrate_config flattens schedule.acquisition.* into schedule.*."""
+    from unittest.mock import patch
+
+    from gamarr.config import _migrate_config
+
+    raw: dict[str, Any] = {
+        "schedule": {
+            "acquisition": {
+                "enabled": True,
+                "schedule_time_mins": 30,
+                "run_on_start": False,
+            }
+        },
+        "review_sites": {"metacritic": {"platform_overrides": {"pc": {}}}},
+        "torrent_client": {
+            "qbittorrent": {"host": "localhost", "port": 8080, "username": "admin", "password": "adminadmin"}
+        },
+    }
+    with patch("gamarr.config.logger"):
+        result = _migrate_config(raw)
+
+    assert result is True
+    schedule = raw["schedule"]
+    assert "acquisition" not in schedule, "acquisition sub-key should be removed"
+    assert schedule["enabled"] is True
+    assert schedule["schedule_time_mins"] == 30
+    assert schedule["run_on_start"] is False
+
+
+def test_migrate_daemon_mode_writes_to_flat_schedule() -> None:
+    """_migrate_daemon_mode writes to schedule.enabled, not schedule.acquisition.enabled."""
+    from unittest.mock import patch
+
+    from gamarr.config import _migrate_daemon_mode
+
+    raw: dict[str, Any] = {
+        "general": {"daemon_mode": "background"},
+    }
+    with patch("gamarr.config.logger"):
+        result = _migrate_daemon_mode(raw)
+
+    assert result is True
+    schedule = raw["schedule"]
+    assert "acquisition" not in schedule, "no acquisition sub-key should be created"
+    assert schedule["enabled"] is True
+
+
+def test_migrate_remove_fitgirl_feed_url_strips_rss_url() -> None:
+    """_migrate_remove_fitgirl_feed_url also strips legacy rss_url keys."""
+    from gamarr.config import _migrate_remove_fitgirl_feed_url
+
+    raw: dict[str, Any] = {
+        "download_sites": [
+            {"fitgirl": {"enabled": True, "rss_url": "https://old-feed.com/feed/"}},
+        ],
+    }
+    result = _migrate_remove_fitgirl_feed_url(raw)
+    assert result is True
+    inner = raw["download_sites"][0]["fitgirl"]
+    assert "rss_url" not in inner
+    assert "feed_url" not in inner

@@ -316,9 +316,10 @@ class FitGirlSource:
             return
         if self._cache_pages_hours > 0 and db.get_sitemap_cache("fitgirl", self._cache_pages_hours):
             if len(db.get_all_source_titles("fitgirl")) > 0:
+                expiry = db.get_sitemap_cache_expiry("fitgirl", self._cache_pages_hours) or "unknown"
                 logger.info(
-                    "FitGirl cache is still valid (TTL: {} hours) — skipping fetch",
-                    self._cache_pages_hours,
+                    "FitGirl cache is still valid — expires at {} — skipping fetch",
+                    expiry,
                 )
                 return
             logger.info(

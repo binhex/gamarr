@@ -52,7 +52,7 @@ def _log_next_run_time(scheduler: Any, job_id: str) -> None:
     wait_minutes = max(1, math.ceil(remaining / 60))
     next_str = job.next_run_time.strftime("%Y-%m-%d %H:%M:%S")
     logger.info(
-        "Next acquisition cycle in ~{} minute(s) at {}",
+        "Next scheduled cycle in ~{} minute(s) at {}",
         wait_minutes,
         next_str,
     )
@@ -105,7 +105,7 @@ def _cleanup_pid_file(pid_path: str | None) -> None:
 def run(config: Config) -> None:
     """Run a scan cycle, either as scheduled daemon or single pass.
 
-    When ``schedule.acquisition.enabled`` is ``true`` in the config, runs
+    When ``schedule.enabled`` is ``true`` in the config, runs
     in continuous scheduled mode using APScheduler. Otherwise runs a
     single scan pass and exits.
 
@@ -120,7 +120,7 @@ def run(config: Config) -> None:
     try:
         if pid_path:
             _write_pid(pid_path)
-        if config.schedule.acquisition.enabled:
+        if config.schedule.enabled:
             _run_daemon(config)
         else:
             run_once(config)
@@ -201,7 +201,7 @@ def _run_daemon(config: Config) -> None:
     """Run the scheduler in continuous schedule mode."""
     logger.info("gamarr starting in schedule mode.")
     scheduler = BackgroundScheduler()
-    acq_cfg = config.schedule.acquisition
+    acq_cfg = config.schedule
     kwargs = _build_kwargs(config)
 
     from datetime import datetime, timedelta

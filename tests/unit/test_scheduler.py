@@ -20,19 +20,19 @@ class TestSchedulerForeground:
     def test_run_once_calls_acquisition(self) -> None:
         with patch("gamarr.scheduler.run_acquisition") as mock_acq:
             mock_acq.return_value = []
-            config = _make_config(acquisition_enabled=False)
+            config = _make_config(schedule_enabled=False)
             run_once(config)
             mock_acq.assert_called_once()
 
     def test_run_foreground_calls_run_once(self) -> None:
         with patch("gamarr.scheduler.run_once") as mock_run_once:
-            config = _make_config(acquisition_enabled=False)
+            config = _make_config(schedule_enabled=False)
             run(config)
             mock_run_once.assert_called_once()
 
     def test_run_calls_daemon_when_schedule_enabled(self) -> None:
-        """When schedule.acquisition.enabled=True, run() should call _run_daemon."""
-        config = _make_config(acquisition_enabled=True)
+        """When schedule.enabled=True, run() should call _run_daemon."""
+        config = _make_config(schedule_enabled=True)
         with (
             patch("gamarr.scheduler._run_daemon") as mock_daemon,
             patch("gamarr.scheduler.run_once") as mock_once,
@@ -42,8 +42,8 @@ class TestSchedulerForeground:
             mock_once.assert_not_called()
 
     def test_run_calls_run_once_when_schedule_disabled(self) -> None:
-        """When schedule.acquisition.enabled=False, run() should call run_once."""
-        config = _make_config(acquisition_enabled=False)
+        """When schedule.enabled=False, run() should call run_once."""
+        config = _make_config(schedule_enabled=False)
         with (
             patch("gamarr.scheduler._run_daemon") as mock_daemon,
             patch("gamarr.scheduler.run_once") as mock_once,
@@ -53,8 +53,8 @@ class TestSchedulerForeground:
             mock_daemon.assert_not_called()
 
 
-def _make_config(acquisition_enabled: bool = False) -> Config:
-    """Build a minimal Config for testing with *acquisition_enabled*."""
+def _make_config(schedule_enabled: bool = False) -> Config:
+    """Build a minimal Config for testing with *schedule_enabled*."""
     from gamarr.config import (
         DatabaseConfig,
         DownloadSitesConfig,
@@ -65,16 +65,13 @@ def _make_config(acquisition_enabled: bool = False) -> Config:
         QbittorrentConfig,
         ReviewSitesConfig,
         ScheduleConfig,
-        ScheduleTaskConfig,
         SourceConfigEntry,
         TorrentClientConfig,
     )
 
     return Config(
         general=GeneralConfig(log_path="", db_path=":memory:", pid_path=""),
-        schedule=ScheduleConfig(
-            acquisition=ScheduleTaskConfig(enabled=acquisition_enabled, schedule_time_mins=60, run_on_start=True),
-        ),
+        schedule=ScheduleConfig(enabled=schedule_enabled, schedule_time_mins=60, run_on_start=True),
         download_sites=DownloadSitesConfig(
             root=[SourceConfigEntry(name="fitgirl", enabled=True, platform="pc")],
         ),
@@ -181,7 +178,6 @@ class TestBuildKwargs:
             QbittorrentConfig,
             ReviewSitesConfig,
             ScheduleConfig,
-            ScheduleTaskConfig,
             SourceConfigEntry,
             TorrentClientConfig,
         )
@@ -189,9 +185,7 @@ class TestBuildKwargs:
 
         config = Config(
             general=GeneralConfig(daemon_mode="foreground", db_path=":memory:"),
-            schedule=ScheduleConfig(
-                acquisition=ScheduleTaskConfig(enabled=True, schedule_time_mins=60),
-            ),
+            schedule=ScheduleConfig(enabled=True, schedule_time_mins=60),
             download_sites=DownloadSitesConfig(
                 root=[SourceConfigEntry(name="fitgirl", enabled=True)],
             ),
@@ -227,8 +221,8 @@ class TestDaemonMode:
                 mock_signal.signal.return_value = None
 
                 config = MagicMock()
-                config.schedule.acquisition.schedule_time_mins = 60
-                config.schedule.acquisition.run_on_start = True
+                config.schedule.schedule_time_mins = 60
+                config.schedule.run_on_start = True
                 config.review_sites.metacritic.platform_overrides = {"pc": MagicMock()}
                 config.review_sites.metacritic.platform_overrides["pc"].min_metascore = 75
                 config.review_sites.metacritic.platform_overrides["pc"].min_metascore_reviews = 5
@@ -272,8 +266,8 @@ class TestDaemonMode:
             mock_sched_cls.return_value = mock_sched
 
             config = MagicMock()
-            config.schedule.acquisition.schedule_time_mins = 60
-            config.schedule.acquisition.run_on_start = False
+            config.schedule.schedule_time_mins = 60
+            config.schedule.run_on_start = False
             config.review_sites.metacritic.platform_overrides = {"pc": MagicMock()}
             config.review_sites.metacritic.platform_overrides["pc"].min_metascore = 75
             config.review_sites.metacritic.platform_overrides["pc"].min_metascore_reviews = 5
@@ -379,6 +373,28 @@ class TestNextRunTimeLogging:
         assert args[1] == 30, f"Expected interval 30, got {args[1]}"
         next_time_str = future.strftime("%Y-%m-%d %H:%M:%S")
         assert next_time_str == args[2], f"Expected next time '{next_time_str}', got {args[2]}"
+
+
+def test_log_next_run_time_says_scheduled_not_acquisition() -> None:
+    """_log_next_run_time log message uses 'scheduled' not 'acquisition'."""
+    from datetime import datetime, timedelta
+    from unittest.mock import MagicMock, PropertyMock, patch
+
+    from gamarr.scheduler import _log_next_run_time
+
+    mock_scheduler = MagicMock()
+    mock_job = MagicMock()
+    future = datetime.now(UTC) + timedelta(minutes=30)
+    type(mock_job).next_run_time = PropertyMock(return_value=future)
+    mock_scheduler.get_job.return_value = mock_job
+
+    with patch("gamarr.scheduler.logger") as mock_logger:
+        _log_next_run_time(mock_scheduler, "scheduled")
+
+    mock_logger.info.assert_called_once()
+    args, _ = mock_logger.info.call_args
+    format_str = args[0]
+    assert "Next scheduled cycle" in format_str, f"Expected 'Next scheduled cycle' in log message, got: {format_str}"
 
 
 class TestRescheduleAcquisition:

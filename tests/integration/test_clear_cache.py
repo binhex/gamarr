@@ -35,8 +35,7 @@ general:
   config_version: "1.35.0"
   db_path: "{db_dir}"
 schedule:
-  acquisition:
-    enabled: false
+  enabled: false
 """
     )
 

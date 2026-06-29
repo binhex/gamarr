@@ -30,18 +30,12 @@ class GeneralConfig(BaseModel):
     library_path_list: list[str] = Field(default_factory=list)
 
 
-class ScheduleTaskConfig(BaseModel):
-    """Settings for a single scheduled task (acquisition, scoring, etc.)."""
+class ScheduleConfig(BaseModel):
+    """Scheduling configuration for periodic tasks."""
 
     enabled: bool = False
     schedule_time_mins: int = Field(default=60, gt=0)
     run_on_start: bool = True
-
-
-class ScheduleConfig(BaseModel):
-    """Scheduling configuration for periodic tasks."""
-
-    acquisition: ScheduleTaskConfig = Field(default_factory=lambda: ScheduleTaskConfig(schedule_time_mins=60))
 
 
 class SourceConfigEntry(BaseModel):
@@ -652,6 +646,22 @@ def _migrate_remove_dodi(raw: dict[str, Any]) -> bool:
     return changed
 
 
+def _strip_feed_url_from_entry(entry: dict[str, Any]) -> bool:
+    """Pop feed_url and rss_url from a keyed-format entry's inner dict.
+
+    Returns True if any keys were stripped.
+    """
+    changed = False
+    for inner in entry.values():
+        if isinstance(inner, dict):
+            if inner.pop("feed_url", None) is not None:
+                changed = True
+            # Also strip any lingering rss_url (legacy edge case)
+            if inner.pop("rss_url", None) is not None:
+                changed = True
+    return changed
+
+
 def _migrate_remove_fitgirl_feed_url(raw: dict[str, Any]) -> bool:
     """Remove feed_url from all download_sites entries.
 
@@ -668,23 +678,15 @@ def _migrate_remove_fitgirl_feed_url(raw: dict[str, Any]) -> bool:
 
     changed = False
     for entry in ds:
-        if not isinstance(entry, dict):
-            continue
-        # Keyed format: {"fitgirl": {"feed_url": "...", ...}}
-        for inner in entry.values():
-            if isinstance(inner, dict):
-                if inner.pop("feed_url", None) is not None:
-                    changed = True
-                # Also strip any lingering rss_url (legacy edge case)
-                if inner.pop("rss_url", None) is not None:
-                    changed = True
+        if isinstance(entry, dict) and _strip_feed_url_from_entry(entry):
+            changed = True
     if changed:
         logger.info("Config: removed obsolete feed_url from download_sites")
     return changed
 
 
 def _migrate_daemon_mode(raw: dict[str, Any]) -> bool:
-    """Migrate deprecated general.daemon_mode to schedule.acquisition.enabled.
+    """Migrate deprecated general.daemon_mode to schedule.enabled.
 
     Returns True if a migration was applied.
     """
@@ -692,14 +694,35 @@ def _migrate_daemon_mode(raw: dict[str, Any]) -> bool:
     if general.get("daemon_mode") != "background":
         return False
     schedule = raw.setdefault("schedule", {})
-    acquisition = schedule.setdefault("acquisition", {})
-    if "enabled" not in acquisition:
-        acquisition["enabled"] = True
-        logger.info(
-            "Config: migrated deprecated 'general.daemon_mode: background' to 'schedule.acquisition.enabled: true'"
-        )
+    if "enabled" not in schedule:
+        schedule["enabled"] = True
+        logger.info("Config: migrated deprecated 'general.daemon_mode: background' to 'schedule.enabled: true'")
         return True
     return False
+
+
+def _migrate_flatten_schedule_acquisition(raw: dict[str, Any]) -> bool:
+    """Flatten schedule.acquisition.* into schedule.* directly.
+
+    The old format nested enabled/schedule_time_mins/run_on_start under
+    an ``acquisition`` sub-key that had no sibling keys.  Flattening
+    removes unnecessary indirection.
+
+    Returns True if a flattening was applied.
+    """
+    schedule = raw.get("schedule")
+    if not isinstance(schedule, dict):
+        return False
+    acq = schedule.get("acquisition")
+    if not isinstance(acq, dict):
+        return False
+    # Copy acquisition values up to schedule, preserving existing keys
+    for key in ("enabled", "schedule_time_mins", "run_on_start"):
+        if key not in schedule and key in acq:
+            schedule[key] = acq[key]
+    del schedule["acquisition"]
+    logger.info("Config: flattened schedule.acquisition into schedule")
+    return True
 
 
 def _migrate_add_freegog_to_download_sites(raw: dict[str, Any]) -> bool:
@@ -771,6 +794,12 @@ def _migrate_config(raw: dict[str, Any]) -> bool:
             _migrate_download_sites_to_keyed_list,
             _migrate_remove_dodi,
             _migrate_remove_fitgirl_feed_url,
+            # _migrate_flatten_schedule_acquisition must run BEFORE
+            # _migrate_daemon_mode.  If daemon_mode runs first and sets
+            # schedule.enabled=True, flatten would skip copying an
+            # existing acquisition.enabled=False (key already present),
+            # silently overriding the user's explicit setting.
+            _migrate_flatten_schedule_acquisition,
             _migrate_daemon_mode,
             _migrate_add_freegog_to_download_sites,
         ]
