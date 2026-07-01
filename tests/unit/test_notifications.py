@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import urllib.parse
 from unittest.mock import MagicMock, patch
 
 from gamarr.notifications import Notifier
@@ -110,7 +111,8 @@ class TestNotifierFormat:
             Must Play: Yes/No (when provided)
             Genre: <genre1>, <genre2> (when provided)
             Release: <YYYY-MM-DD> (when provided)
-            Link: https://www.metacritic.com/game/<slug>/
+            Metacritic: https://www.metacritic.com/game/<slug>/
+            YouTube: https://www.youtube.com/results?search_query=<title>+review
         """
         mock_apobj = MagicMock()
         with patch.object(Notifier, "_init_apprise", return_value=mock_apobj):
@@ -133,7 +135,8 @@ class TestNotifierFormat:
                     "Critic Score: 85.0 (50 reviews)\n"
                     "User Score: 8.8 (100 reviews)\n"
                     "Genre: Action, Adventure\n"
-                    "Link: https://www.metacritic.com/game/pragmata/"
+                    "Metacritic: https://www.metacritic.com/game/pragmata/\n"
+                    "YouTube: https://www.youtube.com/results?search_query=PRAGMATA+review"
                 ),
             )
 
@@ -159,7 +162,8 @@ class TestNotifierFormat:
                     "Status: Paused\n"
                     "Critic Score: N/A\n"
                     "User Score: N/A\n"
-                    "Link: https://www.metacritic.com/game/elden-ring/"
+                    "Metacritic: https://www.metacritic.com/game/elden-ring/\n"
+                    "YouTube: https://www.youtube.com/results?search_query=Elden+Ring+review"
                 ),
             )
 
@@ -190,7 +194,8 @@ class TestNotifierFormat:
                     "Must Play: No\n"
                     "Genre: Action, Adventure\n"
                     "Release: 2026-06-15\n"
-                    "Link: https://www.metacritic.com/game/pragmata/"
+                    "Metacritic: https://www.metacritic.com/game/pragmata/\n"
+                    "YouTube: https://www.youtube.com/results?search_query=PRAGMATA+review"
                 ),
             )
 
@@ -247,3 +252,30 @@ class TestNotifierEdgeCases:
             notifier = Notifier(apprise_urls=["json://localhost"], on_error=True)
             notifier.send_error_notification(error_message="Pipeline error")
             mock_apobj.notify.assert_called_once()
+
+    def test_init_apprise_catches_import_error(self) -> None:
+        """Exception during Apprise initialisation is caught and returns None."""
+        with patch("apprise.Apprise", side_effect=ImportError("No module named 'apprise'")):
+            notifier = Notifier(apprise_urls=["json://localhost"])
+            assert notifier._apprise is None
+
+    def test_send_returns_early_when_no_apprise(self) -> None:
+        """_send is a no-op when Apprise is not initialised."""
+        notifier = Notifier(apprise_urls=[])
+        notifier._send("Test", "Body")  # should not raise
+
+
+class TestYouTubeSearchUrl:
+    """Tests for _youtube_search_url static helper."""
+
+    def test_youtube_search_url_encodes_spaces(self) -> None:
+        """Title with spaces produces URL with + separators."""
+        result = Notifier._youtube_search_url("Elden Ring")
+        assert result == "https://www.youtube.com/results?search_query=Elden+Ring+review"
+
+    def test_youtube_search_url_encodes_special_chars(self) -> None:
+        """Titles with colons and punctuation are URL-safe encoded."""
+        result = Notifier._youtube_search_url("STAR WARS: Battlefront")
+        encoded = urllib.parse.quote_plus("STAR WARS: Battlefront review")
+        expected = f"https://www.youtube.com/results?search_query={encoded}"
+        assert result == expected

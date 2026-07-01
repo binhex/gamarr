@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import urllib.parse
 from typing import Any
 
 from loguru import logger
@@ -47,6 +48,19 @@ class Notifier:
             line += f" ({reviews} reviews)"
         return line
 
+    @staticmethod
+    def _youtube_search_url(title: str) -> str:
+        """Build a YouTube search URL for a game title.
+
+        Args:
+            title: The game title to search for.
+
+        Returns:
+            A YouTube search results URL with the title and "review" as the query.
+        """
+        query = urllib.parse.quote_plus(f"{title} review")
+        return f"https://www.youtube.com/results?search_query={query}"
+
     def send_download_notification(
         self,
         title: str,
@@ -73,6 +87,7 @@ class Notifier:
             genres=genres,
             release_date=release_date,
             slug=slug,
+            title=title,
             platform=platform,
         )
         self._send(f"gamarr - {title} ({platform})", body)
@@ -89,6 +104,7 @@ class Notifier:
         genres: list[str] | None,
         release_date: str | None,
         slug: str,
+        title: str,
         platform: str,
     ) -> str:
         """Build the notification body string for a game download."""
@@ -105,7 +121,8 @@ class Notifier:
             parts.append(f"Genre: {', '.join(genres)}")
         if release_date:
             parts.append(f"Release: {release_date}")
-        parts.append(f"Link: https://www.metacritic.com/game/{slug or 'unknown'}/")
+        parts.append(f"Metacritic: https://www.metacritic.com/game/{slug or 'unknown'}/")
+        parts.append(f"YouTube: {Notifier._youtube_search_url(title)}")
         return "\n".join(parts)
 
     def send_failure_notification(self, title: str, reason: str) -> None:
