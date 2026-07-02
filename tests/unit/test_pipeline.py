@@ -4983,3 +4983,73 @@ class TestScanWindowAdvancing:
         assert cutoff_date == expected_cutoff, (
             f"Expected cutoff_date={expected_cutoff} (104w from today), got {cutoff_date}"
         )
+
+    def test_backlog_scan_uses_stored_page_when_max_weeks_increased(self, tmp_path: Path) -> None:
+        """When max_weeks increases, scan_recent_games should start from the stored
+        browse page number to avoid re-traversing already-known pages."""
+        import datetime
+        import io
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.database import Database
+        from gamarr.pipeline import run_acquisition
+
+        db_path = str(tmp_path / "test.db")
+
+        db = Database(db_path)
+        today = datetime.datetime.now(tz=datetime.UTC).date()
+        # Seed with old boundary AND the stored browse page number from
+        # where the initial backlog left off.
+        old_boundary = (today - datetime.timedelta(weeks=104)).isoformat()
+        db.set_last_cutoff("pc", old_boundary)
+        db.set_last_browse_page("pc", 380)
+        db.close()
+
+        from loguru import logger
+
+        log_stream = io.StringIO()
+        handler_id = logger.add(log_stream, format="{message}", level="INFO")
+
+        try:
+            with (
+                patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
+                patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+                patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+            ):
+                mock_source = MagicMock()
+                mock_source_cls.return_value = mock_source
+
+                mock_mc = MagicMock()
+                mock_mc.scan_recent_games.return_value = []
+                mock_mc_cls.return_value = mock_mc
+
+                mock_qbt = MagicMock()
+                mock_qbt.is_connected.return_value = True
+                mock_qbt_cls.return_value = mock_qbt
+
+                # Run with NEW higher max_weeks (108 > 104)
+                run_acquisition(
+                    platform="pc",
+                    db_path=db_path,
+                    qbt_host="localhost",
+                    qbt_port=8080,
+                    max_weeks=108,
+                    max_cycle_weeks=4,
+                )
+        finally:
+            logger.remove(handler_id)
+
+        log_output = log_stream.getvalue()
+
+        # Should be in backlog mode
+        assert "Backlog cycle" in log_output, (
+            f"Expected backlog mode, got:\n{log_output}"
+        )
+
+        # Verify scan_recent_games was called with start_page matching the stored page
+        assert mock_mc.scan_recent_games.call_count == 1
+        start_page = mock_mc.scan_recent_games.call_args[1].get("start_page")
+        assert start_page is not None, "start_page should be passed to scan_recent_games"
+        assert start_page == 380, (
+            f"Expected start_page=380 (stored browse page), got {start_page}"
+        )

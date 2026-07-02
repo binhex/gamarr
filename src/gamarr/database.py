@@ -117,6 +117,7 @@ class ScanState(Base):
 
     platform: Mapped[str] = mapped_column(String, primary_key=True)
     last_cutoff_date: Mapped[str | None] = mapped_column(String, nullable=True)
+    last_browse_page: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class Database:
@@ -149,6 +150,7 @@ class Database:
         self._migrate_pending_games()
         self._migrate_game_detail_cache()
         self._migrate_source_titles()
+        self._migrate_scan_state()
 
     def _migrate_pending_games(self) -> None:
         """Add columns to pending_games that were added in newer versions."""
@@ -199,6 +201,19 @@ class Database:
                 logger.debug("Added magnet column to source_titles")
         except Exception:
             logger.debug("Migration of source_titles skipped (table may not exist yet)")
+
+    def _migrate_scan_state(self) -> None:
+        """Add last_browse_page column to scan_state if missing."""
+        try:
+            inspector = sa_inspect(self._engine)
+            columns = [c["name"] for c in inspector.get_columns("scan_state")]
+            if "last_browse_page" not in columns:
+                with self._session() as session:
+                    session.execute(text("ALTER TABLE scan_state ADD COLUMN last_browse_page INTEGER"))
+                    session.commit()
+                logger.debug("Added last_browse_page column to scan_state")
+        except Exception:
+            logger.debug("Migration of scan_state skipped (table may not exist yet)")
 
     def close(self) -> None:
         self._engine.dispose()
@@ -267,6 +282,24 @@ class Database:
                 session.add(ScanState(platform=platform, last_cutoff_date=cutoff_date))
             else:
                 row.last_cutoff_date = cutoff_date
+            session.commit()
+
+    def get_last_browse_page(self, platform: str) -> int | None:
+        """Return the last stored browse page number for *platform*, or None."""
+        with self._session() as session:
+            row = session.get(ScanState, platform)
+        if row is None:
+            return None
+        return row.last_browse_page
+
+    def set_last_browse_page(self, platform: str, page_number: int) -> None:
+        """Store or update the last browse page number for *platform*."""
+        with self._session() as session:
+            row = session.get(ScanState, platform)
+            if row is None:
+                session.add(ScanState(platform=platform, last_browse_page=page_number))
+            else:
+                row.last_browse_page = page_number
             session.commit()
 
     def get_expired_pending(self) -> list[PendingGame]:

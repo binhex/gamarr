@@ -253,6 +253,7 @@ def run_acquisition(
             # max_weeks is the absolute hard cutoff.
             cutoff_date: str | None = None
             effective_cycle_weeks = cfg.max_cycle_weeks
+            browse_start_page = 1
 
             # Determine the retreating cutoff based on the last stored position.
             # Each cycle advances max_cycle_weeks weeks further back from the
@@ -276,7 +277,7 @@ def run_acquisition(
                             cfg.max_weeks is not None
                             and cfg.max_weeks > 0
                             and retreating_cutoff
-                            < datetime.datetime.now(tz=datetime.UTC).date() - datetime.timedelta(weeks=cfg.max_weeks)
+                            <= datetime.datetime.now(tz=datetime.UTC).date() - datetime.timedelta(weeks=cfg.max_weeks)
                         ):
                             hard = datetime.datetime.now(tz=datetime.UTC).date() - datetime.timedelta(
                                 weeks=cfg.max_weeks
@@ -285,8 +286,12 @@ def run_acquisition(
                             # the boundary (within one max_cycle_weeks) AND more
                             # recent than the hard cutoff.  During normal
                             # backlog it's much further away.
-                            if hard < last_date and (last_date - hard).days < cfg.max_cycle_weeks * 7:
+                            if hard < last_date and (last_date - hard).days <= cfg.max_cycle_weeks * 7:
                                 cutoff_date = hard.isoformat()
+                                # When jumping to the expanded boundary, start
+                                # scanning from the last known browse page to
+                                # avoid re-traversing already-known pages.
+                                browse_start_page = db.get_last_browse_page(platform) or 1
                             else:
                                 cutoff_date = retreating_cutoff.isoformat()
                         else:
@@ -362,6 +367,7 @@ def run_acquisition(
                 cache_pages_hours=cfg.cache_pages_hours,
                 cutoff_date=cutoff_date,
                 cancel_event=cancel_event,
+                start_page=browse_start_page,
             )
 
             # Store cutoff for next cycle (after scan completes).
@@ -373,6 +379,11 @@ def run_acquisition(
                     db.set_last_cutoff(platform, hard_cutoff_date.isoformat())
                 else:
                     db.set_last_cutoff(platform, cutoff_date)
+                # Track the last scanned browse page so future max_weeks
+                # increases can skip already-known pages.
+                _last_page = getattr(mc, "_recent_games_last_page", None)
+                if isinstance(_last_page, int):
+                    db.set_last_browse_page(platform, _last_page)
             if browse_games:
                 thresholds = {
                     "min_metascore": cfg.min_metascore,

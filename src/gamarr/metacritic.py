@@ -558,6 +558,7 @@ class MetacriticClient:
         self._cache = cache
         self._cache_hits_lock = threading.Lock()
         self.cache_hits = 0
+        self._recent_games_last_page: int | None = None
 
     def close(self) -> None:
         """Release cache resources (no-op; DB lifecycle owned by the pipeline)."""
@@ -754,6 +755,7 @@ class MetacriticClient:
         cache_pages_hours: int = 6,
         cutoff_date: str | None = None,
         cancel_event: threading.Event | None = None,
+        start_page: int = 1,
     ) -> list[dict[str, Any]]:
         """Collect games from Metacritic browse pages.
 
@@ -769,6 +771,10 @@ class MetacriticClient:
                 Pages whose games are all older than this date are skipped.
             cancel_event: Optional threading.Event.  When set, the
                 scan stops early and returns partial results.
+            start_page: Page number to start scanning from.  Pages 1..start_page-1
+                are skipped without fetching.  This avoids re-traversing
+                already-known pages when the backlog resumes after a
+                config change.
 
         Returns a list of game dicts with keys ``title``, ``slug``,
         ``score``, ``critic_review_count``, ``user_rating``,
@@ -779,7 +785,7 @@ class MetacriticClient:
         cutoff_date = _validate_cutoff_date(cutoff_date)
 
         effective_max = max_games if max_games > 0 else 999999
-        page_number = 1
+        page_number = max(1, start_page)
         while len(all_games) < effective_max and page_number <= 2000:
             games = self._fetch_browse_page(platform, page_number, cache_pages_hours)
             if not games:
@@ -827,5 +833,5 @@ class MetacriticClient:
             n_pages,
             len(all_games),
         )
-
+        self._recent_games_last_page = n_pages
         return all_games
