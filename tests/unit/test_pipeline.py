@@ -4914,3 +4914,72 @@ class TestScanWindowAdvancing:
         assert "Backlog cycle 1" in log_output, f"Missing 'Backlog cycle 1' in:\n{log_output}"
         assert "~25 cycles remaining" in log_output, f"Missing '~25 cycles remaining' in:\n{log_output}"
         assert "Scanning latest" not in log_output, f"Unexpected 'Scanning latest' in backlog mode:\n{log_output}"
+
+    def test_backlog_restarts_when_max_weeks_increased(self, tmp_path: Path) -> None:
+        """When max_weeks increases, backlog restarts instead of staying in steady-state."""
+        import datetime
+        import io
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.database import Database
+        from gamarr.pipeline import run_acquisition
+
+        db_path = str(tmp_path / "test.db")
+
+        db = Database(db_path)
+        today = datetime.datetime.now(tz=datetime.UTC).date()
+        # Seed with a cutoff from an OLDER max_weeks setting (102 weeks ago).
+        # The new config will use max_weeks=104 (further back boundary),
+        # so the stored cutoff is more recent than the new hard limit.
+        old_boundary = (today - datetime.timedelta(weeks=102)).isoformat()
+        db.set_last_cutoff("pc", old_boundary)
+        db.close()
+
+        from loguru import logger
+
+        log_stream = io.StringIO()
+        handler_id = logger.add(log_stream, format="{message}", level="INFO")
+
+        try:
+            with (
+                patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
+                patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+                patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+            ):
+                mock_source = MagicMock()
+                mock_source_cls.return_value = mock_source
+
+                mock_mc = MagicMock()
+                mock_mc.scan_recent_games.return_value = []
+                mock_mc_cls.return_value = mock_mc
+
+                mock_qbt = MagicMock()
+                mock_qbt.is_connected.return_value = True
+                mock_qbt_cls.return_value = mock_qbt
+
+                # Run with NEW higher max_weeks (104 > 102)
+                run_acquisition(
+                    platform="pc",
+                    db_path=db_path,
+                    qbt_host="localhost",
+                    qbt_port=8080,
+                    max_weeks=104,
+                    max_cycle_weeks=4,
+                )
+        finally:
+            logger.remove(handler_id)
+
+        log_output = log_stream.getvalue()
+
+        # Should be in backlog mode, NOT steady-state
+        assert "Backlog cycle" in log_output, f"Expected backlog mode when max_weeks increased, got:\n{log_output}"
+        assert "Scanning latest" not in log_output, f"Expected backlog mode, not steady-state:\n{log_output}"
+
+        # Verify the cutoff_date passed to scan_recent_games is the new boundary
+        assert mock_mc.scan_recent_games.call_count == 1
+        cutoff_date = mock_mc.scan_recent_games.call_args[1].get("cutoff_date")
+        assert cutoff_date is not None, "cutoff_date should be passed to scan_recent_games"
+        expected_cutoff = (today - datetime.timedelta(weeks=104)).isoformat()
+        assert cutoff_date == expected_cutoff, (
+            f"Expected cutoff_date={expected_cutoff} (104w from today), got {cutoff_date}"
+        )

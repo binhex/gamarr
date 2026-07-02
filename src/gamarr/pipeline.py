@@ -267,7 +267,30 @@ def run_acquisition(
                         last_date = None
                     if last_date:
                         retreating_cutoff = last_date - datetime.timedelta(weeks=cfg.max_cycle_weeks)
-                        cutoff_date = retreating_cutoff.isoformat()
+                        # If max_weeks was increased while in steady-state, the
+                        # stored cutoff (at the old boundary) is more recent than
+                        # today's hard boundary.  Detect this by checking whether
+                        # last_date is close to hard_cutoff (at-boundary steady-state)
+                        # vs far away (mid-backlog).  Only jump when at the boundary.
+                        if (
+                            cfg.max_weeks is not None
+                            and cfg.max_weeks > 0
+                            and retreating_cutoff
+                            < datetime.datetime.now(tz=datetime.UTC).date() - datetime.timedelta(weeks=cfg.max_weeks)
+                        ):
+                            hard = datetime.datetime.now(tz=datetime.UTC).date() - datetime.timedelta(
+                                weeks=cfg.max_weeks
+                            )
+                            # Guard: only jump when the stored cutoff is at/near
+                            # the boundary (within one max_cycle_weeks) AND more
+                            # recent than the hard cutoff.  During normal
+                            # backlog it's much further away.
+                            if hard < last_date and (last_date - hard).days < cfg.max_cycle_weeks * 7:
+                                cutoff_date = hard.isoformat()
+                            else:
+                                cutoff_date = retreating_cutoff.isoformat()
+                        else:
+                            cutoff_date = retreating_cutoff.isoformat()
                 if cutoff_date is None:
                     # First cycle or unparseable stored date — start from now - max_cycle_weeks
                     cutoff_date = (
