@@ -296,30 +296,43 @@ def run_acquisition(
                     else:
                         cutoff_date = hard_cutoff.isoformat()
 
-            # Log the browse window range so users can track the advancing window.
+            # Log the browse window range — two distinct formats for
+            # backlog mode (retreating cutoff) and steady-state (clamped).
             if cutoff_date is not None:
-                if clamped_by_max_weeks and cfg.max_cycle_weeks and cfg.max_cycle_weeks > 0:
-                    # Backlog caught up — max_cycle_weeks is the effective limiter
-                    limiter = "max_cycle_weeks"
-                    window_end = datetime.datetime.now(tz=datetime.UTC).date().isoformat()
-                elif clamped_by_max_weeks:
-                    limiter = "max_weeks"
-                    window_end = datetime.datetime.now(tz=datetime.UTC).date().isoformat()
+                today = datetime.datetime.now(tz=datetime.UTC).date()
+                if clamped_by_max_weeks:
+                    # Steady-state: backlog caught up, fixed sliding window
+                    cutoff_date_obj = datetime.datetime.strptime(cutoff_date, "%Y-%m-%d").date()
+                    window_weeks = (today - cutoff_date_obj).days // 7
+                    logger.info(
+                        "Scanning latest {} weeks ({} to {})",
+                        window_weeks or cfg.max_cycle_weeks or 4,
+                        cutoff_date,
+                        today.isoformat(),
+                    )
                 else:
-                    limiter = "max_cycle_weeks"
-                    window_weeks = effective_cycle_weeks or cfg.max_cycle_weeks or 0
-                    window_end = (
-                        datetime.datetime.strptime(cutoff_date, "%Y-%m-%d").date()
-                        + datetime.timedelta(weeks=window_weeks)
-                    ).isoformat()
-                logger.info(
-                    "Scanning for games between {} and {} ({} is the active limiter, max_cycle_weeks={}, max_weeks={})",
-                    cutoff_date,
-                    window_end,
-                    limiter,
-                    cfg.max_cycle_weeks,
-                    cfg.max_weeks,
-                )
+                    # Backlog mode: retreating cutoff, show progress
+                    cutoff_date_obj = datetime.datetime.strptime(cutoff_date, "%Y-%m-%d").date()
+                    weeks_covered = (today - cutoff_date_obj).days / 7
+                    window_weeks = int(effective_cycle_weeks or cfg.max_cycle_weeks or 0)
+                    if window_weeks > 0:
+                        cycle_number = max(1, int(weeks_covered / window_weeks))
+                        max_weeks_val = cfg.max_weeks or 104
+                        total_cycles = (max_weeks_val + window_weeks - 1) // window_weeks
+                        remaining = total_cycles - cycle_number
+                        logger.info(
+                            "Backlog cycle {} — scanning {} to {} — ~{} cycles remaining",
+                            cycle_number,
+                            cutoff_date,
+                            today.isoformat(),
+                            remaining,
+                        )
+                    else:
+                        logger.info(
+                            "Scanning for games between {} and {}",
+                            cutoff_date,
+                            today.isoformat(),
+                        )
 
             browse_games = mc.scan_recent_games(
                 platform,

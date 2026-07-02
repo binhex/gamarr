@@ -82,8 +82,8 @@ class TestMaxCycleWeeks:
             logger.remove(sink_id)
 
         log_text = buf.getvalue()
-        assert "Scanning for games between" in log_text, (
-            "Expected a log message showing the browse window range, got: " + repr(log_text)
+        assert "Backlog cycle 1" in log_text, "Expected a log message showing the browse window range, got: " + repr(
+            log_text
         )
 
 
@@ -4729,15 +4729,13 @@ class TestScanWindowAdvancing:
 
         log_output = log_stream.getvalue()
 
-        # Find the "Scanning for games between" log message
-        assert "Scanning for games between" in log_output, f"Missing 'Scanning for games between' in:\n{log_output}"
+        # Find the "Scanning latest" log message (steady-state mode)
+        assert "Scanning latest" in log_output, f"Missing 'Scanning latest' in:\n{log_output}"
 
         # The active limiter should be max_cycle_weeks (4 weeks), not max_weeks.
         # Once the backlog is caught up (retreating cutoff hit the hard limit),
         # the scan window should be capped to max_cycle_weeks from today.
-        assert "max_cycle_weeks is the active limiter" in log_output, (
-            f"Expected max_cycle_weeks to be the active limiter, got:\n{log_output}"
-        )
+        assert "Scanning latest 4 weeks" in log_output, f"Missing 'Scanning latest 4 weeks' in:\n{log_output}"
 
         # Verify the cutoff_date passed to scan_recent_games is ~4 weeks
         # from today, not 104 weeks ago (the hard_cutoff).
@@ -4863,3 +4861,56 @@ class TestScanWindowAdvancing:
             assert cutoff == expected, (
                 f"Cycle 2, call {i}: expected cutoff_date={expected} (4w from today), got {cutoff}"
             )
+
+    def test_backlog_mode_logs_cycle_count(self, tmp_path: Path) -> None:
+        """Backlog mode shows cycle number and remaining count in the log."""
+        import io
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.database import Database
+        from gamarr.pipeline import run_acquisition
+
+        db_path = str(tmp_path / "test.db")
+
+        # No stored cutoff — fresh DB, starts at today - max_cycle_weeks (first cycle)
+        db = Database(db_path)
+        db.close()
+
+        from loguru import logger
+
+        log_stream = io.StringIO()
+        handler_id = logger.add(log_stream, format="{message}", level="INFO")
+
+        try:
+            with (
+                patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
+                patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+                patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+            ):
+                mock_source = MagicMock()
+                mock_source_cls.return_value = mock_source
+
+                mock_mc = MagicMock()
+                mock_mc.scan_recent_games.return_value = []
+                mock_mc_cls.return_value = mock_mc
+
+                mock_qbt = MagicMock()
+                mock_qbt.is_connected.return_value = True
+                mock_qbt_cls.return_value = mock_qbt
+
+                run_acquisition(
+                    platform="pc",
+                    db_path=db_path,
+                    qbt_host="localhost",
+                    qbt_port=8080,
+                    max_weeks=104,
+                    max_cycle_weeks=4,
+                )
+        finally:
+            logger.remove(handler_id)
+
+        log_output = log_stream.getvalue()
+
+        assert "Backlog cycle 1" in log_output, f"Missing 'Backlog cycle 1' in:\n{log_output}"
+        assert "~25 cycles remaining" in log_output, f"Missing '~25 cycles remaining' in:\n{log_output}"
+        assert "Scanning latest" not in log_output, f"Unexpected 'Scanning latest' in backlog mode:\n{log_output}"
