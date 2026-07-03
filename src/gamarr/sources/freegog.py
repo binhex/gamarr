@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 import requests
 from loguru import logger
 
-from gamarr.database import Database, SourceTitle
+from gamarr.database import Database
 
 if TYPE_CHECKING:
     import threading
@@ -235,24 +235,14 @@ class FreeGOGSource:
             )
             return False
 
-        # Atomically delete old row and insert new row in a single transaction.
-        # Uses db._session() directly (rather than store_source_title) to avoid
-        # a crash window between two separate commits.
-        with db._session() as session:
-            if entry["url"] in existing_urls:
-                session.query(SourceTitle).filter(
-                    SourceTitle.source == "freegog",
-                    SourceTitle.url == entry["url"],
-                ).delete()
-            session.add(
-                SourceTitle(
-                    source="freegog",
-                    title=entry["title"],
-                    url=entry["url"],
-                    magnet=magnet,
-                )
-            )
-            session.commit()
+        # Atomically delete old row and insert new row in a single transaction
+        # via upsert_source_title to avoid a crash window between two separate commits.
+        db.upsert_source_title(
+            source="freegog",
+            title=entry["title"],
+            url=entry["url"],
+            magnet=magnet,
+        )
         return True
 
     def _index_az_page(self, db: Database) -> None:

@@ -460,6 +460,34 @@ class Database:
             )
             session.commit()
 
+    def upsert_source_title(self, *, source: str, title: str, url: str, magnet: str | None) -> None:
+        """Insert or replace a source title entry atomically.
+
+        Deletes any existing row with the same (source, url), then inserts
+        the new row — all in a single transaction to avoid a crash window
+        between two separate commits.
+
+        Args:
+            source: Source identifier (e.g. "freegog").
+            title: Cleaned game title.
+            url: Full game page URL.
+            magnet: Magnet URI or None.
+        """
+        with self._session() as session:
+            session.query(SourceTitle).filter(
+                SourceTitle.source == source,
+                SourceTitle.url == url,
+            ).delete()
+            session.add(
+                SourceTitle(
+                    source=source,
+                    title=title,
+                    url=url,
+                    magnet=magnet,
+                )
+            )
+            session.commit()
+
     def rebuild_source_titles(self, source: str, titles: list[dict[str, str | None]]) -> None:
         with self._session() as session:
             session.query(SourceTitle).filter(SourceTitle.source == source).delete()

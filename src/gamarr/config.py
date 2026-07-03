@@ -154,7 +154,7 @@ class NotificationConfig(BaseModel):
 class DatabaseConfig(BaseModel):
     """Database retention and housekeeping settings."""
 
-    processed_expiry_days: int = 365
+    processed_expiry_days: int = 365  # NOTE: currently unused — no history-pruning mechanism exists yet
 
 
 class LibraryConfig(BaseModel):

@@ -1006,6 +1006,20 @@ def _should_process_by_age(game: Any, age_recheck_weeks: int | None) -> bool:
     return _is_older_than(release_date, days=age_recheck_weeks * 7)
 
 
+def _should_age_game(game: Any, age_recheck_weeks: int) -> bool:
+    """Return True if *game* meets all criteria for age-based removal.
+
+    A game must have been checked at least once, have a release date older
+    than *age_recheck_weeks*, AND have passed score verification.
+    """
+    return (
+        game.last_checked_at is not None
+        and game.release_date is not None
+        and game.score_checks_passed is True
+        and _is_older_than(game.release_date, days=age_recheck_weeks * 7)
+    )
+
+
 def _process_aged_games(
     db: Database,
     cfg: AcquisitionConfig,
@@ -1015,7 +1029,8 @@ def _process_aged_games(
     """Mark old verified pending games as processed.
 
     Queries all non-expired pending games that have been checked at
-    least once (``last_checked_at IS NOT NULL``) and whose
+    least once (``last_checked_at IS NOT NULL``), passed score
+    verification (``score_checks_passed IS TRUE``), and whose
     ``release_date`` is older than ``cfg.age_recheck_weeks``.
 
     These games are permanently recorded with ``result="Processed"``
@@ -1032,11 +1047,7 @@ def _process_aged_games(
     for game in pending:
         if is_cancelled(cancel_event):
             break
-        if game.last_checked_at is None:
-            continue
-        if not game.release_date:
-            continue
-        if not _is_older_than(game.release_date, days=cfg.age_recheck_weeks * 7):
+        if not _should_age_game(game, cfg.age_recheck_weeks):
             continue
 
         db.record_processed(
@@ -2058,6 +2069,9 @@ _SITEMAP_TIMEOUT = 30.0
 
 # Cache: URL → HTML <title> tag, populated by _default_magnet_fetcher
 # to avoid a second HTTP request for torrent rename.
+# Each entry is consumed (popped) by _deliver_match on the very next line
+# after magnet_fetcher returns — callers must honour this implicit cleanup
+# contract to prevent unbounded growth.
 _fitgirl_page_title_cache: dict[str, str | None] = {}
 
 

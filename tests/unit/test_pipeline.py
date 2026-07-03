@@ -4089,6 +4089,43 @@ class TestLogVerifyProgress:
 class TestProcessAgedGames:
     """Tests for _process_aged_games sweep function."""
 
+    def test_should_age_game_returns_false_when_not_checked(self) -> None:
+        """_should_age_game returns False when last_checked_at is None."""
+        from unittest.mock import MagicMock
+
+        from gamarr.pipeline import _should_age_game
+
+        game = MagicMock(last_checked_at=None, release_date="2010-01-01", score_checks_passed=True)
+        assert _should_age_game(game, age_recheck_weeks=52) is False
+
+    def test_should_age_game_returns_false_when_no_release_date(self) -> None:
+        """_should_age_game returns False when release_date is None."""
+        from unittest.mock import MagicMock
+
+        from gamarr.pipeline import _should_age_game
+
+        game = MagicMock(last_checked_at="2024-01-01", release_date=None, score_checks_passed=True)
+        assert _should_age_game(game, age_recheck_weeks=52) is False
+
+    def test_should_age_game_returns_false_when_scores_not_passed(self) -> None:
+        """_should_age_game returns False when score_checks_passed is not True."""
+        from unittest.mock import MagicMock
+
+        from gamarr.pipeline import _should_age_game
+
+        game = MagicMock(last_checked_at="2024-01-01", release_date="2010-01-01", score_checks_passed=False)
+        assert _should_age_game(game, age_recheck_weeks=52) is False
+
+    def test_should_age_game_returns_true_for_old_verified_game(self) -> None:
+        """_should_age_game returns True when all criteria are met."""
+        from unittest.mock import MagicMock
+
+        from gamarr.pipeline import _should_age_game
+
+        game = MagicMock(last_checked_at="2024-01-01", release_date="2010-01-01", score_checks_passed=True)
+        # 2010-01-01 is well over 52 weeks ago — should be True
+        assert _should_age_game(game, age_recheck_weeks=52) is True
+
     def test_process_aged_games_processes_old_verified_games(self, tmp_path: Path) -> None:
         """Old games with last_checked_at set should be processed."""
         import datetime
@@ -4114,6 +4151,7 @@ class TestProcessAgedGames:
             row = session.get(PendingGame, "old-checked")
             assert row is not None, "old-checked should exist"
             row.last_checked_at = past
+            row.score_checks_passed = True
             session.commit()
 
         db.record_pending(
@@ -4139,6 +4177,48 @@ class TestProcessAgedGames:
         assert db.is_pending("old-unchecked"), "Old unchecked game should remain"
         stats = db.get_stats()
         assert stats["total"] == 1, "One history record should exist"
+        db.close()
+
+    def test_process_aged_games_skips_failed_score_check(self, tmp_path: Path) -> None:
+        """Old games that were checked but failed score verification should NOT be aged out."""
+        import datetime
+
+        from gamarr.database import Database
+        from gamarr.pipeline import AcquisitionConfig, _process_aged_games
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        past = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(hours=1)).isoformat()
+
+        # Game that was checked but scores failed verification
+        db.record_pending(
+            slug="old-checked-failed",
+            game_title="Old Checked Failed",
+            platform="pc",
+            metascore=60.0,  # below typical threshold
+            user_score=5.0,
+            release_date="2010-01-01",
+            expires_at=expires,
+        )
+        with db._session() as session:
+            from gamarr.database import PendingGame
+
+            row = session.get(PendingGame, "old-checked-failed")
+            assert row is not None
+            row.last_checked_at = past
+            row.score_checks_passed = False
+            session.commit()
+
+        cfg = AcquisitionConfig(
+            min_metascore=75,
+            min_metascore_reviews=5,
+            min_user_score=7.5,
+            min_user_reviews=10,
+            age_recheck_weeks=52,
+        )
+        count = _process_aged_games(db, cfg, platform="pc")
+        assert count == 0, f"Expected 0 processed (scores failed), got {count}"
+        assert db.is_pending("old-checked-failed"), "Failed game should remain in queue"
         db.close()
 
     def test_process_aged_games_skips_recent_games(self, tmp_path: Path) -> None:
@@ -5042,14 +5122,10 @@ class TestScanWindowAdvancing:
         log_output = log_stream.getvalue()
 
         # Should be in backlog mode
-        assert "Backlog cycle" in log_output, (
-            f"Expected backlog mode, got:\n{log_output}"
-        )
+        assert "Backlog cycle" in log_output, f"Expected backlog mode, got:\n{log_output}"
 
         # Verify scan_recent_games was called with start_page matching the stored page
         assert mock_mc.scan_recent_games.call_count == 1
         start_page = mock_mc.scan_recent_games.call_args[1].get("start_page")
         assert start_page is not None, "start_page should be passed to scan_recent_games"
-        assert start_page == 380, (
-            f"Expected start_page=380 (stored browse page), got {start_page}"
-        )
+        assert start_page == 380, f"Expected start_page=380 (stored browse page), got {start_page}"

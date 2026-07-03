@@ -198,7 +198,7 @@ download_sites:
 
 | Key | Description | Default |
 | --- | ----------- | ------- |
-| `processed_expiry_days` | Delete processed history records older than this many days. | `365` |
+| `processed_expiry_days` | Delete processed history records older than this many days (currently unused — no automatic history pruning exists yet). | `365` |
 
 ### `library`
 
@@ -359,7 +359,7 @@ See the [genres section](#review_sitesmetacriticplatform_overridesplatform) for 
 **A:** Games leave the pending queue in only two ways:
 
 1. **Downloaded** — scores pass thresholds AND a matching torrent is found on FitGirl
-2. **Aged out** — `age_recheck_weeks` is set and the game's release date is old enough
+2. **Aged out** — `age_recheck_weeks` is set, the game's scores passed verification, AND the game's release date is old enough
 
 Games that are verified but **fail score thresholds**, or **pass but have no
 FitGirl match**, stay in the queue. They get re-verified each cycle because

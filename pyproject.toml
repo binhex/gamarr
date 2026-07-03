@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gamarr"
-version = "1.1.5"
+version = "1.1.6"
 description = "Metadata game downloader - torrent metadata harvester"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -85,15 +85,19 @@ warn_unused_ignores = true
 strict_equality = true
 mypy_path = "src"
 
-
-
-
-
-
-
-
-
-
 [[tool.mypy.overrides]]
 module = ["apscheduler", "apscheduler.*", "apprise", "qbittorrentapi"]
 ignore_missing_imports = true
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "pytest-cov>=7.1.0",
+    "pytest-mock>=3.15.1",
+    "pytest-crap @ git+https://github.com/binhex/pytest-crap.git@v0.3.1",
+    "types-requests>=2.31.0",
+    "types-pyyaml>=6.0.0",
+    "pre-commit",
+    "mypy",
+    "ruff"
+]
