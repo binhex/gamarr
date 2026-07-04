@@ -1437,6 +1437,7 @@ def _deliver_with_jit_verify(
     magnet_fetcher: Callable[[str], str | None],
     notifier: Any,
     best: dict[str, Any],
+    source_name: str = "fitgirl",
 ) -> dict[str, Any] | None:
     """Verify scores just-in-time, then deliver the match.
 
@@ -1483,6 +1484,7 @@ def _deliver_with_jit_verify(
         game_genres=game_genres,
         game_must_play=game_must_play,
         game_release_date=game_release_date,
+        source_name=source_name,
     )
 
 
@@ -1592,6 +1594,7 @@ def _deliver_match(
     game_genres: list[str] | None = None,
     game_must_play: bool | None = None,
     game_release_date: str | None = None,
+    source_name: str = "fitgirl",
 ) -> dict[str, Any]:
     """Deliver a matched pending game to qBittorrent and emit notifications.
 
@@ -1694,6 +1697,8 @@ def _deliver_match(
         must_play=game_must_play,
         release_date=game_release_date,
         add_paused=qbt.add_paused,
+        source_name=source_name,
+        source_url=best["url"],
     )
     return record_result
 
@@ -1820,6 +1825,7 @@ def _process_single_pending_match(
             magnet_fetcher=magnet_fetcher,
             notifier=notifier,
             best=best,
+            source_name=source_name,
         )
         if result_dict is not None:
             return result_dict

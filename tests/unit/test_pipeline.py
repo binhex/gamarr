@@ -1650,6 +1650,8 @@ class TestMetacriticBrowse:
             add_paused=False,
             must_play=None,
             release_date=None,
+            source_name="fitgirl",
+            source_url="https://fitgirl-repacks.site/elden-ring/",
         )
         db.close()
 
