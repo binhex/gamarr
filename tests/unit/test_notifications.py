@@ -380,6 +380,22 @@ class TestMarkdownClassify:
         assert Notifier._maybe_upgrade_ntfy(nfy_val) == nfy_val
 
 
+class TestFormatSourceName:
+    """Tests for _format_source_name static helper."""
+
+    def test_fitgirl_returns_fitgirl(self) -> None:
+        """'fitgirl' maps to 'FitGirl'."""
+        assert Notifier._format_source_name("fitgirl") == "FitGirl"
+
+    def test_freegog_returns_freegog(self) -> None:
+        """'freegog' maps to 'FreeGOG'."""
+        assert Notifier._format_source_name("freegog") == "FreeGOG"
+
+    def test_unknown_source_uses_title_case(self) -> None:
+        """Unknown source names fall back to str.title()."""
+        assert Notifier._format_source_name("some_source") == "Some_Source"
+
+
 class TestSourceLink:
     """Tests for download-source link in notification body."""
 
@@ -403,7 +419,7 @@ class TestSourceLink:
                 source_url="https://fitgirl-repacks.site/pragmata",
             )
             body = mock_apobj.notify.call_args[1]["body"]
-            assert "Fitgirl: https://fitgirl-repacks.site/pragmata" in body
+            assert "FitGirl: https://fitgirl-repacks.site/pragmata" in body
 
     def test_source_link_freegog_appears_in_body(self) -> None:
         """source_name='freegog' \u2192 FreeGog label."""
@@ -425,7 +441,7 @@ class TestSourceLink:
                 source_url="https://freegogpcgames.com/pragmata",
             )
             body = mock_apobj.notify.call_args[1]["body"]
-            assert "Freegog: https://freegogpcgames.com/pragmata" in body
+            assert "FreeGOG: https://freegogpcgames.com/pragmata" in body
 
     def test_source_link_omitted_when_none(self) -> None:
         """When source_name and source_url are None, no source line in body."""
@@ -447,8 +463,8 @@ class TestSourceLink:
                 source_url=None,
             )
             body = mock_apobj.notify.call_args[1]["body"]
-            assert "Fitgirl" not in body
-            assert "Freegog" not in body
+            assert "FitGirl" not in body
+            assert "FreeGOG" not in body
 
     def test_source_link_omitted_when_only_name(self) -> None:
         """When only source_name provided (no URL), line is omitted."""
@@ -470,7 +486,7 @@ class TestSourceLink:
                 source_url=None,
             )
             body = mock_apobj.notify.call_args[1]["body"]
-            assert "Fitgirl" not in body
+            assert "FitGirl" not in body
 
     def test_source_link_ordering_metacritic_source_youtube(self) -> None:
         """Source link appears between Metacritic and YouTube links in body."""
@@ -493,7 +509,7 @@ class TestSourceLink:
             )
             body = mock_apobj.notify.call_args[1]["body"]
             metacritic_pos = body.index("Metacritic:")
-            source_pos = body.index("Fitgirl:")
+            source_pos = body.index("FitGirl:")
             youtube_pos = body.index("YouTube:")
             assert metacritic_pos < source_pos < youtube_pos
 
@@ -522,9 +538,14 @@ class TestMarkdownNotification:
             )
             body = mock_md.notify.call_args[1]["body"]
             assert "[Metacritic](https://www.metacritic.com/game/pragmata)" in body
-            assert "[Fitgirl](https://fitgirl-repacks.site/pragmata)" in body
+            assert "[FitGirl](https://fitgirl-repacks.site/pragmata)" in body
             assert "[YouTube](https://www.youtube.com/results?search_query=PRAGMATA+review)" in body
             assert "Metacritic: http" not in body  # no bare text link for metacritic
+            assert "**Status:** Downloading" in body
+            assert "**Critic Score:**" in body
+            assert "**User Score:**" in body
+            assert "**Links:** " in body
+            assert " | " in body  # pipe-separated links
 
     def test_markdown_omits_source_when_none(self) -> None:
         """Markdown mode omits source line when source_name is None."""
@@ -544,8 +565,88 @@ class TestMarkdownNotification:
                 add_paused=False,
             )
             body = mock_md.notify.call_args[1]["body"]
-            assert "Fitgirl" not in body
-            assert "Freegog" not in body
+            assert "FitGirl" not in body
+            assert "FreeGOG" not in body
+
+    def test_markdown_bold_labels_with_optional_fields(self) -> None:
+        """Optional fields (Must Play, Genre, Release) also have bold labels in markdown."""
+        mock_md = MagicMock()
+
+        def _mock_init(urls: list[str]) -> MagicMock | None:
+            return mock_md if urls else None
+
+        with patch.object(Notifier, "_init_apprise", side_effect=_mock_init):
+            notifier = Notifier(apprise_urls=["discord://webhook/token"])
+            notifier.send_download_notification(
+                title="PRAGMATA",
+                platform="pc",
+                metascore=85.0,
+                user_score=8.8,
+                slug="pragmata",
+                add_paused=False,
+                genres=["Action", "Adventure"],
+                must_play=False,
+                release_date="2026-06-15",
+            )
+            body = mock_md.notify.call_args[1]["body"]
+            assert "**Must Play:** No" in body
+            assert "**Genre:** Action, Adventure" in body
+            assert "**Release:** 2026-06-15" in body
+
+    def test_markdown_bold_labels_not_in_text_mode(self) -> None:
+        """Text mode (non-markdown) should NOT have **bold** labels."""
+        mock_text = MagicMock()
+
+        def _mock_init(urls: list[str]) -> MagicMock | None:
+            return mock_text if urls else None
+
+        with patch.object(Notifier, "_init_apprise", side_effect=_mock_init):
+            notifier = Notifier(apprise_urls=["json://localhost"])
+            notifier.send_download_notification(
+                title="PRAGMATA",
+                platform="pc",
+                metascore=85.0,
+                user_score=8.8,
+                slug="pragmata",
+                add_paused=False,
+                source_name="fitgirl",
+                source_url="https://fitgirl-repacks.site/pragmata",
+            )
+            body = mock_text.notify.call_args[1]["body"]
+            # No bold asterisks in text mode
+            assert "**Status:**" not in body
+            assert "**Critic Score:**" not in body
+            assert "**Links:**" not in body
+
+    def test_markdown_pipe_separated_links_with_freegog(self) -> None:
+        """Markdown links with FreeGOG source appear pipe-separated with correct label."""
+        mock_md = MagicMock()
+
+        def _mock_init(urls: list[str]) -> MagicMock | None:
+            return mock_md if urls else None
+
+        with patch.object(Notifier, "_init_apprise", side_effect=_mock_init):
+            notifier = Notifier(apprise_urls=["discord://webhook/token"])
+            notifier.send_download_notification(
+                title="PRAGMATA",
+                platform="pc",
+                metascore=85.0,
+                user_score=8.8,
+                slug="pragmata",
+                add_paused=False,
+                source_name="freegog",
+                source_url="https://freegogpcgames.com/pragmata",
+            )
+            body = mock_md.notify.call_args[1]["body"]
+            # Verify the pipe-separated links line exists
+            assert "**Links:** " in body
+            assert "[FreeGOG]" in body
+            assert " | " in body
+            # Verify it's on a single line
+            links_line = [line for line in body.split("\n") if "**Links:**" in line][0]
+            assert "[Metacritic]" in links_line
+            assert "[FreeGOG]" in links_line
+            assert "[YouTube]" in links_line
 
     def test_ntfy_url_gets_format_upgraded(self) -> None:
         """ntfy URL without format=markdown gets it appended on init."""

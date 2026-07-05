@@ -55,9 +55,13 @@ class Notifier:
             return None
 
     @staticmethod
-    def _format_score_line(label: str, score: float | None, reviews: int | None) -> str:
-        """Format a score line, optionally appending review count in brackets."""
-        line = f"{label}: {'N/A' if score is None else score}"
+    def _format_score_line(label: str, score: float | None, reviews: int | None, *, use_markdown: bool = False) -> str:
+        """Format a score line, optionally appending review count in brackets.
+
+        When *use_markdown* is True the label is wrapped in ``**`` for bold.
+        """
+        bold_label = f"**{label}:**" if use_markdown else f"{label}:"
+        line = f"{bold_label} {'N/A' if score is None else score}"
         if score is not None and reviews is not None:
             line += f" ({reviews} reviews)"
         return line
@@ -113,6 +117,22 @@ class Notifier:
         if use_markdown:
             return f"[{label}]({url})"
         return f"{label}: {url}"
+
+    @staticmethod
+    def _format_source_name(source_name: str) -> str:
+        """Format a source identifier for display in notification links.
+
+        Args:
+            source_name: Raw source identifier (e.g. ``"fitgirl"``, ``"freegog"``).
+
+        Returns:
+            Properly capitalised display name (e.g. ``"FitGirl"``, ``"FreeGOG"``).
+        """
+        mapping = {
+            "fitgirl": "FitGirl",
+            "freegog": "FreeGOG",
+        }
+        return mapping.get(source_name, source_name.title())
 
     def send_download_notification(
         self,
@@ -177,14 +197,21 @@ class Notifier:
         must_play: bool | None,
         genres: list[str] | None,
         release_date: str | None,
+        use_markdown: bool = False,
     ) -> None:
-        """Append optional metadata fields to the body parts list."""
+        """Append optional metadata fields to the body parts list.
+
+        When *use_markdown* is True labels are wrapped in ``**`` for bold.
+        """
         if must_play is not None:
-            parts.append(f"Must Play: {'Yes' if must_play else 'No'}")
+            label = "**Must Play:**" if use_markdown else "Must Play:"
+            parts.append(f"{label} {'Yes' if must_play else 'No'}")
         if genres:
-            parts.append(f"Genre: {', '.join(genres)}")
+            label = "**Genre:**" if use_markdown else "Genre:"
+            parts.append(f"{label} {', '.join(genres)}")
         if release_date:
-            parts.append(f"Release: {release_date}")
+            label = "**Release:**" if use_markdown else "Release:"
+            parts.append(f"{label} {release_date}")
 
     @staticmethod
     def _format_download_body(
@@ -205,21 +232,60 @@ class Notifier:
         use_markdown: bool = False,
     ) -> str:
         """Build the notification body string for a game download."""
-        link = Notifier._format_link
         mk = use_markdown
-        parts = [f"Status: {'Paused' if add_paused else 'Downloading'}"]
+        parts = []
+
+        # Status line with optional bold label
+        status_label = "**Status:**" if mk else "Status:"
+        parts.append(f"{status_label} {'Paused' if add_paused else 'Downloading'}")
+
+        # Score lines with optional bold labels
         parts.extend(
             [
-                Notifier._format_score_line("Critic Score", metascore, metascore_reviews),
-                Notifier._format_score_line("User Score", user_score, user_reviews),
+                Notifier._format_score_line("Critic Score", metascore, metascore_reviews, use_markdown=mk),
+                Notifier._format_score_line("User Score", user_score, user_reviews, use_markdown=mk),
             ]
         )
-        Notifier._append_optional_fields(parts, must_play=must_play, genres=genres, release_date=release_date)
-        parts.append(link("Metacritic", f"https://www.metacritic.com/game/{slug or 'unknown'}", use_markdown=mk))
-        if source_name and source_url:
-            parts.append(link(source_name.title(), source_url, use_markdown=mk))
-        parts.append(link("YouTube", Notifier._youtube_search_url(title), use_markdown=mk))
+
+        # Optional fields with optional bold labels
+        Notifier._append_optional_fields(
+            parts,
+            must_play=must_play,
+            genres=genres,
+            release_date=release_date,
+            use_markdown=mk,
+        )
+
+        # Link formatting — mode-dependent
+        Notifier._append_link_items(
+            parts, slug=slug, title=title, source_name=source_name, source_url=source_url, use_markdown=mk
+        )
+
         return "\n".join(parts)
+
+    @staticmethod
+    def _append_link_items(
+        parts: list[str],
+        *,
+        slug: str,
+        title: str,
+        source_name: str | None,
+        source_url: str | None,
+        use_markdown: bool,
+    ) -> None:
+        """Build link tuples and append them to *parts* as formatted lines."""
+        items: list[tuple[str, str]] = [
+            ("Metacritic", f"https://www.metacritic.com/game/{slug or 'unknown'}"),
+        ]
+        if source_name and source_url:
+            items.append((Notifier._format_source_name(source_name), source_url))
+        items.append(("YouTube", Notifier._youtube_search_url(title)))
+
+        if use_markdown:
+            parts.append("**Links:** " + " | ".join(f"[{label}]({url})" for label, url in items))
+        else:
+            for label, url in items:
+                parts.append(Notifier._format_link(label, url, use_markdown=False))
 
     def send_failure_notification(self, title: str, reason: str) -> None:
         if not self._on_failure:
