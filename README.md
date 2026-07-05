@@ -15,8 +15,8 @@ Sources are checked in config-defined priority order.
   This avoids hundreds of slow HTTP requests while keeping score accuracy.
 - **Genre-based rejection** — exclude games by genre using case-insensitive
   substring matching (e.g. `["RPG"]` rejects "Action RPG", "JRPG", etc.).
-- **Keyword-based title filtering** — reject games whose titles contain
-  specific keywords.
+- **Keyword-based filtering** — reject games whose titles or FitGirl page
+  description contain specific keywords.
 - **Relative date cutoff** — set a look-back window in weeks instead of
   maintaining a static date (e.g. `max_weeks: 52` for roughly one year).
 - **Re-verification with expiry** — games whose real Metacritic detail
@@ -149,7 +149,7 @@ download_sites:
 | `enabled` | Enable or disable this source. | `true` |
 | `platform` | Target platform for matching. | `pc` |
 | `cache_pages_hours` | How long to cache the source index before re-fetching. | `6` |
-| `reject_keywords` | Reject titles containing any of these keywords (case-insensitive). | `[]` |
+| `reject_keywords` | Reject games whose FitGirl page title or description contains any of these keywords (case-insensitive). | `[]` |
 | `max_queue_days` | How many days a game stays in the pending queue *after* its scores are verified (the source-matching phase). `0` = indefinite pending (no expiry). | `60` |
 
 ### `review_sites.metacritic`

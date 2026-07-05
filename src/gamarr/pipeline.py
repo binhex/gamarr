@@ -1713,15 +1713,33 @@ def _check_reject_keywords(
     """Check whether a match should be skipped due to rejected keywords.
 
     Returns True if the match should be skipped, keeping the game
-    pending for the next cycle.  Fetches the HTML <title> tag and
-    checks it against *reject_keywords*; falls back to the stored
-    title when the page cannot be fetched.
+    pending for the next cycle.  Fetches the FitGirl HTML page and
+    checks the **article body** first (most descriptive), then the
+    HTML ``<title>`` tag, against *reject_keywords*.  Falls back to
+    the stored sitemap title when the page cannot be fetched.
+
+    The check is deliberately scoped to the ``<article>`` element to
+    exclude sidebar navigation (which contains "Hypervisor" links on
+    every page) and the comments section (rogue comments should never
+    block a download).
     """
     if not reject_keywords:
         return False
 
-    # Fetch the page title for the most accurate check
-    page_title = _fetch_fitgirl_page_title(best["url"])
+    # Single HTTP request for both title and article body
+    page_title, article_text = _fetch_fitgirl_page_content(best["url"])
+
+    if page_title is None and article_text is None:
+        return _check_sitemap_title_fallback(db, best, game_title, game_slug, reject_keywords)
+
+    if article_text and _title_contains_keywords(article_text, reject_keywords):
+        logger.info(
+            "Skipping match for '{}' \u2014 FitGirl article body contains rejected keyword",
+            game_title,
+        )
+        db.touch_pending(game_slug)
+        return True
+
     if page_title and _title_contains_keywords(page_title, reject_keywords):
         logger.info(
             "Skipping match for '{}' \u2014 FitGirl page title '{}' contains rejected keyword",
@@ -1730,19 +1748,34 @@ def _check_reject_keywords(
         )
         db.touch_pending(game_slug)
         return True
-    if page_title is None:
-        logger.warning(
-            "Could not fetch page title for '{}' \u2014 checking sitemap title instead",
-            best["url"],
+
+    return False
+
+
+def _check_sitemap_title_fallback(
+    db: Database,
+    best: dict[str, Any],
+    game_title: str,
+    game_slug: str,
+    reject_keywords: list[str],
+) -> bool:
+    """Check the sitemap title against reject keywords as a fallback.
+
+    Called when the FitGirl page could not be fetched.  Logs a warning
+    and inspects the pre-indexed sitemap title.
+    """
+    logger.warning(
+        "Could not fetch page content for '{}' \u2014 checking sitemap title instead",
+        best["url"],
+    )
+    if _title_contains_keywords(best["title"], reject_keywords):
+        logger.info(
+            "Skipping match for '{}' \u2014 sitemap title '{}' contains rejected keyword",
+            game_title,
+            best["title"],
         )
-        if _title_contains_keywords(best["title"], reject_keywords):
-            logger.info(
-                "Skipping match for '{}' \u2014 sitemap title '{}' contains rejected keyword",
-                game_title,
-                best["title"],
-            )
-            db.touch_pending(game_slug)
-            return True
+        db.touch_pending(game_slug)
+        return True
     return False
 
 
@@ -2081,16 +2114,20 @@ _SITEMAP_TIMEOUT = 30.0
 _fitgirl_page_title_cache: dict[str, str | None] = {}
 
 
-def _fetch_fitgirl_page_title(url: str) -> str | None:
-    """Fetch a FitGirl repack page and extract its HTML <title> tag.
+def _fetch_fitgirl_page_content(url: str) -> tuple[str | None, str | None]:
+    """Fetch a FitGirl repack page and extract its <title> and <article> text.
 
-    Returns the full page title (e.g. "Crimson Desert [FitGirl HV Repack]")
-    or None if the page could not be fetched.
+    Returns ``(title, article_text)`` where both are ``None`` if the page
+    could not be fetched or the tag is missing.  The article text has HTML
+    tags stripped and whitespace collapsed.
+
+    Returns:
+        A ``(title, article_text)`` tuple.
     """
     try:
         # Only fetch from FitGirl (uses self-signed cert — verify=False is intentional)
         if not url.startswith("https://fitgirl-repacks.site"):
-            return None
+            return None, None
         resp = requests.get(
             url,
             headers={"User-Agent": _USER_AGENT},
@@ -2099,12 +2136,33 @@ def _fetch_fitgirl_page_title(url: str) -> str | None:
         )
         resp.raise_for_status()
     except requests.RequestException:
-        return None
+        return None, None
+
+    html = resp.text
     # Extract <title> tag content
-    match = re.search(r"<title[^>]*>(.*?)</title>", resp.text, re.IGNORECASE | re.DOTALL)
+    title: str | None = None
+    match = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
     if match:
-        return match.group(1).strip()
-    return None
+        title = match.group(1).strip()
+
+    # Extract <article> text content (excludes sidebar, nav, comments)
+    article_text: str | None = None
+    article_match = re.search(r"<article[^>]*>(.*?)</article>", html, re.IGNORECASE | re.DOTALL)
+    if article_match:
+        article_text = re.sub(r"<[^>]+>", " ", article_match.group(1))
+        article_text = re.sub(r"\s+", " ", article_text).strip()
+
+    return title, article_text
+
+
+def _fetch_fitgirl_page_title(url: str) -> str | None:
+    """Fetch a FitGirl repack page and extract its HTML <title> tag.
+
+    Returns the full page title (e.g. "Crimson Desert [FitGirl HV Repack]")
+    or None if the page could not be fetched.
+    """
+    title, _ = _fetch_fitgirl_page_content(url)
+    return title
 
 
 def _default_magnet_fetcher(url: str) -> str | None:

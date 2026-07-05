@@ -1409,6 +1409,137 @@ class TestMetacriticBrowse:
             assert db.is_pending("hv-game"), "Should remain pending"
             db.close()
 
+    def test_reject_keywords_article_body_contains_keyword(self, tmp_path: Path) -> None:
+        """When <title> is clean but <article> body contains reject keyword, reject the game."""
+        import datetime
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _process_single_pending_match
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="game-with-body-keyword",
+            game_title="Game With Body Keyword",
+            platform="pc",
+            metascore=85.0,
+            user_score=8.0,
+            expires_at=expires,
+        )
+        db.update_pending_scores(slug="game-with-body-keyword", metascore=85.0, user_score=8.0)
+        db.rebuild_source_titles(
+            "fitgirl",
+            [{"title": "Game With Body Keyword", "url": "https://fitgirl-repacks.site/game-with-body-keyword/"}],
+        )
+
+        # Title is clean, but article body contains "Hypervisor"
+        html = (
+            "<html><head><title>Game With Body Keyword [FitGirl Repack]</title></head>"
+            "<body>"
+            "<article>"
+            "Hypervisor Bypass, Lossless Repack Game With Body Keyword"
+            "</article>"
+            "</body></html>"
+        )
+
+        with patch("gamarr.pipeline.requests.get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.text = html
+            mock_resp.raise_for_status.return_value = None
+            mock_get.return_value = mock_resp
+
+            result = _process_single_pending_match(
+                db,
+                mc=None,
+                thresholds=None,
+                qbt=None,
+                magnet_fetcher=None,
+                notifier=None,
+                library=None,
+                can_deliver=False,
+                game_title="Game With Body Keyword",
+                game_slug="game-with-body-keyword",
+                game_platform="pc",
+                game_metascore=85.0,
+                game_metascore_reviews=100,
+                game_user_score=8.0,
+                game_user_reviews=50,
+                game_release_date=None,
+                reject_keywords=["Hypervisor"],
+            )
+            # SHOULD be rejected because article body contains "Hypervisor"
+            assert result is None, "Game should be rejected \u2014 article body contains Hypervisor"
+            assert db.is_pending("game-with-body-keyword"), "Should remain pending"
+            db.close()
+
+    def test_reject_keywords_ignores_comments_section(self, tmp_path: Path) -> None:
+        """When keyword only appears in comments (outside <article>), do NOT reject."""
+        import datetime
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _process_single_pending_match
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="clean-game",
+            game_title="Clean Game",
+            platform="pc",
+            metascore=85.0,
+            user_score=8.0,
+            expires_at=expires,
+        )
+        db.update_pending_scores(slug="clean-game", metascore=85.0, user_score=8.0)
+        db.rebuild_source_titles(
+            "fitgirl",
+            [{"title": "Clean Game", "url": "https://fitgirl-repacks.site/clean-game/"}],
+        )
+
+        mock_qbt = MagicMock()
+        mock_qbt.add_torrent.return_value = "gamarr-tag"
+
+        # Title is clean, article is clean, but COMMENTS after </article> contain "hypervisor"
+        html = (
+            "<html><head><title>Clean Game [FitGirl Repack]</title></head>"
+            "<body>"
+            "<article>Lossless Repack Clean Game</article>"
+            '<div id="comments" class="comments-area">'
+            '<div class="comment">User said: this game needs hypervisor bypass</div>'
+            "</div>"
+            "</body></html>"
+        )
+
+        with patch("gamarr.pipeline.requests.get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.text = html
+            mock_resp.raise_for_status.return_value = None
+            mock_get.return_value = mock_resp
+
+            result = _process_single_pending_match(
+                db,
+                mc=None,
+                thresholds=None,
+                qbt=mock_qbt,
+                magnet_fetcher=MagicMock(return_value="magnet:?xt=urn:btih:abc"),
+                notifier=None,
+                library=None,
+                can_deliver=True,
+                game_title="Clean Game",
+                game_slug="clean-game",
+                game_platform="pc",
+                game_metascore=85.0,
+                game_metascore_reviews=100,
+                game_user_score=8.0,
+                game_user_reviews=50,
+                game_release_date=None,
+                reject_keywords=["hypervisor"],
+            )
+            # Should NOT be rejected \u2014 keyword only in comments, outside <article>
+            assert result is not None, "Game should proceed \u2014 keyword only in comments section"
+            db.close()
+
     def test_match_pending_against_source(self, tmp_path: Path) -> None:
         import datetime
 
