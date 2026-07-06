@@ -417,6 +417,25 @@ class TestEscapeOr:
         assert _escape_or(None, "N/A") == "N/A"
 
 
+class TestSourceDisplay:
+    """_source_display helper for readable source names in log output."""
+
+    def test_source_display_fitgirl(self) -> None:
+        from gamarr.pipeline import _source_display
+
+        assert _source_display("fitgirl") == "FitGirl"
+
+    def test_source_display_freegog(self) -> None:
+        from gamarr.pipeline import _source_display
+
+        assert _source_display("freegog") == "FreeGOG"
+
+    def test_source_display_unknown_falls_back_to_title(self) -> None:
+        from gamarr.pipeline import _source_display
+
+        assert _source_display("steam") == "Steam"
+
+
 class TestMetacriticBrowse:
     """Metacritic browse discovery phase."""
 
@@ -2468,6 +2487,60 @@ class TestRunAcquisitionMetacritic:
         )
         # Belt-and-suspenders: sitemap should be called exactly once.
         mock_source.fetch_sitemap.assert_called_once()
+
+
+class TestPhaseBannerLogging:
+    """Phase banners must use logger.opt(colors=True) to avoid raw markup tags."""
+
+    def test_phase_banner_does_not_leak_raw_markup_tags(self, tmp_path: Path) -> None:
+        """Run acquisition and verify phase banners don't have raw <color> tags."""
+        import io
+        from unittest.mock import MagicMock, patch
+
+        from loguru import logger
+
+        from gamarr.pipeline import run_acquisition
+
+        log_stream = io.StringIO()
+        handler_id = logger.add(log_stream, format="{message}", level="INFO")
+
+        try:
+            with (
+                patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
+                patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+                patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+            ):
+                mock_source = MagicMock()
+                mock_source_cls.return_value = mock_source
+
+                mock_mc = MagicMock()
+                mock_mc.scan_recent_games.return_value = []
+                mock_mc_cls.return_value = mock_mc
+
+                mock_qbt = MagicMock()
+                mock_qbt.is_connected.return_value = True
+                mock_qbt_cls.return_value = mock_qbt
+
+                run_acquisition(
+                    platform="pc",
+                    qbt_host="localhost",
+                    qbt_port=8080,
+                )
+        finally:
+            logger.remove(handler_id)
+
+        log_output = log_stream.getvalue()
+
+        # Phase 1 banner fires when Metacritic returns empty.
+        # Verify no raw colour markup tags leak into output.
+        assert "<yellow>" not in log_output, f"Raw yellow markup leaked:\n{log_output}"
+        assert "<cyan>" not in log_output, f"Raw cyan markup leaked:\n{log_output}"
+        assert "<light-red>" not in log_output, f"Raw light-red markup leaked:\n{log_output}"
+        assert "<magenta>" not in log_output, f"Raw magenta markup leaked:\n{log_output}"
+        assert "<blue>" not in log_output, f"Raw blue markup leaked:\n{log_output}"
+        assert "</>" not in log_output, f"Raw close-tag leaked into log output:\n{log_output}"
+        # The phase banner text should appear (cleaned of markup)
+        assert "Phase 1/5" in log_output, f"Phase 1 banner missing from log output:\n{log_output}"
 
 
 class TestVerifyPendingScoresEdgeCases:

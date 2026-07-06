@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 from datetime import UTC
 from typing import TYPE_CHECKING
 
@@ -198,6 +199,7 @@ class TestPendingGame:
 
     def test_insert_and_retrieve(self, tmp_path: Path) -> None:
         db = Database(str(tmp_path / "test.db"))
+        future = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
         db.record_pending(
             slug="elden-ring",
             game_title="Elden Ring",
@@ -208,7 +210,7 @@ class TestPendingGame:
             user_reviews=5000,
             genres=["Action", "RPG"],
             release_date="2022-02-25",
-            expires_at="2026-07-05T00:00:00",
+            expires_at=future,
         )
         pending = db.get_pending(platform="pc")
         assert len(pending) == 1
@@ -244,17 +246,18 @@ class TestPendingGame:
     def test_record_pending_duplicate_slug(self, tmp_path: Path) -> None:
         """Inserting the same slug twice should be a no-op."""
         db = Database(str(tmp_path / "test.db"))
+        future = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
         db.record_pending(
             slug="test-game",
             game_title="Original",
             platform="pc",
-            expires_at="2026-07-05T00:00:00",
+            expires_at=future,
         )
         db.record_pending(
             slug="test-game",
             game_title="Duplicate",
             platform="pc",
-            expires_at="2026-07-05T00:00:00",
+            expires_at=future,
         )
         pending = db.get_pending()
         assert len(pending) == 1

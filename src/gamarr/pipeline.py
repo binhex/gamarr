@@ -523,14 +523,14 @@ def run_acquisition(
                 sources_built.append((source_entry, source))
 
                 if source_entry.name.casefold() == "freegog":
-                    logger.info("--- Phase 2/5: Indexing FreeGOG ---")
+                    logger.opt(colors=True).info("<cyan>━━━ Phase 2/5: Indexing FreeGOG ━━━</>")
                 elif source_entry.name.casefold() == "fitgirl":
-                    logger.info("--- Phase 3/5: Indexing FitGirl ---")
+                    logger.opt(colors=True).info("<light-red>━━━ Phase 3/5: Indexing FitGirl ━━━</>")
 
                 source.fetch_sitemap(db, cancel_event=cancel_event)
 
             # Phase 4: Match pending games against all sources
-            logger.info("--- Phase 4/5: Matching games to download sources ---")
+            logger.opt(colors=True).info("<magenta>━━━ Phase 4/5: Matching games to download sources ━━━</>")
             for source_entry, _source in sources_built:
                 source_matched = _match_pending_games(
                     db,
@@ -545,9 +545,9 @@ def run_acquisition(
                 )
                 if source_matched:
                     matched.extend(source_matched)
-                    logger.info("{} queued games found on {}", len(source_matched), source_entry.name)
+                    logger.info("{} queued games found on {}", len(source_matched), _source_display(source_entry.name))
 
-        logger.info("--- Phase 5/5: Delivering to qBittorrent ---")
+        logger.opt(colors=True).info("<blue>━━━ Phase 5/5: Delivering to qBittorrent ━━━</>")
         if matched:
             logger.info("Match summary: {} game(s) matched across all sources", len(matched))
         else:
@@ -562,7 +562,7 @@ def run_acquisition(
 
         return matched
 
-    logger.info("--- Phase 1/5: Discovering games on Metacritic ---")
+    logger.opt(colors=True).info("<yellow>━━━ Phase 1/5: Discovering games on Metacritic ━━━</>")
     try:
         # Metacritic-first acquisition: discover games via Metacritic browse,
         # then match against each configured source, and deliver to qBittorrent.
@@ -632,6 +632,14 @@ def _title_matches_reject(title: str, reject_title: list[str] | None) -> bool:
         return False
     title_lower = title.lower()
     return any(term.lower() in title_lower for term in reject_title)
+
+
+_SOURCE_DISPLAY: dict[str, str] = {"fitgirl": "FitGirl", "freegog": "FreeGOG"}
+
+
+def _source_display(name: str) -> str:
+    """Return the display-cased form of a source name."""
+    return _SOURCE_DISPLAY.get(name, name.title())
 
 
 def _game_passes_thresholds(game: dict[str, Any], thresholds: dict[str, Any]) -> bool:
@@ -1840,14 +1848,14 @@ def _process_single_pending_match(
         logger.info(
             "'{}' passed Metacritic checks but has no {} match \u2014 staying in queue",
             game_title,
-            source_name,
+            _source_display(source_name),
         )
         return None
 
     best = matches[0]
     logger.info(
         "{} match: '{}' \u2192 '{}' ({})",
-        source_name.title(),
+        _source_display(source_name),
         game_title,
         best["title"],
         best["url"],
@@ -1990,7 +1998,7 @@ def _record_match_only(
         metascore=game_metascore,
         user_score=game_user_score,
         result="Passed",
-        result_details=f"Matched on {source_name}: {best['url']}",
+        result_details=f"Matched on {_source_display(source_name)}: {best['url']}",
     )
     record_result["slug"] = game_slug
     db.remove_pending(game_slug)
