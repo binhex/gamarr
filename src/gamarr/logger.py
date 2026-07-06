@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import TYPE_CHECKING
 
@@ -9,6 +10,27 @@ from loguru import logger as _logger
 
 if TYPE_CHECKING:
     import loguru
+
+
+class InterceptHandler(logging.Handler):
+    """Bridge between Python's standard logging and Loguru.
+
+    APScheduler uses Python's ``logging.getLogger('apscheduler')``
+    internally. Without this handler, those messages fall through
+    to ``logging.lastResort`` which prints raw to stderr, bypassing
+    Loguru's format entirely.
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """Forward a standard logging record to Loguru."""
+        try:
+            level: str | int = _logger.level(record.levelname).name
+        except ValueError:
+            level = record.levelno
+        _logger.opt(depth=6, exception=record.exc_info).log(
+            level,
+            record.getMessage(),
+        )
 
 
 def create_logger(
@@ -51,5 +73,13 @@ def create_logger(
             backtrace=False,
             diagnose=False,
         )
+
+    # Intercept APScheduler's Python logging so its internal messages
+    # (e.g. "maximum number of running instances reached") go through
+    # Loguru's format instead of falling through to logging.lastResort.
+    aps_logger = logging.getLogger("apscheduler")
+    aps_logger.handlers[:] = []
+    aps_logger.addHandler(InterceptHandler())
+    aps_logger.propagate = False
 
     return _logger
