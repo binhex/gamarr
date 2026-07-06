@@ -253,7 +253,11 @@ def run_acquisition(
             # max_weeks is the absolute hard cutoff.
             cutoff_date: str | None = None
             effective_cycle_weeks = cfg.max_cycle_weeks
-            browse_start_page = 1
+            # Start from the last known browse page so each backlog cycle
+            # scans forward from where the previous cycle stopped, instead
+            # of re-traversing already-known pages from the beginning.
+            # When no stored page exists (first cycle), start from page 1.
+            browse_start_page = db.get_last_browse_page(platform) or 1
 
             # Determine the retreating cutoff based on the last stored position.
             # Each cycle advances max_cycle_weeks weeks further back from the
@@ -288,10 +292,6 @@ def run_acquisition(
                             # backlog it's much further away.
                             if hard < last_date and (last_date - hard).days <= cfg.max_cycle_weeks * 7:
                                 cutoff_date = hard.isoformat()
-                                # When jumping to the expanded boundary, start
-                                # scanning from the last known browse page to
-                                # avoid re-traversing already-known pages.
-                                browse_start_page = db.get_last_browse_page(platform) or 1
                             else:
                                 cutoff_date = retreating_cutoff.isoformat()
                         else:
@@ -315,7 +315,9 @@ def run_acquisition(
                     # When the backlog is fully caught up (retreating cutoff
                     # hit the max_weeks boundary), switch to steady-state
                     # mode: scan only max_cycle_weeks from today instead of
-                    # the full max_weeks range.
+                    # the full max_weeks range.  Always start from page 1
+                    # so new releases on the most recent pages are picked up.
+                    browse_start_page = 1
                     if cfg.max_cycle_weeks and cfg.max_cycle_weeks > 0:
                         cutoff_date = (
                             datetime.datetime.now(tz=datetime.UTC).date()

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gamarr"
-version = "1.1.12"
+version = "1.1.13"
 description = "Metadata game downloader - torrent metadata harvester"
 readme = "README.md"
 requires-python = ">=3.12"

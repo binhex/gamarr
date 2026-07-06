@@ -5337,3 +5337,60 @@ class TestScanWindowAdvancing:
         start_page = mock_mc.scan_recent_games.call_args[1].get("start_page")
         assert start_page is not None, "start_page should be passed to scan_recent_games"
         assert start_page == 380, f"Expected start_page=380 (stored browse page), got {start_page}"
+
+    def test_backlog_scan_resumes_from_stored_page(self, tmp_path: Path) -> None:
+        """Backlog scans must resume from the stored last browse page, not
+        page 1. Each cycle previously re-scanned pages 1..N from the cache,
+        finding only already-known games.
+        """
+        import datetime
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.database import Database
+        from gamarr.pipeline import run_acquisition
+
+        db_path = str(tmp_path / "test.db")
+
+        # Pre-seed a browse page (simulating a previous scan that reached
+        # page 100) and a cutoff date (simulating a cycle in progress).
+        db = Database(db_path)
+        db.set_last_browse_page("pc", 100)
+        db.set_last_cutoff(
+            "pc", (datetime.datetime.now(tz=datetime.UTC).date() - datetime.timedelta(weeks=4)).isoformat()
+        )
+        db.close()
+
+        with (
+            patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
+            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+        ):
+            mock_source = MagicMock()
+            mock_source_cls.return_value = mock_source
+
+            mock_mc = MagicMock()
+            mock_mc.scan_recent_games.return_value = []
+            mock_mc_cls.return_value = mock_mc
+
+            mock_qbt = MagicMock()
+            mock_qbt.is_connected.return_value = True
+            mock_qbt_cls.return_value = mock_qbt
+
+            run_acquisition(
+                platform="pc",
+                db_path=db_path,
+                qbt_host="localhost",
+                qbt_port=8080,
+                max_weeks=104,
+                max_cycle_weeks=4,
+            )
+
+        # Without the fix, start_page = 1 (always re-scan from beginning).
+        # With the fix, start_page uses the stored last browse page.
+        assert mock_mc.scan_recent_games.call_count == 1
+        start_page = mock_mc.scan_recent_games.call_args[1].get("start_page")
+        assert start_page is not None, "start_page should be passed to scan_recent_games"
+        assert start_page > 1, (
+            f"Expected start_page > 1 (resuming from stored page 100), got {start_page}. "
+            "Bug: backlog re-scans from page 1 every cycle."
+        )
