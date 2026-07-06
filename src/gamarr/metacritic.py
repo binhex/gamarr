@@ -756,6 +756,7 @@ class MetacriticClient:
         cutoff_date: str | None = None,
         cancel_event: threading.Event | None = None,
         start_page: int = 1,
+        show_progress: bool = False,
     ) -> list[dict[str, Any]]:
         """Collect games from Metacritic browse pages.
 
@@ -775,6 +776,8 @@ class MetacriticClient:
                 are skipped without fetching.  This avoids re-traversing
                 already-known pages when the backlog resumes after a
                 config change.
+            show_progress: When True, log page-level progress heartbeats
+                during long cold-cache scans.
 
         Returns a list of game dicts with keys ``title``, ``slug``,
         ``score``, ``critic_review_count``, ``user_rating``,
@@ -803,7 +806,7 @@ class MetacriticClient:
             # release_date older than the cutoff, stop fetching more
             # pages (they will be even older).
             if _page_is_before_cutoff(games, cutoff_date):
-                logger.info(
+                logger.debug(
                     "Metacritic page {} reached (no games within the scan window, cutoff: {}); stopping scan",
                     page_number,
                     cutoff_date,
@@ -818,20 +821,25 @@ class MetacriticClient:
             # Log progress every 100 pages so the user can see the scan is
             # making progress during long cold-cache scans (e.g. first
             # cycle after a restart with max_weeks=104).
-            if page_number % 100 == 0:
-                logger.info(
-                    "Fetched {} Metacritic pages — {} games collected",
-                    page_number,
-                    len(all_games),
-                )
+            _log_batch_progress(page_number, len(all_games), show_progress)
 
             page_number += 1
 
         n_pages = max(page_number - 1, 0)
         logger.info(
-            "Scanned {} Metacritic page(s) — collected {} games",
+            "Scan result: {} pages browsed, {} games collected",
             n_pages,
             len(all_games),
         )
         self._recent_games_last_page = n_pages
         return all_games
+
+
+def _log_batch_progress(page_number: int, game_count: int, show_progress: bool) -> None:
+    """Log periodic scan progress when *show_progress* is True."""
+    if page_number % 100 == 0 and show_progress:
+        logger.info(
+            "Backlog scan: page {} ({} games)",
+            page_number,
+            game_count,
+        )

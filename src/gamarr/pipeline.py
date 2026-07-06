@@ -333,10 +333,12 @@ def run_acquisition(
                     cutoff_date_obj = datetime.datetime.strptime(cutoff_date, "%Y-%m-%d").date()
                     window_weeks = (today - cutoff_date_obj).days // 7
                     logger.info(
-                        "Scanning latest {} weeks ({} to {})",
+                        "Scan window: last {} weeks ({} \u2192 {})  [max_weeks={}, cycle={}]",
                         window_weeks or cfg.max_cycle_weeks or 4,
                         cutoff_date,
                         today.isoformat(),
+                        cfg.max_weeks or 104,
+                        effective_cycle_weeks or 4,
                     )
                 else:
                     # Backlog mode: retreating cutoff, show progress
@@ -349,8 +351,9 @@ def run_acquisition(
                         total_cycles = (max_weeks_val + window_weeks - 1) // window_weeks
                         remaining = total_cycles - cycle_number
                         logger.info(
-                            "Backlog cycle {} — scanning {} to {} — ~{} cycles remaining",
+                            "Backlog scan: cycle {}/{} — window {} \u2192 {} ({} cycles remaining)",
                             cycle_number,
+                            total_cycles,
                             cutoff_date,
                             today.isoformat(),
                             remaining,
@@ -362,12 +365,15 @@ def run_acquisition(
                             today.isoformat(),
                         )
 
+            pending_before = len(db.get_pending(platform=platform))
+
             browse_games = mc.scan_recent_games(
                 platform,
                 cache_pages_hours=cfg.cache_pages_hours,
                 cutoff_date=cutoff_date,
                 cancel_event=cancel_event,
                 start_page=browse_start_page,
+                show_progress=(not clamped_by_max_weeks),
             )
 
             # Store cutoff for next cycle (after scan completes).
@@ -399,6 +405,15 @@ def run_acquisition(
                     max_queue_days=cfg.max_queue_days,
                     days_since_release=cfg._age_days(),
                     reject_title=cfg.reject_title,
+                )
+                # Pending queue state after processing browse results
+                pending_after = len(db.get_pending(platform=platform))
+                new_this_cycle = max(0, pending_after - pending_before)
+                logger.info(
+                    "Pending queue: {} new + {} from previous cycles = {} total",
+                    new_this_cycle,
+                    pending_before,
+                    pending_after,
                 )
                 if new_pending:
                     logger.info(
@@ -498,12 +513,25 @@ def run_acquisition(
             # If no download_sites provided, fall back to a default FitGirl entry
             # using the legacy parameters for backward compatibility.
             sites = download_sites if download_sites else [_make_fitgirl_entry()]
+            # Phase 2-3: Index all sources (indexing must happen before matching
+            # so _match_pending_games sees fresh sitemap data).
+            sources_built: list[tuple[Any, Any]] = []
             for source_entry in sites:
                 if not source_entry.enabled:
                     continue
                 source = _build_source(source_entry, db)
+                sources_built.append((source_entry, source))
+
+                if source_entry.name.casefold() == "freegog":
+                    logger.info("--- Phase 2/5: Indexing FreeGOG ---")
+                elif source_entry.name.casefold() == "fitgirl":
+                    logger.info("--- Phase 3/5: Indexing FitGirl ---")
+
                 source.fetch_sitemap(db, cancel_event=cancel_event)
 
+            # Phase 4: Match pending games against all sources
+            logger.info("--- Phase 4/5: Matching games to download sources ---")
+            for source_entry, _source in sources_built:
                 source_matched = _match_pending_games(
                     db,
                     qbt=qbt,
@@ -519,8 +547,11 @@ def run_acquisition(
                     matched.extend(source_matched)
                     logger.info("{} queued games found on {}", len(source_matched), source_entry.name)
 
+        logger.info("--- Phase 5/5: Delivering to qBittorrent ---")
         if matched:
-            logger.info("Total: {} queued games found across all sources", len(matched))
+            logger.info("Match summary: {} game(s) matched across all sources", len(matched))
+        else:
+            logger.info("No matches to deliver this cycle.")
 
         # Process old verified games AFTER the matching phase.
         # Games that passed score verification must get a chance to
@@ -531,6 +562,7 @@ def run_acquisition(
 
         return matched
 
+    logger.info("--- Phase 1/5: Discovering games on Metacritic ---")
     try:
         # Metacritic-first acquisition: discover games via Metacritic browse,
         # then match against each configured source, and deliver to qBittorrent.
@@ -1256,7 +1288,7 @@ def _process_verify_batch(
         # futures may exceed the count of consumed results.
         if checked > 0:
             logger.info(
-                "Score verification: {} checked \u2014 {} from cache, {} attempted",
+                "Score check: {} verified ({} from cache, {} from Metacritic API)",
                 checked,
                 mc.cache_hits,
                 max(0, checked - int(mc.cache_hits)),

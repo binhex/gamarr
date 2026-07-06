@@ -82,8 +82,8 @@ class TestMaxCycleWeeks:
             logger.remove(sink_id)
 
         log_text = buf.getvalue()
-        assert "Backlog cycle 1" in log_text, "Expected a log message showing the browse window range, got: " + repr(
-            log_text
+        assert "Backlog scan" in log_text and "cycle" in log_text, (
+            "Expected a log message showing the browse window range, got: " + repr(log_text)
         )
 
 
@@ -4942,13 +4942,13 @@ class TestScanWindowAdvancing:
 
         log_output = log_stream.getvalue()
 
-        # Find the "Scanning latest" log message (steady-state mode)
-        assert "Scanning latest" in log_output, f"Missing 'Scanning latest' in:\n{log_output}"
+        # Find the "Scan window" log message (steady-state mode)
+        assert "Scan window" in log_output, f"Missing 'Scan window' in:\n{log_output}"
 
         # The active limiter should be max_cycle_weeks (4 weeks), not max_weeks.
         # Once the backlog is caught up (retreating cutoff hit the hard limit),
         # the scan window should be capped to max_cycle_weeks from today.
-        assert "Scanning latest 4 weeks" in log_output, f"Missing 'Scanning latest 4 weeks' in:\n{log_output}"
+        assert "Scan window: last 4 weeks" in log_output, f"Missing 'Scan window: last 4 weeks' in:\n{log_output}"
 
         # Verify the cutoff_date passed to scan_recent_games is ~4 weeks
         # from today, not 104 weeks ago (the hard_cutoff).
@@ -5124,8 +5124,10 @@ class TestScanWindowAdvancing:
 
         log_output = log_stream.getvalue()
 
-        assert "Backlog cycle 1" in log_output, f"Missing 'Backlog cycle 1' in:\n{log_output}"
-        assert "~25 cycles remaining" in log_output, f"Missing '~25 cycles remaining' in:\n{log_output}"
+        assert "Backlog scan" in log_output and "cycle" in log_output, (
+            f"Missing 'Backlog scan' with 'cycle' in:\n{log_output}"
+        )
+        assert "(25 cycles remaining)" in log_output, f"Missing '(25 cycles remaining)' in:\n{log_output}"
         assert "Scanning latest" not in log_output, f"Unexpected 'Scanning latest' in backlog mode:\n{log_output}"
 
     def test_backlog_restarts_when_max_weeks_increased(self, tmp_path: Path) -> None:
@@ -5185,7 +5187,7 @@ class TestScanWindowAdvancing:
         log_output = log_stream.getvalue()
 
         # Should be in backlog mode, NOT steady-state
-        assert "Backlog cycle" in log_output, f"Expected backlog mode when max_weeks increased, got:\n{log_output}"
+        assert "Backlog scan" in log_output, f"Expected backlog mode when max_weeks increased, got:\n{log_output}"
         assert "Scanning latest" not in log_output, f"Expected backlog mode, not steady-state:\n{log_output}"
 
         # Verify the cutoff_date passed to scan_recent_games is the new boundary
@@ -5255,7 +5257,7 @@ class TestScanWindowAdvancing:
         log_output = log_stream.getvalue()
 
         # Should be in backlog mode
-        assert "Backlog cycle" in log_output, f"Expected backlog mode, got:\n{log_output}"
+        assert "Backlog scan" in log_output, f"Expected backlog mode, got:\n{log_output}"
 
         # Verify scan_recent_games was called with start_page matching the stored page
         assert mock_mc.scan_recent_games.call_count == 1

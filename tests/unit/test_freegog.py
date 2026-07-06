@@ -534,22 +534,12 @@ class TestFreeGOGFetchSitemap:
             assert "letter '" not in fmt, f"Per-letter log should be absent, found: {fmt}"
             assert "complete (" not in fmt, f"Per-letter complete log should be absent, found: {fmt}"
 
-        # ── NEW batch progress messages MUST be present ──
+        # ── NEW batch progress messages MUST be absent (removed) ──
         batch_calls = [call for call in info_calls if "entries" in str(call.args[0]) and "of" in str(call.args[0])]
-        assert len(batch_calls) >= 1, f"Expected batch progress logs, got none. Info calls: {info_calls}"
-        # First batch: entries 1-500 of 550
-        assert any(call.args[1] == 1 and call.args[2] == 500 for call in batch_calls), (
-            f"Expected batch 1-500 message, got args: {[(c.args[1], c.args[2]) for c in batch_calls]}"
-        )
-        # Second batch: entries 501-550 of 550
-        assert any(call.args[1] == 501 and call.args[2] == total_entries for call in batch_calls), (
-            f"Expected batch 501-{total_entries} message, got args: {[(c.args[1], c.args[2]) for c in batch_calls]}"
-        )
+        assert len(batch_calls) == 0, f"Batch progress logs should have been removed, found: {batch_calls}"
 
-        # ── Summary MUST still be present ──
-        summary_calls = [
-            call for call in info_calls if "indexed" in str(call.args[0]) and "skipped" in str(call.args[0])
-        ]
+        # ── Summary MUST still be present (either "new games found" or "all already known") ──
+        summary_calls = [call for call in info_calls if "already known" in str(call.args[0])]
         assert len(summary_calls) == 1, f"Expected one summary log, got: {summary_calls}"
 
         source.close()

@@ -293,7 +293,7 @@ class FitGirlSource:
             titles = _filter_game_urls(titles)
             db.rebuild_source_titles("fitgirl", [{"magnet": None, **t} for t in titles])
             db.set_sitemap_cache("fitgirl")
-            logger.info("FitGirl sitemap indexed {} game titles", len(titles))
+            logger.info("FitGirl: {} new game titles indexed", len(titles))
         except requests.RequestException as exc:
             logger.warning("Failed to fetch FitGirl sitemap: {}", exc)
             db.set_sitemap_cache("fitgirl")

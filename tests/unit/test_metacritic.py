@@ -971,18 +971,16 @@ class TestScanRecentGamesLogging:
         handler_id = logger.add(log_stream, format="{message}", level="INFO")
         try:
             with patch.object(client, "_fetch_browse_page", side_effect=pages):
-                client.scan_recent_games("pc", max_games=0)
+                client.scan_recent_games("pc", max_games=0, show_progress=True)
         finally:
             logger.remove(handler_id)
 
         log_output = log_stream.getvalue()
 
         # Should have the final summary
-        assert "Scanned 150 Metacritic page(s) — collected 3000 games" in log_output, (
-            f"Expected final summary in:\n{log_output}"
-        )
+        assert "150 pages browsed, 3000 games collected" in log_output, f"Expected final summary in:\n{log_output}"
 
         # Should have an intermediate 'page 100' progress log (every 100 pages)
-        assert "Fetched 100 Metacritic pages —" in log_output, (
-            f"Expected intermediate 'Fetched 100...' progress log, got:\n{log_output}"
+        assert "page 100 (2000 games)" in log_output, (
+            f"Expected intermediate 'page 100...' progress log, got:\n{log_output}"
         )

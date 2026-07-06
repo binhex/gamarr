@@ -267,17 +267,6 @@ class FreeGOGSource:
             total_entries = len(az_entries)
 
             for entry in az_entries:
-                entry_idx = known_count + new_count  # 0-based index; excludes fetch failures
-                if entry_idx % 500 == 0:
-                    batch_start = entry_idx + 1
-                    batch_end = min(entry_idx + 500, total_entries)
-                    logger.info(
-                        "FreeGOG: processing entries {}-{} of {}...",
-                        batch_start,
-                        batch_end,
-                        total_entries,
-                    )
-
                 if entry["url"] in existing_urls and existing_urls[entry["url"]] is not None:
                     # Skip only if we already have a valid magnet for this URL.
                     # Re-fetch entries with magnet=None (broken from earlier buggy indexing).
@@ -288,11 +277,18 @@ class FreeGOGSource:
                     new_count += 1
 
             db.set_sitemap_cache("freegog")
-            logger.info(
-                "FreeGOG indexed {} new games ({} skipped, already known)",
-                new_count,
-                known_count,
-            )
+            if new_count > 0:
+                logger.info(
+                    "FreeGOG: {} new games found ({} entries checked, {} already known)",
+                    new_count,
+                    total_entries,
+                    known_count,
+                )
+            else:
+                logger.info(
+                    "FreeGOG: all {} entries already known — nothing new",
+                    total_entries,
+                )
         except requests.RequestException as exc:
             logger.warning("Failed to fetch FreeGOG A-Z page: {}", exc)
             db.set_sitemap_cache("freegog")

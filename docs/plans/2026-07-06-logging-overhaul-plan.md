@@ -46,7 +46,7 @@ Update the test:
 def test_scan_recent_games_logs_batch_progress(self) -> None:
     """scan_recent_games should log periodic progress when show_progress=True."""
     # ... setup same as before ...
-    
+
     log_stream = io.StringIO()
     handler_id = logger.add(log_stream, format="{message}", level="INFO")
     try:
