@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import math
 import re
 import types
 from concurrent.futures import ThreadPoolExecutor
@@ -224,6 +225,40 @@ def run_acquisition(
         entry.max_queue_days = fitgirl_max_queue_days
         return entry
 
+    def _log_backlog_progress(
+        platform: str,
+        db: Database,
+        max_pages: int,
+        max_cycle_pages: int,
+        cutoff_year: int,
+        current_year: int,
+    ) -> None:
+        """Log backlog scan progress and estimated cycles remaining."""
+        if max_pages <= 0:
+            return
+        total_scanned = db.sum_scanned_pages(platform, cutoff_year, current_year)
+        pct = min(100, round(total_scanned / max_pages * 100))
+        remaining = max(0, max_pages - total_scanned)
+
+        if remaining == 0 or total_scanned >= max_pages:
+            logger.info("Backlog: fully scanned — monitoring for new releases on page 1")
+        elif max_cycle_pages and max_cycle_pages > 0:
+            cycles = math.ceil(remaining / max_cycle_pages)
+            logger.info(
+                "Backlog progress: {} of {} pages ({}%, ~{} cycles remaining)",
+                total_scanned,
+                max_pages,
+                pct,
+                cycles,
+            )
+        else:
+            logger.info(
+                "Backlog progress: {} of {} pages ({}%, unlimited per cycle)",
+                total_scanned,
+                max_pages,
+                pct,
+            )
+
     def _run_discovery_phases(
         mc: Any,
         db: Database,
@@ -263,10 +298,13 @@ def run_acquisition(
                 # Clear the browse page cache so stale data from the old
                 # sort order is not returned (cache key does not include sort_order).
                 db.clear_cache("metacritic")
+                # Also reset backlog progress so the new sort order starts
+                # from page 1 — the page structure differs for "new" vs "metascore".
+                db.reset_backlog_progress(platform, cfg.sort_order)
 
             pending_before = len(db.get_pending(platform=platform))
 
-            scan_year = datetime.datetime.now(tz=datetime.UTC).year
+            scan_year_anchor = datetime.datetime.now(tz=datetime.UTC).year
 
             # Set sort_order from config on the client
             mc.sort_order = cfg.sort_order
@@ -275,20 +313,37 @@ def run_acquisition(
             # current year. Each year's pages are cached independently,
             # so scanning multiple years is fast after the first fetch.
             browse_games = []
-            cutoff_year = scan_year
-            current_year = datetime.datetime.now(tz=datetime.UTC).year
+            if cfg.sort_order == "new":
+                years_back = max(0, math.ceil((cfg.max_pages if cfg.max_pages else 500) / 52))
+                cutoff_year = scan_year_anchor - years_back
+                current_year = scan_year_anchor
+            else:
+                # sort_order == "metascore": no year dimension, use year=0 sentinel
+                cutoff_year = 0
+                current_year = 0
+
             for scan_year in range(cutoff_year, current_year + 1):
-                year_games = mc.scan_recent_games(
-                    platform,
-                    cache_pages_hours=cfg.cache_pages_hours,
-                    cutoff_date=cutoff_date,
-                    cancel_event=cancel_event,
-                    start_page=1,
-                    show_progress=True,
-                    year=scan_year,
-                    max_pages=cfg.max_cycle_pages if cfg.max_cycle_pages else (cfg.max_pages if cfg.max_pages else 0),
-                )
-                browse_games.extend(year_games)
+                if is_cancelled(cancel_event):
+                    break
+                start_page = db.get_last_scanned_page(platform, scan_year) + 1
+                try:
+                    year_games = mc.scan_recent_games(
+                        platform,
+                        cache_pages_hours=cfg.cache_pages_hours,
+                        cutoff_date=cutoff_date,
+                        cancel_event=cancel_event,
+                        start_page=start_page,
+                        show_progress=True,
+                        year=scan_year if cfg.sort_order == "new" else None,
+                        max_pages=cfg.max_cycle_pages
+                        if cfg.max_cycle_pages
+                        else (cfg.max_pages if cfg.max_pages else 0),
+                    )
+                    browse_games.extend(year_games)
+                    last_page = mc._recent_games_last_page if isinstance(mc._recent_games_last_page, int) else 0
+                    db.set_last_scanned_page(platform, scan_year, last_page)
+                except Exception:
+                    logger.exception("Scan failed for year {} — will retry next cycle", scan_year)
 
             # Persist the current sort_order so the next cycle can
             # detect if the user changed it.
@@ -470,6 +525,17 @@ def run_acquisition(
         # this ran before matching, silently removing every old game
         # from pending before it could be delivered.
         _process_aged_games(db, cfg, platform, cancel_event=cancel_event)
+
+        # Log backlog progress if max_pages is configured
+        if cfg.enabled:
+            _log_backlog_progress(
+                platform,
+                db,
+                cfg.max_pages if cfg.max_pages else 0,
+                cfg.max_cycle_pages if cfg.max_cycle_pages else 0,
+                cutoff_year,
+                current_year,
+            )
 
         return matched
 

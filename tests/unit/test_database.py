@@ -1039,6 +1039,102 @@ class TestKnownSlugs:
         db.close()
 
 
+class TestBacklogProgress:
+    """Tests for the backlog_progress table and CRUD methods."""
+
+    def test_default_returns_zero(self, tmp_path: Path) -> None:
+        from gamarr.database import Database
+
+        db = Database(str(tmp_path / "test.db"))
+        assert db.get_last_scanned_page("pc", 2026) == 0
+        db.close()
+
+    def test_set_and_get(self, tmp_path: Path) -> None:
+        from gamarr.database import Database
+
+        db = Database(str(tmp_path / "test.db"))
+        db.set_last_scanned_page("pc", 2026, 42)
+        assert db.get_last_scanned_page("pc", 2026) == 42
+        db.close()
+
+    def test_overwrite(self, tmp_path: Path) -> None:
+        from gamarr.database import Database
+
+        db = Database(str(tmp_path / "test.db"))
+        db.set_last_scanned_page("pc", 2026, 10)
+        db.set_last_scanned_page("pc", 2026, 20)
+        assert db.get_last_scanned_page("pc", 2026) == 20
+        db.close()
+
+    def test_per_year_isolation(self, tmp_path: Path) -> None:
+        from gamarr.database import Database
+
+        db = Database(str(tmp_path / "test.db"))
+        db.set_last_scanned_page("pc", 2026, 10)
+        db.set_last_scanned_page("pc", 2025, 50)
+        assert db.get_last_scanned_page("pc", 2026) == 10
+        assert db.get_last_scanned_page("pc", 2025) == 50
+        db.close()
+
+    def test_per_platform_isolation(self, tmp_path: Path) -> None:
+        from gamarr.database import Database
+
+        db = Database(str(tmp_path / "test.db"))
+        db.set_last_scanned_page("pc", 2026, 10)
+        db.set_last_scanned_page("ps4", 2026, 5)
+        assert db.get_last_scanned_page("pc", 2026) == 10
+        assert db.get_last_scanned_page("ps4", 2026) == 5
+        db.close()
+
+    def test_sum_scanned_pages_single_year(self, tmp_path: Path) -> None:
+        from gamarr.database import Database
+
+        db = Database(str(tmp_path / "test.db"))
+        db.set_last_scanned_page("pc", 2026, 10)
+        assert db.sum_scanned_pages("pc", 2026, 2026) == 10
+        db.close()
+
+    def test_sum_scanned_pages_multi_year(self, tmp_path: Path) -> None:
+        from gamarr.database import Database
+
+        db = Database(str(tmp_path / "test.db"))
+        db.set_last_scanned_page("pc", 2026, 10)
+        db.set_last_scanned_page("pc", 2025, 50)
+        db.set_last_scanned_page("pc", 2024, 0)
+        assert db.sum_scanned_pages("pc", 2024, 2026) == 60
+        db.close()
+
+    def test_sum_scanned_pages_empty_returns_zero(self, tmp_path: Path) -> None:
+        from gamarr.database import Database
+
+        db = Database(str(tmp_path / "test.db"))
+        assert db.sum_scanned_pages("pc", 2020, 2025) == 0
+        db.close()
+
+    def test_reset_backlog_progress_new_sort(self, tmp_path: Path) -> None:
+        from gamarr.database import Database
+
+        db = Database(str(tmp_path / "test.db"))
+        db.set_last_scanned_page("pc", 2026, 10)
+        db.set_last_scanned_page("pc", 2025, 50)
+        db.reset_backlog_progress("pc", "new")
+        assert db.get_last_scanned_page("pc", 2026) == 0
+        assert db.get_last_scanned_page("pc", 2025) == 0
+        db.close()
+
+    def test_reset_backlog_progress_metascore_sentinel(self, tmp_path: Path) -> None:
+        """Reset deletes all rows for the platform regardless of sort_order."""
+        from gamarr.database import Database
+
+        db = Database(str(tmp_path / "test.db"))
+        db.set_last_scanned_page("pc", 0, 25)
+        db.set_last_scanned_page("pc", 2026, 10)
+        db.reset_backlog_progress("pc", "metascore")
+        assert db.get_last_scanned_page("pc", 0) == 0
+        assert db.get_last_scanned_page("pc", 2026) == 0  # all rows deleted
+        db.close()
+
+
 class TestClearCache:
     """Database.clear_cache method tests."""
 

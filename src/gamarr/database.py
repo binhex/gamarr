@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from loguru import logger
-from sqlalchemy import Boolean, Float, Integer, String, Text, create_engine, text
+from sqlalchemy import Boolean, Float, Integer, String, Text, create_engine, func, text
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
@@ -120,6 +120,23 @@ class ScanState(Base):
     last_cutoff_date: Mapped[str | None] = mapped_column(String, nullable=True)
     last_max_weeks: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_sort_order: Mapped[str | None] = mapped_column(String, nullable=True)
+
+
+class BacklogProgress(Base):
+    """Tracks per-year backlog scan progress for each platform.
+
+    ``year = 0`` is the sentinel for ``sort_order = "metascore"`` (no year
+    dimension — all games sorted by score).
+
+    ``year = N`` (e.g. 2026) is for ``sort_order = "new"`` (year-specific
+    browse pages).
+    """
+
+    __tablename__ = "backlog_progress"
+
+    platform: Mapped[str] = mapped_column(String, primary_key=True)
+    year: Mapped[int] = mapped_column(Integer, primary_key=True)
+    last_scanned_page: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class Database:
@@ -326,6 +343,43 @@ class Database:
             else:
                 row.last_sort_order = sort_order
             session.commit()
+
+    def get_last_scanned_page(self, platform: str, year: int) -> int:
+        with self._session() as session:
+            row = session.get(BacklogProgress, (platform, year))
+        return row.last_scanned_page if row else 0
+
+    def set_last_scanned_page(self, platform: str, year: int, page: int) -> None:
+        with self._session() as session:
+            row = session.get(BacklogProgress, (platform, year))
+            if row is None:
+                session.add(BacklogProgress(platform=platform, year=year, last_scanned_page=page))
+            else:
+                row.last_scanned_page = page
+            session.commit()
+
+    def reset_backlog_progress(self, platform: str, sort_order: str) -> None:  # noqa: ARG002
+        """Reset backlog progress for *platform*.
+
+        Deletes ALL rows regardless of sort_order — switching sort order
+        means the page structure changes entirely, so we start from page 1.
+        """
+        with self._session() as session:
+            session.query(BacklogProgress).filter(BacklogProgress.platform == platform).delete()
+            session.commit()
+
+    def sum_scanned_pages(self, platform: str, from_year: int, to_year: int) -> int:
+        with self._session() as session:
+            result = (
+                session.query(func.coalesce(func.sum(BacklogProgress.last_scanned_page), 0))
+                .filter(
+                    BacklogProgress.platform == platform,
+                    BacklogProgress.year >= from_year,
+                    BacklogProgress.year <= to_year,
+                )
+                .scalar()
+            )
+        return int(result)
 
     def get_expired_pending(self) -> list[PendingGame]:
         now = datetime.datetime.now(tz=datetime.UTC).isoformat()

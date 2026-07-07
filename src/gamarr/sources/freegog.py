@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import re
+from html import unescape
 from typing import TYPE_CHECKING
 
 import requests
@@ -107,7 +108,7 @@ def _parse_freegog_az_page(html: str) -> list[dict[str, str]]:
             if href in seen_urls:
                 continue
             seen_urls.add(href)
-            raw_title = match.group(2)
+            raw_title = unescape(match.group(2))
             cleaned = _clean_freegog_title(raw_title)
             results.append({"title": cleaned, "url": href, "letter": letter})
 

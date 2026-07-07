@@ -157,6 +157,24 @@ class TestParseFreeGOGAZPage:
         # Title should be cleaned, not the raw "Gothic 1 Remake v1.0.2a"
         assert result[0]["title"] == "Gothic 1 Remake"
 
+    def test_parse_decodes_html_entities(self) -> None:
+        """HTML entities like &#039; in titles should be decoded before cleaning."""
+        from gamarr.sources.freegog import _parse_freegog_az_page
+        from gamarr.utils import normalise_for_compare
+
+        html = """<section id="gd-az-b" class="gd-az-section" data-gd-az-section>
+    <a href="https://freegogpcgames.com/5977/27-baldurs-gate-3/"><span>Baldur&#039;s Gate 3 v4.1.1.7209685 + 2 DLC</span></a>
+</section>"""
+        result = _parse_freegog_az_page(html)
+        assert len(result) == 1
+        parsed_title = result[0]["title"]
+        # The cleaned title should have the apostrophe decoded, not the raw entity
+        assert "&#039;" not in parsed_title, f"HTML entity should be decoded, got: {parsed_title!r}"
+        # The normalized form should match the canonical game name
+        norm_metacritic = normalise_for_compare("Baldur's Gate 3")
+        norm_parsed = normalise_for_compare(parsed_title)
+        assert norm_parsed == norm_metacritic, f"Normalised title '{norm_parsed}' should match '{norm_metacritic}'"
+
 
 class TestExtractMagnetFromFreeGOGPage:
     """Magnet extraction from FreeGOG game pages."""

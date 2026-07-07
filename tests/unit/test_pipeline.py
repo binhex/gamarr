@@ -74,7 +74,7 @@ class TestMaxCycleWeeks:
 
     def test_max_cycle_pages_limits_scan_recent_games(self) -> None:
         """When max_cycle_pages is set, scan_recent_games receives it as max_pages."""
-        from unittest.mock import ANY, MagicMock, patch
+        from unittest.mock import MagicMock, patch
 
         from gamarr.pipeline import run_acquisition
 
@@ -101,20 +101,13 @@ class TestMaxCycleWeeks:
             # Verify scan_recent_games was called with max_cycle_pages,
             # not max_pages.  max_pages=280 should NOT appear as the
             # per-scan limit — max_cycle_pages=4 should.
-            mock_mc.scan_recent_games.assert_called_once_with(
-                "pc",
-                cache_pages_hours=ANY,
-                cutoff_date=None,
-                cancel_event=ANY,
-                start_page=1,
-                show_progress=True,
-                year=ANY,
-                max_pages=4,
-            )
+            # Multiple years are scanned now; check the last call's max_pages.
+            _, kwargs = mock_mc.scan_recent_games.call_args
+            assert kwargs["max_pages"] == 4
 
     def test_max_cycle_pages_default_falls_back_to_max_pages(self) -> None:
         """When max_cycle_pages is 0 (default), max_pages is used as the limit."""
-        from unittest.mock import ANY, MagicMock, patch
+        from unittest.mock import MagicMock, patch
 
         from gamarr.pipeline import run_acquisition
 
@@ -140,16 +133,9 @@ class TestMaxCycleWeeks:
 
             # When max_cycle_pages is 0 (default/unlimited), fall back to
             # max_pages as the total ceiling.
-            mock_mc.scan_recent_games.assert_called_once_with(
-                "pc",
-                cache_pages_hours=ANY,
-                cutoff_date=None,
-                cancel_event=ANY,
-                start_page=1,
-                show_progress=True,
-                year=ANY,
-                max_pages=500,
-            )
+            # Multiple years are scanned now; check the last call's max_pages.
+            _, kwargs = mock_mc.scan_recent_games.call_args
+            assert kwargs["max_pages"] == 500
 
 
 class TestRunAcquisition:
@@ -283,8 +269,8 @@ class TestRunAcquisition:
                 qbt_port=8080,
                 library_paths=["/games"],
             )
-            # Metacritic browse should be called
-            mock_mc.scan_recent_games.assert_called_once()
+            # Metacritic browse should be called (multiple years now)
+            assert mock_mc.scan_recent_games.called
             # Sitemap is NOT fetched when there are no pending games to match
             mock_source.fetch_sitemap.assert_not_called()
 
@@ -2683,8 +2669,8 @@ class TestRunAcquisitionMetacritic:
                 qbt_port=8080,
             )
 
-            # Metacritic browse WAS called
-            mock_mc.scan_recent_games.assert_called_once()
+            # Metacritic browse WAS called (multiple years now)
+            assert mock_mc.scan_recent_games.called
             # But the FitGirl sitemap was NOT fetched because there is
             # nothing to match against (no pending games produced).
             mock_source.fetch_sitemap.assert_not_called()
@@ -2768,10 +2754,13 @@ class TestRunAcquisitionMetacritic:
                 qbt_port=8080,
             )
 
-        # Metacritic browse must happen BEFORE the FitGirl sitemap fetch
-        assert call_order == ["scan_recent_games", "fetch_sitemap"], (
-            f"Expected Metacritic browse first, then FitGirl sitemap; got {call_order}"
+        # Multiple years are scanned now, so scan_recent_games appears
+        # multiple times before fetch_sitemap.
+        assert call_order[-1] == "fetch_sitemap", f"Expected fetch_sitemap last; got {call_order}"
+        assert all(c == "scan_recent_games" for c in call_order[:-1]), (
+            f"Expected only scan_recent_games calls before fetch_sitemap; got {call_order}"
         )
+        assert len(call_order) > 1, f"Expected at least one scan_recent_games call; got {call_order}"
         # Belt-and-suspenders: sitemap should be called exactly once.
         mock_source.fetch_sitemap.assert_called_once()
 
@@ -4307,7 +4296,7 @@ class TestCancellation:
 
     def test_run_acquisition_returns_early_when_precancelled(self) -> None:
         """When cancel_event is pre-set, run_acquisition returns
-        early — scan_recent_games aborts its page loop immediately
+        early — the year loop breaks before calling scan_recent_games
         and no further pipeline steps run."""
         import threading
         from unittest.mock import MagicMock, patch
@@ -4325,8 +4314,6 @@ class TestCancellation:
             mock_source = MagicMock()
             mock_source_cls.return_value = mock_source
             mock_mc = MagicMock()
-            # scan_recent_games will return empty (aborted by cancel_event)
-            # so we make it return [] to simulate a clean early exit
             mock_mc.scan_recent_games.return_value = []
             mock_mc_cls.return_value = mock_mc
             mock_qbt = MagicMock()
@@ -4340,9 +4327,9 @@ class TestCancellation:
                 cancel_event=cancel_event,
             )
 
-        # scan_recent_games is called (cancel check is inside it), but
-        # no pending games means no verify, no sitemap, no delivery
-        mock_mc.scan_recent_games.assert_called_once()
+        # is_cancelled check at the top of the year loop prevents the
+        # scan entirely when the event is pre-set — returns empty results.
+        mock_mc.scan_recent_games.assert_not_called()
         mock_mc.lookup_game.assert_not_called()
         mock_source.fetch_sitemap.assert_not_called()
         assert results == []
@@ -5369,3 +5356,100 @@ class TestScanWindowAdvancing:
                 sort_order="new",
             )
             assert isinstance(results, list)
+
+
+class TestBacklogAdvancing:
+    """Backlog page advancement across scheduler cycles."""
+
+    def test_backlog_advances_start_page_across_cycles(self, tmp_path: Path) -> None:
+        """Start_page should come from persisted last_scanned_page, not 1."""
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.database import Database
+        from gamarr.pipeline import run_acquisition
+
+        db_path = str(tmp_path / "test.db")
+        db = Database(db_path)
+        db.set_last_scanned_page("pc", 2026, 4)
+        db.close()
+
+        with (
+            patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
+            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+        ):
+            mock_source = MagicMock()
+            mock_source_cls.return_value = mock_source
+            mock_mc = MagicMock()
+            mock_mc.scan_recent_games.return_value = []
+            # Set _recent_games_last_page so DB set_last_scanned_page receives an int
+            mock_mc._recent_games_last_page = 4
+            mock_mc_cls.return_value = mock_mc
+            mock_qbt = MagicMock()
+            mock_qbt.is_connected.return_value = True
+            mock_qbt_cls.return_value = mock_qbt
+
+            run_acquisition(
+                platform="pc",
+                db_path=db_path,
+                qbt_host="localhost",
+                qbt_port=8080,
+                max_pages=280,
+                max_cycle_pages=4,
+                sort_order="new",
+            )
+
+            _, kwargs = mock_mc.scan_recent_games.call_args
+            assert kwargs["start_page"] == 5, f"Expected start_page=5, got {kwargs['start_page']}"
+
+    def test_backlog_progress_logged_in_phase_5(self, tmp_path: Path) -> None:
+        """Backlog progress line should appear at the end of a cycle."""
+        from io import StringIO
+        from unittest.mock import MagicMock, patch
+
+        from loguru import logger
+
+        from gamarr.database import Database
+        from gamarr.pipeline import run_acquisition
+
+        db_path = str(tmp_path / "test.db")
+        db = Database(db_path)
+        db.set_last_scanned_page("pc", 2026, 12)
+        db.close()
+
+        with (
+            patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
+            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+        ):
+            mock_source = MagicMock()
+            mock_source_cls.return_value = mock_source
+            mock_mc = MagicMock()
+            mock_mc.scan_recent_games.return_value = []
+            # Set _recent_games_last_page so DB set_last_scanned_page receives an int
+            mock_mc._recent_games_last_page = 12
+            mock_mc_cls.return_value = mock_mc
+            mock_qbt = MagicMock()
+            mock_qbt.is_connected.return_value = True
+            mock_qbt_cls.return_value = mock_qbt
+
+            log_buffer = StringIO()
+            handler_id = logger.add(log_buffer, level="INFO", format="{message}")
+
+            run_acquisition(
+                platform="pc",
+                db_path=db_path,
+                qbt_host="localhost",
+                qbt_port=8080,
+                max_pages=280,
+                max_cycle_pages=4,
+                sort_order="new",
+                enabled=True,
+            )
+
+            logger.remove(handler_id)
+            log_output = log_buffer.getvalue()
+
+            assert "Backlog progress" in log_output, (
+                f"Expected 'Backlog progress' in log output, got: {log_output[:500]}"
+            )

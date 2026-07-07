@@ -162,7 +162,7 @@ download_sites:
 | `min_metascore_reviews` | Minimum number of critic reviews required. | `10` |
 | `min_user_score` | Minimum Metacritic user score (0–10). | `7.5` |
 | `min_user_reviews` | Minimum number of user reviews required. | `10` |
-| `max_pages` | Maximum browse pages per cycle. Each cycle scans the most recent `max_pages` Metacritic browse pages. `0` = unlimited scan. | `500` |
+| `max_pages` | Total browse page window. The backlog scanner progressively advances through `max_pages` pages across cycles, then resets to scan new releases. `0` = unlimited scan. | `500` |
 | `max_cycle_pages` | Maximum number of browse pages to scan per cycle. `0` = unlimited (scan all pages). | `0` |
 | `age_recheck_weeks` | Games older than this (weeks since release) are permanently processed once their Metacritic scores pass thresholds. `null` or `0` = disabled. | `null` |
 | `enabled` | Enable or disable the Metacritic browse step. Disabling skips game discovery entirely. | `true` |
@@ -258,7 +258,9 @@ flowchart TD
 2. **Browse-page filtering** — Games whose titles match `reject_title` are
    skipped. Games outside the `max_pages` window
    are skipped. `max_cycle_pages` controls the per-cycle page limit
-   (default `0` = unlimited). Each cycle scans the most recent `max_pages`.
+   (default `0` = unlimited). The scanner advances through the
+   `max_pages` window progressively — each cycle resumes where the
+   last one left off, draining the backlog page by page.
    **Note:** browse scores are on a different scale and always
    exceed the configured thresholds — score filtering effectively starts
    at the verification step (phase 4), not here.
