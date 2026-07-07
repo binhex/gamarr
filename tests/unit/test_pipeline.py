@@ -72,6 +72,85 @@ class TestMaxCycleWeeks:
             )
             assert isinstance(results, list)
 
+    def test_max_cycle_pages_limits_scan_recent_games(self) -> None:
+        """When max_cycle_pages is set, scan_recent_games receives it as max_pages."""
+        from unittest.mock import ANY, MagicMock, patch
+
+        from gamarr.pipeline import run_acquisition
+
+        with (
+            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+            patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
+        ):
+            mock_mc = MagicMock()
+            mock_mc.scan_recent_games.return_value = []
+            mock_mc_cls.return_value = mock_mc
+            mock_source = MagicMock()
+            mock_source_cls.return_value = mock_source
+            mock_qbt = MagicMock()
+            mock_qbt.is_connected.return_value = True
+            mock_qbt_cls.return_value = mock_qbt
+
+            run_acquisition(
+                db_path=":memory:",
+                max_pages=280,
+                max_cycle_pages=4,
+            )
+
+            # Verify scan_recent_games was called with max_cycle_pages,
+            # not max_pages.  max_pages=280 should NOT appear as the
+            # per-scan limit — max_cycle_pages=4 should.
+            mock_mc.scan_recent_games.assert_called_once_with(
+                "pc",
+                cache_pages_hours=ANY,
+                cutoff_date=None,
+                cancel_event=ANY,
+                start_page=1,
+                show_progress=True,
+                year=ANY,
+                max_pages=4,
+            )
+
+    def test_max_cycle_pages_default_falls_back_to_max_pages(self) -> None:
+        """When max_cycle_pages is 0 (default), max_pages is used as the limit."""
+        from unittest.mock import ANY, MagicMock, patch
+
+        from gamarr.pipeline import run_acquisition
+
+        with (
+            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+            patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
+        ):
+            mock_mc = MagicMock()
+            mock_mc.scan_recent_games.return_value = []
+            mock_mc_cls.return_value = mock_mc
+            mock_source = MagicMock()
+            mock_source_cls.return_value = mock_source
+            mock_qbt = MagicMock()
+            mock_qbt.is_connected.return_value = True
+            mock_qbt_cls.return_value = mock_qbt
+
+            run_acquisition(
+                db_path=":memory:",
+                max_pages=500,
+                max_cycle_pages=0,
+            )
+
+            # When max_cycle_pages is 0 (default/unlimited), fall back to
+            # max_pages as the total ceiling.
+            mock_mc.scan_recent_games.assert_called_once_with(
+                "pc",
+                cache_pages_hours=ANY,
+                cutoff_date=None,
+                cancel_event=ANY,
+                start_page=1,
+                show_progress=True,
+                year=ANY,
+                max_pages=500,
+            )
+
 
 class TestRunAcquisition:
     """End-to-end acquisition pipeline."""
@@ -5147,38 +5226,6 @@ class TestScanWindowAdvancing:
 
     def test_max_cycle_pages_steady_state_persists_across_cycles(self, tmp_path: Path) -> None:
         """Acquisition runs with max_pages and max_cycle_pages."""
-        from unittest.mock import MagicMock, patch
-
-        from gamarr.pipeline import run_acquisition
-
-        with (
-            patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
-            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
-            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
-        ):
-            mock_source = MagicMock()
-            mock_source_cls.return_value = mock_source
-
-            mock_mc = MagicMock()
-            mock_mc.scan_recent_games.return_value = []
-            mock_mc_cls.return_value = mock_mc
-
-            mock_qbt = MagicMock()
-            mock_qbt.is_connected.return_value = True
-            mock_qbt_cls.return_value = mock_qbt
-
-            results = run_acquisition(
-                platform="pc",
-                db_path=":memory:",
-                qbt_host="localhost",
-                qbt_port=8080,
-                max_pages=104,
-                max_cycle_pages=100,
-            )
-            assert isinstance(results, list)
-
-    def test_backlog_runs_with_params(self, tmp_path: Path) -> None:
-        """Acquisition runs with max_pages and max_cycle_pages configured."""
         from unittest.mock import MagicMock, patch
 
         from gamarr.pipeline import run_acquisition

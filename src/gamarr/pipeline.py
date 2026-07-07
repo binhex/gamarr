@@ -286,7 +286,7 @@ def run_acquisition(
                     start_page=1,
                     show_progress=True,
                     year=scan_year,
-                    max_pages=cfg.max_pages if cfg.max_pages else 0,
+                    max_pages=cfg.max_cycle_pages if cfg.max_cycle_pages else (cfg.max_pages if cfg.max_pages else 0),
                 )
                 browse_games.extend(year_games)
 
