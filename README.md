@@ -18,7 +18,7 @@ Sources are checked in config-defined priority order.
 - **Keyword-based filtering** — reject games whose titles or FitGirl page
   description contain specific keywords.
 - **Relative date cutoff** — set a look-back window in weeks instead of
-  maintaining a static date (e.g. `max_weeks: 52` for roughly one year).
+  maintaining a static date (e.g. `max_pages: 500` for ~21 months of releases).
 - **Re-verification with expiry** — games whose real Metacritic detail
   page scores don't match the browse page scores are kept in a pending queue
   for re-verification until they expire (`max_queue_days`). Once scores pass
@@ -162,8 +162,8 @@ download_sites:
 | `min_metascore_reviews` | Minimum number of critic reviews required. | `10` |
 | `min_user_score` | Minimum Metacritic user score (0–10). | `7.5` |
 | `min_user_reviews` | Minimum number of user reviews required. | `10` |
-| `max_weeks` | Look-back window in weeks from today. Games released before this are skipped. `null` or `0` = no cutoff. | `13` |
-| `max_cycle_weeks` | Size of the rolling scan window in weeks. Each cycle scans this many weeks of recent releases. Staged backlog catch-up: each cycle retreats up to `max_weeks`, then locks into steady-state scanning only the most recent `max_cycle_weeks`. Reduces HTTP load by limiting browse depth each cycle. `0` or `null` = unlimited (retreats through the full `max_weeks` window each time). | `4` |
+| `max_pages` | Maximum browse pages per cycle. Each cycle scans the most recent `max_pages` Metacritic browse pages. `0` = unlimited scan. | `500` |
+| `max_cycle_pages` | Maximum number of browse pages to scan per cycle. `0` = unlimited (scan all pages). | `0` |
 | `age_recheck_weeks` | Games older than this (weeks since release) are permanently processed once their Metacritic scores pass thresholds. `null` or `0` = disabled. | `null` |
 | `enabled` | Enable or disable the Metacritic browse step. Disabling skips game discovery entirely. | `true` |
 | `max_queue_days` | Days a game stays in the pending queue before expiring. `0` = indefinite pending (no expiry). | `30` |
@@ -254,13 +254,11 @@ flowchart TD
    *internal browse-only metrics*, not the real 0–100 critic scores or
    0–10 user scores. These rough scores are used only to build a candidate
    pool — the real filtering happens in step 4. Games are collected within the
-   `max_weeks` window.
-are collected.
+   `max_pages` browse window.
 2. **Browse-page filtering** — Games whose titles match `reject_title` are
-   skipped. Games outside the `max_weeks` window
-   are skipped. `max_cycle_weeks` controls the per-cycle scan window size
-   (default 4 weeks). Each cycle retreats up to `max_weeks`, then switches
-   to steady-state — always scanning the most recent `max_cycle_weeks`.
+   skipped. Games outside the `max_pages` window
+   are skipped. `max_cycle_pages` controls the per-cycle page limit
+   (default `0` = unlimited). Each cycle scans the most recent `max_pages`.
    **Note:** browse scores are on a different scale and always
    exceed the configured thresholds — score filtering effectively starts
    at the verification step (phase 4), not here.
@@ -359,7 +357,8 @@ See the [genres section](#review_sitesmetacriticplatform_overridesplatform) for 
 **A:** Games leave the pending queue in only two ways:
 
 1. **Downloaded** — scores pass thresholds AND a matching torrent is found on FitGirl
-2. **Aged out** — `age_recheck_weeks` is set, the game's scores passed verification, AND the game's release date is old enough
+2. **Aged out** — `age_recheck_weeks` is set, the game's scores passed
+   verification, AND the game's release date is old enough
 
 Games that are verified but **fail score thresholds**, or **pass but have no
 FitGirl match**, stay in the queue. They get re-verified each cycle because
