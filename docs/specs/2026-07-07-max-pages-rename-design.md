@@ -109,6 +109,6 @@ covering removed features (age filtering, hard_cutoff computation,
 
 ## Scope boundary
 
-- **Replace**: `max_weeks` → `max_pages` in config, pipeline, scheduler, database
+- **Replace**: `max_weeks` → `max_pages` in config, pipeline, scheduler, database, README
 - **Remove**: age filter (`_age_days`, `_is_older_than` call, `days_since_release`)
 - **Out of scope**: No new features, no behavioral enhancements beyond the rename
