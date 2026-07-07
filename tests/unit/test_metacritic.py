@@ -133,7 +133,7 @@ class TestMetacriticCache:
         from gamarr.database import BrowsePageCache
 
         with cache._db._session() as session:
-            row = session.get(BrowsePageCache, ("pc", 1))
+            row = session.get(BrowsePageCache, ("pc", 1, 0))
             if row is not None:
                 row.cached_at = old_time
                 session.commit()
@@ -865,6 +865,7 @@ class TestScanRecentGamesCancellation:
             _platform: str,
             _page_number: int,
             _cache_pages_hours: int,
+            **kwargs: object,
         ) -> list[dict] | None:
             nonlocal call_count
             call_count += 1
@@ -914,6 +915,7 @@ class TestScanRecentGamesPageLimit:
             _platform: str,
             page_number: int,
             _cache_pages_hours: int,
+            **kwargs: object,
         ) -> list[dict] | None:
             page_date = (today - datetime.timedelta(days=page_number)).isoformat()
             return [
@@ -940,6 +942,62 @@ class TestScanRecentGamesPageLimit:
         assert len(result) > 500 * 25, (
             f"Expected >{500 * 25} games (beyond 500 pages), got {len(result)} — the 500-page cap blocked the scan"
         )
+
+
+class TestFetchBrowsePageUrl:
+    """_fetch_browse_page URL construction for year-specific browsing."""
+
+    def test_fetch_browse_page_with_year_uses_year_specific_url(self) -> None:
+        """When year is given, URL should use year/sort_order format."""
+        import json
+        from unittest.mock import MagicMock, patch
+
+        key = "browse-game-abc"
+        game = {"title": "Test Game", "slug": "test-game"}
+        page_data = [{key: 1}, {"items": 2}, [3], game, "x" * 2000]
+        html = "<html><body><script>" + json.dumps(page_data) + "</script></body></html>"
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.content = html.encode()
+
+        client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
+        with patch("gamarr.metacritic.requests.get", return_value=mock_resp) as mock_get:
+            client._fetch_browse_page("ps5", 1, 4, year=2026)
+
+        expected_url = (
+            "https://www.metacritic.com/browse/game/ps5/all/2026/new/"
+            "?releaseYearMin=1958&releaseYearMax=2035"
+            "&platform=ps5&page=1"
+        )
+        actual_url = mock_get.call_args[0][0]
+        assert actual_url == expected_url, f"URL mismatch\nExpected: {expected_url}\nGot:      {actual_url}"
+
+    def test_fetch_browse_page_without_year_uses_all_time(self) -> None:
+        """When year is not given, URL should use all-time/sort_order format."""
+        import json
+        from unittest.mock import MagicMock, patch
+
+        key = "browse-game-abc"
+        game = {"title": "Test Game", "slug": "test-game"}
+        page_data = [{key: 1}, {"items": 2}, [3], game, "x" * 2000]
+        html = "<html><body><script>" + json.dumps(page_data) + "</script></body></html>"
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.content = html.encode()
+
+        client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
+        with patch("gamarr.metacritic.requests.get", return_value=mock_resp) as mock_get:
+            client._fetch_browse_page("ps5", 1, 4)  # no year
+
+        expected_url = (
+            "https://www.metacritic.com/browse/game/ps5/all/all-time/new/"
+            "?releaseYearMin=1958&releaseYearMax=2035"
+            "&platform=ps5&page=1"
+        )
+        actual_url = mock_get.call_args[0][0]
+        assert actual_url == expected_url, f"URL mismatch\nExpected: {expected_url}\nGot:      {actual_url}"
 
 
 class TestScanRecentGamesLogging:

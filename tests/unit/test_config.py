@@ -1234,3 +1234,22 @@ def test_migrate_remove_fitgirl_feed_url_strips_rss_url() -> None:
     inner = raw["download_sites"][0]["fitgirl"]
     assert "rss_url" not in inner
     assert "feed_url" not in inner
+
+
+class TestSortOrder:
+    """sort_order config key for year-specific Metacritic browsing."""
+
+    def test_sort_order_defaults_to_new(self) -> None:
+        """Default sort_order must be "new" (newest-first) for valid
+        Metacritic browse URLs. "newest" maps to metascore sorting,
+        returning old games that are immediately filtered by cutoff."""
+        from gamarr.config import MetacriticPlatformConfig
+
+        cfg = MetacriticPlatformConfig()
+        assert cfg.sort_order == "new"
+
+    def test_sort_order_accepts_metascore(self) -> None:
+        from gamarr.config import MetacriticPlatformConfig
+
+        cfg = MetacriticPlatformConfig(sort_order="metascore")
+        assert cfg.sort_order == "metascore"

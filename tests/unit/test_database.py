@@ -20,6 +20,31 @@ class TestDatabase:
         db = Database(db_path)
         db.close()
 
+    def test_scan_state_migration_idempotent(self, tmp_path: Path) -> None:
+        """_migrate_scan_state must add missing columns to an existing table."""
+        from sqlalchemy import create_engine, text
+
+        db_path = str(tmp_path / "old_schema.db")
+        # Simulate an old gamarr DB where scan_state exists but lacks
+        # the columns added later (last_max_weeks).
+        engine = create_engine(f"sqlite:///{db_path}")
+        with engine.connect() as conn:
+            conn.execute(text("CREATE TABLE scan_state (platform TEXT PRIMARY KEY, last_cutoff_date TEXT)"))
+            conn.commit()
+        engine.dispose()
+
+        # Opening with Database should migrate and add the missing columns
+        db = Database(db_path)
+        # Should not raise — migration handled it
+        db.set_last_max_weeks("pc", 250)
+        assert db.get_last_max_weeks("pc") == 250
+        db.close()
+
+        # Second open: migration should be a no-op (columns already exist)
+        db2 = Database(db_path)
+        assert db2.get_last_max_weeks("pc") == 250
+        db2.close()
+
     def test_is_processed_returns_false_for_new_entry(self, tmp_path: Path) -> None:
         db = Database(str(tmp_path / "test.db"))
         assert db.is_processed("fitgirl", "http://example.com/game") is False
@@ -149,6 +174,36 @@ class TestDatabase:
         result = db.get_browse_page_cache("pc", 1, ttl_hours=4)
         assert result is not None
         assert result[0]["slug"] == "game"
+        db.close()
+
+    def test_browse_cache_multiple_years_do_not_conflict(self, tmp_path: Path) -> None:
+        """Storing browse pages for different years must NOT raise IntegrityError.
+
+        The PK was originally (platform, page_number) without year.
+        Year-specific browsing stores multiple years for the same page.
+        Without year in the PK, the second INSERT fails:
+        UNIQUE constraint failed: browse_page_cache.platform, browse_page_cache.page_number
+        """
+        from gamarr.database import Database
+
+        db = Database(str(tmp_path / "test.db"))
+
+        data_2025 = [{"title": "Game 2025", "slug": "game-2025"}]
+        data_2026 = [{"title": "Game 2026", "slug": "game-2026"}]
+
+        # Store for year 2025 (page 1)
+        db.set_browse_page_cache("pc", 1, data_2025, year=2025)
+        # Store for year 2026 (same page 1) — raises IntegrityError without fix
+        db.set_browse_page_cache("pc", 1, data_2026, year=2026)
+
+        # Both must be retrievable independently
+        cached_2025 = db.get_browse_page_cache("pc", 1, ttl_hours=24, year=2025)
+        cached_2026 = db.get_browse_page_cache("pc", 1, ttl_hours=24, year=2026)
+
+        assert cached_2025 is not None, "2025 cache entry lost"
+        assert cached_2026 is not None, "2026 cache entry lost"
+        assert cached_2025[0]["slug"] == "game-2025"
+        assert cached_2026[0]["slug"] == "game-2026"
         db.close()
 
     def test_get_sitemap_cache_zero_ttl(self, tmp_path: Path) -> None:
@@ -729,6 +784,33 @@ class TestMigration:
         assert "verify_attempts" in columns
         db.close()
 
+    def test_browse_cache_migration_adds_year_column(self, tmp_path: Path) -> None:
+        """_migrate_browse_cache must add year column to existing browse_page_cache table."""
+        from sqlalchemy import Column, Integer, MetaData, String, Table, Text, create_engine
+        from sqlalchemy import inspect as sa_inspect
+
+        # Create a database with the pre-migration schema (no year column)
+        db_path = str(tmp_path / "old_browse_schema.db")
+        engine = create_engine(f"sqlite:///{db_path}")
+        metadata = MetaData()
+        Table(
+            "browse_page_cache",
+            metadata,
+            Column("platform", String, primary_key=True),
+            Column("page_number", Integer, primary_key=True),
+            Column("games_json", Text, nullable=False),
+            Column("cached_at", String, nullable=False),
+        )
+        metadata.create_all(engine)
+        engine.dispose()
+
+        # Opening with Database should add the year column
+        db = Database(db_path)
+        inspector = sa_inspect(db._engine)
+        columns = [c["name"] for c in inspector.get_columns("browse_page_cache")]
+        assert "year" in columns, "Migration should add year column to browse_page_cache"
+        db.close()
+
     def test_get_last_cutoff_returns_none_when_not_set(self, tmp_path: Path) -> None:
         """get_last_cutoff returns None when no cutoff has been stored."""
         db = Database(str(tmp_path / "test.db"))
@@ -983,10 +1065,10 @@ class TestClearCache:
         with db._session() as session:
             session.execute(
                 text(
-                    "INSERT INTO browse_page_cache (platform, page_number, games_json, cached_at) "
-                    "VALUES (:p, :pn, :j, :ca)"
+                    "INSERT INTO browse_page_cache (platform, page_number, year, games_json, cached_at) "
+                    "VALUES (:p, :pn, :y, :j, :ca)"
                 ),
-                {"p": "pc", "pn": 1, "j": "[]", "ca": datetime.now(UTC).isoformat()},
+                {"p": "pc", "pn": 1, "y": 0, "j": "[]", "ca": datetime.now(UTC).isoformat()},
             )
             # Insert a detail cache row
             session.execute(

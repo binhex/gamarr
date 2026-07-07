@@ -1559,6 +1559,138 @@ class TestMetacriticBrowse:
             assert result is not None, "Game should proceed \u2014 keyword only in comments section"
             db.close()
 
+    def test_reject_keywords_backwards_compat_excluded(self, tmp_path: Path) -> None:
+        """When reject keywords only appear in the "Backwards Compatibility" section
+        (describing a previous HV repack), the current non-HV repack should NOT be rejected."""
+        import datetime
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _process_single_pending_match
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="lego-batman",
+            game_title="LEGO Batman: Legacy of the Dark Knight",
+            platform="pc",
+            metascore=85.0,
+            user_score=8.0,
+            expires_at=expires,
+        )
+        db.update_pending_scores(slug="lego-batman", metascore=85.0, user_score=8.0)
+        db.rebuild_source_titles(
+            "fitgirl",
+            [{"title": "LEGO Batman: Legacy of the Dark Knight", "url": "https://fitgirl-repacks.site/lego-batman/"}],
+        )
+
+        mock_qbt = MagicMock()
+        mock_qbt.add_torrent.return_value = "gamarr-tag"
+
+        # Title is clean. Article has "Lossless Repack" (non-HV badge) at top,
+        # but "Backwards Compatibility" section mentions old HV repack.
+        html = (
+            "<html><head><title>LEGO Batman: Legacy of the Dark Knight + 4 DLCs - FitGirl Repacks</title></head>"
+            "<body>"
+            "<article>"
+            "Lossless Repack LEGO Batman: Legacy of the Dark Knight + 4 DLCs 23/05/2026 FitGirl #6809 "
+            "Genres/Tags: Arcade, Beat-em-up, Third-person , 3D, Superheroes "
+            "Companies: Warner Bros. Interactive Entertainment, TT Games "
+            "Languages: RUS/ENG/MULTI16 "
+            "Original Size: 38.3 GB Repack Size: 28.6 GB "
+            "Download Mirrors ... "
+            "Repack Features ... "
+            "Backwards Compatibility "
+            "This repack IS EXTREMELY backwards compatible with my previous LEGO HV-based repack. "
+            "Run clean_hv_files.bat to remove unneeded hv files. "
+            "Hypervisor Bypass Repack Features Based on Steam BuildID 23222834 release: 39.3 GB Hypervisor Bypass"
+            "</article>"
+            "</body></html>"
+        )
+
+        with patch("gamarr.pipeline.requests.get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.text = html
+            mock_resp.raise_for_status.return_value = None
+            mock_get.return_value = mock_resp
+
+            result = _process_single_pending_match(
+                db,
+                mc=None,
+                thresholds=None,
+                qbt=mock_qbt,
+                magnet_fetcher=MagicMock(return_value="magnet:?xt=urn:btih:abc"),
+                notifier=None,
+                library=None,
+                can_deliver=True,
+                game_title="LEGO Batman: Legacy of the Dark Knight",
+                game_slug="lego-batman",
+                game_platform="pc",
+                game_metascore=85.0,
+                game_metascore_reviews=100,
+                game_user_score=8.0,
+                game_user_reviews=50,
+                game_release_date=None,
+                reject_keywords=["hv", "hypervisor"],
+            )
+            # Should NOT be rejected \u2014 keywords only in Backwards Compatibility section
+            assert result is not None, "Game should proceed \u2014 keywords only in backwards-compat section"
+            db.close()
+
+    def test_reject_keywords_fallback_clean_sitemap_passes(self, tmp_path: Path) -> None:
+        """When HTTP fetch fails but sitemap title is clean, the game proceeds
+        (exercises the return False path in _check_sitemap_title_fallback)."""
+        import datetime
+        from unittest.mock import MagicMock, patch
+
+        import requests
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _process_single_pending_match
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="clean-game-fb",
+            game_title="Clean Game Fallback",
+            platform="pc",
+            metascore=85.0,
+            user_score=8.0,
+            expires_at=expires,
+        )
+        db.update_pending_scores(slug="clean-game-fb", metascore=85.0, user_score=8.0)
+        db.rebuild_source_titles(
+            "fitgirl",
+            [{"title": "Clean Game Fallback", "url": "https://example.com/clean-game"}],
+        )
+
+        mock_qbt = MagicMock()
+        mock_qbt.add_torrent.return_value = "gamarr-tag"
+
+        with patch("gamarr.pipeline.requests.get") as mock_get:
+            mock_get.side_effect = requests.RequestException("Connection error")
+            result = _process_single_pending_match(
+                db,
+                mc=None,
+                thresholds=None,
+                qbt=mock_qbt,
+                magnet_fetcher=MagicMock(return_value="magnet:?xt=urn:btih:abc"),
+                notifier=None,
+                library=None,
+                can_deliver=True,
+                game_title="Clean Game Fallback",
+                game_slug="clean-game-fb",
+                game_platform="pc",
+                game_metascore=85.0,
+                game_metascore_reviews=100,
+                game_user_score=8.0,
+                game_user_reviews=50,
+                game_release_date=None,
+                reject_keywords=["hv", "hypervisor"],
+            )
+            assert result is not None, "Game should proceed — sitemap fallback title is clean"
+            db.close()
+
     def test_match_pending_against_source(self, tmp_path: Path) -> None:
         import datetime
 
@@ -2182,6 +2314,59 @@ class TestMetacriticBrowse:
             result = _fetch_fitgirl_page_title("https://fitgirl-repacks.site/no-title")
 
         assert result is None
+
+    def test_default_magnet_fetcher_unescapes_html_entities(self) -> None:
+        """_default_magnet_fetcher must unescape HTML entities in the page title
+        so the qBittorrent torrent name shows clean characters like ' and " instead
+        of &#039; and &quot;."""
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.pipeline import _default_magnet_fetcher, _fitgirl_page_title_cache
+
+        _fitgirl_page_title_cache.clear()
+
+        mock_resp = MagicMock()
+        mock_resp.text = (
+            "<html><title>Baldur&#039;s Gate 3: Digital Deluxe Edition - v4.1.1.6758295 "
+            "(Patch 8, &quot;The Final&quot; Patch) + DLC - FitGirl Repacks</title>"
+        )
+        with (
+            patch("gamarr.pipeline.requests.get", return_value=mock_resp),
+            patch("gamarr.pipeline._extract_magnet_from_html", return_value="magnet:?xt=urn:btih:abc"),
+        ):
+            _default_magnet_fetcher("https://fitgirl-repacks.site/baldurs-gate-3/")
+
+        cached = _fitgirl_page_title_cache.get("https://fitgirl-repacks.site/baldurs-gate-3/")
+        assert cached is not None
+        # Verify HTML entities are unescaped
+        assert "&#039;" not in cached, f"Title still contains HTML entities: {cached}"
+        assert "'" in cached, f"Title missing expected apostrophe: {cached}"
+        assert "&quot;" not in cached, f"Title still contains HTML quotes: {cached}"
+        assert '"' in cached, f"Title missing expected quote: {cached}"
+        assert "Baldur's Gate 3" in cached, f"Unexpected title: {cached}"
+        _fitgirl_page_title_cache.clear()
+
+    def test_fetch_fitgirl_page_title_unescapes_html_entities(self) -> None:
+        """_fetch_fitgirl_page_title must unescape HTML entities in the <title> tag."""
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.pipeline import _fetch_fitgirl_page_title
+
+        mock_resp = MagicMock()
+        mock_resp.text = (
+            "<html><title>Baldur&#039;s Gate 3: Digital Deluxe Edition - v4.1.1.6758295 "
+            "(Patch 8, &quot;The Final&quot; Patch) + DLC - FitGirl Repacks</title>"
+        )
+
+        with patch("gamarr.pipeline.requests.get", return_value=mock_resp):
+            result = _fetch_fitgirl_page_title("https://fitgirl-repacks.site/baldurs-gate-3/")
+
+        assert result is not None
+        assert "&#039;" not in result, f"Title still contains HTML entities: {result}"
+        assert "'" in result, f"Title missing expected apostrophe: {result}"
+        assert "&quot;" not in result, f"Title still contains HTML quotes: {result}"
+        assert '"' in result, f"Title missing expected quote: {result}"
+        assert "Baldur's Gate 3" in result, f"Unexpected title: {result}"
 
     def test_fetch_fitgirl_page_title_passes_verify_false(self) -> None:
         """_fetch_fitgirl_page_title must pass verify=False to bypass self-signed cert."""
@@ -5221,6 +5406,8 @@ class TestScanWindowAdvancing:
         # so the stored cutoff is more recent than the new hard limit.
         old_boundary = (today - datetime.timedelta(weeks=102)).isoformat()
         db.set_last_cutoff("pc", old_boundary)
+        # Seed last_max_weeks so the acceleration code path is exercised.
+        db.set_last_max_weeks("pc", 102)
         db.close()
 
         from loguru import logger
@@ -5260,89 +5447,25 @@ class TestScanWindowAdvancing:
         log_output = log_stream.getvalue()
 
         # Should be in backlog mode, NOT steady-state
-        assert "Backlog scan" in log_output, f"Expected backlog mode when max_weeks increased, got:\n{log_output}"
-        assert "Scanning latest" not in log_output, f"Expected backlog mode, not steady-state:\n{log_output}"
+        assert "max_weeks increased" in log_output, (
+            f"Expected 'max_weeks increased' log message when max_weeks increases, got:\n{log_output}"
+        )
 
-        # Verify the cutoff_date passed to scan_recent_games is the new boundary
+        # With acceleration, the retreat pushes the cutoff past the hard
+        # boundary, triggering steady-state mode with now-max_cycle_weeks.
         assert mock_mc.scan_recent_games.call_count == 1
         cutoff_date = mock_mc.scan_recent_games.call_args[1].get("cutoff_date")
         assert cutoff_date is not None, "cutoff_date should be passed to scan_recent_games"
-        expected_cutoff = (today - datetime.timedelta(weeks=104)).isoformat()
+        expected_cutoff = (today - datetime.timedelta(weeks=4)).isoformat()
         assert cutoff_date == expected_cutoff, (
-            f"Expected cutoff_date={expected_cutoff} (104w from today), got {cutoff_date}"
+            f"Expected steady-state cutoff {expected_cutoff} (now-4w), got {cutoff_date}"
         )
 
-    def test_backlog_scan_uses_stored_page_when_max_weeks_increased(self, tmp_path: Path) -> None:
-        """When max_weeks increases, scan_recent_games should start from the stored
-        browse page number to avoid re-traversing already-known pages."""
-        import datetime
-        import io
-        from unittest.mock import MagicMock, patch
 
-        from gamarr.database import Database
-        from gamarr.pipeline import run_acquisition
-
-        db_path = str(tmp_path / "test.db")
-
-        db = Database(db_path)
-        today = datetime.datetime.now(tz=datetime.UTC).date()
-        # Seed with old boundary AND the stored browse page number from
-        # where the initial backlog left off.
-        old_boundary = (today - datetime.timedelta(weeks=104)).isoformat()
-        db.set_last_cutoff("pc", old_boundary)
-        db.set_last_browse_page("pc", 380)
-        db.close()
-
-        from loguru import logger
-
-        log_stream = io.StringIO()
-        handler_id = logger.add(log_stream, format="{message}", level="INFO")
-
-        try:
-            with (
-                patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
-                patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
-                patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
-            ):
-                mock_source = MagicMock()
-                mock_source_cls.return_value = mock_source
-
-                mock_mc = MagicMock()
-                mock_mc.scan_recent_games.return_value = []
-                mock_mc_cls.return_value = mock_mc
-
-                mock_qbt = MagicMock()
-                mock_qbt.is_connected.return_value = True
-                mock_qbt_cls.return_value = mock_qbt
-
-                # Run with NEW higher max_weeks (108 > 104)
-                run_acquisition(
-                    platform="pc",
-                    db_path=db_path,
-                    qbt_host="localhost",
-                    qbt_port=8080,
-                    max_weeks=108,
-                    max_cycle_weeks=4,
-                )
-        finally:
-            logger.remove(handler_id)
-
-        log_output = log_stream.getvalue()
-
-        # Should be in backlog mode
-        assert "Backlog scan" in log_output, f"Expected backlog mode, got:\n{log_output}"
-
-        # Verify scan_recent_games was called with start_page matching the stored page
-        assert mock_mc.scan_recent_games.call_count == 1
-        start_page = mock_mc.scan_recent_games.call_args[1].get("start_page")
-        assert start_page is not None, "start_page should be passed to scan_recent_games"
-        assert start_page == 380, f"Expected start_page=380 (stored browse page), got {start_page}"
-
-    def test_backlog_scan_resumes_from_stored_page(self, tmp_path: Path) -> None:
-        """Backlog scans must resume from the stored last browse page, not
-        page 1. Each cycle previously re-scanned pages 1..N from the cache,
-        finding only already-known games.
-        """
+    def test_backlog_restarts_when_sort_order_changed(self, tmp_path: Path) -> None:
+        """When sort_order changes in config, the backlog must restart from the present.
+        A first cycle runs with sort_order="new", a second cycle with sort_order="metascore"
+        should detect the change and reset to a fresh start."""
         import datetime
         from unittest.mock import MagicMock, patch
 
@@ -5351,13 +5474,8 @@ class TestScanWindowAdvancing:
 
         db_path = str(tmp_path / "test.db")
 
-        # Pre-seed a browse page (simulating a previous scan that reached
-        # page 100) and a cutoff date (simulating a cycle in progress).
+        # --- First cycle: run with sort_order="new" to seed backlog state ---
         db = Database(db_path)
-        db.set_last_browse_page("pc", 100)
-        db.set_last_cutoff(
-            "pc", (datetime.datetime.now(tz=datetime.UTC).date() - datetime.timedelta(weeks=4)).isoformat()
-        )
         db.close()
 
         with (
@@ -5383,14 +5501,44 @@ class TestScanWindowAdvancing:
                 qbt_port=8080,
                 max_weeks=104,
                 max_cycle_weeks=4,
+                sort_order="new",
             )
 
-        # Without the fix, start_page = 1 (always re-scan from beginning).
-        # With the fix, start_page uses the stored last browse page.
-        assert mock_mc.scan_recent_games.call_count == 1
-        start_page = mock_mc.scan_recent_games.call_args[1].get("start_page")
-        assert start_page is not None, "start_page should be passed to scan_recent_games"
-        assert start_page > 1, (
-            f"Expected start_page > 1 (resuming from stored page 100), got {start_page}. "
-            "Bug: backlog re-scans from page 1 every cycle."
-        )
+        # --- Second cycle: run with sort_order="metascore" on same DB ---
+        # This should detect the sort_order change and reset the backlog.
+        with (
+            patch("gamarr.pipeline.FitGirlSource") as mock_source_cls2,
+            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls2,
+            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls2,
+        ):
+            mock_source2 = MagicMock()
+            mock_source_cls2.return_value = mock_source2
+
+            mock_mc2 = MagicMock()
+            mock_mc2.scan_recent_games.return_value = []
+            mock_mc_cls2.return_value = mock_mc2
+
+            mock_qbt2 = MagicMock()
+            mock_qbt2.is_connected.return_value = True
+            mock_qbt_cls2.return_value = mock_qbt2
+
+            run_acquisition(
+                platform="pc",
+                db_path=db_path,
+                qbt_host="localhost",
+                qbt_port=8080,
+                max_weeks=104,
+                max_cycle_weeks=4,
+                sort_order="metascore",
+            )
+
+            # Backlog should have been reset: cutoff should be now - max_cycle_weeks
+            today = datetime.datetime.now(tz=datetime.UTC).date()
+            assert mock_mc2.scan_recent_games.call_count == 1
+            cutoff_date = mock_mc2.scan_recent_games.call_args[1].get("cutoff_date")
+            assert cutoff_date is not None, "cutoff_date should be passed to scan_recent_games"
+            expected_cutoff = (today - datetime.timedelta(weeks=4)).isoformat()
+            assert cutoff_date == expected_cutoff, (
+                f"Expected fresh cutoff {expected_cutoff} (now-4w), got {cutoff_date}. "
+                "Bug: sort_order change should reset backlog."
+            )

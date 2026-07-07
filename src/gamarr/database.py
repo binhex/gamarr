@@ -97,6 +97,7 @@ class BrowsePageCache(Base):
 
     platform: Mapped[str] = mapped_column(String, primary_key=True)
     page_number: Mapped[int] = mapped_column(Integer, primary_key=True)
+    year: Mapped[int] = mapped_column(Integer, primary_key=True, default=0)
     games_json: Mapped[str] = mapped_column(Text, nullable=False)
     cached_at: Mapped[str] = mapped_column(String, nullable=False)
 
@@ -117,7 +118,8 @@ class ScanState(Base):
 
     platform: Mapped[str] = mapped_column(String, primary_key=True)
     last_cutoff_date: Mapped[str | None] = mapped_column(String, nullable=True)
-    last_browse_page: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_max_weeks: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_sort_order: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class Database:
@@ -151,6 +153,7 @@ class Database:
         self._migrate_game_detail_cache()
         self._migrate_source_titles()
         self._migrate_scan_state()
+        self._migrate_browse_cache()
 
     def _migrate_pending_games(self) -> None:
         """Add columns to pending_games that were added in newer versions."""
@@ -203,17 +206,39 @@ class Database:
             logger.debug("Migration of source_titles skipped (table may not exist yet)")
 
     def _migrate_scan_state(self) -> None:
-        """Add last_browse_page column to scan_state if missing."""
+        """Add missing columns to scan_state if not present."""
         try:
             inspector = sa_inspect(self._engine)
             columns = [c["name"] for c in inspector.get_columns("scan_state")]
-            if "last_browse_page" not in columns:
+            if "last_max_weeks" not in columns:
                 with self._session() as session:
-                    session.execute(text("ALTER TABLE scan_state ADD COLUMN last_browse_page INTEGER"))
+                    session.execute(text("ALTER TABLE scan_state ADD COLUMN last_max_weeks INTEGER"))
                     session.commit()
-                logger.debug("Added last_browse_page column to scan_state")
+                logger.debug("Added last_max_weeks column to scan_state")
+            if "last_sort_order" not in columns:
+                with self._session() as session:
+                    session.execute(text("ALTER TABLE scan_state ADD COLUMN last_sort_order VARCHAR"))
+                    session.commit()
+                logger.debug("Added last_sort_order column to scan_state")
         except Exception:
             logger.debug("Migration of scan_state skipped (table may not exist yet)")
+
+    def _migrate_browse_cache(self) -> None:
+        """Add year column to browse_page_cache and fix primary key."""
+        try:
+            inspector = sa_inspect(self._engine)
+            pk = inspector.get_pk_constraint("browse_page_cache")
+            pk_cols = pk.get("constrained_columns", [])
+
+            if "year" not in pk_cols:
+                # Old schema: year not in PK.  Drop and recreate the table so
+                # the PRIMARY KEY is (platform, page_number, year).  Cached
+                # data is lost but will be repopulated on the next fetch.
+                BrowsePageCache.__table__.drop(self._engine)  # type: ignore[attr-defined]
+                BrowsePageCache.__table__.create(self._engine)  # type: ignore[attr-defined]
+                logger.debug("Recreated browse_page_cache with year in primary key")
+        except Exception:
+            logger.debug("Migration of browse_cache skipped (table may not exist yet)")
 
     def close(self) -> None:
         self._engine.dispose()
@@ -284,22 +309,40 @@ class Database:
                 row.last_cutoff_date = cutoff_date
             session.commit()
 
-    def get_last_browse_page(self, platform: str) -> int | None:
-        """Return the last stored browse page number for *platform*, or None."""
+    def get_last_max_weeks(self, platform: str) -> int | None:
+        """Return the last stored max_weeks value for *platform*, or None."""
         with self._session() as session:
             row = session.get(ScanState, platform)
         if row is None:
             return None
-        return row.last_browse_page
+        return row.last_max_weeks
 
-    def set_last_browse_page(self, platform: str, page_number: int) -> None:
-        """Store or update the last browse page number for *platform*."""
+    def set_last_max_weeks(self, platform: str, max_weeks: int | None) -> None:
+        """Store or update the max_weeks value for *platform*."""
         with self._session() as session:
             row = session.get(ScanState, platform)
             if row is None:
-                session.add(ScanState(platform=platform, last_browse_page=page_number))
+                session.add(ScanState(platform=platform, last_max_weeks=max_weeks))
             else:
-                row.last_browse_page = page_number
+                row.last_max_weeks = max_weeks
+            session.commit()
+
+    def get_last_sort_order(self, platform: str) -> str | None:
+        """Return the last stored sort_order for *platform*, or None."""
+        with self._session() as session:
+            row = session.get(ScanState, platform)
+        if row is None:
+            return None
+        return row.last_sort_order
+
+    def set_last_sort_order(self, platform: str, sort_order: str) -> None:
+        """Store or update the sort_order value for *platform*."""
+        with self._session() as session:
+            row = session.get(ScanState, platform)
+            if row is None:
+                session.add(ScanState(platform=platform, last_sort_order=sort_order))
+            else:
+                row.last_sort_order = sort_order
             session.commit()
 
     def get_expired_pending(self) -> list[PendingGame]:
@@ -697,27 +740,54 @@ class Database:
             )
             session.commit()
 
-    def get_browse_page_cache(self, platform: str, page_number: int, ttl_hours: int) -> list[dict[str, Any]] | None:
-        """Return cached browse page games list or None if expired/missing."""
+    def get_browse_page_cache(
+        self,
+        platform: str,
+        page_number: int,
+        ttl_hours: int,
+        *,
+        year: int = 0,
+    ) -> list[dict[str, Any]] | None:
+        """Return cached browse page games list or None if expired/missing.
+
+        Args:
+            platform: Target platform.
+            page_number: Browse page number.
+            ttl_hours: Cache TTL in hours.
+            year: Year filter.  ``0`` matches rows stored without a year
+                (e.g. legacy all-time entries or fallback lookups).
+        """
         if ttl_hours <= 0:
             return None
         cutoff = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(hours=ttl_hours)).isoformat()
         with self._session() as session:
-            row = session.get(BrowsePageCache, (platform, page_number))
+            row = (
+                session.query(BrowsePageCache).filter_by(platform=platform, page_number=page_number, year=year).first()
+            )
             if row is None or row.cached_at <= cutoff:
                 return None
             return cast("list[dict[str, Any]]", json.loads(row.games_json))
 
-    def set_browse_page_cache(self, platform: str, page_number: int, games: list[dict[str, Any]]) -> None:
+    def set_browse_page_cache(
+        self,
+        platform: str,
+        page_number: int,
+        games: list[dict[str, Any]],
+        *,
+        year: int = 0,
+    ) -> None:
         """Insert or replace a browse page cache entry."""
         now = datetime.datetime.now(tz=datetime.UTC).isoformat()
         with self._session() as session:
-            row = session.get(BrowsePageCache, (platform, page_number))
+            row = (
+                session.query(BrowsePageCache).filter_by(platform=platform, page_number=page_number, year=year).first()
+            )
             if row is None:
                 session.add(
                     BrowsePageCache(
                         platform=platform,
                         page_number=page_number,
+                        year=year,
                         games_json=json.dumps(games),
                         cached_at=now,
                     )

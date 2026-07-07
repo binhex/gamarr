@@ -7,7 +7,8 @@ import re
 import types
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from html import unescape
+from typing import TYPE_CHECKING, Any, Literal
 
 import requests
 from loguru import logger
@@ -118,6 +119,7 @@ class AcquisitionConfig:
     fitgirl_max_queue_days: int = 60
     notify_on_scrape_failure: bool = True
     age_recheck_weeks: int | None = None
+    sort_order: Literal["new", "metascore"] = "new"
 
     def _age_days(self) -> int:
         """Return the age filter in days, derived from max_weeks."""
@@ -158,6 +160,7 @@ def run_acquisition(
     fitgirl_reject_keywords: list[str] | None = None,
     cancel_event: threading.Event | None = None,
     download_sites: list | None = None,
+    sort_order: Literal["new", "metascore"] = "new",
 ) -> list[dict[str, Any]]:
     """Execute one scan cycle.
 
@@ -182,6 +185,7 @@ def run_acquisition(
         reject_genre=reject_genre,
         reject_title=reject_title,
         age_recheck_weeks=age_recheck_weeks,
+        sort_order=sort_order,
     )
 
     logger.info("Fetching Metacritic pages for platform '{}', please wait...", platform)
@@ -253,11 +257,9 @@ def run_acquisition(
             # max_weeks is the absolute hard cutoff.
             cutoff_date: str | None = None
             effective_cycle_weeks = cfg.max_cycle_weeks
-            # Start from the last known browse page so each backlog cycle
-            # scans forward from where the previous cycle stopped, instead
-            # of re-traversing already-known pages from the beginning.
-            # When no stored page exists (first cycle), start from page 1.
-            browse_start_page = db.get_last_browse_page(platform) or 1
+            # Always start from page 1. The backlog no longer stores
+            # browse page position; each cycle starts fresh.
+            browse_start_page = 1
 
             # Determine the retreating cutoff based on the last stored position.
             # Each cycle advances max_cycle_weeks weeks further back from the
@@ -271,7 +273,42 @@ def run_acquisition(
                     except (ValueError, TypeError):
                         last_date = None
                     if last_date:
-                        retreating_cutoff = last_date - datetime.timedelta(weeks=cfg.max_cycle_weeks)
+                        # Detect max_weeks increase: if the stored value is
+                        # lower than the current config, the user expanded
+                        # the scan boundary.  Accelerate the retreat by the
+                        # difference so the backlog catches up faster.
+                        previous_max_weeks = db.get_last_max_weeks(platform)
+                        if (
+                            previous_max_weeks is not None
+                            and cfg.max_weeks is not None
+                            and cfg.max_weeks > previous_max_weeks
+                        ):
+                            diff = cfg.max_weeks - previous_max_weeks
+                            logger.info(
+                                "Backlog restart: max_weeks increased from {} to {} — accelerating retreat by {} week(s)",
+                                previous_max_weeks,
+                                cfg.max_weeks,
+                                diff,
+                            )
+                            last_date -= datetime.timedelta(weeks=diff)
+
+                        # Detect sort_order change: if the stored value differs
+                        # from the current config, reset the backlog so the new
+                        # sort order starts from a clean state.
+                        previous_sort_order = db.get_last_sort_order(platform)
+                        if previous_sort_order is not None and previous_sort_order != cfg.sort_order:
+                            logger.info(
+                                "Sort order changed from '{}' to '{}' — resetting backlog",
+                                previous_sort_order,
+                                cfg.sort_order,
+                            )
+                            cutoff_date = None
+                            last_date = None
+
+                        if last_date is not None:
+                            retreating_cutoff = last_date - datetime.timedelta(weeks=cfg.max_cycle_weeks)
+                        else:
+                            retreating_cutoff = None
                         # If max_weeks was increased while in steady-state, the
                         # stored cutoff (at the old boundary) is more recent than
                         # today's hard boundary.  Detect this by checking whether
@@ -280,6 +317,7 @@ def run_acquisition(
                         if (
                             cfg.max_weeks is not None
                             and cfg.max_weeks > 0
+                            and retreating_cutoff is not None
                             and retreating_cutoff
                             <= datetime.datetime.now(tz=datetime.UTC).date() - datetime.timedelta(weeks=cfg.max_weeks)
                         ):
@@ -292,9 +330,9 @@ def run_acquisition(
                             # backlog it's much further away.
                             if hard < last_date and (last_date - hard).days <= cfg.max_cycle_weeks * 7:
                                 cutoff_date = hard.isoformat()
-                            else:
+                            elif retreating_cutoff is not None:
                                 cutoff_date = retreating_cutoff.isoformat()
-                        else:
+                        elif retreating_cutoff is not None:
                             cutoff_date = retreating_cutoff.isoformat()
                 if cutoff_date is None:
                     # First cycle or unparseable stored date — start from now - max_cycle_weeks
@@ -316,8 +354,8 @@ def run_acquisition(
                     # hit the max_weeks boundary), switch to steady-state
                     # mode: scan only max_cycle_weeks from today instead of
                     # the full max_weeks range.  Always start from page 1
-                    # so new releases on the most recent pages are picked up.
-                    browse_start_page = 1
+                    # (set above), so new releases on the most recent pages
+                    # are picked up.
                     if cfg.max_cycle_weeks and cfg.max_cycle_weeks > 0:
                         cutoff_date = (
                             datetime.datetime.now(tz=datetime.UTC).date()
@@ -369,14 +407,32 @@ def run_acquisition(
 
             pending_before = len(db.get_pending(platform=platform))
 
-            browse_games = mc.scan_recent_games(
-                platform,
-                cache_pages_hours=cfg.cache_pages_hours,
-                cutoff_date=cutoff_date,
-                cancel_event=cancel_event,
-                start_page=browse_start_page,
-                show_progress=(not clamped_by_max_weeks),
-            )
+            # Determine the year to scan from the cutoff date
+            if cutoff_date is not None:
+                scan_year = datetime.datetime.strptime(cutoff_date, "%Y-%m-%d").year
+            else:
+                scan_year = datetime.datetime.now(tz=datetime.UTC).year
+
+            # Set sort_order from config on the client
+            mc.sort_order = cfg.sort_order
+
+            # Year-specific browsing: scan from the cutoff year up to the
+            # current year. Each year's pages are cached independently,
+            # so scanning multiple years is fast after the first fetch.
+            browse_games = []
+            cutoff_year = scan_year
+            current_year = datetime.datetime.now(tz=datetime.UTC).year
+            for scan_year in range(cutoff_year, current_year + 1):
+                year_games = mc.scan_recent_games(
+                    platform,
+                    cache_pages_hours=cfg.cache_pages_hours,
+                    cutoff_date=cutoff_date,
+                    cancel_event=cancel_event,
+                    start_page=browse_start_page,
+                    show_progress=(not clamped_by_max_weeks),
+                    year=scan_year,
+                )
+                browse_games.extend(year_games)
 
             # Store cutoff for next cycle (after scan completes).
             # When the clamp fired (backlog caught up), store hard_cutoff
@@ -387,11 +443,12 @@ def run_acquisition(
                     db.set_last_cutoff(platform, hard_cutoff_date.isoformat())
                 else:
                     db.set_last_cutoff(platform, cutoff_date)
-                # Track the last scanned browse page so future max_weeks
-                # increases can skip already-known pages.
-                _last_page = getattr(mc, "_recent_games_last_page", None)
-                if isinstance(_last_page, int):
-                    db.set_last_browse_page(platform, _last_page)
+            # Persist the current max_weeks config so the next cycle can
+            # detect if the user changed it.
+            db.set_last_max_weeks(platform, cfg.max_weeks)
+            # Persist the current sort_order so the next cycle can
+            # detect if the user changed it.
+            db.set_last_sort_order(platform, cfg.sort_order)
             if browse_games:
                 thresholds = {
                     "min_metascore": cfg.min_metascore,
@@ -427,7 +484,16 @@ def run_acquisition(
         # check whether scraping is broken (skip if cancelled)
         if cfg.enabled and not is_cancelled(cancel_event) and not browse_games and cfg.notify_on_scrape_failure:
             # Check if we have any cached browse data (if so, stale data is fine)
-            cached_exists = mc._cache.get_browse_page(platform, 1, ttl_hours=cfg.cache_pages_hours) is not None
+            cached_exists = (
+                mc._cache.get_browse_page(platform, 1, ttl_hours=cfg.cache_pages_hours, year=0) is not None
+                or mc._cache.get_browse_page(
+                    platform,
+                    1,
+                    ttl_hours=cfg.cache_pages_hours,
+                    year=datetime.datetime.now(tz=datetime.UTC).year,
+                )
+                is not None
+            )
             if not cached_exists:
                 _diagnose_and_notify_scrape(
                     notifier,
@@ -620,12 +686,15 @@ def _reject_by_browse_review_counts(
     return None
 
 
-def _title_contains_keywords(title: str, keywords: list[str] | None) -> bool:
-    """Return True if *title* case-insensitively matches any *keywords*."""
+def _title_contains_keywords(title: str, keywords: list[str] | None) -> str | None:
+    """Return the first matching keyword (lowercased), or None if no match."""
     if not keywords:
-        return False
+        return None
     title_lower = title.lower()
-    return any(kw.lower() in title_lower for kw in keywords)
+    for kw in keywords:
+        if kw.lower() in title_lower:
+            return kw.lower()
+    return None
 
 
 def _title_matches_reject(title: str, reject_title: list[str] | None) -> bool:
@@ -1763,7 +1832,9 @@ def _check_reject_keywords(
     The check is deliberately scoped to the ``<article>`` element to
     exclude sidebar navigation (which contains "Hypervisor" links on
     every page) and the comments section (rogue comments should never
-    block a download).
+    block a download).  Article text is additionally truncated before
+    the "Backwards Compatibility" section to avoid false positives from
+    historical references to previous repacks.
     """
     if not reject_keywords:
         return False
@@ -1774,19 +1845,27 @@ def _check_reject_keywords(
     if page_title is None and article_text is None:
         return _check_sitemap_title_fallback(db, best, game_title, game_slug, reject_keywords)
 
-    if article_text and _title_contains_keywords(article_text, reject_keywords):
+    # Truncate article text before "Backwards Compatibility" section.
+    # FitGirl pages describe backwards compatibility with previous repacks
+    # there, which may reference keywords (e.g. "HV", "hypervisor") from
+    # older releases — causing false positives for current non-HV repacks.
+    article_text = _truncate_at_backwards_compat(article_text)
+
+    if article_text and (matched := _title_contains_keywords(article_text, reject_keywords)):
         logger.info(
-            "Skipping match for '{}' \u2014 FitGirl article body contains rejected keyword",
+            "Skipping match for '{}' \u2014 FitGirl article body contains rejected keyword '{}'",
             game_title,
+            matched,
         )
         db.touch_pending(game_slug)
         return True
 
-    if page_title and _title_contains_keywords(page_title, reject_keywords):
+    if page_title and (matched := _title_contains_keywords(page_title, reject_keywords)):
         logger.info(
-            "Skipping match for '{}' \u2014 FitGirl page title '{}' contains rejected keyword",
+            "Skipping match for '{}' \u2014 FitGirl page title '{}' contains rejected keyword '{}'",
             game_title,
             page_title,
+            matched,
         )
         db.touch_pending(game_slug)
         return True
@@ -1810,15 +1889,34 @@ def _check_sitemap_title_fallback(
         "Could not fetch page content for '{}' \u2014 checking sitemap title instead",
         best["url"],
     )
-    if _title_contains_keywords(best["title"], reject_keywords):
+    matched = _title_contains_keywords(best["title"], reject_keywords)
+    if matched:
         logger.info(
-            "Skipping match for '{}' \u2014 sitemap title '{}' contains rejected keyword",
+            "Skipping match for '{}' \u2014 sitemap title '{}' contains rejected keyword '{}'",
             game_title,
             best["title"],
+            matched,
         )
         db.touch_pending(game_slug)
         return True
     return False
+
+
+def _truncate_at_backwards_compat(article_text: str | None) -> str | None:
+    """Truncate *article_text* before the backwards-compatibility section.
+
+    FitGirl article pages include a "Backwards Compatibility" section that
+    describes how to migrate from a previous repack (which may have been an
+    HV/hypervisor release). Checking keywords in that section produces false
+    positives for the current (non-HV) repack.
+
+    Returns the original text when the section marker is absent or when
+    *article_text* is ``None``.
+    """
+    if not article_text:
+        return article_text
+    idx = article_text.lower().find("backwards compatibility")
+    return article_text[:idx] if idx >= 0 else article_text
 
 
 def _process_single_pending_match(
@@ -2160,8 +2258,9 @@ def _fetch_fitgirl_page_content(url: str) -> tuple[str | None, str | None]:
     """Fetch a FitGirl repack page and extract its <title> and <article> text.
 
     Returns ``(title, article_text)`` where both are ``None`` if the page
-    could not be fetched or the tag is missing.  The article text has HTML
-    tags stripped and whitespace collapsed.
+    could not be fetched or the tag is missing.  The title has HTML entities
+    decoded (e.g. ``&#039;`` → ``'``, ``&quot;`` → ``"``).  The article
+    text has HTML tags stripped and whitespace collapsed.
 
     Returns:
         A ``(title, article_text)`` tuple.
@@ -2185,7 +2284,7 @@ def _fetch_fitgirl_page_content(url: str) -> tuple[str | None, str | None]:
     title: str | None = None
     match = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
     if match:
-        title = match.group(1).strip()
+        title = unescape(match.group(1).strip())
 
     # Extract <article> text content (excludes sidebar, nav, comments)
     article_text: str | None = None
@@ -2211,7 +2310,8 @@ def _default_magnet_fetcher(url: str) -> str | None:
     """Fetch a source page and extract its magnet link.
 
     Handles both FitGirl (self-signed cert, verify=False) and
-    FreeGOG (standard HTTPS) pages.  Caches the HTML <title> tag in
+    FreeGOG (standard HTTPS) pages.  Caches the unescaped HTML
+    ``<title>`` tag (with HTML entities decoded) in
     ``_fitgirl_page_title_cache`` so callers can retrieve it without
     a second HTTP request.
     """
@@ -2235,5 +2335,5 @@ def _default_magnet_fetcher(url: str) -> str | None:
         return None
     # Cache page title for torrent rename (avoids re-fetch)
     title_match = re.search(r"<title[^>]*>(.*?)</title>", resp.text, re.IGNORECASE | re.DOTALL)
-    _fitgirl_page_title_cache[url] = title_match.group(1).strip() if title_match else None
+    _fitgirl_page_title_cache[url] = unescape(title_match.group(1).strip()) if title_match else None
     return _extract_magnet_from_html(resp.text)
