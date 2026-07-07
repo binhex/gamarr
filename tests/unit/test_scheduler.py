@@ -146,15 +146,17 @@ class TestShutdownEvent:
 class TestBuildKwargs:
     """_build_kwargs config extraction."""
 
-    def test_build_kwargs_includes_max_cycle_weeks(self) -> None:
-        """_build_kwargs should include max_cycle_weeks from config."""
+    def test_build_kwargs_includes_max_pages_and_max_cycle_pages(self) -> None:
+        """_build_kwargs should include max_pages and max_cycle_pages from config."""
         from gamarr.config import Config
         from gamarr.scheduler import _build_kwargs
 
         config = Config()
         kwargs = _build_kwargs(config)
-        assert "max_cycle_weeks" in kwargs
-        assert kwargs["max_cycle_weeks"] == 4
+        assert "max_pages" in kwargs
+        assert kwargs["max_pages"] == 500
+        assert "max_cycle_pages" in kwargs
+        assert kwargs["max_cycle_pages"] == 0
 
     def test_build_kwargs_includes_fitgirl_reject_keywords(self) -> None:
         """_build_kwargs should include fitgirl_reject_keywords, not fitgirl_exclude_keywords."""
@@ -228,7 +230,7 @@ class TestDaemonMode:
                 config.review_sites.metacritic.platform_overrides["pc"].min_metascore_reviews = 5
                 config.review_sites.metacritic.platform_overrides["pc"].min_user_score = 7.5
                 config.review_sites.metacritic.platform_overrides["pc"].min_user_reviews = 10
-                config.review_sites.metacritic.platform_overrides["pc"].max_weeks = 12
+                config.review_sites.metacritic.platform_overrides["pc"].max_pages = 12
                 config.review_sites.metacritic.platform_overrides["pc"].cache_details_days = 7
                 config.review_sites.metacritic.platform_overrides["pc"].cache_pages_hours = 4
                 config.download_sites.fitgirl.platform = "pc"
@@ -273,7 +275,7 @@ class TestDaemonMode:
             config.review_sites.metacritic.platform_overrides["pc"].min_metascore_reviews = 5
             config.review_sites.metacritic.platform_overrides["pc"].min_user_score = 7.5
             config.review_sites.metacritic.platform_overrides["pc"].min_user_reviews = 10
-            config.review_sites.metacritic.platform_overrides["pc"].max_weeks = 12
+            config.review_sites.metacritic.platform_overrides["pc"].max_pages = 12
             config.review_sites.metacritic.platform_overrides["pc"].cache_details_days = 7
             config.review_sites.metacritic.platform_overrides["pc"].cache_pages_hours = 4
             config.download_sites.fitgirl.platform = "pc"

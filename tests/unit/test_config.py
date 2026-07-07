@@ -80,9 +80,9 @@ class TestConfigModels:
         assert not hasattr(cfg, "pending_days"), "Field was renamed to max_queue_days"
         assert not hasattr(cfg, "recheck_days"), "Field was renamed to max_queue_days"
         assert cfg.max_queue_days == 30
-        assert cfg.max_weeks == 13, "Default max_weeks should be ~90 days (13 weeks)"
-        assert not hasattr(cfg, "cutoff_weeks"), "Field was renamed to max_weeks"
-        assert not hasattr(cfg, "max_games"), "Field was removed — max_weeks controls game count"
+        assert cfg.max_pages == 500, "Default max_pages should be ~90 days (13 weeks)"
+        assert not hasattr(cfg, "cutoff_weeks"), "Field was renamed to max_pages"
+        assert not hasattr(cfg, "max_games"), "Field was removed — max_pages controls game count"
 
     def test_cache_details_days_replaces_cache_ttl_days(self) -> None:
         """MetacriticPlatformConfig should use cache_details_days, not cache_ttl_days."""
@@ -327,7 +327,7 @@ class TestConfigModels:
         assert "metacritic_cache_ttl_hours" not in mc_pc
         assert "cutoff_date" not in mc_pc
         assert mc_pc["enabled"] is False
-        assert "max_games" not in mc_pc, "max_games was removed — use max_weeks"
+        assert "max_games" not in mc_pc, "max_games was removed — use max_pages"
         assert mc_pc["cache_pages_hours"] == 12
 
     def test_migrate_config_handles_exception_gracefully(self) -> None:
@@ -404,24 +404,24 @@ class TestConfigModels:
         cfg = MetacriticPlatformConfig()
         assert cfg.age_recheck_weeks is None
 
-    def test_max_cycle_weeks_default(self) -> None:
-        """MetacriticPlatformConfig.max_cycle_weeks defaults to 4."""
+    def test_max_cycle_pages_default(self) -> None:
+        """MetacriticPlatformConfig.max_cycle_pages defaults to 0."""
         from gamarr.config import MetacriticPlatformConfig
 
         cfg = MetacriticPlatformConfig()
-        assert cfg.max_cycle_weeks == 4
+        assert cfg.max_cycle_pages == 0
 
-    def test_max_cycle_weeks_ge_zero(self) -> None:
-        """max_cycle_weeks must be >= 0 (0 or None = unlimited)."""
+    def test_max_cycle_pages_ge_zero(self) -> None:
+        """max_cycle_pages must be >= 0 (0 or None = unlimited)."""
         from pydantic import ValidationError
 
         from gamarr.config import MetacriticPlatformConfig
 
-        MetacriticPlatformConfig(max_cycle_weeks=0)
-        MetacriticPlatformConfig(max_cycle_weeks=None)
-        MetacriticPlatformConfig(max_cycle_weeks=4)
+        MetacriticPlatformConfig(max_cycle_pages=0)
+        MetacriticPlatformConfig(max_cycle_pages=None)
+        MetacriticPlatformConfig(max_cycle_pages=4)
         with pytest.raises(ValidationError):
-            MetacriticPlatformConfig(max_cycle_weeks=-1)
+            MetacriticPlatformConfig(max_cycle_pages=-1)
 
 
 class TestLoadConfig:
@@ -486,7 +486,7 @@ class TestLoadConfig:
         raw: dict[str, Any] = {
             "metacritic": {
                 "platform_overrides": {
-                    "pc": {"min_metascore": 75, "max_weeks": 12},
+                    "pc": {"min_metascore": 75, "max_pages": 12},
                 },
             },
         }
@@ -572,11 +572,11 @@ class TestLoadConfig:
         assert result is True
         pc = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
         assert "days_since_release" not in pc
-        assert "cutoff_weeks" not in pc, "cutoff_weeks was renamed to max_weeks"
-        assert pc["max_weeks"] == 12
+        assert "cutoff_weeks" not in pc, "cutoff_weeks was renamed to max_pages"
+        assert pc["max_pages"] == 12
 
-    def test_migrate_days_since_release_converts_to_max_weeks(self) -> None:
-        """days_since_release without max_weeks should be converted."""
+    def test_migrate_days_since_release_converts_to_max_pages(self) -> None:
+        """days_since_release without max_pages should be converted."""
 
         from gamarr.config import _migrate_config
 
@@ -591,8 +591,8 @@ class TestLoadConfig:
         assert result is True
         pc = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
         assert "days_since_release" not in pc
-        assert "cutoff_weeks" not in pc, "cutoff_weeks was renamed to max_weeks"
-        assert pc["max_weeks"] == 17  # 120 / 7 ≈ 17
+        assert "cutoff_weeks" not in pc, "cutoff_weeks was renamed to max_pages"
+        assert pc["max_pages"] == 17  # 120 / 7 ≈ 17
 
     def test_migrate_pending_days_to_max_queue_days(self) -> None:
         """Old pending_days key is renamed to max_queue_days in metacritic and fitgirl sections."""
@@ -656,7 +656,7 @@ class TestLoadConfig:
         raw: dict[str, Any] = {
             "metacritic": {
                 "platform_overrides": {
-                    "pc": {"recheck_days": 30, "max_weeks": 12},
+                    "pc": {"recheck_days": 30, "max_pages": 12},
                 },
             },
             "download_sites": {

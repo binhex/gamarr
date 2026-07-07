@@ -558,6 +558,7 @@ class MetacriticClient:
         self._cache = cache
         self._cache_hits_lock = threading.Lock()
         self.cache_hits = 0
+        self.sort_order = "new"
         self._recent_games_last_page: int | None = None
 
     def close(self) -> None:
@@ -712,13 +713,20 @@ class MetacriticClient:
         )
         return None
 
-    def _fetch_browse_page(self, platform: str, page_number: int, cache_pages_hours: int) -> list[dict] | None:
+    def _fetch_browse_page(
+        self,
+        platform: str,
+        page_number: int,
+        cache_pages_hours: int,
+        year: int | None = None,
+    ) -> list[dict] | None:
         """Return game listings for a browse page from cache or HTTP."""
-        cached = self._cache.get_browse_page(platform, page_number, ttl_hours=cache_pages_hours)
+        cached = self._cache.get_browse_page(platform, page_number, ttl_hours=cache_pages_hours, year=year or 0)
         if cached is not None:
             return cached
+        year_str = str(year) if year is not None else "all-time"
         url = (
-            f"https://www.metacritic.com/browse/game/{platform}/all/all-time/new/"
+            f"https://www.metacritic.com/browse/game/{platform}/all/{year_str}/{self.sort_order}/"
             f"?releaseYearMin=1958&releaseYearMax=2035"
             f"&platform={platform}&page={page_number}"
         )
@@ -733,7 +741,7 @@ class MetacriticClient:
                 return None
             parsed = _parse_browse_page(resp.content)
             if parsed is not None:
-                self._cache.set_browse_page(platform, page_number, parsed)
+                self._cache.set_browse_page(platform, page_number, parsed, year=year or 0)
             return parsed
         except requests.RequestException as exc:
             logger.warning("Failed to fetch browse page '{}': {}", url, exc)
@@ -752,7 +760,9 @@ class MetacriticClient:
         platform: str,
         *,
         max_games: int = 0,
+        max_pages: int = 0,
         cache_pages_hours: int = 6,
+        year: int | None = None,
         cutoff_date: str | None = None,
         cancel_event: threading.Event | None = None,
         start_page: int = 1,
@@ -790,7 +800,7 @@ class MetacriticClient:
         effective_max = max_games if max_games > 0 else 999999
         page_number = max(1, start_page)
         while len(all_games) < effective_max and page_number <= 2000:
-            games = self._fetch_browse_page(platform, page_number, cache_pages_hours)
+            games = self._fetch_browse_page(platform, page_number, cache_pages_hours, year=year)
             if not games:
                 break
 
@@ -802,15 +812,15 @@ class MetacriticClient:
                 )
                 break
 
-            # Date-based early stop: if every game on this page has a
-            # release_date older than the cutoff, stop fetching more
-            # pages (they will be even older).
-            if _page_is_before_cutoff(games, cutoff_date):
-                logger.debug(
-                    "Metacritic page {} reached (no games within the scan window, cutoff: {}); stopping scan",
-                    page_number,
-                    cutoff_date,
-                )
+            # Check early-stop conditions
+            if _should_stop_scan(
+                self.sort_order,
+                games,
+                cutoff_date,
+                max_pages,
+                page_number,
+                start_page,
+            ):
                 break
 
             # Trim this page and collect up to effective_max
@@ -818,9 +828,7 @@ class MetacriticClient:
 
             all_games.extend(games)
 
-            # Log progress every 100 pages so the user can see the scan is
-            # making progress during long cold-cache scans (e.g. first
-            # cycle after a restart with max_weeks=104).
+            # Log progress every 100 pages
             _log_batch_progress(page_number, len(all_games), show_progress)
 
             page_number += 1
@@ -833,6 +841,32 @@ class MetacriticClient:
         )
         self._recent_games_last_page = n_pages
         return all_games
+
+
+def _should_stop_scan(
+    sort_order: str,
+    games: list[dict[str, Any]],
+    cutoff_date: str | None,
+    max_pages: int,
+    page_number: int,
+    start_page: int,
+) -> bool:
+    """Return True if the browse-page scan should stop early."""
+    if sort_order == "new" and _page_is_before_cutoff(games, cutoff_date):
+        logger.debug(
+            "Metacritic page {} reached (no games within the scan window, cutoff: {}); stopping scan",
+            page_number,
+            cutoff_date,
+        )
+        return True
+    if max_pages > 0 and (page_number - start_page) >= max_pages:
+        logger.debug(
+            "Metacritic page limit {} reached (max_pages={}); stopping scan",
+            page_number - start_page,
+            max_pages,
+        )
+        return True
+    return False
 
 
 def _log_batch_progress(page_number: int, game_count: int, show_progress: bool) -> None:

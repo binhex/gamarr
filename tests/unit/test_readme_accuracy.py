@@ -130,17 +130,17 @@ class TestReadmeMetacriticPlatformConfig:
         )
         return _parse_readme_defaults(block)
 
-    def test_max_weeks_default(self) -> None:
-        """max_weeks default is 13, not null."""
+    def test_max_pages_default(self) -> None:
+        """max_pages default is 500, matching README."""
         from gamarr.config import MetacriticPlatformConfig
 
         cfg = MetacriticPlatformConfig()
-        assert cfg.max_weeks == 13, f"Code default is 13, got {cfg.max_weeks}"
+        assert cfg.max_pages == 500, f"Code default is 500, got {cfg.max_pages}"
 
         defaults = self._readme_defaults()
-        readme_val = defaults.get("max_weeks", "MISSING")
-        assert readme_val == "13", (
-            f"README says max_weeks default is '{readme_val}', expected '13' (code default is 13)"
+        readme_val = defaults.get("max_pages", "MISSING")
+        assert readme_val == "500", (
+            f"README says max_pages default is '{readme_val}', expected '500' (code default is 500)"
         )
 
 

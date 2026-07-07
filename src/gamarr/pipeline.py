@@ -112,18 +112,14 @@ class AcquisitionConfig:
     cache_pages_hours: int = 6
     enabled: bool = True
     max_queue_days: int = 30
-    max_weeks: int | None = None
-    max_cycle_weeks: int | None = None
+    max_pages: int | None = None
+    max_cycle_pages: int | None = None
     reject_genre: list[str] | None = None
     reject_title: list[str] | None = None
     fitgirl_max_queue_days: int = 60
     notify_on_scrape_failure: bool = True
     age_recheck_weeks: int | None = None
     sort_order: Literal["new", "metascore"] = "new"
-
-    def _age_days(self) -> int:
-        """Return the age filter in days, derived from max_weeks."""
-        return (self.max_weeks or 0) * 7
 
 
 def run_acquisition(
@@ -144,8 +140,8 @@ def run_acquisition(
     cache_pages_hours: int = 6,
     enabled: bool = True,
     max_queue_days: int = 30,
-    max_weeks: int | None = None,
-    max_cycle_weeks: int | None = None,
+    max_pages: int | None = None,
+    max_cycle_pages: int | None = None,
     fitgirl_max_queue_days: int = 60,
     notify_on_scrape_failure: bool = True,
     reject_genre: list[str] | None = None,
@@ -178,8 +174,8 @@ def run_acquisition(
         cache_pages_hours=cache_pages_hours,
         enabled=enabled,
         max_queue_days=max_queue_days,
-        max_weeks=max_weeks,
-        max_cycle_weeks=max_cycle_weeks,
+        max_pages=max_pages,
+        max_cycle_pages=max_cycle_pages,
         fitgirl_max_queue_days=fitgirl_max_queue_days,
         notify_on_scrape_failure=notify_on_scrape_failure,
         reject_genre=reject_genre,
@@ -251,167 +247,26 @@ def run_acquisition(
         browse_games: list[dict[str, Any]] = []
         new_pending: int = 0
         if cfg.enabled:
-            # Compute the effective cutoff for page fetching.
-            # max_cycle_weeks advances through the backlog: each cycle
-            # looks max_cycle_weeks weeks beyond the oldest pending game.
-            # max_weeks is the absolute hard cutoff.
+            # cutoff_date is always None — page-count based limit is handled
+            # by max_cycle_pages passed to scan_recent_games.
             cutoff_date: str | None = None
-            effective_cycle_weeks = cfg.max_cycle_weeks
-            # Always start from page 1. The backlog no longer stores
-            # browse page position; each cycle starts fresh.
-            browse_start_page = 1
 
-            # Determine the retreating cutoff based on the last stored position.
-            # Each cycle advances max_cycle_weeks weeks further back from the
-            # previous cycle's cutoff, creating a truly advancing window that
-            # does not depend on queue state.
-            if cfg.max_cycle_weeks and cfg.max_cycle_weeks > 0:
-                last_cutoff = db.get_last_cutoff(platform)
-                if last_cutoff:
-                    try:
-                        last_date = datetime.datetime.strptime(last_cutoff.strip(), "%Y-%m-%d").date()
-                    except (ValueError, TypeError):
-                        last_date = None
-                    if last_date:
-                        # Detect max_weeks increase: if the stored value is
-                        # lower than the current config, the user expanded
-                        # the scan boundary.  Accelerate the retreat by the
-                        # difference so the backlog catches up faster.
-                        previous_max_weeks = db.get_last_max_weeks(platform)
-                        if (
-                            previous_max_weeks is not None
-                            and cfg.max_weeks is not None
-                            and cfg.max_weeks > previous_max_weeks
-                        ):
-                            diff = cfg.max_weeks - previous_max_weeks
-                            logger.info(
-                                "Backlog restart: max_weeks increased from {} to {} — accelerating retreat by {} week(s)",
-                                previous_max_weeks,
-                                cfg.max_weeks,
-                                diff,
-                            )
-                            last_date -= datetime.timedelta(weeks=diff)
-
-                        # Detect sort_order change: if the stored value differs
-                        # from the current config, reset the backlog so the new
-                        # sort order starts from a clean state.
-                        previous_sort_order = db.get_last_sort_order(platform)
-                        if previous_sort_order is not None and previous_sort_order != cfg.sort_order:
-                            logger.info(
-                                "Sort order changed from '{}' to '{}' — resetting backlog",
-                                previous_sort_order,
-                                cfg.sort_order,
-                            )
-                            cutoff_date = None
-                            last_date = None
-
-                        if last_date is not None:
-                            retreating_cutoff = last_date - datetime.timedelta(weeks=cfg.max_cycle_weeks)
-                        else:
-                            retreating_cutoff = None
-                        # If max_weeks was increased while in steady-state, the
-                        # stored cutoff (at the old boundary) is more recent than
-                        # today's hard boundary.  Detect this by checking whether
-                        # last_date is close to hard_cutoff (at-boundary steady-state)
-                        # vs far away (mid-backlog).  Only jump when at the boundary.
-                        if (
-                            cfg.max_weeks is not None
-                            and cfg.max_weeks > 0
-                            and retreating_cutoff is not None
-                            and retreating_cutoff
-                            <= datetime.datetime.now(tz=datetime.UTC).date() - datetime.timedelta(weeks=cfg.max_weeks)
-                        ):
-                            hard = datetime.datetime.now(tz=datetime.UTC).date() - datetime.timedelta(
-                                weeks=cfg.max_weeks
-                            )
-                            # Guard: only jump when the stored cutoff is at/near
-                            # the boundary (within one max_cycle_weeks) AND more
-                            # recent than the hard cutoff.  During normal
-                            # backlog it's much further away.
-                            if hard < last_date and (last_date - hard).days <= cfg.max_cycle_weeks * 7:
-                                cutoff_date = hard.isoformat()
-                            elif retreating_cutoff is not None:
-                                cutoff_date = retreating_cutoff.isoformat()
-                        elif retreating_cutoff is not None:
-                            cutoff_date = retreating_cutoff.isoformat()
-                if cutoff_date is None:
-                    # First cycle or unparseable stored date — start from now - max_cycle_weeks
-                    cutoff_date = (
-                        datetime.datetime.now(tz=datetime.UTC).date() - datetime.timedelta(weeks=cfg.max_cycle_weeks)
-                    ).isoformat()
-
-            # Apply hard cutoff: clamp the cutoff to never go past
-            # max_weeks.  Track whether the clamp fired so the log can
-            # accurately report which limiter is active.
-            clamped_by_max_weeks = False
-            hard_cutoff_date: datetime.date | None = None
-            if cfg.max_weeks is not None and cfg.max_weeks > 0:
-                hard_cutoff = datetime.datetime.now(tz=datetime.UTC).date() - datetime.timedelta(weeks=cfg.max_weeks)
-                hard_cutoff_date = hard_cutoff
-                if cutoff_date is None or cutoff_date < hard_cutoff.isoformat():
-                    clamped_by_max_weeks = True
-                    # When the backlog is fully caught up (retreating cutoff
-                    # hit the max_weeks boundary), switch to steady-state
-                    # mode: scan only max_cycle_weeks from today instead of
-                    # the full max_weeks range.  Always start from page 1
-                    # (set above), so new releases on the most recent pages
-                    # are picked up.
-                    if cfg.max_cycle_weeks and cfg.max_cycle_weeks > 0:
-                        cutoff_date = (
-                            datetime.datetime.now(tz=datetime.UTC).date()
-                            - datetime.timedelta(weeks=cfg.max_cycle_weeks)
-                        ).isoformat()
-                    else:
-                        cutoff_date = hard_cutoff.isoformat()
-
-            # Log the browse window range — two distinct formats for
-            # backlog mode (retreating cutoff) and steady-state (clamped).
-            if cutoff_date is not None:
-                today = datetime.datetime.now(tz=datetime.UTC).date()
-                if clamped_by_max_weeks:
-                    # Steady-state: backlog caught up, fixed sliding window
-                    cutoff_date_obj = datetime.datetime.strptime(cutoff_date, "%Y-%m-%d").date()
-                    window_weeks = (today - cutoff_date_obj).days // 7
-                    logger.info(
-                        "Scan window: last {} weeks ({} \u2192 {})  [max_weeks={}, cycle={}]",
-                        window_weeks or cfg.max_cycle_weeks or 4,
-                        cutoff_date,
-                        today.isoformat(),
-                        cfg.max_weeks or 104,
-                        effective_cycle_weeks or 4,
-                    )
-                else:
-                    # Backlog mode: retreating cutoff, show progress
-                    cutoff_date_obj = datetime.datetime.strptime(cutoff_date, "%Y-%m-%d").date()
-                    weeks_covered = (today - cutoff_date_obj).days / 7
-                    window_weeks = int(effective_cycle_weeks or cfg.max_cycle_weeks or 0)
-                    if window_weeks > 0:
-                        cycle_number = max(1, int(weeks_covered / window_weeks))
-                        max_weeks_val = cfg.max_weeks or 104
-                        total_cycles = (max_weeks_val + window_weeks - 1) // window_weeks
-                        remaining = total_cycles - cycle_number
-                        logger.info(
-                            "Backlog scan: cycle {}/{} — window {} \u2192 {} ({} cycles remaining)",
-                            cycle_number,
-                            total_cycles,
-                            cutoff_date,
-                            today.isoformat(),
-                            remaining,
-                        )
-                    else:
-                        logger.info(
-                            "Scanning for games between {} and {}",
-                            cutoff_date,
-                            today.isoformat(),
-                        )
+            # Detect sort_order change: if the stored value differs
+            # from the current config, log the change.
+            previous_sort_order = db.get_last_sort_order(platform)
+            if previous_sort_order is not None and previous_sort_order != cfg.sort_order:
+                logger.info(
+                    "Sort order changed from '{}' to '{}'",
+                    previous_sort_order,
+                    cfg.sort_order,
+                )
+                # Clear the browse page cache so stale data from the old
+                # sort order is not returned (cache key does not include sort_order).
+                db.clear_cache("metacritic")
 
             pending_before = len(db.get_pending(platform=platform))
 
-            # Determine the year to scan from the cutoff date
-            if cutoff_date is not None:
-                scan_year = datetime.datetime.strptime(cutoff_date, "%Y-%m-%d").year
-            else:
-                scan_year = datetime.datetime.now(tz=datetime.UTC).year
+            scan_year = datetime.datetime.now(tz=datetime.UTC).year
 
             # Set sort_order from config on the client
             mc.sort_order = cfg.sort_order
@@ -428,24 +283,13 @@ def run_acquisition(
                     cache_pages_hours=cfg.cache_pages_hours,
                     cutoff_date=cutoff_date,
                     cancel_event=cancel_event,
-                    start_page=browse_start_page,
-                    show_progress=(not clamped_by_max_weeks),
+                    start_page=1,
+                    show_progress=True,
                     year=scan_year,
+                    max_pages=cfg.max_pages if cfg.max_pages else 0,
                 )
                 browse_games.extend(year_games)
 
-            # Store cutoff for next cycle (after scan completes).
-            # When the clamp fired (backlog caught up), store hard_cutoff
-            # instead of cutoff_date so the next cycle's retreat is also
-            # clamped and the window stays in steady-state mode.
-            if cutoff_date is not None:
-                if clamped_by_max_weeks and hard_cutoff_date is not None:
-                    db.set_last_cutoff(platform, hard_cutoff_date.isoformat())
-                else:
-                    db.set_last_cutoff(platform, cutoff_date)
-            # Persist the current max_weeks config so the next cycle can
-            # detect if the user changed it.
-            db.set_last_max_weeks(platform, cfg.max_weeks)
             # Persist the current sort_order so the next cycle can
             # detect if the user changed it.
             db.set_last_sort_order(platform, cfg.sort_order)
@@ -462,7 +306,6 @@ def run_acquisition(
                     db,
                     thresholds,
                     max_queue_days=cfg.max_queue_days,
-                    days_since_release=cfg._age_days(),
                     reject_title=cfg.reject_title,
                 )
                 # Pending queue state after processing browse results
@@ -749,7 +592,6 @@ def _is_game_eligible(
     game: dict[str, Any],
     db: Database,
     thresholds: dict[str, Any],
-    days_since_release: int,
     *,
     known_slugs: set[str] | None = None,
 ) -> bool:
@@ -766,17 +608,7 @@ def _is_game_eligible(
         return False
     if _is_game_known(slug, db, known_slugs=known_slugs):
         return False
-    if not _game_passes_thresholds(game, thresholds):
-        return False
-    if _is_older_than(game.get("release_date"), days_since_release):
-        logger.debug(
-            "Skipping '{}' ({}): older than {} days",
-            title,
-            game.get("release_date"),
-            days_since_release,
-        )
-        return False
-    return True
+    return _game_passes_thresholds(game, thresholds)
 
 
 def _process_browse_games(
@@ -786,7 +618,6 @@ def _process_browse_games(
     thresholds: dict[str, Any],
     *,
     max_queue_days: int = 30,
-    days_since_release: int = 0,
     reject_title: list[str] | None = None,
 ) -> int:
     """Evaluate browse-page games and insert qualifying ones into the pending queue.
@@ -803,7 +634,6 @@ def _process_browse_games(
         db: Database instance.
         thresholds: Dict with ``min_metascore`` keys.
         max_queue_days: How many days to keep the game pending before expiry.
-        days_since_release: Max age in days. Games older than this are skipped.
         reject_title: Titles matching any of these are skipped.
 
     Returns:
@@ -813,7 +643,7 @@ def _process_browse_games(
     known_slugs = db.get_known_slugs(source="metacritic", platform=platform)
     new_count = 0
     for game in browse_games:
-        if not _is_game_eligible(game, db, thresholds, days_since_release, known_slugs=known_slugs):
+        if not _is_game_eligible(game, db, thresholds, known_slugs=known_slugs):
             continue
         if _title_matches_reject(game.get("title", ""), reject_title):
             logger.debug("Skipping '{}' — matches reject_title", game.get("title", ""))

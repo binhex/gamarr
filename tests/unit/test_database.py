@@ -36,13 +36,10 @@ class TestDatabase:
         # Opening with Database should migrate and add the missing columns
         db = Database(db_path)
         # Should not raise — migration handled it
-        db.set_last_max_weeks("pc", 250)
-        assert db.get_last_max_weeks("pc") == 250
         db.close()
 
         # Second open: migration should be a no-op (columns already exist)
         db2 = Database(db_path)
-        assert db2.get_last_max_weeks("pc") == 250
         db2.close()
 
     def test_is_processed_returns_false_for_new_entry(self, tmp_path: Path) -> None:

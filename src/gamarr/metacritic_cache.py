@@ -64,10 +64,14 @@ class MetacriticCache:
                 row.cached_at = cached_at
                 session.commit()
 
-    def get_browse_page(self, platform: str, page_number: int, ttl_hours: int = 4) -> list[dict[str, Any]] | None:
+    def get_browse_page(
+        self, platform: str, page_number: int, ttl_hours: int = 4, year: int | None = None
+    ) -> list[dict[str, Any]] | None:
         """Retrieve cached browse page data if within *ttl_hours*."""
-        return self._db.get_browse_page_cache(platform, page_number, ttl_hours)
+        return self._db.get_browse_page_cache(platform, page_number, ttl_hours, year=year or 0)
 
-    def set_browse_page(self, platform: str, page_number: int, games: list[dict[str, Any]]) -> None:
+    def set_browse_page(
+        self, platform: str, page_number: int, games: list[dict[str, Any]], year: int | None = None
+    ) -> None:
         """Insert or replace a cached browse page entry."""
-        self._db.set_browse_page_cache(platform, page_number, games)
+        self._db.set_browse_page_cache(platform, page_number, games, year=year or 0)

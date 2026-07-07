@@ -112,7 +112,7 @@ class SitemapCache(Base):
 
 
 class ScanState(Base):
-    """Tracks the last browse cutoff date per platform for max_cycle_weeks."""
+    """Tracks pipeline state per platform."""
 
     __tablename__ = "scan_state"
 
@@ -307,24 +307,6 @@ class Database:
                 session.add(ScanState(platform=platform, last_cutoff_date=cutoff_date))
             else:
                 row.last_cutoff_date = cutoff_date
-            session.commit()
-
-    def get_last_max_weeks(self, platform: str) -> int | None:
-        """Return the last stored max_weeks value for *platform*, or None."""
-        with self._session() as session:
-            row = session.get(ScanState, platform)
-        if row is None:
-            return None
-        return row.last_max_weeks
-
-    def set_last_max_weeks(self, platform: str, max_weeks: int | None) -> None:
-        """Store or update the max_weeks value for *platform*."""
-        with self._session() as session:
-            row = session.get(ScanState, platform)
-            if row is None:
-                session.add(ScanState(platform=platform, last_max_weeks=max_weeks))
-            else:
-                row.last_max_weeks = max_weeks
             session.commit()
 
     def get_last_sort_order(self, platform: str) -> str | None:

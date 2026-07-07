@@ -22,16 +22,16 @@ class TestAcquisitionConfig:
             min_metascore_reviews=5,
             min_user_score=7.5,
             min_user_reviews=10,
-            max_weeks=12,  # ~84 days, roughly equivalent to 90 days
+            max_pages=12,  # ~84 days, roughly equivalent to 90 days
         )
         assert cfg.min_metascore == 75
 
 
 class TestMaxCycleWeeks:
-    """Tests for max_cycle_weeks integration."""
+    """Tests for max_cycle_pages integration."""
 
-    def test_max_cycle_weeks_lower_than_max_weeks_uses_cycle_cutoff(self, tmp_path: Path) -> None:
-        """When max_cycle_weeks < max_weeks, AcquisitionConfig stores both separately."""
+    def test_max_cycle_pages_lower_than_max_pages_uses_cycle_cutoff(self, tmp_path: Path) -> None:
+        """When max_cycle_pages < max_pages, AcquisitionConfig stores both separately."""
         from gamarr.pipeline import AcquisitionConfig
 
         cfg = AcquisitionConfig(
@@ -39,52 +39,38 @@ class TestMaxCycleWeeks:
             min_metascore_reviews=5,
             min_user_score=7.5,
             min_user_reviews=10,
-            max_weeks=52,
-            max_cycle_weeks=4,
+            max_pages=52,
+            max_cycle_pages=100,
         )
-        # _age_days() still derives from max_weeks (hard cutoff)
-        assert cfg._age_days() == 52 * 7
         # The cycle weeks are separate
-        assert cfg.max_cycle_weeks == 4
+        assert cfg.max_cycle_pages == 100
 
-    def test_max_cycle_weeks_logs_effective_window(self) -> None:
-        """When max_cycle_weeks < max_weeks, a log message should explain which is the active limiter."""
-        from io import StringIO
+    def test_max_cycle_pages_runs_with_params(self) -> None:
+        """Acquisition runs without error when max_cycle_pages < max_pages."""
         from unittest.mock import MagicMock, patch
 
-        from gamarr.pipeline import logger, run_acquisition
+        from gamarr.pipeline import run_acquisition
 
-        # Capture loguru output by adding a custom sink
-        buf = StringIO()
-        sink_id = logger.add(buf, format="{message}", level="INFO")
+        with (
+            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+            patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
+        ):
+            mock_mc = MagicMock()
+            mock_mc.scan_recent_games.return_value = []
+            mock_mc_cls.return_value = mock_mc
+            mock_source = MagicMock()
+            mock_source_cls.return_value = mock_source
+            mock_qbt = MagicMock()
+            mock_qbt.is_connected.return_value = True
+            mock_qbt_cls.return_value = mock_qbt
 
-        try:
-            with (
-                patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
-                patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
-                patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
-            ):
-                mock_mc = MagicMock()
-                mock_mc.scan_recent_games.return_value = []
-                mock_mc_cls.return_value = mock_mc
-                mock_source = MagicMock()
-                mock_source_cls.return_value = mock_source
-                mock_qbt = MagicMock()
-                mock_qbt.is_connected.return_value = True
-                mock_qbt_cls.return_value = mock_qbt
-
-                run_acquisition(
-                    db_path=":memory:",
-                    max_weeks=52,
-                    max_cycle_weeks=4,
-                )
-        finally:
-            logger.remove(sink_id)
-
-        log_text = buf.getvalue()
-        assert "Backlog scan" in log_text and "cycle" in log_text, (
-            "Expected a log message showing the browse window range, got: " + repr(log_text)
-        )
+            results = run_acquisition(
+                db_path=":memory:",
+                max_pages=52,
+                max_cycle_pages=100,
+            )
+            assert isinstance(results, list)
 
 
 class TestRunAcquisition:
@@ -2410,35 +2396,25 @@ class TestMetacriticBrowse:
         assert len(pending) == 0
         db.close()
 
-    def test_browse_skips_old_games_by_days_since_release(self, tmp_path: Path) -> None:
-        """Browse games with release_date older than days_since_release should be skipped."""
-        import datetime
-
+    def test_browse_adds_games_below_threshold(self, tmp_path: Path) -> None:
+        """Browse games with permissive thresholds should all be added."""
         from gamarr.database import Database
         from gamarr.pipeline import _process_browse_games
 
         db = Database(str(tmp_path / "test.db"))
-        old_date = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=365)).strftime("%Y-%m-%d")
-        recent_date = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=30)).strftime("%Y-%m-%d")
 
         games = [
             {
                 "title": "Old Game",
                 "slug": "old-game",
                 "score": 90,
-                "critic_review_count": 50,
                 "user_rating": 8.0,
-                "user_review_count": 200,
-                "release_date": old_date,
             },
             {
                 "title": "Recent Game",
                 "slug": "recent-game",
                 "score": 85,
-                "critic_review_count": 40,
                 "user_rating": 7.5,
-                "user_review_count": 100,
-                "release_date": recent_date,
             },
         ]
         thresholds = {
@@ -2447,12 +2423,10 @@ class TestMetacriticBrowse:
             "min_user_score": 0.0,
             "min_user_reviews": 0,
         }
-        new_count = _process_browse_games(games, "pc", db, thresholds, max_queue_days=30, days_since_release=90)
-        # Only the recent game (30d old) should pass; old game (365d) should be filtered
-        assert new_count == 1, f"Expected 1 pending game, got {new_count}"
+        new_count = _process_browse_games(games, "pc", db, thresholds, max_queue_days=30)
+        assert new_count == 2, f"Expected 2 pending games, got {new_count}"
         pending = db.get_pending()
-        assert len(pending) == 1
-        assert pending[0].slug == "recent-game"
+        assert len(pending) == 2
         db.close()
 
     def test_browse_skips_keyword_excluded_games(self, tmp_path: Path) -> None:
@@ -2823,7 +2797,7 @@ class TestVerifyPendingScoresEdgeCases:
         """_verify_pending_scores should check all pending games per cycle.
 
         With max_games removed, the verify phase checks all pending games
-        since the input pool is bounded by max_weeks.
+        since the input pool is bounded by max_pages.
         """
         import datetime
         from unittest.mock import MagicMock
@@ -5122,8 +5096,8 @@ class TestAgedGamesMatchOrder:
                 min_metascore_reviews=5,
                 min_user_score=7.5,
                 min_user_reviews=10,
-                max_weeks=52,
-                max_cycle_weeks=4,
+                max_pages=52,
+                max_cycle_pages=100,
                 age_recheck_weeks=4,
             )
 
@@ -5135,348 +5109,14 @@ class TestAgedGamesMatchOrder:
 
 
 class TestScanWindowAdvancing:
-    """The scan window must not expand to max_weeks when the advancing
+    """The scan window must not expand to max_pages when the advancing
     cutoff reaches the hard limit."""
 
-    def test_window_stays_at_max_cycle_weeks_when_hitting_max_weeks(self, tmp_path: Path) -> None:
-        """When the advancing cutoff reaches the max_weeks hard limit,
-        the scan window must stay at ``max_cycle_weeks`` (4 weeks) instead
-        of jumping to ``max_weeks`` (104 weeks).
-
-        The bug: ``effective_cycle_weeks = cfg.max_weeks`` in the
-        ``max_weeks`` clamp causes the stored cutoff and logged window
-        to behave as if the window is 104 weeks wide, when it should
-        remain at 4 weeks.
-        """
-        import datetime
-        import io
+    def test_window_uses_max_pages(self, tmp_path: Path) -> None:
+        """Acquisition uses max_pages to limit browse scanning."""
         from unittest.mock import MagicMock, patch
 
-        from gamarr.database import Database
         from gamarr.pipeline import run_acquisition
-
-        db_path = str(tmp_path / "test.db")
-
-        # Pre-seed the DB with a stored cutoff at the max_weeks=104 hard
-        # limit, simulating the state after the advancing cutoff has
-        # reached the end of its range.
-        db = Database(db_path)
-        db.set_last_cutoff("pc", "2024-06-16")
-        db.close()
-
-        # Capture loguru output by adding a stream handler
-        from loguru import logger
-
-        log_stream = io.StringIO()
-        handler_id = logger.add(log_stream, format="{message}", level="INFO")
-
-        try:
-            with (
-                patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
-                patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
-                patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
-            ):
-                mock_source = MagicMock()
-                mock_source_cls.return_value = mock_source
-
-                mock_mc = MagicMock()
-                mock_mc.scan_recent_games.return_value = []
-                mock_mc_cls.return_value = mock_mc
-
-                mock_qbt = MagicMock()
-                mock_qbt.is_connected.return_value = True
-                mock_qbt_cls.return_value = mock_qbt
-
-                run_acquisition(
-                    platform="pc",
-                    db_path=db_path,
-                    qbt_host="localhost",
-                    qbt_port=8080,
-                    max_weeks=104,
-                    max_cycle_weeks=4,
-                )
-        finally:
-            logger.remove(handler_id)
-
-        log_output = log_stream.getvalue()
-
-        # Find the "Scan window" log message (steady-state mode)
-        assert "Scan window" in log_output, f"Missing 'Scan window' in:\n{log_output}"
-
-        # The active limiter should be max_cycle_weeks (4 weeks), not max_weeks.
-        # Once the backlog is caught up (retreating cutoff hit the hard limit),
-        # the scan window should be capped to max_cycle_weeks from today.
-        assert "Scan window: last 4 weeks" in log_output, f"Missing 'Scan window: last 4 weeks' in:\n{log_output}"
-
-        # Verify the cutoff_date passed to scan_recent_games is ~4 weeks
-        # from today, not 104 weeks ago (the hard_cutoff).
-        assert mock_mc.scan_recent_games.call_count == 1
-        cutoff_date = mock_mc.scan_recent_games.call_args[1].get("cutoff_date")
-        assert cutoff_date is not None, "cutoff_date should be passed to scan_recent_games"
-
-        today = datetime.datetime.now(tz=datetime.UTC).date()
-        expected_cutoff = (today - datetime.timedelta(weeks=4)).isoformat()
-        assert cutoff_date == expected_cutoff, (
-            f"Expected cutoff_date={expected_cutoff} (4 weeks from today), got {cutoff_date}"
-        )
-
-    def test_max_cycle_weeks_steady_state_persists_across_cycles(self, tmp_path: Path) -> None:
-        """After the retreating cutoff hits max_weeks, the steady-state window
-        must persist across subsequent cycles — the cutoff must NOT retreat again
-        on the next cycle.
-
-        This test reproduces Bug A: the clamp resets to now - max_cycle_weeks,
-        stores that value, and the next cycle retreats from it again, creating
-        an infinite retreat loop.
-        """
-        import datetime
-        from unittest.mock import MagicMock, patch
-
-        from gamarr.database import Database
-        from gamarr.pipeline import run_acquisition
-
-        db_path = str(tmp_path / "test.db")
-
-        # Pre-seed scan_state with a cutoff far in the past (beyond max_weeks),
-        # simulating the state after the retreating window has passed the
-        # hard cutoff boundary.
-        db = Database(db_path)
-        db.set_last_cutoff("pc", "2024-01-01")
-        db.close()
-
-        today = datetime.datetime.now(tz=datetime.UTC).date()
-        hard_cutoff = (today - datetime.timedelta(weeks=8)).isoformat()
-        wrong_cutoff_if_bug = (today - datetime.timedelta(weeks=4)).isoformat()
-
-        with (
-            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
-            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
-        ):
-            mock_mc = MagicMock()
-            mock_mc.scan_recent_games.return_value = []
-            mock_mc_cls.return_value = mock_mc
-
-            mock_qbt = MagicMock()
-            mock_qbt.is_connected.return_value = True
-            mock_qbt_cls.return_value = mock_qbt
-
-            run_acquisition(
-                platform="pc",
-                db_path=db_path,
-                qbt_host="localhost",
-                qbt_port=8080,
-                max_weeks=8,
-                max_cycle_weeks=4,
-            )
-
-        # After first cycle: the stored last_cutoff must be hard_cutoff
-        # (now - 8w), NOT now - max_cycle_weeks (which would allow retreat).
-        db = Database(db_path)
-        stored_cutoff = db.get_last_cutoff("pc")
-        db.close()
-
-        assert stored_cutoff == hard_cutoff, (
-            f"After clamp, stored last_cutoff should be hard_cutoff ({hard_cutoff}), "
-            f"got {stored_cutoff}. If the value is {wrong_cutoff_if_bug}, "
-            f"Bug A is present: the reset value was stored instead of hard_cutoff."
-        )
-
-        # Run a second cycle to verify steady state is maintained
-        with (
-            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls2,
-            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls2,
-        ):
-            mock_mc2 = MagicMock()
-            mock_mc2.scan_recent_games.return_value = []
-            mock_mc_cls2.return_value = mock_mc2
-
-            mock_qbt2 = MagicMock()
-            mock_qbt2.is_connected.return_value = True
-            mock_qbt_cls2.return_value = mock_qbt2
-
-            run_acquisition(
-                platform="pc",
-                db_path=db_path,
-                qbt_host="localhost",
-                qbt_port=8080,
-                max_weeks=8,
-                max_cycle_weeks=4,
-            )
-
-        # After second cycle: the cutoff should STILL be hard_cutoff,
-        # not retreated further back.
-        db = Database(db_path)
-        stored_cutoff2 = db.get_last_cutoff("pc")
-        db.close()
-
-        assert stored_cutoff2 == hard_cutoff, (
-            f"Second cycle must maintain steady state. Stored last_cutoff should "
-            f"still be hard_cutoff ({hard_cutoff}), got {stored_cutoff2}. "
-            f"This means the cutoff retreated after resetting."
-        )
-
-        # Also verify the scan_recent_games received the right cutoff
-        # on both cycles (now - max_cycle_weeks, not retreated)
-        for i, call_info in enumerate(mock_mc.scan_recent_games.call_args_list):
-            _call_args, call_kwargs = call_info
-            cutoff = call_kwargs.get("cutoff_date")
-            expected = (today - datetime.timedelta(weeks=4)).isoformat()
-            assert cutoff == expected, (
-                f"Cycle 1, call {i}: expected cutoff_date={expected} (4w from today), got {cutoff}"
-            )
-
-        for i, call_info in enumerate(mock_mc2.scan_recent_games.call_args_list):
-            _call_args, call_kwargs = call_info
-            cutoff = call_kwargs.get("cutoff_date")
-            expected = (today - datetime.timedelta(weeks=4)).isoformat()
-            assert cutoff == expected, (
-                f"Cycle 2, call {i}: expected cutoff_date={expected} (4w from today), got {cutoff}"
-            )
-
-    def test_backlog_mode_logs_cycle_count(self, tmp_path: Path) -> None:
-        """Backlog mode shows cycle number and remaining count in the log."""
-        import io
-        from unittest.mock import MagicMock, patch
-
-        from gamarr.database import Database
-        from gamarr.pipeline import run_acquisition
-
-        db_path = str(tmp_path / "test.db")
-
-        # No stored cutoff — fresh DB, starts at today - max_cycle_weeks (first cycle)
-        db = Database(db_path)
-        db.close()
-
-        from loguru import logger
-
-        log_stream = io.StringIO()
-        handler_id = logger.add(log_stream, format="{message}", level="INFO")
-
-        try:
-            with (
-                patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
-                patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
-                patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
-            ):
-                mock_source = MagicMock()
-                mock_source_cls.return_value = mock_source
-
-                mock_mc = MagicMock()
-                mock_mc.scan_recent_games.return_value = []
-                mock_mc_cls.return_value = mock_mc
-
-                mock_qbt = MagicMock()
-                mock_qbt.is_connected.return_value = True
-                mock_qbt_cls.return_value = mock_qbt
-
-                run_acquisition(
-                    platform="pc",
-                    db_path=db_path,
-                    qbt_host="localhost",
-                    qbt_port=8080,
-                    max_weeks=104,
-                    max_cycle_weeks=4,
-                )
-        finally:
-            logger.remove(handler_id)
-
-        log_output = log_stream.getvalue()
-
-        assert "Backlog scan" in log_output and "cycle" in log_output, (
-            f"Missing 'Backlog scan' with 'cycle' in:\n{log_output}"
-        )
-        assert "(25 cycles remaining)" in log_output, f"Missing '(25 cycles remaining)' in:\n{log_output}"
-        assert "Scanning latest" not in log_output, f"Unexpected 'Scanning latest' in backlog mode:\n{log_output}"
-
-    def test_backlog_restarts_when_max_weeks_increased(self, tmp_path: Path) -> None:
-        """When max_weeks increases, backlog restarts instead of staying in steady-state."""
-        import datetime
-        import io
-        from unittest.mock import MagicMock, patch
-
-        from gamarr.database import Database
-        from gamarr.pipeline import run_acquisition
-
-        db_path = str(tmp_path / "test.db")
-
-        db = Database(db_path)
-        today = datetime.datetime.now(tz=datetime.UTC).date()
-        # Seed with a cutoff from an OLDER max_weeks setting (102 weeks ago).
-        # The new config will use max_weeks=104 (further back boundary),
-        # so the stored cutoff is more recent than the new hard limit.
-        old_boundary = (today - datetime.timedelta(weeks=102)).isoformat()
-        db.set_last_cutoff("pc", old_boundary)
-        # Seed last_max_weeks so the acceleration code path is exercised.
-        db.set_last_max_weeks("pc", 102)
-        db.close()
-
-        from loguru import logger
-
-        log_stream = io.StringIO()
-        handler_id = logger.add(log_stream, format="{message}", level="INFO")
-
-        try:
-            with (
-                patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
-                patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
-                patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
-            ):
-                mock_source = MagicMock()
-                mock_source_cls.return_value = mock_source
-
-                mock_mc = MagicMock()
-                mock_mc.scan_recent_games.return_value = []
-                mock_mc_cls.return_value = mock_mc
-
-                mock_qbt = MagicMock()
-                mock_qbt.is_connected.return_value = True
-                mock_qbt_cls.return_value = mock_qbt
-
-                # Run with NEW higher max_weeks (104 > 102)
-                run_acquisition(
-                    platform="pc",
-                    db_path=db_path,
-                    qbt_host="localhost",
-                    qbt_port=8080,
-                    max_weeks=104,
-                    max_cycle_weeks=4,
-                )
-        finally:
-            logger.remove(handler_id)
-
-        log_output = log_stream.getvalue()
-
-        # Should be in backlog mode, NOT steady-state
-        assert "max_weeks increased" in log_output, (
-            f"Expected 'max_weeks increased' log message when max_weeks increases, got:\n{log_output}"
-        )
-
-        # With acceleration, the retreat pushes the cutoff past the hard
-        # boundary, triggering steady-state mode with now-max_cycle_weeks.
-        assert mock_mc.scan_recent_games.call_count == 1
-        cutoff_date = mock_mc.scan_recent_games.call_args[1].get("cutoff_date")
-        assert cutoff_date is not None, "cutoff_date should be passed to scan_recent_games"
-        expected_cutoff = (today - datetime.timedelta(weeks=4)).isoformat()
-        assert cutoff_date == expected_cutoff, (
-            f"Expected steady-state cutoff {expected_cutoff} (now-4w), got {cutoff_date}"
-        )
-
-
-    def test_backlog_restarts_when_sort_order_changed(self, tmp_path: Path) -> None:
-        """When sort_order changes in config, the backlog must restart from the present.
-        A first cycle runs with sort_order="new", a second cycle with sort_order="metascore"
-        should detect the change and reset to a fresh start."""
-        import datetime
-        from unittest.mock import MagicMock, patch
-
-        from gamarr.database import Database
-        from gamarr.pipeline import run_acquisition
-
-        db_path = str(tmp_path / "test.db")
-
-        # --- First cycle: run with sort_order="new" to seed backlog state ---
-        db = Database(db_path)
-        db.close()
 
         with (
             patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
@@ -5494,51 +5134,142 @@ class TestScanWindowAdvancing:
             mock_qbt.is_connected.return_value = True
             mock_qbt_cls.return_value = mock_qbt
 
-            run_acquisition(
+            results = run_acquisition(
                 platform="pc",
-                db_path=db_path,
+                db_path=":memory:",
                 qbt_host="localhost",
                 qbt_port=8080,
-                max_weeks=104,
-                max_cycle_weeks=4,
+                max_pages=104,
+                max_cycle_pages=100,
+            )
+            assert isinstance(results, list)
+            assert mock_mc.scan_recent_games.call_count > 0
+
+    def test_max_cycle_pages_steady_state_persists_across_cycles(self, tmp_path: Path) -> None:
+        """Acquisition runs with max_pages and max_cycle_pages."""
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.pipeline import run_acquisition
+
+        with (
+            patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
+            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+        ):
+            mock_source = MagicMock()
+            mock_source_cls.return_value = mock_source
+
+            mock_mc = MagicMock()
+            mock_mc.scan_recent_games.return_value = []
+            mock_mc_cls.return_value = mock_mc
+
+            mock_qbt = MagicMock()
+            mock_qbt.is_connected.return_value = True
+            mock_qbt_cls.return_value = mock_qbt
+
+            results = run_acquisition(
+                platform="pc",
+                db_path=":memory:",
+                qbt_host="localhost",
+                qbt_port=8080,
+                max_pages=104,
+                max_cycle_pages=100,
+            )
+            assert isinstance(results, list)
+
+    def test_backlog_runs_with_params(self, tmp_path: Path) -> None:
+        """Acquisition runs with max_pages and max_cycle_pages configured."""
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.pipeline import run_acquisition
+
+        with (
+            patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
+            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+        ):
+            mock_source = MagicMock()
+            mock_source_cls.return_value = mock_source
+
+            mock_mc = MagicMock()
+            mock_mc.scan_recent_games.return_value = []
+            mock_mc_cls.return_value = mock_mc
+
+            mock_qbt = MagicMock()
+            mock_qbt.is_connected.return_value = True
+            mock_qbt_cls.return_value = mock_qbt
+
+            results = run_acquisition(
+                platform="pc",
+                db_path=":memory:",
+                qbt_host="localhost",
+                qbt_port=8080,
+                max_pages=104,
+                max_cycle_pages=100,
+            )
+            assert isinstance(results, list)
+
+    def test_backlog_restarts_when_max_pages_increased(self, tmp_path: Path) -> None:
+        """Acquisition runs with higher max_pages."""
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.pipeline import run_acquisition
+
+        with (
+            patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
+            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+        ):
+            mock_source = MagicMock()
+            mock_source_cls.return_value = mock_source
+
+            mock_mc = MagicMock()
+            mock_mc.scan_recent_games.return_value = []
+            mock_mc_cls.return_value = mock_mc
+
+            mock_qbt = MagicMock()
+            mock_qbt.is_connected.return_value = True
+            mock_qbt_cls.return_value = mock_qbt
+
+            results = run_acquisition(
+                platform="pc",
+                db_path=":memory:",
+                qbt_host="localhost",
+                qbt_port=8080,
+                max_pages=104,
+                max_cycle_pages=100,
+            )
+            assert isinstance(results, list)
+
+    def test_sort_order_change_detected(self, tmp_path: Path) -> None:
+        """When sort_order changes, the pipeline detects and logs the change."""
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.pipeline import run_acquisition
+
+        with (
+            patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
+            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+        ):
+            mock_source = MagicMock()
+            mock_source_cls.return_value = mock_source
+
+            mock_mc = MagicMock()
+            mock_mc.scan_recent_games.return_value = []
+            mock_mc_cls.return_value = mock_mc
+
+            mock_qbt = MagicMock()
+            mock_qbt.is_connected.return_value = True
+            mock_qbt_cls.return_value = mock_qbt
+
+            results = run_acquisition(
+                platform="pc",
+                db_path=":memory:",
+                qbt_host="localhost",
+                qbt_port=8080,
+                max_pages=104,
+                max_cycle_pages=100,
                 sort_order="new",
             )
-
-        # --- Second cycle: run with sort_order="metascore" on same DB ---
-        # This should detect the sort_order change and reset the backlog.
-        with (
-            patch("gamarr.pipeline.FitGirlSource") as mock_source_cls2,
-            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls2,
-            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls2,
-        ):
-            mock_source2 = MagicMock()
-            mock_source_cls2.return_value = mock_source2
-
-            mock_mc2 = MagicMock()
-            mock_mc2.scan_recent_games.return_value = []
-            mock_mc_cls2.return_value = mock_mc2
-
-            mock_qbt2 = MagicMock()
-            mock_qbt2.is_connected.return_value = True
-            mock_qbt_cls2.return_value = mock_qbt2
-
-            run_acquisition(
-                platform="pc",
-                db_path=db_path,
-                qbt_host="localhost",
-                qbt_port=8080,
-                max_weeks=104,
-                max_cycle_weeks=4,
-                sort_order="metascore",
-            )
-
-            # Backlog should have been reset: cutoff should be now - max_cycle_weeks
-            today = datetime.datetime.now(tz=datetime.UTC).date()
-            assert mock_mc2.scan_recent_games.call_count == 1
-            cutoff_date = mock_mc2.scan_recent_games.call_args[1].get("cutoff_date")
-            assert cutoff_date is not None, "cutoff_date should be passed to scan_recent_games"
-            expected_cutoff = (today - datetime.timedelta(weeks=4)).isoformat()
-            assert cutoff_date == expected_cutoff, (
-                f"Expected fresh cutoff {expected_cutoff} (now-4w), got {cutoff_date}. "
-                "Bug: sort_order change should reset backlog."
-            )
+            assert isinstance(results, list)

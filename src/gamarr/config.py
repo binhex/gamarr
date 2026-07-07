@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import yaml
 from loguru import logger
@@ -108,8 +108,9 @@ class MetacriticPlatformConfig(BaseModel):
     cache_pages_hours: int = 6
     max_queue_days: int = 30
     enabled: bool = True
-    max_weeks: int | None = Field(default=13, ge=0)
-    max_cycle_weeks: int | None = Field(default=4, ge=0)
+    max_pages: int = Field(default=500, ge=1)
+    max_cycle_pages: int | None = Field(default=0, ge=0)
+    sort_order: Literal["new", "metascore"] = "new"
     reject_genre: list[str] = Field(default_factory=list)
     reject_title: list[str] = Field(default_factory=list)  # case-insensitive substrings
     age_recheck_weeks: int | None = Field(default=None, ge=0)
@@ -258,6 +259,8 @@ def _migrate_platform_overrides(raw: dict[str, Any]) -> bool:
         changed |= _rename_config_key(mc_pc, "cache_ttl_days", "cache_details_days", platform_key)
         changed |= _rename_config_key(mc_pc, "cache_ttl_hours", "cache_pages_hours", platform_key)
         changed |= _drop_max_verify_attempts(mc_pc, platform_key)
+        changed |= _rename_config_key(mc_pc, "max_cycle_weeks", "max_cycle_pages", platform_key)
+        changed |= _rename_config_key(mc_pc, "max_weeks", "max_pages", platform_key)
     return changed
 
 
@@ -266,7 +269,7 @@ def _drop_metacritic_max_games(mc_pc: dict[str, Any], platform_key: str) -> bool
     if "metacritic_max_games" not in mc_pc:
         return False
     logger.info(
-        "Config: removing deprecated 'metacritic_max_games' for platform '{}' — use max_weeks instead",
+        "Config: removing deprecated 'metacritic_max_games' for platform '{}' — use max_pages instead",
         platform_key,
     )
     del mc_pc["metacritic_max_games"]
@@ -280,7 +283,7 @@ def _drop_migrated_deprecated_keys(mc_pc: dict[str, Any], platform_key: str) -> 
         if old_key in mc_pc:
             logger.warning(
                 "Config: '{}' is deprecated for platform '{}'; "
-                "set 'max_weeks' to control the discovery window (count-based throttling removed). Ignoring value.",
+                "set 'max_pages' to control the browse page limit (count-based throttling removed). Ignoring value.",
                 old_key,
                 platform_key,
             )
@@ -290,7 +293,7 @@ def _drop_migrated_deprecated_keys(mc_pc: dict[str, Any], platform_key: str) -> 
         if old_key in mc_pc:
             logger.warning(
                 "Config: '{}' is deprecated for platform '{}'; "
-                "set 'max_weeks' instead (e.g. max_weeks: 52 for ~1 year). Ignoring value.",
+                "set 'max_pages' instead (e.g. max_pages: 500 for ~1 year). Ignoring value.",
                 old_key,
                 platform_key,
             )
@@ -381,9 +384,9 @@ def _migrate_fitgirl_exclude_keywords(raw: dict[str, Any]) -> bool:
 
 
 def _migrate_days_since_release(raw: dict[str, Any]) -> bool:
-    """Convert deprecated days_since_release to max_weeks in metacritic.platform_overrides.
+    """Convert deprecated days_since_release to max_pages in metacritic.platform_overrides.
 
-    max_weeks replaces this field (same purpose, weeks not days).
+    max_pages replaces this field (same purpose, weeks not days).
     Returns True if a migration was applied.
     """
     changed = False
@@ -391,12 +394,12 @@ def _migrate_days_since_release(raw: dict[str, Any]) -> bool:
     for platform_key, mc_pc in overrides.items():
         if isinstance(mc_pc, dict) and "days_since_release" in mc_pc:
             days = mc_pc.pop("days_since_release")
-            if isinstance(days, (int, float)) and days > 0 and "max_weeks" not in mc_pc:
-                mc_pc["max_weeks"] = max(1, round(days / 7))
+            if isinstance(days, (int, float)) and days > 0 and "max_pages" not in mc_pc:
+                mc_pc["max_pages"] = max(1, round(days / 7))
                 logger.info(
-                    "Config: converted days_since_release={} to max_weeks={} for platform '{}'",
+                    "Config: converted days_since_release={} to max_pages={} for platform '{}'",
                     days,
-                    mc_pc["max_weeks"],
+                    mc_pc["max_pages"],
                     platform_key,
                 )
             else:
@@ -486,8 +489,8 @@ def _migrate_fitgirl_cache_ttl_hours(raw: dict[str, Any]) -> bool:
     return changed
 
 
-def _migrate_cutoff_weeks_to_max_weeks(raw: dict[str, Any]) -> bool:
-    """Rename cutoff_weeks to max_weeks in metacritic.platform_overrides.
+def _migrate_cutoff_weeks_to_max_pages(raw: dict[str, Any]) -> bool:
+    """Rename cutoff_weeks to max_pages in metacritic.platform_overrides.
 
     Returns True if any migration was applied.
     """
@@ -495,9 +498,9 @@ def _migrate_cutoff_weeks_to_max_weeks(raw: dict[str, Any]) -> bool:
     overrides = raw.get("review_sites", {}).get("metacritic", {}).get("platform_overrides", {})
     for platform_key, mc_pc in overrides.items():
         if isinstance(mc_pc, dict) and "cutoff_weeks" in mc_pc:
-            mc_pc["max_weeks"] = mc_pc.pop("cutoff_weeks")
+            mc_pc["max_pages"] = mc_pc.pop("cutoff_weeks")
             logger.info(
-                "Config: renamed 'cutoff_weeks' to 'max_weeks' for platform '{}'",
+                "Config: renamed 'cutoff_weeks' to 'max_pages' for platform '{}'",
                 platform_key,
             )
             changed = True
@@ -507,7 +510,7 @@ def _migrate_cutoff_weeks_to_max_weeks(raw: dict[str, Any]) -> bool:
 def _migrate_remove_max_games(raw: dict[str, Any]) -> bool:
     """Remove max_games from metacritic.platform_overrides.
 
-    max_games is no longer needed — max_weeks controls the game count.
+    max_games is no longer needed — max_pages controls the browse page limit.
     Returns True if any migration was applied.
     """
     changed = False
@@ -516,7 +519,7 @@ def _migrate_remove_max_games(raw: dict[str, Any]) -> bool:
         if isinstance(mc_pc, dict) and "max_games" in mc_pc:
             del mc_pc["max_games"]
             logger.info(
-                "Config: removed 'max_games' for platform '{}' — use max_weeks to control game count",
+                "Config: removed 'max_games' for platform '{}' — use max_pages to control game count",
                 platform_key,
             )
             changed = True
@@ -784,7 +787,7 @@ def _migrate_config(raw: dict[str, Any]) -> bool:
             _migrate_platform_overrides,
             _migrate_fitgirl_exclude_keywords,
             _migrate_fitgirl_cache_ttl_hours,
-            _migrate_cutoff_weeks_to_max_weeks,
+            _migrate_cutoff_weeks_to_max_pages,
             _migrate_days_since_release,
             _migrate_pending_days_to_max_queue_days,
             _migrate_recheck_days_to_max_queue_days,
