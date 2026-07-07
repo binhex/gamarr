@@ -148,14 +148,38 @@ class LibraryScanner:
         For each directory that contains at least one game file (e.g. .exe, .iso,
         .zip), the directory's basename is indexed. This avoids indexing deeply
         nested non-game data folders like "pc/data/maps/props/street".
+
+        Parent directories of game-file directories are also indexed, so that
+        version/ subdirectories inside the game folder don't hide the game title
+        (e.g. "Fallout 3/v1.7.0.3/Fallout3.exe" still indexes "fallout 3").
         """
+        lib_path = os.path.normpath(lib_path)
         for root, dirs, files in os.walk(lib_path):
             dirs[:] = [d for d in dirs if not d.startswith(".")]
             if any(self._is_game_file(f) for f in files):
-                parent = os.path.basename(root)
-                norm = _normalise_name(parent)
-                if norm:
-                    self._index.setdefault(norm, []).append(root)
+                self._index_dirname(root)
+                self._index_parent_dirs(root, lib_path)
+
+    def _index_parent_dirs(self, root: str, lib_path: str) -> None:
+        """Index parent directories of *root* up to but not including *lib_path*."""
+        if root == lib_path:
+            return  # game files directly in library root — no parent to walk to
+        parent = os.path.dirname(root)
+        while parent and parent != lib_path:
+            self._index_dirname(parent)
+            next_parent = os.path.dirname(parent)
+            if next_parent == parent:  # reached filesystem root
+                break
+            parent = next_parent
+
+    def _index_dirname(self, path: str) -> None:
+        """Index *path* by its normalized basename."""
+        name = os.path.basename(path)
+        norm = _normalise_name(name)
+        if norm:
+            paths = self._index.setdefault(norm, [])
+            if path not in paths:
+                paths.append(path)
 
     @staticmethod
     def _is_game_file(filename: str) -> bool:

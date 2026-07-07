@@ -2559,6 +2559,55 @@ class TestMetacriticBrowse:
         assert pending[0].slug == "real-game"
         db.close()
 
+    def test_reject_keywords_skipped_for_freegog(self, tmp_path: Path) -> None:
+        """_check_reject_keywords is not called for FreeGOG sources."""
+        import datetime
+        from unittest.mock import patch
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _process_single_pending_match
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="freegog-game",
+            game_title="FreeGOG Game",
+            platform="pc",
+            metascore=85.0,
+            user_score=8.0,
+            expires_at=expires,
+        )
+        db.update_pending_scores(slug="freegog-game", metascore=85.0, user_score=8.0)
+        db.rebuild_source_titles(
+            "freegog",
+            [{"title": "FreeGOG Game", "url": "https://freegogpcgames.com/123/freegog-game/"}],
+        )
+
+        with patch("gamarr.pipeline._check_reject_keywords") as mock_check:
+            _process_single_pending_match(
+                db,
+                mc=None,
+                thresholds=None,
+                qbt=None,
+                magnet_fetcher=None,
+                notifier=None,
+                library=None,
+                can_deliver=False,
+                game_title="FreeGOG Game",
+                game_slug="freegog-game",
+                game_platform="pc",
+                game_metascore=85.0,
+                game_metascore_reviews=100,
+                game_user_score=8.0,
+                game_user_reviews=50,
+                game_release_date=None,
+                reject_keywords=["hv"],
+                source_name="freegog",
+            )
+            # The reject-keyword check is FitGirl-specific (article body scanning
+            # for HV/hypervisor).  For FreeGOG sources it should be skipped.
+            mock_check.assert_not_called()
+
 
 class TestRunAcquisitionMetacritic:
     """Full acquisition cycle with Metacritic browse enabled."""

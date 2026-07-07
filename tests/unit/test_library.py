@@ -113,6 +113,16 @@ class TestLibraryScanner:
         assert scanner.check_game("Hades II") is not None
         assert scanner.check_game("Cyberpunk 2077") is not None
 
+    def test_check_game_version_subdirectory(self, tmp_path: Path) -> None:
+        """Game files in a version subdirectory should still match the game title."""
+        game_dir = tmp_path / "Fallout 3" / "v1.7.0.3_(12034)"
+        game_dir.mkdir(parents=True)
+        (game_dir / "Fallout3.exe").write_text("")
+        scanner = LibraryScanner([str(tmp_path)])
+        match = scanner.check_game("Fallout 3")
+        assert match is not None, "Fallout 3 should be found even though game files are in a version subdirectory"
+        assert match.found is True
+
 
 class TestPartialMatchDirect:
     """Direct tests for _partial_match function."""

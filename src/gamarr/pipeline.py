@@ -1644,6 +1644,24 @@ def _deliver_match(
     return record_result
 
 
+def _skip_for_reject_keywords(
+    source_name: str,
+    db: Database,
+    best: dict[str, Any],
+    game_title: str,
+    game_slug: str,
+    reject_keywords: list[str] | None,
+) -> bool:
+    """Return True if the source match should be skipped due to rejected keywords.
+
+    Only applies to FitGirl — FreeGOG pages don't have the same article body
+    structure with HV/hypervisor keywords and use standard HTTPS (verify=True).
+    """
+    return source_name.casefold() == "fitgirl" and _check_reject_keywords(
+        db, best, game_title, game_slug, reject_keywords
+    )
+
+
 def _check_reject_keywords(
     db: Database,
     best: dict[str, Any],
@@ -1791,8 +1809,8 @@ def _process_single_pending_match(
         best["url"],
     )
 
-    # Skip matches whose FitGirl page title contains rejected keywords.
-    if _check_reject_keywords(db, best, game_title, game_slug, reject_keywords):
+    # Skip FitGirl matches whose article body contains rejected keywords.
+    if _skip_for_reject_keywords(source_name, db, best, game_title, game_slug, reject_keywords):
         return None
 
     # Check library first — skip if already owned
