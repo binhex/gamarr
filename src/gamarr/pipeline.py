@@ -1639,7 +1639,8 @@ def _deliver_match(
         )
         return record_result
 
-    tag = qbt.add_torrent(magnet_url=magnet, title=source_title)
+    display_name = _source_display(source_name)
+    tag = qbt.add_torrent(magnet_url=magnet, title=f"[{display_name}] {source_title}")
     if not tag:
         record_result = _record_delivery_error(
             db,

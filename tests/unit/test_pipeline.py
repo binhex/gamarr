@@ -772,6 +772,104 @@ class TestMetacriticBrowse:
         assert call_kwargs.get("release_date") == "2024-10-11"
         db.close()
 
+    def test_deliver_match_prepends_source_prefix_to_torrent_title(self, tmp_path: Path) -> None:
+        """_deliver_match prepends source display name in square brackets to torrent title."""
+        import datetime
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _deliver_match
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="test-game",
+            game_title="Test Game",
+            platform="pc",
+            metascore=85.0,
+            user_score=8.0,
+            expires_at=expires,
+        )
+        db.update_pending_scores(slug="test-game", metascore=85.0, user_score=8.0)
+
+        mock_qbt = MagicMock()
+        mock_qbt.add_torrent.return_value = "gamarr-tag"
+        mock_notifier = MagicMock()
+
+        best = {
+            "title": "Test Game Repack",
+            "url": "https://fitgirl-repacks.site/test-game/",
+            "magnet": "magnet:?xt=urn:btih:abc",
+        }
+
+        _deliver_match(
+            db,
+            qbt=mock_qbt,
+            magnet_fetcher=MagicMock(),
+            notifier=mock_notifier,
+            best=best,
+            game_slug="test-game",
+            game_title="Test Game",
+            game_platform="pc",
+            game_metascore=85.0,
+            game_user_score=8.0,
+            source_name="fitgirl",
+        )
+
+        _, kwargs = mock_qbt.add_torrent.call_args
+        assert kwargs["title"] == "[FitGirl] Test Game Repack", (
+            f"Expected '[FitGirl] Test Game Repack', got '{kwargs['title']}'"
+        )
+        db.close()
+
+    def test_deliver_match_prepends_freegog_source_prefix(self, tmp_path: Path) -> None:
+        """_deliver_match prepends [FreeGOG] prefix for freegog source."""
+        import datetime
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _deliver_match
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="test-game2",
+            game_title="Test Game 2",
+            platform="pc",
+            metascore=85.0,
+            user_score=8.0,
+            expires_at=expires,
+        )
+        db.update_pending_scores(slug="test-game2", metascore=85.0, user_score=8.0)
+
+        mock_qbt = MagicMock()
+        mock_qbt.add_torrent.return_value = "gamarr-tag"
+        mock_notifier = MagicMock()
+
+        best = {
+            "title": "Test Game 2",
+            "url": "https://freegogpcgames.com/123/test-game-2/",
+            "magnet": "magnet:?xt=urn:btih:def",
+        }
+
+        _deliver_match(
+            db,
+            qbt=mock_qbt,
+            magnet_fetcher=MagicMock(),
+            notifier=mock_notifier,
+            best=best,
+            game_slug="test-game2",
+            game_title="Test Game 2",
+            game_platform="pc",
+            game_metascore=85.0,
+            game_user_score=8.0,
+            source_name="freegog",
+        )
+
+        _, kwargs = mock_qbt.add_torrent.call_args
+        assert kwargs["title"] == "[FreeGOG] Test Game 2", f"Expected '[FreeGOG] Test Game 2', got '{kwargs['title']}'"
+        db.close()
+
     def test_verify_pending_keeps_game_with_failing_real_scores_for_recheck(self, tmp_path: Path) -> None:
         """A game with failing real scores should stay pending for re-verification."""
         import datetime
@@ -1821,7 +1919,7 @@ class TestMetacriticBrowse:
         mock_qbt.add_torrent.assert_called_once()
         args, kwargs = mock_qbt.add_torrent.call_args
         assert kwargs["magnet_url"] == "magnet:?xt=urn:btih:test"
-        assert kwargs["title"] == "Elden Ring", "Falls back to sitemap/game title when no page cached"
+        assert kwargs["title"] == "[FitGirl] Elden Ring", "Falls back to sitemap/game title when no page cached"
         assert db.is_pending("elden-ring") is False
         db.close()
 
