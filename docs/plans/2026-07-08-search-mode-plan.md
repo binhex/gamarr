@@ -243,7 +243,7 @@ import tempfile, os, datetime, json
 
 with tempfile.TemporaryDirectory() as tmp:
     db_path = os.path.join(tmp, 'gamarr.db')
-    
+
     # Create a legacy pending_games table manually
     import sqlite3
     conn = sqlite3.connect(db_path)
@@ -269,21 +269,21 @@ with tempfile.TemporaryDirectory() as tmp:
     )
     conn.commit()
     conn.close()
-    
+
     # Open Database — migration should copy the row
     db = Database(db_path)
-    
+
     # Check the row is now in backlog table
     import sqlite3
     conn = sqlite3.connect(db_path)
     backlog_rows = conn.execute('SELECT slug, game_title FROM pending_games_backlog').fetchall()
     legacy_rows = conn.execute('SELECT slug FROM pending_games').fetchall()
     conn.close()
-    
+
     assert len(backlog_rows) == 1, f'Expected 1 backlog row, got {len(backlog_rows)}'
     assert backlog_rows[0][0] == 'test-slug'
     assert len(legacy_rows) == 0, f'Legacy table should be empty, got {len(legacy_rows)}'
-    
+
     db.close()
     print('OK: migration successful')
 "

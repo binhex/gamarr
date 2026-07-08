@@ -119,8 +119,9 @@ class AcquisitionConfig:
     reject_title: list[str] | None = None
     fitgirl_max_queue_days: int = 60
     notify_on_scrape_failure: bool = True
-    age_recheck_weeks: int | None = None
     sort_order: Literal["new", "metascore"] = "new"
+    search_mode: Literal["backlog", "latest"] = "latest"
+    age_recheck_weeks: int | None = None
 
 
 def run_acquisition(
@@ -147,7 +148,6 @@ def run_acquisition(
     notify_on_scrape_failure: bool = True,
     reject_genre: list[str] | None = None,
     reject_title: list[str] | None = None,
-    age_recheck_weeks: int | None = None,
     apprise_urls: list[str] | None = None,
     notify_on_download: bool = True,
     notify_on_failure: bool = False,
@@ -158,6 +158,8 @@ def run_acquisition(
     cancel_event: threading.Event | None = None,
     download_sites: list | None = None,
     sort_order: Literal["new", "metascore"] = "new",
+    search_mode: Literal["backlog", "latest"] = "latest",
+    age_recheck_weeks: int | None = None,
 ) -> list[dict[str, Any]]:
     """Execute one scan cycle.
 
@@ -181,8 +183,9 @@ def run_acquisition(
         notify_on_scrape_failure=notify_on_scrape_failure,
         reject_genre=reject_genre,
         reject_title=reject_title,
-        age_recheck_weeks=age_recheck_weeks,
         sort_order=sort_order,
+        search_mode=search_mode,
+        age_recheck_weeks=age_recheck_weeks,
     )
 
     logger.info("Fetching Metacritic pages for platform '{}', please wait...", platform)
@@ -241,7 +244,7 @@ def run_acquisition(
         remaining = max(0, max_pages - total_scanned)
 
         if remaining == 0 or total_scanned >= max_pages:
-            logger.info("Backlog: fully scanned — monitoring for new releases on page 1")
+            return  # exhaustion already logged by backlog completion check
         elif max_cycle_pages and max_cycle_pages > 0:
             cycles = math.ceil(remaining / max_cycle_pages)
             logger.info(
@@ -281,73 +284,95 @@ def run_acquisition(
         # only if Metacritic produced games to match against.
         browse_games: list[dict[str, Any]] = []
         new_pending: int = 0
+        scan_year_anchor = datetime.datetime.now(tz=datetime.UTC).year
+
         if cfg.enabled:
             # cutoff_date is always None — page-count based limit is handled
             # by max_cycle_pages passed to scan_recent_games.
             cutoff_date: str | None = None
 
-            # Detect sort_order change: if the stored value differs
-            # from the current config, log the change.
-            previous_sort_order = db.get_last_sort_order(platform)
-            if previous_sort_order is not None and previous_sort_order != cfg.sort_order:
-                logger.info(
-                    "Sort order changed from '{}' to '{}'",
-                    previous_sort_order,
-                    cfg.sort_order,
-                )
-                # Clear the browse page cache so stale data from the old
-                # sort order is not returned (cache key does not include sort_order).
-                db.clear_cache("metacritic")
-                # Also reset backlog progress so the new sort order starts
-                # from page 1 — the page structure differs for "new" vs "metascore".
-                db.reset_backlog_progress(platform, cfg.sort_order)
+            if cfg.search_mode == "backlog":
+                # ── Backlog mode: year-loop with progress tracking ──
+                previous_sort_order = db.get_last_sort_order(platform)
+                if previous_sort_order is not None and previous_sort_order != cfg.sort_order:
+                    logger.info(
+                        "Sort order changed from '{}' to '{}'",
+                        previous_sort_order,
+                        cfg.sort_order,
+                    )
+                    # Clear the browse page cache so stale data from the old
+                    # sort order is not returned (cache key does not include sort_order).
+                    db.clear_cache("metacritic")
+                    # Also reset backlog progress so the new sort order starts
+                    # from page 1 — the page structure differs for "new" vs "metascore".
+                    db.reset_backlog_progress(platform, cfg.sort_order)
 
-            pending_before = len(db.get_pending(platform=platform))
+                mc.sort_order = cfg.sort_order
 
-            scan_year_anchor = datetime.datetime.now(tz=datetime.UTC).year
+                if cfg.sort_order == "new":
+                    years_back = max(0, math.ceil((cfg.max_pages if cfg.max_pages else 500) / 52))
+                    cutoff_year = scan_year_anchor - years_back
+                    current_year = scan_year_anchor
+                else:
+                    # sort_order == "metascore": no year dimension, use year=0 sentinel
+                    cutoff_year = 0
+                    current_year = 0
 
-            # Set sort_order from config on the client
-            mc.sort_order = cfg.sort_order
+                total_backlog = db.sum_scanned_pages(platform, cutoff_year, current_year)
+                max_pages_cfg = cfg.max_pages if cfg.max_pages else 0
 
-            # Year-specific browsing: scan from the cutoff year up to the
-            # current year. Each year's pages are cached independently,
-            # so scanning multiple years is fast after the first fetch.
-            browse_games = []
-            if cfg.sort_order == "new":
-                years_back = max(0, math.ceil((cfg.max_pages if cfg.max_pages else 500) / 52))
-                cutoff_year = scan_year_anchor - years_back
-                current_year = scan_year_anchor
+                if max_pages_cfg > 0 and total_backlog >= max_pages_cfg:
+                    logger.info(
+                        "Backlog complete — {} of {} pages scanned. "
+                        "Switch to search_mode: latest for ongoing monitoring.",
+                        total_backlog,
+                        max_pages_cfg,
+                    )
+                else:
+                    for scan_year in range(cutoff_year, current_year + 1):
+                        if is_cancelled(cancel_event):
+                            break
+                        start_page = db.get_last_scanned_page(platform, scan_year) + 1
+                        try:
+                            year_games = mc.scan_recent_games(
+                                platform,
+                                cache_pages_hours=cfg.cache_pages_hours,
+                                cutoff_date=cutoff_date,
+                                cancel_event=cancel_event,
+                                start_page=start_page,
+                                show_progress=True,
+                                year=scan_year if cfg.sort_order == "new" else None,
+                                max_pages=cfg.max_cycle_pages
+                                if cfg.max_cycle_pages
+                                else (cfg.max_pages if cfg.max_pages else 0),
+                            )
+                            browse_games.extend(year_games)
+                            last_page = mc._recent_games_last_page if isinstance(mc._recent_games_last_page, int) else 0
+                            db.set_last_scanned_page(platform, scan_year, last_page)
+                        except Exception:
+                            logger.exception("Scan failed for year {} — will retry next cycle", scan_year)
+
+                    db.set_last_sort_order(platform, cfg.sort_order)
+
             else:
-                # sort_order == "metascore": no year dimension, use year=0 sentinel
-                cutoff_year = 0
-                current_year = 0
-
-            for scan_year in range(cutoff_year, current_year + 1):
-                if is_cancelled(cancel_event):
-                    break
-                start_page = db.get_last_scanned_page(platform, scan_year) + 1
+                # ── Latest mode: simple page-1..N scan, no progress tracking ──
+                mc.sort_order = cfg.sort_order
+                year = scan_year_anchor if cfg.sort_order == "new" else None
                 try:
-                    year_games = mc.scan_recent_games(
+                    browse_games = mc.scan_recent_games(
                         platform,
                         cache_pages_hours=cfg.cache_pages_hours,
-                        cutoff_date=cutoff_date,
+                        cutoff_date=None,
                         cancel_event=cancel_event,
-                        start_page=start_page,
+                        start_page=1,
                         show_progress=True,
-                        year=scan_year if cfg.sort_order == "new" else None,
-                        max_pages=cfg.max_cycle_pages
-                        if cfg.max_cycle_pages
-                        else (cfg.max_pages if cfg.max_pages else 0),
+                        year=year,
+                        max_pages=cfg.max_cycle_pages if cfg.max_cycle_pages else 0,
                     )
-                    browse_games.extend(year_games)
-                    last_page = mc._recent_games_last_page if isinstance(mc._recent_games_last_page, int) else 0
-                    db.set_last_scanned_page(platform, scan_year, last_page)
                 except Exception:
-                    logger.exception("Scan failed for year {} — will retry next cycle", scan_year)
+                    logger.exception("Latest scan failed — will retry next cycle")
 
-            # Persist the current sort_order so the next cycle can
-            # detect if the user changed it.
-            db.set_last_sort_order(platform, cfg.sort_order)
+            # ── Shared: process browse results into pending queue ──
             if browse_games:
                 thresholds = {
                     "min_metascore": cfg.min_metascore,
@@ -362,15 +387,16 @@ def run_acquisition(
                     thresholds,
                     max_queue_days=cfg.max_queue_days,
                     reject_title=cfg.reject_title,
+                    search_mode=cfg.search_mode,
                 )
-                # Pending queue state after processing browse results
-                pending_after = len(db.get_pending(platform=platform))
-                new_this_cycle = max(0, pending_after - pending_before)
+                pending_queue_len = (
+                    len(db.get_backlog_pending(platform=platform))
+                    if cfg.search_mode == "backlog"
+                    else len(db.get_latest_pending(platform=platform))
+                )
                 logger.info(
-                    "Pending queue: {} new + {} from previous cycles = {} total",
-                    new_this_cycle,
-                    pending_before,
-                    pending_after,
+                    "Pending queue: {} total (including previous cycles)",
+                    pending_queue_len,
                 )
                 if new_pending:
                     logger.info(
@@ -378,33 +404,37 @@ def run_acquisition(
                         new_pending,
                         len(browse_games),
                     )
-        # NEW: If browsing returned no games AND no cached data exists,
-        # check whether scraping is broken (skip if cancelled)
-        if cfg.enabled and not is_cancelled(cancel_event) and not browse_games and cfg.notify_on_scrape_failure:
-            # Check if we have any cached browse data (if so, stale data is fine)
-            cached_exists = (
-                mc._cache.get_browse_page(platform, 1, ttl_hours=cfg.cache_pages_hours, year=0) is not None
-                or mc._cache.get_browse_page(
-                    platform,
-                    1,
-                    ttl_hours=cfg.cache_pages_hours,
-                    year=datetime.datetime.now(tz=datetime.UTC).year,
+
+            # ── Shared: scrape-health check ──
+            if not is_cancelled(cancel_event) and not browse_games and cfg.notify_on_scrape_failure:
+                # Check if we have any cached browse data (if so, stale data is fine)
+                cached_exists = (
+                    mc._cache.get_browse_page(platform, 1, ttl_hours=cfg.cache_pages_hours, year=0) is not None
+                    or mc._cache.get_browse_page(
+                        platform,
+                        1,
+                        ttl_hours=cfg.cache_pages_hours,
+                        year=datetime.datetime.now(tz=datetime.UTC).year,
+                    )
+                    is not None
                 )
-                is not None
-            )
-            if not cached_exists:
-                _diagnose_and_notify_scrape(
-                    notifier,
-                    _check_scrape_health(),
-                    "Metacritic browse returned no games",
-                )
+                if not cached_exists:
+                    _diagnose_and_notify_scrape(
+                        notifier,
+                        _check_scrape_health(),
+                        "Metacritic browse returned no games",
+                    )
         # After the browse step, re-verify every pending game against
         # the real Metacritic detail page.  Browse-page Nuxt data does
         # NOT carry standard 0\u2013100 metascores or 0\u201310 user scores
         # \u2014 the \"score\" fields are internal browse-only metrics.
         # Games whose detail-page scores fail the configured thresholds
         # are removed from pending.
-        pending_games = db.get_pending(platform=platform)
+        pending_games = (
+            db.get_backlog_pending(platform=platform)
+            if cfg.search_mode == "backlog"
+            else db.get_latest_pending(platform=platform)
+        )
         if pending_games:
             total_pending = len(pending_games)
             carryover = total_pending - (new_pending if browse_games else 0)
@@ -438,6 +468,7 @@ def run_acquisition(
                 fitgirl_max_queue_days=cfg.fitgirl_max_queue_days,
                 notifier=notifier,
                 cancel_event=cancel_event,
+                search_mode=cfg.search_mode,
             )
             if removed:
                 logger.info(
@@ -469,7 +500,12 @@ def run_acquisition(
             return factory(**kwargs)
 
         matched: list[dict[str, Any]] = []
-        if not is_cancelled(cancel_event) and db.has_verified_pending(platform=platform):
+        phase = 1  # Phase counter for logging
+        if not is_cancelled(cancel_event) and (
+            db.has_verified_backlog_pending(platform=platform)
+            if cfg.search_mode == "backlog"
+            else db.has_verified_latest_pending(platform=platform)
+        ):
             match_thresholds = {
                 "min_metascore": cfg.min_metascore,
                 "min_metascore_reviews": cfg.min_metascore_reviews,
@@ -488,16 +524,19 @@ def run_acquisition(
                 source = _build_source(source_entry, db)
                 sources_built.append((source_entry, source))
 
-                if source_entry.name.casefold() == "freegog":
-                    logger.opt(colors=True).info("<cyan>━━━ Phase 2/5: Indexing FreeGOG ━━━</>")
-                elif source_entry.name.casefold() == "fitgirl":
-                    logger.opt(colors=True).info("<light-red>━━━ Phase 3/5: Indexing FitGirl ━━━</>")
+                phase += 1
+                display = _source_display(source_entry.name)
+                logger.opt(colors=True).info("<cyan>━━━ Phase {}: Indexing {} ━━━</>", phase, display)
 
                 source.fetch_sitemap(db, cancel_event=cancel_event)
 
-            # Phase 4: Match pending games against all sources
-            logger.opt(colors=True).info("<magenta>━━━ Phase 4/5: Matching games to download sources ━━━</>")
+            # Per-source matching phases
             for source_entry, _source in sources_built:
+                phase += 1
+                display = _source_display(source_entry.name)
+                logger.opt(colors=True).info(
+                    "<magenta>━━━ Phase {}: Searching for matching games on {} ━━━</>", phase, display
+                )
                 source_matched = _match_pending_games(
                     db,
                     qbt=qbt,
@@ -508,16 +547,26 @@ def run_acquisition(
                     thresholds=match_thresholds,
                     reject_keywords=source_entry.reject_keywords or None,
                     source_name=source_entry.name,
+                    search_mode=cfg.search_mode,
                 )
                 if source_matched:
                     matched.extend(source_matched)
-                    logger.info("{} queued games found on {}", len(source_matched), _source_display(source_entry.name))
+                    logger.info("{} queued games found on {}", len(source_matched), display)
 
-        logger.opt(colors=True).info("<blue>━━━ Phase 5/5: Delivering to qBittorrent ━━━</>")
-        if matched:
-            logger.info("Match summary: {} game(s) matched across all sources", len(matched))
-        else:
-            logger.info("No matches to deliver this cycle.")
+        # Mandatory end-of-cycle phase
+        phase += 1
+        delivered = sum(1 for m in matched if m.get("result") == "Passed")
+        logger.opt(colors=True).info(
+            "<green>━━━ Phase {}: End of cycle ━━━</>",
+            phase,
+        )
+        logger.info(
+            "{} games browsed, {} queued, {} matched, {} delivered",
+            len(browse_games),
+            new_pending,
+            len(matched),
+            delivered,
+        )
 
         # Process old verified games AFTER the matching phase.
         # Games that passed score verification must get a chance to
@@ -526,8 +575,8 @@ def run_acquisition(
         # from pending before it could be delivered.
         _process_aged_games(db, cfg, platform, cancel_event=cancel_event)
 
-        # Log backlog progress if max_pages is configured
-        if cfg.enabled:
+        # Log backlog progress if max_pages is configured (backlog mode only)
+        if cfg.enabled and cfg.search_mode == "backlog":
             _log_backlog_progress(
                 platform,
                 db,
@@ -539,7 +588,7 @@ def run_acquisition(
 
         return matched
 
-    logger.opt(colors=True).info("<yellow>━━━ Phase 1/5: Discovering games on Metacritic ━━━</>")
+    logger.opt(colors=True).info("<yellow>━━━ Phase 1: Discovering games on Metacritic ━━━</>")
     try:
         # Metacritic-first acquisition: discover games via Metacritic browse,
         # then match against each configured source, and deliver to qBittorrent.
@@ -685,6 +734,7 @@ def _process_browse_games(
     *,
     max_queue_days: int = 30,
     reject_title: list[str] | None = None,
+    search_mode: str = "latest",
 ) -> int:
     """Evaluate browse-page games and insert qualifying ones into the pending queue.
 
@@ -701,12 +751,12 @@ def _process_browse_games(
         thresholds: Dict with ``min_metascore`` keys.
         max_queue_days: How many days to keep the game pending before expiry.
         reject_title: Titles matching any of these are skipped.
+        search_mode: "backlog" or "latest" — determines which pending queue to use.
 
     Returns:
         Number of new pending games added.
     """
-    # Batch-query all known slugs once, instead of N+1 per-game DB calls
-    known_slugs = db.get_known_slugs(source="metacritic", platform=platform)
+    known_slugs = _get_known_slugs_by_mode(db, search_mode, source="metacritic", platform=platform)
     new_count = 0
     for game in browse_games:
         if not _is_game_eligible(game, db, thresholds, known_slugs=known_slugs):
@@ -737,7 +787,9 @@ def _process_browse_games(
         else:
             expires_at = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=max_queue_days)).isoformat()
 
-        db.record_pending(
+        _record_pending_by_mode(
+            db,
+            search_mode,
             slug=g_slug,
             game_title=g_title,
             platform=platform,
@@ -937,7 +989,7 @@ def _fail_game_after_max_attempts(
             game.game_title,
             attempts,
         )
-    db.remove_pending(str(game.slug))
+    db.remove_backlog_pending(str(game.slug))
 
 
 def _reject_by_genre(
@@ -998,6 +1050,97 @@ def _scores_fail_check(result: Any, thresholds: dict[str, Any]) -> bool:
     return not _scores_present(result) or not _real_scores_pass_thresholds(result, thresholds)
 
 
+def _get_known_slugs_by_mode(db: Database, search_mode: str, *, source: str, platform: str) -> set[str]:
+    """Get known slugs from the mode-specific pending table + history."""
+    if search_mode == "backlog":
+        return db.get_known_backlog_slugs(source=source, platform=platform)
+    return db.get_known_latest_slugs(source=source, platform=platform)
+
+
+def _remove_pending_by_mode(db: Database, slug: str, search_mode: str) -> None:
+    """Remove a pending game from the mode-specific table."""
+    if search_mode == "backlog":
+        db.remove_backlog_pending(slug)
+    else:
+        db.remove_latest_pending(slug)
+
+
+def _touch_pending_by_mode(db: Database, slug: str, search_mode: str) -> None:
+    """Touch a pending game in the mode-specific table."""
+    if search_mode == "backlog":
+        db.touch_backlog_pending(slug)
+    else:
+        db.touch_latest_pending(slug)
+
+
+def _record_pending_by_mode(
+    db: Database,
+    search_mode: str,
+    slug: str,
+    game_title: str,
+    platform: str,
+    metascore: float | None = None,
+    metascore_reviews: int | None = None,
+    user_score: float | None = None,
+    user_reviews: int | None = None,
+    release_date: str | None = None,
+    expires_at: str | None = None,
+) -> None:
+    """Record a pending game in the mode-specific table."""
+    if search_mode == "backlog":
+        db.record_backlog_pending(
+            slug=slug,
+            game_title=game_title,
+            platform=platform,
+            metascore=metascore,
+            metascore_reviews=metascore_reviews,
+            user_score=user_score,
+            user_reviews=user_reviews,
+            release_date=release_date,
+            expires_at=expires_at,
+        )
+    else:
+        db.record_latest_pending(
+            slug=slug,
+            game_title=game_title,
+            platform=platform,
+            metascore=metascore,
+            metascore_reviews=metascore_reviews,
+            user_score=user_score,
+            user_reviews=user_reviews,
+            release_date=release_date,
+            expires_at=expires_at,
+        )
+
+
+def _update_pending_scores_by_mode(
+    db: Database,
+    slug: str,
+    result: Any,
+    search_mode: str,
+    fitgirl_max_queue_days: int,
+) -> None:
+    """Update scores and expiry for a pending game in the mode-specific table."""
+    if search_mode == "backlog":
+        db.update_backlog_pending_scores(
+            slug=slug,
+            metascore=result.metascore,
+            metascore_reviews=result.metascore_review_count,
+            user_score=result.user_score,
+            user_reviews=result.user_review_count,
+        )
+        db.update_backlog_pending_expiry(slug, fitgirl_max_queue_days)
+    else:
+        db.update_latest_pending_scores(
+            slug=slug,
+            metascore=result.metascore,
+            metascore_reviews=result.metascore_review_count,
+            user_score=result.user_score,
+            user_reviews=result.user_review_count,
+        )
+        db.update_latest_pending_expiry(slug, fitgirl_max_queue_days)
+
+
 def _should_process_by_age(game: Any, age_recheck_weeks: int | None) -> bool:
     """Return True if *game* is old enough to be permanently processed.
 
@@ -1049,7 +1192,7 @@ def _process_aged_games(
     if not cfg.age_recheck_weeks:
         return 0
 
-    pending = db.get_pending(platform=platform)
+    pending = db.get_backlog_pending(platform=platform)
     processed = 0
     for game in pending:
         if is_cancelled(cancel_event):
@@ -1068,7 +1211,7 @@ def _process_aged_games(
             result="Processed",
             result_details=f"Game older than {cfg.age_recheck_weeks}-week threshold, not re-checked",
         )
-        db.remove_pending(str(game.slug))
+        db.remove_backlog_pending(str(game.slug))
         logger.debug(
             "Processed '{}' \u2014 release date older than {} weeks",
             game.game_title,
@@ -1094,6 +1237,7 @@ def _process_verify_result(
     reject_genre: list[str] | None = None,
     reject_title: list[str] | None = None,
     fitgirl_max_queue_days: int = 60,
+    search_mode: str = "latest",
 ) -> bool:
     """Process one score-check result. Returns True if the game was removed.
 
@@ -1109,33 +1253,42 @@ def _process_verify_result(
         reject_title: Title substrings to reject (case-insensitive).
         fitgirl_max_queue_days: Days to extend pending expiry when scores pass.
             Set to 0 for indefinite pending (far-future expiry).
+        search_mode: "backlog" or "latest" — determines which pending queue to use.
     """
     matched_genre = _reject_by_genre(game, result, reject_genre)
     if matched_genre is not None:
-        attempts = db.increment_verify_attempts(str(game.slug))
-        _fail_game_after_max_attempts(
-            db,
-            game,
-            result,
-            attempts=attempts,
+        db.record_processed(
+            source="metacritic",
+            source_title=str(game.game_title),
+            source_url=f"mc:{str(game.slug)}",
+            game_title=str(game.game_title),
+            platform=str(game.platform),
+            metascore=result.metascore,
+            user_score=result.user_score,
+            result="Failed",
             result_details=f"Game '{game.game_title}' — genre '{matched_genre}' is in reject_genre list",
         )
+        _remove_pending_by_mode(db, str(game.slug), search_mode)
         return True
 
     matched_title = _reject_by_title(game, reject_title)
     if matched_title is not None:
-        attempts = db.increment_verify_attempts(str(game.slug))
-        _fail_game_after_max_attempts(
-            db,
-            game,
-            result,
-            attempts=attempts,
+        db.record_processed(
+            source="metacritic",
+            source_title=str(game.game_title),
+            source_url=f"mc:{str(game.slug)}",
+            game_title=str(game.game_title),
+            platform=str(game.platform),
+            metascore=result.metascore,
+            user_score=result.user_score,
+            result="Failed",
             result_details=f"Game '{game.game_title}' — title matches reject_title '{matched_title}'",
         )
+        _remove_pending_by_mode(db, str(game.slug), search_mode)
         return True
 
     if result is None:
-        db.touch_pending(str(game.slug))
+        _touch_pending_by_mode(db, str(game.slug), search_mode)
         logger.debug(
             "Keeping '{}' in queue \u2014 game not found on Metacritic page",
             game.game_title,
@@ -1143,7 +1296,7 @@ def _process_verify_result(
         return False
 
     if _scores_fail_check(result, thresholds):
-        db.touch_pending(str(game.slug))
+        _touch_pending_by_mode(db, str(game.slug), search_mode)
         logger.debug(
             "Keeping '{}' in queue \u2014 Metacritic scores ({}, {}) below thresholds",
             game.game_title,
@@ -1152,15 +1305,7 @@ def _process_verify_result(
         )
         return False
 
-    db.update_pending_scores(
-        slug=str(game.slug),
-        metascore=result.metascore,
-        metascore_reviews=result.metascore_review_count,
-        user_score=result.user_score,
-        user_reviews=result.user_review_count,
-    )
-    db.reset_verify_attempts(str(game.slug))
-    db.update_pending_expiry(str(game.slug), fitgirl_max_queue_days)
+    _update_pending_scores_by_mode(db, str(game.slug), result, search_mode, fitgirl_max_queue_days)
     logger.debug(
         "'{}' passed score check \u2014 ({}, {}) with ({} reviews, {} reviews)",
         game.game_title,
@@ -1186,6 +1331,7 @@ def _process_verify_batch(
     reject_title: list[str] | None = None,
     fitgirl_max_queue_days: int = 60,
     cancel_event: threading.Event | None = None,
+    search_mode: str = "latest",
 ) -> tuple[int, bool]:
     """Process a batch of pending game lookups concurrently.
 
@@ -1255,6 +1401,7 @@ def _process_verify_batch(
                 reject_genre=reject_genre,
                 reject_title=reject_title,
                 fitgirl_max_queue_days=fitgirl_max_queue_days,
+                search_mode=search_mode,
             ):
                 removed += 1
 
@@ -1287,6 +1434,7 @@ def _verify_pending_scores(
     fitgirl_max_queue_days: int = 60,
     notifier: Any = None,
     cancel_event: threading.Event | None = None,
+    search_mode: str = "latest",
 ) -> int:
     """Re-verify pending games' scores against the real Metacritic detail page.
 
@@ -1328,7 +1476,11 @@ def _verify_pending_scores(
         return 0
 
     removed = 0
-    pending = db.get_pending(platform=platform)
+    pending = (
+        db.get_backlog_pending(platform=platform)
+        if search_mode == "backlog"
+        else db.get_latest_pending(platform=platform)
+    )
     total_pending = len(pending)
 
     # Collect the batch of games to check this cycle
@@ -1350,6 +1502,7 @@ def _verify_pending_scores(
         reject_title=reject_title,
         fitgirl_max_queue_days=fitgirl_max_queue_days,
         cancel_event=cancel_event,
+        search_mode=search_mode,
     )
 
     if notifier is not None and not is_cancelled(cancel_event) and batch and not any_success:
@@ -1369,6 +1522,7 @@ def _jit_verify_and_update(
     game_title: str,
     game_slug: str,
     game_platform: str,
+    search_mode: str = "latest",
 ) -> Any:
     """Just-in-time verify a matched game's scores before delivery.
 
@@ -1402,20 +1556,43 @@ def _jit_verify_and_update(
         )
         return None
     if not (_scores_present(jit_result) and _real_scores_pass_thresholds(jit_result, thresholds)):
-        db.remove_pending(game_slug)
+        db.record_processed(
+            source="metacritic",
+            source_title=game_title,
+            source_url=f"mc:{game_slug}",
+            game_title=game_title,
+            platform=game_platform,
+            metascore=jit_result.metascore,
+            user_score=jit_result.user_score,
+            result="Failed",
+            result_details="JIT verify: scores below thresholds",
+        )
+        if search_mode == "backlog":
+            db.remove_backlog_pending(game_slug)
+        else:
+            db.remove_latest_pending(game_slug)
         logger.debug(
             "Skipped '{}' \u2014 scores missing or below thresholds",
             game_title,
         )
         return None
     # Update pending record with real detail-page scores
-    db.update_pending_scores(
-        slug=game_slug,
-        metascore=jit_result.metascore,
-        metascore_reviews=jit_result.metascore_review_count,
-        user_score=jit_result.user_score,
-        user_reviews=jit_result.user_review_count,
-    )
+    if search_mode == "backlog":
+        db.update_backlog_pending_scores(
+            slug=game_slug,
+            metascore=jit_result.metascore,
+            metascore_reviews=jit_result.metascore_review_count,
+            user_score=jit_result.user_score,
+            user_reviews=jit_result.user_review_count,
+        )
+    else:
+        db.update_latest_pending_scores(
+            slug=game_slug,
+            metascore=jit_result.metascore,
+            metascore_reviews=jit_result.metascore_review_count,
+            user_score=jit_result.user_score,
+            user_reviews=jit_result.user_review_count,
+        )
     return (
         jit_result.metascore,
         jit_result.user_score,
@@ -1445,6 +1622,7 @@ def _deliver_with_jit_verify(
     notifier: Any,
     best: dict[str, Any],
     source_name: str = "fitgirl",
+    search_mode: str = "latest",
 ) -> dict[str, Any] | None:
     """Verify scores just-in-time, then deliver the match.
 
@@ -1462,6 +1640,7 @@ def _deliver_with_jit_verify(
         game_title,
         game_slug,
         game_platform,
+        search_mode=search_mode,
     )
     # ``None`` → verification failed, skip delivery
     # ``()`` → no mc/thresholds, use original scores
@@ -1492,6 +1671,7 @@ def _deliver_with_jit_verify(
         game_must_play=game_must_play,
         game_release_date=game_release_date,
         source_name=source_name,
+        search_mode=search_mode,
     )
 
 
@@ -1506,6 +1686,7 @@ def _match_pending_games(
     thresholds: dict[str, Any] | None = None,
     reject_keywords: list[str] | None = None,
     source_name: str = "fitgirl",
+    search_mode: str = "latest",
 ) -> list[dict[str, Any]]:
     """Match pending games against a torrent source index.
 
@@ -1527,6 +1708,7 @@ def _match_pending_games(
         thresholds: Score thresholds for verification. Required when *mc*
             is provided.
         source_name: Name of the source to match against ("fitgirl").
+        search_mode: "backlog" or "latest" — determines which pending queue to use.
 
     Returns a list of result dicts.
     """
@@ -1537,7 +1719,7 @@ def _match_pending_games(
 
     # Match non-expired pending games whose scores have been checked
     # against the real Metacritic detail page.
-    pending = db.get_pending()
+    pending = db.get_backlog_pending() if search_mode == "backlog" else db.get_latest_pending()
     for game in pending:
         # ── Score-check gate ──
         # Games whose scores haven't been verified against the real
@@ -1574,12 +1756,13 @@ def _match_pending_games(
             game_release_date=game_release_date,
             reject_keywords=reject_keywords,
             source_name=source_name,
+            search_mode=search_mode,
         )
         if result is not None:
             results.append(result)
 
     # Expire overdue pending games
-    results.extend(_process_expired_games(db))
+    results.extend(_process_expired_games(db, search_mode=search_mode))
 
     return results
 
@@ -1602,6 +1785,7 @@ def _deliver_match(
     game_must_play: bool | None = None,
     game_release_date: str | None = None,
     source_name: str = "fitgirl",
+    search_mode: str = "latest",
 ) -> dict[str, Any]:
     """Deliver a matched pending game to qBittorrent and emit notifications.
 
@@ -1630,6 +1814,7 @@ def _deliver_match(
             game_metascore=game_metascore,
             game_user_score=game_user_score,
             best=best,
+            search_mode=search_mode,
         )
         _safe_notify(
             notifier,
@@ -1650,6 +1835,7 @@ def _deliver_match(
             game_metascore=game_metascore,
             game_user_score=game_user_score,
             best=best,
+            search_mode=search_mode,
         )
         _safe_notify(
             notifier,
@@ -1689,7 +1875,10 @@ def _deliver_match(
         torrent_tag=str(tag),
     )
     record_result["slug"] = game_slug
-    db.remove_pending(game_slug)
+    if search_mode == "backlog":
+        db.remove_backlog_pending(game_slug)
+    else:
+        db.remove_latest_pending(game_slug)
     # See comment above re: notification ordering.
     _safe_notify(
         notifier,
@@ -1718,6 +1907,7 @@ def _skip_for_reject_keywords(
     game_title: str,
     game_slug: str,
     reject_keywords: list[str] | None,
+    search_mode: str = "latest",
 ) -> bool:
     """Return True if the source match should be skipped due to rejected keywords.
 
@@ -1725,7 +1915,7 @@ def _skip_for_reject_keywords(
     structure with HV/hypervisor keywords and use standard HTTPS (verify=True).
     """
     return source_name.casefold() == "fitgirl" and _check_reject_keywords(
-        db, best, game_title, game_slug, reject_keywords
+        db, best, game_title, game_slug, reject_keywords, search_mode=search_mode
     )
 
 
@@ -1735,6 +1925,7 @@ def _check_reject_keywords(
     game_title: str,
     game_slug: str,
     reject_keywords: list[str] | None,
+    search_mode: str = "latest",
 ) -> bool:
     """Check whether a match should be skipped due to rejected keywords.
 
@@ -1758,7 +1949,7 @@ def _check_reject_keywords(
     page_title, article_text = _fetch_fitgirl_page_content(best["url"])
 
     if page_title is None and article_text is None:
-        return _check_sitemap_title_fallback(db, best, game_title, game_slug, reject_keywords)
+        return _check_sitemap_title_fallback(db, best, game_title, game_slug, reject_keywords, search_mode=search_mode)
 
     # Truncate article text before "Backwards Compatibility" section.
     # FitGirl pages describe backwards compatibility with previous repacks
@@ -1772,7 +1963,7 @@ def _check_reject_keywords(
             game_title,
             matched,
         )
-        db.touch_pending(game_slug)
+        _touch_pending_by_mode(db, game_slug, search_mode)
         return True
 
     if page_title and (matched := _title_contains_keywords(page_title, reject_keywords)):
@@ -1782,7 +1973,7 @@ def _check_reject_keywords(
             page_title,
             matched,
         )
-        db.touch_pending(game_slug)
+        _touch_pending_by_mode(db, game_slug, search_mode)
         return True
 
     return False
@@ -1794,6 +1985,7 @@ def _check_sitemap_title_fallback(
     game_title: str,
     game_slug: str,
     reject_keywords: list[str],
+    search_mode: str = "latest",
 ) -> bool:
     """Check the sitemap title against reject keywords as a fallback.
 
@@ -1812,7 +2004,7 @@ def _check_sitemap_title_fallback(
             best["title"],
             matched,
         )
-        db.touch_pending(game_slug)
+        _touch_pending_by_mode(db, game_slug, search_mode)
         return True
     return False
 
@@ -1854,12 +2046,13 @@ def _process_single_pending_match(
     game_release_date: str | None,
     reject_keywords: list[str] | None = None,
     source_name: str = "fitgirl",
+    search_mode: str = "latest",
 ) -> dict[str, Any] | None:
     """Match one pending game against a source sitemap and either deliver or touch."""
     normalized = normalise_for_compare(game_title)
     matches = db.match_source_title(source_name, normalized)
     if not matches:
-        db.touch_pending(game_slug)
+        _touch_pending_by_mode(db, game_slug, search_mode)
         logger.info(
             "'{}' passed Metacritic checks but has no {} match \u2014 staying in queue",
             game_title,
@@ -1877,7 +2070,9 @@ def _process_single_pending_match(
     )
 
     # Skip FitGirl matches whose article body contains rejected keywords.
-    if _skip_for_reject_keywords(source_name, db, best, game_title, game_slug, reject_keywords):
+    if _skip_for_reject_keywords(
+        source_name, db, best, game_title, game_slug, reject_keywords, search_mode=search_mode
+    ):
         return None
 
     # Check library first — skip if already owned
@@ -1892,6 +2087,7 @@ def _process_single_pending_match(
                 game_metascore=game_metascore,
                 game_user_score=game_user_score,
                 lib_match=lib_match,
+                search_mode=search_mode,
             )
 
     # If qbt and magnet_fetcher are provided, deliver the torrent
@@ -1914,6 +2110,7 @@ def _process_single_pending_match(
             notifier=notifier,
             best=best,
             source_name=source_name,
+            search_mode=search_mode,
         )
         if result_dict is not None:
             return result_dict
@@ -1929,13 +2126,17 @@ def _process_single_pending_match(
         game_user_score=game_user_score,
         best=best,
         source_name=source_name,
+        search_mode=search_mode,
     )
 
 
-def _process_expired_games(db: Database) -> list[dict[str, Any]]:
+def _process_expired_games(
+    db: Database,
+    search_mode: str = "latest",
+) -> list[dict[str, Any]]:
     """Move expired pending games to history and return their result dicts."""
     results: list[dict[str, Any]] = []
-    expired = db.get_expired_pending()
+    expired = db.get_expired_backlog_pending() if search_mode == "backlog" else db.get_expired_latest_pending()
     for game in expired:
         game_title = str(game.game_title)
         game_slug = str(game.slug)
@@ -1952,7 +2153,10 @@ def _process_expired_games(db: Database) -> list[dict[str, Any]]:
             result_details="Not available on any source within pending window",
         )
         record_result["slug"] = game_slug
-        db.remove_pending(game_slug)
+        if search_mode == "backlog":
+            db.remove_backlog_pending(game_slug)
+        else:
+            db.remove_latest_pending(game_slug)
         results.append(record_result)
         logger.info("'{}' expired \u2014 queued too long, no match found on any source", game_title)
     return results
@@ -1967,6 +2171,7 @@ def _record_library_match(
     game_metascore: float | None,
     game_user_score: float | None,
     lib_match: Any,
+    search_mode: str = "latest",
 ) -> dict[str, Any]:
     """Record that a matched game was already found in the local library."""
     record_result = _record_result(
@@ -1982,7 +2187,10 @@ def _record_library_match(
         result_details=f"Found in library: {lib_match.matched_path}",
     )
     record_result["slug"] = game_slug
-    db.remove_pending(game_slug)
+    if search_mode == "backlog":
+        db.remove_backlog_pending(game_slug)
+    else:
+        db.remove_latest_pending(game_slug)
     logger.info(
         "Already owned: '{}' found in library at {}; skipping",
         game_title,
@@ -2001,6 +2209,7 @@ def _record_match_only(
     game_user_score: float | None,
     best: dict[str, Any],
     source_name: str = "fitgirl",
+    search_mode: str = "latest",
 ) -> dict[str, Any]:
     """Record a matched game to history without delivering to qBittorrent."""
     record_result = _record_result(
@@ -2016,7 +2225,10 @@ def _record_match_only(
         result_details=f"Matched on {_source_display(source_name)}: {best['url']}",
     )
     record_result["slug"] = game_slug
-    db.remove_pending(game_slug)
+    if search_mode == "backlog":
+        db.remove_backlog_pending(game_slug)
+    else:
+        db.remove_latest_pending(game_slug)
     logger.info("\u2713 '{}' matched \u2014 logged (no downloader configured)", game_title)
     return record_result
 
@@ -2030,6 +2242,7 @@ def _record_delivery_error(
     game_metascore: float | None,
     game_user_score: float | None,
     best: dict[str, Any],
+    search_mode: str = "latest",
 ) -> dict[str, Any]:
     """Record an error result for a failed delivery and remove the pending row.
 
@@ -2048,7 +2261,10 @@ def _record_delivery_error(
         result_details=f"Match found at {best['url']} but delivery failed",
     )
     record_result["slug"] = game_slug
-    db.remove_pending(game_slug)
+    if search_mode == "backlog":
+        db.remove_backlog_pending(game_slug)
+    else:
+        db.remove_latest_pending(game_slug)
     return record_result
 
 

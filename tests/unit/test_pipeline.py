@@ -69,6 +69,7 @@ class TestMaxCycleWeeks:
                 db_path=":memory:",
                 max_pages=52,
                 max_cycle_pages=100,
+                search_mode="backlog",
             )
             assert isinstance(results, list)
 
@@ -96,6 +97,7 @@ class TestMaxCycleWeeks:
                 db_path=":memory:",
                 max_pages=280,
                 max_cycle_pages=4,
+                search_mode="backlog",
             )
 
             # Verify scan_recent_games was called with max_cycle_pages,
@@ -129,6 +131,7 @@ class TestMaxCycleWeeks:
                 db_path=":memory:",
                 max_pages=500,
                 max_cycle_pages=0,
+                search_mode="backlog",
             )
 
             # When max_cycle_pages is 0 (default/unlimited), fall back to
@@ -164,6 +167,7 @@ class TestRunAcquisition:
                 platform="pc",
                 qbt_host="localhost",
                 qbt_port=8080,
+                search_mode="backlog",
             )
             assert results == []
 
@@ -183,6 +187,7 @@ class TestRunAcquisition:
                 platform="pc",
                 qbt_host="localhost",
                 qbt_port=8080,
+                search_mode="backlog",
             )
             assert results == []
 
@@ -235,6 +240,7 @@ class TestRunAcquisition:
                 platform="pc",
                 qbt_host="localhost",
                 qbt_port=8080,
+                search_mode="backlog",
             )
 
             # The Metacritic-first flow must NOT call fetch_new() at all.
@@ -268,6 +274,7 @@ class TestRunAcquisition:
                 qbt_host="localhost",
                 qbt_port=8080,
                 library_paths=["/games"],
+                search_mode="backlog",
             )
             # Metacritic browse should be called (multiple years now)
             assert mock_mc.scan_recent_games.called
@@ -294,7 +301,7 @@ class TestRunAcquisition:
         db = Database(db_path)
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
         for i in range(52):
-            db.record_pending(
+            db.record_backlog_pending(
                 slug=f"game-{i:02d}",
                 game_title=f"Game {i:02d}",
                 platform="pc",
@@ -345,6 +352,7 @@ class TestRunAcquisition:
                 min_user_score=7.5,
                 min_user_reviews=10,
                 min_metascore_reviews=5,
+                search_mode="backlog",
             )
 
             # Sitemap must NOT be fetched because no pending game has
@@ -354,7 +362,7 @@ class TestRunAcquisition:
 
             # Confirm ALL games are still pending for future re-verification
             verify_db = Database(db_path)
-            remaining = verify_db.get_pending(platform="pc")
+            remaining = verify_db.get_backlog_pending(platform="pc")
             assert len(remaining) == 52, f"{len(remaining)} games should remain pending for re-check"
             assert all(g.score_checks_passed is None or g.score_checks_passed is False for g in remaining), (
                 "No games should have passed score checks"
@@ -522,7 +530,7 @@ class TestMetacriticBrowse:
         buf = io.StringIO()
         logger_id = logger.add(buf, format="{level.name}:{message}", colorize=False)
         try:
-            _process_browse_games(browse_games, "pc", db, thresholds)
+            _process_browse_games(browse_games, "pc", db, thresholds, search_mode="backlog")
         finally:
             logger.remove(logger_id)
 
@@ -530,7 +538,7 @@ class TestMetacriticBrowse:
         assert "Added pending game" in output, "The pending message should appear"
         assert output.startswith("DEBUG"), f"Should be DEBUG, not INFO; got: {output[:60]}"
         # Also verify behavior is correct (game was added)
-        pending = db.get_pending(platform="pc")
+        pending = db.get_backlog_pending(platform="pc")
         assert len(pending) == 1
         db.close()
 
@@ -548,7 +556,7 @@ class TestMetacriticBrowse:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="gothic-1-remake",
             game_title="Gothic 1 Remake",
             platform="pc",
@@ -559,7 +567,7 @@ class TestMetacriticBrowse:
             release_date="2026-06-05",
             expires_at=expires,
         )
-        db.update_pending_scores(
+        db.update_backlog_pending_scores(
             slug="gothic-1-remake",
             metascore=76.0,
             metascore_reviews=12,
@@ -606,6 +614,7 @@ class TestMetacriticBrowse:
                 magnet_fetcher=magnet_fetcher,
                 mc=mock_mc,
                 thresholds=thresholds,
+                search_mode="backlog",
             )
         finally:
             logger.remove(logger_id)
@@ -631,7 +640,7 @@ class TestMetacriticBrowse:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="elden-ring",
             game_title="Elden Ring",
             platform="pc",
@@ -642,7 +651,7 @@ class TestMetacriticBrowse:
             release_date="2026-06-01",
             expires_at=expires,
         )
-        db.update_pending_scores(
+        db.update_backlog_pending_scores(
             slug="elden-ring",
             metascore=96.0,
             metascore_reviews=120,
@@ -662,7 +671,7 @@ class TestMetacriticBrowse:
         buf = io.StringIO()
         logger_id = logger.add(buf, format="{message}", colorize=False)
         try:
-            matched = _match_pending_games(db, qbt=mock_qbt, magnet_fetcher=magnet_fetcher)
+            matched = _match_pending_games(db, qbt=mock_qbt, magnet_fetcher=magnet_fetcher, search_mode="backlog")
         finally:
             logger.remove(logger_id)
 
@@ -690,7 +699,7 @@ class TestMetacriticBrowse:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="game-with-angle",
             game_title="Game <Director's>",
             platform="pc",
@@ -701,7 +710,7 @@ class TestMetacriticBrowse:
             release_date="2026-06-01",
             expires_at=expires,
         )
-        db.update_pending_scores(
+        db.update_backlog_pending_scores(
             slug="game-with-angle",
             metascore=80.0,
             metascore_reviews=10,
@@ -720,7 +729,7 @@ class TestMetacriticBrowse:
         buf = io.StringIO()
         logger_id = logger.add(buf, format="{message}", colorize=False)
         try:
-            matched = _match_pending_games(db, qbt=mock_qbt, magnet_fetcher=magnet_fetcher)
+            matched = _match_pending_games(db, qbt=mock_qbt, magnet_fetcher=magnet_fetcher, search_mode="backlog")
         finally:
             logger.remove(logger_id)
 
@@ -782,7 +791,7 @@ class TestMetacriticBrowse:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="test-game",
             game_title="Test Game",
             platform="pc",
@@ -790,7 +799,7 @@ class TestMetacriticBrowse:
             user_score=8.0,
             expires_at=expires,
         )
-        db.update_pending_scores(slug="test-game", metascore=85.0, user_score=8.0)
+        db.update_backlog_pending_scores(slug="test-game", metascore=85.0, user_score=8.0)
 
         mock_qbt = MagicMock()
         mock_qbt.add_torrent.return_value = "gamarr-tag"
@@ -832,7 +841,7 @@ class TestMetacriticBrowse:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="test-game2",
             game_title="Test Game 2",
             platform="pc",
@@ -840,7 +849,7 @@ class TestMetacriticBrowse:
             user_score=8.0,
             expires_at=expires,
         )
-        db.update_pending_scores(slug="test-game2", metascore=85.0, user_score=8.0)
+        db.update_backlog_pending_scores(slug="test-game2", metascore=85.0, user_score=8.0)
 
         mock_qbt = MagicMock()
         mock_qbt.add_torrent.return_value = "gamarr-tag"
@@ -880,7 +889,7 @@ class TestMetacriticBrowse:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="thick-as-thieves",
             game_title="Thick as Thieves",
             platform="pc",
@@ -915,11 +924,11 @@ class TestMetacriticBrowse:
             "min_user_reviews": 10,
         }
 
-        assert db.is_pending("thick-as-thieves") is True
-        removed = _verify_pending_scores(db, mock_mc, "pc", thresholds)
+        assert db.is_backlog_pending("thick-as-thieves") is True
+        removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, search_mode="backlog")
         # Real scores (62, 3.3) fail thresholds — game should stay for re-check
         assert removed == 0, "Game with failing real scores should NOT be removed (re-check later)"
-        assert db.is_pending("thick-as-thieves") is True, "Game should stay in pending queue"
+        assert db.is_backlog_pending("thick-as-thieves") is True, "Game should stay in pending queue"
         db.close()
 
     def test_verify_pending_keeps_game_with_passing_real_scores(self, tmp_path: Path) -> None:
@@ -932,7 +941,7 @@ class TestMetacriticBrowse:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="forza-horizon-6",
             game_title="Forza Horizon 6",
             platform="pc",
@@ -966,12 +975,12 @@ class TestMetacriticBrowse:
             "min_user_reviews": 10,
         }
 
-        assert db.is_pending("forza-horizon-6") is True
-        removed = _verify_pending_scores(db, mock_mc, "pc", thresholds)
+        assert db.is_backlog_pending("forza-horizon-6") is True
+        removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, search_mode="backlog")
         assert removed == 0, "Game with passing real scores should NOT be removed"
         # DB should still have the pending game with corrected scores
-        assert db.is_pending("forza-horizon-6") is True
-        pending_list = db.get_pending(platform="pc")
+        assert db.is_backlog_pending("forza-horizon-6") is True
+        pending_list = db.get_backlog_pending(platform="pc")
         assert len(pending_list) == 1
         assert pending_list[0].metascore == 88.0, "Score should be updated to real value"
         assert pending_list[0].user_score == 8.0, "User score should be updated to real value"
@@ -987,7 +996,7 @@ class TestMetacriticBrowse:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="not-found-game",
             game_title="Not Found Game",
             platform="pc",
@@ -999,7 +1008,7 @@ class TestMetacriticBrowse:
         mock_mc = MagicMock()
         mock_mc.lookup_game.return_value = None  # detail page not found
 
-        assert db.is_pending("not-found-game") is True
+        assert db.is_backlog_pending("not-found-game") is True
         removed = _verify_pending_scores(
             db,
             mock_mc,
@@ -1010,10 +1019,11 @@ class TestMetacriticBrowse:
                 "min_user_score": 7.5,
                 "min_user_reviews": 10,
             },
+            search_mode="backlog",
         )
         # Game with None lookup should stay pending for re-check
         assert removed == 0, "Game with None lookup should NOT be removed (re-check later)"
-        assert db.is_pending("not-found-game") is True, "Game should stay in pending queue"
+        assert db.is_backlog_pending("not-found-game") is True, "Game should stay in pending queue"
         # lookup_game was called with direct_only=True (no browse fallback)
         assert mock_mc.lookup_game.call_count == 1
         _call_args, call_kwargs = mock_mc.lookup_game.call_args
@@ -1031,7 +1041,7 @@ class TestMetacriticBrowse:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="unreviewed-game",
             game_title="Unreviewed Game",
             platform="pc",
@@ -1053,7 +1063,7 @@ class TestMetacriticBrowse:
             release_date=None,
         )
 
-        assert db.is_pending("unreviewed-game") is True
+        assert db.is_backlog_pending("unreviewed-game") is True
         removed = _verify_pending_scores(
             db,
             mock_mc,
@@ -1064,12 +1074,13 @@ class TestMetacriticBrowse:
                 "min_user_score": 7.5,
                 "min_user_reviews": 10,
             },
+            search_mode="backlog",
         )
         # Game with TBD scores should NOT be removed — stays pending for re-check
         assert removed == 0, "Game with TBD scores should NOT be removed"
-        assert db.is_pending("unreviewed-game") is True, "Game should stay in pending queue"
+        assert db.is_backlog_pending("unreviewed-game") is True, "Game should stay in pending queue"
         # score_checks_passed should remain None (not True)
-        pending = db.get_pending()
+        pending = db.get_backlog_pending()
         unreviewed = next((g for g in pending if g.slug == "unreviewed-game"), None)
         assert unreviewed is not None
         assert unreviewed.score_checks_passed is None or unreviewed.score_checks_passed is False
@@ -1085,7 +1096,7 @@ class TestMetacriticBrowse:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="mixed-scores-game",
             game_title="Mixed Scores Game",
             platform="pc",
@@ -1107,7 +1118,7 @@ class TestMetacriticBrowse:
             release_date="2026-06-01",
         )
 
-        assert db.is_pending("mixed-scores-game") is True
+        assert db.is_backlog_pending("mixed-scores-game") is True
         removed = _verify_pending_scores(
             db,
             mock_mc,
@@ -1118,10 +1129,11 @@ class TestMetacriticBrowse:
                 "min_user_score": 7.5,
                 "min_user_reviews": 10,
             },
+            search_mode="backlog",
         )
         # Game stays pending for re-verification (not permanently removed)
         assert removed == 0
-        assert db.is_pending("mixed-scores-game") is True
+        assert db.is_backlog_pending("mixed-scores-game") is True
         db.close()
 
     def test_verify_pending_respects_max_verify_limit(self, tmp_path: Path) -> None:
@@ -1136,7 +1148,7 @@ class TestMetacriticBrowse:
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
         # Create 20 pending games with zero-padded slugs for predictable sort order
         for i in range(20):
-            db.record_pending(
+            db.record_backlog_pending(
                 slug=f"game-{i:02d}",
                 game_title=f"Game {i:02d}",
                 platform="pc",
@@ -1165,12 +1177,13 @@ class TestMetacriticBrowse:
             "pc",
             {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10},
             max_verify=5,
+            search_mode="backlog",
         )
         assert mock_mc.lookup_game.call_count == 5, f"Expected 5 lookups, got {mock_mc.lookup_game.call_count}"
         # Removed should be 0 (all passing scores)
         assert removed == 0, "All games pass thresholds, none removed"
         # All 20 games still pending: first 5 verified (scores updated), last 15 untouched
-        remaining = db.get_pending()
+        remaining = db.get_backlog_pending()
         assert len(remaining) == 20, f"All 20 must remain: {len(remaining)}"
         # First 5 (game-00 to game-04) should have updated metascore (85.0),
         # last 15 (game-05 to game-19) should still have browse score (1288.0)
@@ -1197,7 +1210,7 @@ class TestMetacriticBrowse:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="unverified-game",
             game_title="Unverified Game",
             platform="pc",
@@ -1230,6 +1243,7 @@ class TestMetacriticBrowse:
             magnet_fetcher=magnet_fetcher,
             mc=mock_mc,
             thresholds=thresholds,
+            search_mode="backlog",
         )
 
         # No matches should be returned — game has unverified browse scores
@@ -1241,7 +1255,7 @@ class TestMetacriticBrowse:
         # Magnet should NOT be fetched
         magnet_fetcher.assert_not_called()
         # Game should remain in queue until next score-check cycle
-        assert db.is_pending("unverified-game"), "Unverified game should stay pending until score-checked"
+        assert db.is_backlog_pending("unverified-game"), "Unverified game should stay pending until score-checked"
         db.close()
 
     def test_match_pending_delivers_verified_game(self, tmp_path: Path) -> None:
@@ -1254,7 +1268,7 @@ class TestMetacriticBrowse:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="verified-game",
             game_title="Verified Game",
             platform="pc",
@@ -1272,7 +1286,7 @@ class TestMetacriticBrowse:
 
         mock_qbt = MagicMock()
         # Mark the game as score-checked so it passes the gate in _match_pending_games
-        db.update_pending_scores(
+        db.update_backlog_pending_scores(
             slug="verified-game",
             metascore=85.0,
             metascore_reviews=20,
@@ -1309,6 +1323,7 @@ class TestMetacriticBrowse:
             magnet_fetcher=magnet_fetcher,
             mc=mock_mc,
             thresholds=thresholds,
+            search_mode="backlog",
         )
 
         # Game should be delivered
@@ -1327,7 +1342,7 @@ class TestMetacriticBrowse:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="007-first-light",
             game_title="007 First Light",
             platform="pc",
@@ -1335,7 +1350,7 @@ class TestMetacriticBrowse:
             user_score=8.0,
             expires_at=expires,
         )
-        db.update_pending_scores(slug="007-first-light", metascore=85.0, user_score=8.0)
+        db.update_backlog_pending_scores(slug="007-first-light", metascore=85.0, user_score=8.0)
         # FitGirl title contains "HV"
         db.rebuild_source_titles(
             "fitgirl",
@@ -1351,12 +1366,13 @@ class TestMetacriticBrowse:
             qbt=mock_qbt,
             magnet_fetcher=magnet_fetcher,
             reject_keywords=["HV"],
+            search_mode="backlog",
         )
         # Game should NOT be delivered — FitGirl title was excluded by keyword
         assert len(matched) == 0
         mock_qbt.add_torrent.assert_not_called()
         # Game should still be pending (not removed, not expired)
-        assert db.is_pending("007-first-light"), "Game should remain pending when match is skipped"
+        assert db.is_backlog_pending("007-first-light"), "Game should remain pending when match is skipped"
         db.close()
 
     def test_browse_qualifying_games_inserts_pending(self, tmp_path: Path) -> None:
@@ -1380,8 +1396,8 @@ class TestMetacriticBrowse:
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
-        _process_browse_games(browse_games, "pc", db, thresholds, max_queue_days=30)
-        pending = db.get_pending(platform="pc")
+        _process_browse_games(browse_games, "pc", db, thresholds, max_queue_days=30, search_mode="backlog")
+        pending = db.get_backlog_pending(platform="pc")
         assert len(pending) == 1
         assert pending[0].slug == "elden-ring"
         db.close()
@@ -1402,7 +1418,7 @@ class TestMetacriticBrowse:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="crimson-desert",
             game_title="Crimson Desert",
             platform="pc",
@@ -1410,7 +1426,7 @@ class TestMetacriticBrowse:
             user_score=8.0,
             expires_at=expires,
         )
-        db.update_pending_scores(slug="crimson-desert", metascore=85.0, user_score=8.0)
+        db.update_backlog_pending_scores(slug="crimson-desert", metascore=85.0, user_score=8.0)
         # Sitemap title is URL-derived and CLEAN — "HV" is NOT in it
         db.rebuild_source_titles(
             "fitgirl",
@@ -1455,7 +1471,7 @@ class TestMetacriticBrowse:
             assert result is None, "Game should be rejected — FitGirl page title contains HV"
             mock_get.assert_called_once()
             # The game should remain pending (not removed)
-            assert db.is_pending("crimson-desert")
+            assert db.is_backlog_pending("crimson-desert")
             db.close()
 
     def test_reject_keywords_clean_page_title_passes(self, tmp_path: Path) -> None:
@@ -1468,7 +1484,7 @@ class TestMetacriticBrowse:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="crimson-desert",
             game_title="Crimson Desert",
             platform="pc",
@@ -1476,7 +1492,7 @@ class TestMetacriticBrowse:
             user_score=8.0,
             expires_at=expires,
         )
-        db.update_pending_scores(slug="crimson-desert", metascore=85.0, user_score=8.0)
+        db.update_backlog_pending_scores(slug="crimson-desert", metascore=85.0, user_score=8.0)
         db.rebuild_source_titles(
             "fitgirl",
             [{"title": "Crimson Desert", "url": "https://fitgirl-repacks.site/crimson-desert/"}],
@@ -1532,7 +1548,7 @@ class TestMetacriticBrowse:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="hv-game",
             game_title="HV Game",
             platform="pc",
@@ -1540,7 +1556,7 @@ class TestMetacriticBrowse:
             user_score=8.0,
             expires_at=expires,
         )
-        db.update_pending_scores(slug="hv-game", metascore=85.0, user_score=8.0)
+        db.update_backlog_pending_scores(slug="hv-game", metascore=85.0, user_score=8.0)
         # Sitemap title DOES contain HV
         db.rebuild_source_titles(
             "fitgirl",
@@ -1574,7 +1590,7 @@ class TestMetacriticBrowse:
             )
             # Should be rejected — fallback to sitemap title which contains HV
             assert result is None, "Should reject via sitemap title fallback"
-            assert db.is_pending("hv-game"), "Should remain pending"
+            assert db.is_backlog_pending("hv-game"), "Should remain pending"
             db.close()
 
     def test_reject_keywords_article_body_contains_keyword(self, tmp_path: Path) -> None:
@@ -1587,7 +1603,7 @@ class TestMetacriticBrowse:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="game-with-body-keyword",
             game_title="Game With Body Keyword",
             platform="pc",
@@ -1595,7 +1611,7 @@ class TestMetacriticBrowse:
             user_score=8.0,
             expires_at=expires,
         )
-        db.update_pending_scores(slug="game-with-body-keyword", metascore=85.0, user_score=8.0)
+        db.update_backlog_pending_scores(slug="game-with-body-keyword", metascore=85.0, user_score=8.0)
         db.rebuild_source_titles(
             "fitgirl",
             [{"title": "Game With Body Keyword", "url": "https://fitgirl-repacks.site/game-with-body-keyword/"}],
@@ -1638,7 +1654,7 @@ class TestMetacriticBrowse:
             )
             # SHOULD be rejected because article body contains "Hypervisor"
             assert result is None, "Game should be rejected \u2014 article body contains Hypervisor"
-            assert db.is_pending("game-with-body-keyword"), "Should remain pending"
+            assert db.is_backlog_pending("game-with-body-keyword"), "Should remain pending"
             db.close()
 
     def test_reject_keywords_ignores_comments_section(self, tmp_path: Path) -> None:
@@ -1651,7 +1667,7 @@ class TestMetacriticBrowse:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="clean-game",
             game_title="Clean Game",
             platform="pc",
@@ -1659,7 +1675,7 @@ class TestMetacriticBrowse:
             user_score=8.0,
             expires_at=expires,
         )
-        db.update_pending_scores(slug="clean-game", metascore=85.0, user_score=8.0)
+        db.update_backlog_pending_scores(slug="clean-game", metascore=85.0, user_score=8.0)
         db.rebuild_source_titles(
             "fitgirl",
             [{"title": "Clean Game", "url": "https://fitgirl-repacks.site/clean-game/"}],
@@ -1719,7 +1735,7 @@ class TestMetacriticBrowse:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="lego-batman",
             game_title="LEGO Batman: Legacy of the Dark Knight",
             platform="pc",
@@ -1727,7 +1743,7 @@ class TestMetacriticBrowse:
             user_score=8.0,
             expires_at=expires,
         )
-        db.update_pending_scores(slug="lego-batman", metascore=85.0, user_score=8.0)
+        db.update_backlog_pending_scores(slug="lego-batman", metascore=85.0, user_score=8.0)
         db.rebuild_source_titles(
             "fitgirl",
             [{"title": "LEGO Batman: Legacy of the Dark Knight", "url": "https://fitgirl-repacks.site/lego-batman/"}],
@@ -1799,7 +1815,7 @@ class TestMetacriticBrowse:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="clean-game-fb",
             game_title="Clean Game Fallback",
             platform="pc",
@@ -1807,7 +1823,7 @@ class TestMetacriticBrowse:
             user_score=8.0,
             expires_at=expires,
         )
-        db.update_pending_scores(slug="clean-game-fb", metascore=85.0, user_score=8.0)
+        db.update_backlog_pending_scores(slug="clean-game-fb", metascore=85.0, user_score=8.0)
         db.rebuild_source_titles(
             "fitgirl",
             [{"title": "Clean Game Fallback", "url": "https://example.com/clean-game"}],
@@ -1849,7 +1865,7 @@ class TestMetacriticBrowse:
         db = Database(str(tmp_path / "test.db"))
 
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="elden-ring",
             game_title="Elden Ring",
             platform="pc",
@@ -1857,7 +1873,7 @@ class TestMetacriticBrowse:
             user_score=8.5,
             expires_at=expires,
         )
-        db.update_pending_scores(
+        db.update_backlog_pending_scores(
             slug="elden-ring",
             metascore=96.0,
             user_score=8.5,
@@ -1870,10 +1886,10 @@ class TestMetacriticBrowse:
             ],
         )
 
-        matched = _match_pending_games(db)
+        matched = _match_pending_games(db, search_mode="backlog")
         assert len(matched) == 1
         assert matched[0]["slug"] == "elden-ring"
-        assert db.is_pending("elden-ring") is False
+        assert db.is_backlog_pending("elden-ring") is False
         db.close()
 
     def test_match_pending_delivers_magnet(self, tmp_path: Path) -> None:
@@ -1886,7 +1902,7 @@ class TestMetacriticBrowse:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="elden-ring",
             game_title="Elden Ring",
             platform="pc",
@@ -1894,7 +1910,7 @@ class TestMetacriticBrowse:
             user_score=8.5,
             expires_at=expires,
         )
-        db.update_pending_scores(
+        db.update_backlog_pending_scores(
             slug="elden-ring",
             metascore=96.0,
             user_score=8.5,
@@ -1908,7 +1924,7 @@ class TestMetacriticBrowse:
         mock_qbt.add_torrent.return_value = "gamarr-tag"
         magnet_fetcher = MagicMock(return_value="magnet:?xt=urn:btih:test")
 
-        matched = _match_pending_games(db, qbt=mock_qbt, magnet_fetcher=magnet_fetcher)
+        matched = _match_pending_games(db, qbt=mock_qbt, magnet_fetcher=magnet_fetcher, search_mode="backlog")
 
         # Game should be matched and delivered
         assert len(matched) == 1
@@ -1920,7 +1936,7 @@ class TestMetacriticBrowse:
         args, kwargs = mock_qbt.add_torrent.call_args
         assert kwargs["magnet_url"] == "magnet:?xt=urn:btih:test"
         assert kwargs["title"] == "[FitGirl] Elden Ring", "Falls back to sitemap/game title when no page cached"
-        assert db.is_pending("elden-ring") is False
+        assert db.is_backlog_pending("elden-ring") is False
         db.close()
 
     def test_match_pending_delivers_magnet_fetch_fails(self, tmp_path: Path) -> None:
@@ -1933,7 +1949,7 @@ class TestMetacriticBrowse:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="elden-ring",
             game_title="Elden Ring",
             platform="pc",
@@ -1941,7 +1957,7 @@ class TestMetacriticBrowse:
             user_score=8.5,
             expires_at=expires,
         )
-        db.update_pending_scores(
+        db.update_backlog_pending_scores(
             slug="elden-ring",
             metascore=96.0,
             user_score=8.5,
@@ -1954,14 +1970,14 @@ class TestMetacriticBrowse:
         mock_qbt = MagicMock()
         magnet_fetcher = MagicMock(return_value=None)  # No magnet found
 
-        matched = _match_pending_games(db, qbt=mock_qbt, magnet_fetcher=magnet_fetcher)
+        matched = _match_pending_games(db, qbt=mock_qbt, magnet_fetcher=magnet_fetcher, search_mode="backlog")
 
         assert len(matched) == 1
         assert matched[0]["result"] == "Error"
         assert "delivery failed" in matched[0]["result_details"].lower()
         magnet_fetcher.assert_called_once()
         mock_qbt.add_torrent.assert_not_called()
-        assert db.is_pending("elden-ring") is False
+        assert db.is_backlog_pending("elden-ring") is False
         db.close()
 
     def test_match_pending_delivers_magnet_qbt_fails(self, tmp_path: Path) -> None:
@@ -1974,7 +1990,7 @@ class TestMetacriticBrowse:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="elden-ring",
             game_title="Elden Ring",
             platform="pc",
@@ -1982,7 +1998,7 @@ class TestMetacriticBrowse:
             user_score=8.5,
             expires_at=expires,
         )
-        db.update_pending_scores(
+        db.update_backlog_pending_scores(
             slug="elden-ring",
             metascore=96.0,
             user_score=8.5,
@@ -1996,14 +2012,14 @@ class TestMetacriticBrowse:
         mock_qbt.add_torrent.return_value = False  # qBittorrent failure
         magnet_fetcher = MagicMock(return_value="magnet:?xt=urn:btih:test")
 
-        matched = _match_pending_games(db, qbt=mock_qbt, magnet_fetcher=magnet_fetcher)
+        matched = _match_pending_games(db, qbt=mock_qbt, magnet_fetcher=magnet_fetcher, search_mode="backlog")
 
         assert len(matched) == 1
         assert matched[0]["result"] == "Error"
         assert "delivery failed" in matched[0]["result_details"].lower()
         magnet_fetcher.assert_called_once()
         mock_qbt.add_torrent.assert_called_once()
-        assert db.is_pending("elden-ring") is False
+        assert db.is_backlog_pending("elden-ring") is False
         db.close()
 
     def test_match_pending_expired_game(self, tmp_path: Path) -> None:
@@ -2015,17 +2031,17 @@ class TestMetacriticBrowse:
 
         db = Database(str(tmp_path / "test.db"))
         past = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=1)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="old-game",
             game_title="Old Game",
             platform="pc",
             expires_at=past,
         )
-        matched = _match_pending_games(db)
+        matched = _match_pending_games(db, search_mode="backlog")
         # Expired game should be returned with result "Expired"
         assert len(matched) == 1
         assert matched[0]["result"] == "Expired"
-        assert db.is_pending("old-game") is False
+        assert db.is_backlog_pending("old-game") is False
         db.close()
 
     def test_match_pending_sends_download_notification(self, tmp_path: Path) -> None:
@@ -2038,7 +2054,7 @@ class TestMetacriticBrowse:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="elden-ring",
             game_title="Elden Ring",
             platform="pc",
@@ -2046,7 +2062,7 @@ class TestMetacriticBrowse:
             user_score=8.5,
             expires_at=expires,
         )
-        db.update_pending_scores(
+        db.update_backlog_pending_scores(
             slug="elden-ring",
             metascore=96.0,
             user_score=8.5,
@@ -2067,6 +2083,7 @@ class TestMetacriticBrowse:
             qbt=mock_qbt,
             magnet_fetcher=magnet_fetcher,
             notifier=mock_notifier,
+            search_mode="backlog",
         )
         assert len(matched) == 1
         mock_notifier.send_download_notification.assert_called_once_with(
@@ -2096,7 +2113,7 @@ class TestMetacriticBrowse:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="elden-ring",
             game_title="Elden Ring",
             platform="pc",
@@ -2104,7 +2121,7 @@ class TestMetacriticBrowse:
             user_score=8.5,
             expires_at=expires,
         )
-        db.update_pending_scores(
+        db.update_backlog_pending_scores(
             slug="elden-ring",
             metascore=96.0,
             user_score=8.5,
@@ -2124,6 +2141,7 @@ class TestMetacriticBrowse:
             qbt=mock_qbt,
             magnet_fetcher=magnet_fetcher,
             notifier=mock_notifier,
+            search_mode="backlog",
         )
         assert len(matched) == 1
         mock_notifier.send_failure_notification.assert_called_once()
@@ -2142,7 +2160,7 @@ class TestMetacriticBrowse:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="elden-ring",
             game_title="Elden Ring",
             platform="pc",
@@ -2155,7 +2173,7 @@ class TestMetacriticBrowse:
             [{"title": "Elden Ring", "url": "https://fitgirl-repacks.site/elden-ring/"}],
         )
 
-        db.update_pending_scores(
+        db.update_backlog_pending_scores(
             slug="elden-ring",
             metascore=96.0,
             user_score=8.5,
@@ -2171,6 +2189,7 @@ class TestMetacriticBrowse:
             qbt=mock_qbt,
             magnet_fetcher=magnet_fetcher,
             notifier=mock_notifier,
+            search_mode="backlog",
         )
         assert len(matched) == 1
         mock_notifier.send_failure_notification.assert_called_once()
@@ -2195,7 +2214,7 @@ class TestMetacriticBrowse:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="elden-ring",
             game_title="Elden Ring",
             platform="pc",
@@ -2203,7 +2222,7 @@ class TestMetacriticBrowse:
             user_score=8.5,
             expires_at=expires,
         )
-        db.update_pending_scores(
+        db.update_backlog_pending_scores(
             slug="elden-ring",
             metascore=96.0,
             user_score=8.5,
@@ -2227,6 +2246,7 @@ class TestMetacriticBrowse:
             qbt=mock_qbt,
             magnet_fetcher=magnet_fetcher,
             notifier=mock_notifier,
+            search_mode="backlog",
         )
         assert len(matched) == 1
         assert matched[0]["result"] == "Passed"
@@ -2234,7 +2254,7 @@ class TestMetacriticBrowse:
         # notification path runs AFTER the DB update, not skipped.
         mock_notifier.send_download_notification.assert_called_once()
         # Pending row should be removed despite notification failure
-        assert db.is_pending("elden-ring") is False
+        assert db.is_backlog_pending("elden-ring") is False
         db.close()
 
     def test_match_pending_skips_when_in_library(self, tmp_path: Path) -> None:
@@ -2247,7 +2267,7 @@ class TestMetacriticBrowse:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="elden-ring",
             game_title="Elden Ring",
             platform="pc",
@@ -2255,7 +2275,7 @@ class TestMetacriticBrowse:
             user_score=8.5,
             expires_at=expires,
         )
-        db.update_pending_scores(
+        db.update_backlog_pending_scores(
             slug="elden-ring",
             metascore=96.0,
             user_score=8.5,
@@ -2279,6 +2299,7 @@ class TestMetacriticBrowse:
             qbt=mock_qbt,
             magnet_fetcher=magnet_fetcher,
             library=mock_library,
+            search_mode="backlog",
         )
         assert len(matched) == 1
         assert matched[0]["result"] == "Already owned"
@@ -2297,7 +2318,7 @@ class TestMetacriticBrowse:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="unmatched-game",
             game_title="Unmatched Game",
             platform="pc",
@@ -2305,11 +2326,11 @@ class TestMetacriticBrowse:
         )
         # No source titles indexed, so no match will be found
 
-        matched = _match_pending_games(db)
+        matched = _match_pending_games(db, search_mode="backlog")
         # No matches, no results
         assert matched == []
         # Pending should still be in DB (not removed)
-        assert db.is_pending("unmatched-game") is True
+        assert db.is_backlog_pending("unmatched-game") is True
         db.close()
 
     def test_default_magnet_fetcher_handles_request_failure(self) -> None:
@@ -2553,9 +2574,9 @@ class TestMetacriticBrowse:
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
-        new_count = _process_browse_games(games, "pc", db, thresholds, max_queue_days=30)
+        new_count = _process_browse_games(games, "pc", db, thresholds, max_queue_days=30, search_mode="backlog")
         assert new_count == 0
-        pending = db.get_pending()
+        pending = db.get_backlog_pending()
         assert len(pending) == 0
         db.close()
 
@@ -2586,9 +2607,9 @@ class TestMetacriticBrowse:
             "min_user_score": 0.0,
             "min_user_reviews": 0,
         }
-        new_count = _process_browse_games(games, "pc", db, thresholds, max_queue_days=30)
+        new_count = _process_browse_games(games, "pc", db, thresholds, max_queue_days=30, search_mode="backlog")
         assert new_count == 2, f"Expected 2 pending games, got {new_count}"
-        pending = db.get_pending()
+        pending = db.get_backlog_pending()
         assert len(pending) == 2
         db.close()
 
@@ -2637,9 +2658,10 @@ class TestMetacriticBrowse:
             thresholds,
             max_queue_days=30,
             reject_title=["DLC", "Soundtrack", "Bundle"],
+            search_mode="backlog",
         )
         assert new_count == 1, "Only the non-excluded game should be added"
-        pending = db.get_pending()
+        pending = db.get_backlog_pending()
         assert pending[0].slug == "real-game"
         db.close()
 
@@ -2653,7 +2675,7 @@ class TestMetacriticBrowse:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="freegog-game",
             game_title="FreeGOG Game",
             platform="pc",
@@ -2661,7 +2683,7 @@ class TestMetacriticBrowse:
             user_score=8.0,
             expires_at=expires,
         )
-        db.update_pending_scores(slug="freegog-game", metascore=85.0, user_score=8.0)
+        db.update_backlog_pending_scores(slug="freegog-game", metascore=85.0, user_score=8.0)
         db.rebuild_source_titles(
             "freegog",
             [{"title": "FreeGOG Game", "url": "https://freegogpcgames.com/123/freegog-game/"}],
@@ -2727,6 +2749,7 @@ class TestRunAcquisitionMetacritic:
                 qbt_port=8080,
                 qbt_username="admin",
                 qbt_password="adminadmin",
+                search_mode="backlog",
             )
 
         assert isinstance(results, list)
@@ -2765,6 +2788,7 @@ class TestRunAcquisitionMetacritic:
                 platform="pc",
                 qbt_host="localhost",
                 qbt_port=8080,
+                search_mode="backlog",
             )
 
             # Metacritic browse WAS called (multiple years now)
@@ -2850,6 +2874,7 @@ class TestRunAcquisitionMetacritic:
                 platform="pc",
                 qbt_host="localhost",
                 qbt_port=8080,
+                search_mode="backlog",
             )
 
         # Multiple years are scanned now, so scan_recent_games appears
@@ -2899,6 +2924,7 @@ class TestPhaseBannerLogging:
                     platform="pc",
                     qbt_host="localhost",
                     qbt_port=8080,
+                    search_mode="backlog",
                 )
         finally:
             logger.remove(handler_id)
@@ -2914,7 +2940,9 @@ class TestPhaseBannerLogging:
         assert "<blue>" not in log_output, f"Raw blue markup leaked:\n{log_output}"
         assert "</>" not in log_output, f"Raw close-tag leaked into log output:\n{log_output}"
         # The phase banner text should appear (cleaned of markup)
-        assert "Phase 1/5" in log_output, f"Phase 1 banner missing from log output:\n{log_output}"
+        assert "Phase 1: Discovering games on Metacritic" in log_output, (
+            f"Phase 1 banner missing from log output:\n{log_output}"
+        )
 
 
 class TestVerifyPendingScoresEdgeCases:
@@ -2965,7 +2993,7 @@ class TestVerifyPendingScoresEdgeCases:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="failing-jit",
             game_title="Failing JIT Game",
             platform="pc",
@@ -2974,7 +3002,7 @@ class TestVerifyPendingScoresEdgeCases:
             expires_at=expires,
         )
         # Mark as score-checked so it passes the gate
-        db.update_pending_scores(slug="failing-jit", metascore=85.0, user_score=8.0)
+        db.update_backlog_pending_scores(slug="failing-jit", metascore=85.0, user_score=8.0)
         db.rebuild_source_titles(
             "fitgirl",
             [{"title": "Failing JIT Game", "url": "https://example.com/failing-jit"}],
@@ -2999,11 +3027,12 @@ class TestVerifyPendingScoresEdgeCases:
             magnet_fetcher=magnet_fetcher,
             mc=mock_mc,
             thresholds=thresholds,
+            search_mode="backlog",
         )
         # Game should stay pending (transient Metacritic failure —
         # re-verify on next cycle)
         assert len(matched) == 0
-        assert db.is_pending("failing-jit"), "Game should stay pending for re-check"
+        assert db.is_backlog_pending("failing-jit"), "Game should stay pending for re-check"
         # qBittorrent should NOT be called
         mock_qbt.add_torrent.assert_not_called()
         db.close()
@@ -3024,7 +3053,7 @@ class TestVerifyPendingScoresEdgeCases:
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
         # Create 3 pending games
         for i in range(3):
-            db.record_pending(
+            db.record_backlog_pending(
                 slug=f"game-{i:02d}",
                 game_title=f"Game {i:02d}",
                 platform="pc",
@@ -3059,7 +3088,8 @@ class TestVerifyPendingScoresEdgeCases:
             mock_mc,
             "pc",
             thresholds,
-            max_verify=len(db.get_pending()),
+            max_verify=len(db.get_backlog_pending()),
+            search_mode="backlog",
         )
         assert removed == 0  # All passed
         assert mock_mc.lookup_game.call_count == 3  # All 3 checked
@@ -3084,7 +3114,7 @@ class TestVerifyPendingScoresEdgeCases:
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
         # Create 10 pending games
         for i in range(10):
-            db.record_pending(
+            db.record_backlog_pending(
                 slug=f"game-{i:02d}",
                 game_title=f"Game {i:02d}",
                 platform="pc",
@@ -3125,6 +3155,7 @@ class TestVerifyPendingScoresEdgeCases:
             "pc",
             thresholds,
             max_verify=10,
+            search_mode="backlog",
         )
         elapsed = time.time() - start
 
@@ -3154,7 +3185,7 @@ class TestVerifyPendingScoresEdgeCases:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="passing-game",
             game_title="Passing Game",
             platform="pc",
@@ -3186,7 +3217,7 @@ class TestVerifyPendingScoresEdgeCases:
         buf = io.StringIO()
         logger_id = logger.add(buf, format="{message}", colorize=False, level="DEBUG")
         try:
-            removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, max_verify=10)
+            removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, max_verify=10, search_mode="backlog")
         finally:
             logger.remove(logger_id)
 
@@ -3206,9 +3237,9 @@ class TestVerifyPendingScoresEdgeCases:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(slug="test-game", game_title="Test Game", platform="pc", expires_at=expires)
+        db.record_backlog_pending(slug="test-game", game_title="Test Game", platform="pc", expires_at=expires)
 
-        game = db.get_pending()[0]
+        game = db.get_backlog_pending()[0]
         result = types.SimpleNamespace(
             metascore=62.0,
             metascore_review_count=25,
@@ -3220,7 +3251,7 @@ class TestVerifyPendingScoresEdgeCases:
         )
 
         _fail_game_after_max_attempts(db, game, result, attempts=3)
-        assert not db.is_pending("test-game")
+        assert not db.is_backlog_pending("test-game")
         db.close()
 
     def test_reject_genre_matches(self, tmp_path: Path) -> None:
@@ -3233,7 +3264,7 @@ class TestVerifyPendingScoresEdgeCases:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="elden-ring",
             game_title="Elden Ring",
             platform="pc",
@@ -3261,10 +3292,10 @@ class TestVerifyPendingScoresEdgeCases:
 
         thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
 
-        assert db.is_pending("elden-ring") is True
-        removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, reject_genre=["rpg"])
+        assert db.is_backlog_pending("elden-ring") is True
+        removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, reject_genre=["rpg"], search_mode="backlog")
         assert removed == 1, "Game with rejected genre should be removed"
-        assert db.is_pending("elden-ring") is False, "Game should no longer be pending"
+        assert db.is_backlog_pending("elden-ring") is False, "Game should no longer be pending"
         db.close()
 
     def test_reject_genre_no_match(self, tmp_path: Path) -> None:
@@ -3277,7 +3308,7 @@ class TestVerifyPendingScoresEdgeCases:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="forza-horizon-6",
             game_title="Forza Horizon 6",
             platform="pc",
@@ -3305,9 +3336,9 @@ class TestVerifyPendingScoresEdgeCases:
 
         thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
 
-        removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, reject_genre=["action"])
+        removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, reject_genre=["action"], search_mode="backlog")
         assert removed == 0, "Game genre 'Racing' not in reject_genre ['action'] — should NOT be removed"
-        assert db.is_pending("forza-horizon-6") is True, "Game should remain pending"
+        assert db.is_backlog_pending("forza-horizon-6") is True, "Game should remain pending"
         db.close()
 
     def test_reject_genre_empty_list(self, tmp_path: Path) -> None:
@@ -3320,7 +3351,7 @@ class TestVerifyPendingScoresEdgeCases:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="elden-ring",
             game_title="Elden Ring",
             platform="pc",
@@ -3348,9 +3379,9 @@ class TestVerifyPendingScoresEdgeCases:
 
         thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
 
-        removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, reject_genre=[])
+        removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, reject_genre=[], search_mode="backlog")
         assert removed == 0, "Empty reject_genre — game should NOT be removed"
-        assert db.is_pending("elden-ring") is True, "Game should remain pending"
+        assert db.is_backlog_pending("elden-ring") is True, "Game should remain pending"
         db.close()
 
     def test_reject_genre_multi_match(self, tmp_path: Path) -> None:
@@ -3363,7 +3394,7 @@ class TestVerifyPendingScoresEdgeCases:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="cyberpunk-2077",
             game_title="Cyberpunk 2077",
             platform="pc",
@@ -3391,9 +3422,11 @@ class TestVerifyPendingScoresEdgeCases:
 
         thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
 
-        removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, reject_genre=["rpg", "sports"])
+        removed = _verify_pending_scores(
+            db, mock_mc, "pc", thresholds, reject_genre=["rpg", "sports"], search_mode="backlog"
+        )
         assert removed == 1, "Game has 'RPG' which is in reject_genre — should be removed"
-        assert db.is_pending("cyberpunk-2077") is False
+        assert db.is_backlog_pending("cyberpunk-2077") is False
         db.close()
 
     def test_reject_genre_case_insensitive(self, tmp_path: Path) -> None:
@@ -3406,7 +3439,7 @@ class TestVerifyPendingScoresEdgeCases:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="hades-2",
             game_title="Hades II",
             platform="pc",
@@ -3434,7 +3467,9 @@ class TestVerifyPendingScoresEdgeCases:
 
         thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
 
-        removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, reject_genre=["ROGUELIKE"])
+        removed = _verify_pending_scores(
+            db, mock_mc, "pc", thresholds, reject_genre=["ROGUELIKE"], search_mode="backlog"
+        )
         assert removed == 1, "Case-insensitive match — 'ROGUELIKE' should match 'Roguelike'"
         db.close()
 
@@ -3448,7 +3483,7 @@ class TestVerifyPendingScoresEdgeCases:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="unknown-game",
             game_title="Unknown Game",
             platform="pc",
@@ -3465,9 +3500,9 @@ class TestVerifyPendingScoresEdgeCases:
 
         thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
 
-        removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, reject_genre=["action"])
+        removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, reject_genre=["action"], search_mode="backlog")
         assert removed == 0, "Lookup returned None — genre check skipped, game stays for re-check"
-        assert db.is_pending("unknown-game") is True, "Game should remain pending for re-try"
+        assert db.is_backlog_pending("unknown-game") is True, "Game should remain pending for re-try"
         db.close()
 
     def test_reject_genre_none_genres(self, tmp_path: Path) -> None:
@@ -3480,7 +3515,7 @@ class TestVerifyPendingScoresEdgeCases:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="no-genre-game",
             game_title="No Genre Game",
             platform="pc",
@@ -3508,9 +3543,9 @@ class TestVerifyPendingScoresEdgeCases:
 
         thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
 
-        removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, reject_genre=["action"])
+        removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, reject_genre=["action"], search_mode="backlog")
         assert removed == 0, "genres=None — genre check skipped, game should not be removed"
-        assert db.is_pending("no-genre-game") is True, "Game should remain pending (scores pass)"
+        assert db.is_backlog_pending("no-genre-game") is True, "Game should remain pending (scores pass)"
         db.close()
 
     def test_reject_genre_none_default(self, tmp_path: Path) -> None:
@@ -3523,7 +3558,7 @@ class TestVerifyPendingScoresEdgeCases:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="default-test",
             game_title="Default Test",
             platform="pc",
@@ -3552,9 +3587,9 @@ class TestVerifyPendingScoresEdgeCases:
         thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
 
         # reject_genre not passed (defaults to None)
-        removed = _verify_pending_scores(db, mock_mc, "pc", thresholds)
+        removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, search_mode="backlog")
         assert removed == 0, "reject_genre=None — game should not be removed by genre check"
-        assert db.is_pending("default-test") is True, "Game should remain pending"
+        assert db.is_backlog_pending("default-test") is True, "Game should remain pending"
         db.close()
 
     def test_reject_genre_substring_broad(self, tmp_path: Path) -> None:
@@ -3567,7 +3602,7 @@ class TestVerifyPendingScoresEdgeCases:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="action-rpg-game",
             game_title="Action RPG Game",
             platform="pc",
@@ -3595,9 +3630,9 @@ class TestVerifyPendingScoresEdgeCases:
 
         thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
 
-        removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, reject_genre=["RPG"])
+        removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, reject_genre=["RPG"], search_mode="backlog")
         assert removed == 1, "'RPG' should match 'Action RPG' via substring"
-        assert db.is_pending("action-rpg-game") is False
+        assert db.is_backlog_pending("action-rpg-game") is False
         db.close()
 
     def test_reject_genre_substring_narrow(self, tmp_path: Path) -> None:
@@ -3610,7 +3645,7 @@ class TestVerifyPendingScoresEdgeCases:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="action-rpg-game2",
             game_title="Action RPG Game 2",
             platform="pc",
@@ -3638,9 +3673,11 @@ class TestVerifyPendingScoresEdgeCases:
 
         thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
 
-        removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, reject_genre=["Western RPG"])
+        removed = _verify_pending_scores(
+            db, mock_mc, "pc", thresholds, reject_genre=["Western RPG"], search_mode="backlog"
+        )
         assert removed == 0, "'Western RPG' should NOT match 'Action RPG' — substring not found"
-        assert db.is_pending("action-rpg-game2") is True
+        assert db.is_backlog_pending("action-rpg-game2") is True
         db.close()
 
 
@@ -3737,7 +3774,7 @@ class TestFitgirlRecheckExpiry:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="passing-game",
             game_title="Passing Game",
             platform="pc",
@@ -3769,10 +3806,10 @@ class TestFitgirlRecheckExpiry:
             "min_user_reviews": 10,
         }
 
-        _verify_pending_scores(db, mock_mc, "pc", thresholds, fitgirl_max_queue_days=60)
+        _verify_pending_scores(db, mock_mc, "pc", thresholds, fitgirl_max_queue_days=60, search_mode="backlog")
 
         # Game should still be pending
-        pending = db.get_pending(platform="pc")
+        pending = db.get_backlog_pending(platform="pc")
         assert len(pending) == 1
         row = pending[0]
         # Expiry should be recalculated to now + 60 days (not the original +30)
@@ -3794,7 +3831,7 @@ class TestFitgirlRecheckExpiry:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="zero-days-game",
             game_title="Zero Days Game",
             platform="pc",
@@ -3825,9 +3862,9 @@ class TestFitgirlRecheckExpiry:
             "min_user_reviews": 10,
         }
 
-        _verify_pending_scores(db, mock_mc, "pc", thresholds, fitgirl_max_queue_days=0)
+        _verify_pending_scores(db, mock_mc, "pc", thresholds, fitgirl_max_queue_days=0, search_mode="backlog")
 
-        pending = db.get_pending(platform="pc")
+        pending = db.get_backlog_pending(platform="pc")
         assert len(pending) == 1
         # Expiry should be updated to far-future
         new_expiry = datetime.datetime.fromisoformat(pending[0].expires_at)
@@ -3848,7 +3885,7 @@ class TestFitgirlRecheckExpiry:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="failing-game",
             game_title="Failing Game",
             platform="pc",
@@ -3879,10 +3916,10 @@ class TestFitgirlRecheckExpiry:
             "min_user_reviews": 10,
         }
 
-        _verify_pending_scores(db, mock_mc, "pc", thresholds, fitgirl_max_queue_days=60)
+        _verify_pending_scores(db, mock_mc, "pc", thresholds, fitgirl_max_queue_days=60, search_mode="backlog")
 
         # Game should still be pending (re-check)
-        pending = db.get_pending(platform="pc")
+        pending = db.get_backlog_pending(platform="pc")
         assert len(pending) == 1
         # Expiry must NOT be updated (still original +30d)
         assert pending[0].expires_at == expires, f"Expiry should be unchanged ({expires}), got {pending[0].expires_at}"
@@ -3920,9 +3957,10 @@ class TestRejectTitle:
             db,
             thresholds,
             reject_title=["Remake"],
+            search_mode="backlog",
         )
         assert added == 0, "Game with matching title should not be added"
-        assert not db.is_pending("resident-evil-4-remake")
+        assert not db.is_backlog_pending("resident-evil-4-remake")
         db.close()
 
     def test_reject_title_at_verify(self, tmp_path: Path) -> None:
@@ -3935,7 +3973,7 @@ class TestRejectTitle:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="vr-game",
             game_title="VR Adventure",
             platform="pc",
@@ -3965,10 +4003,10 @@ class TestRejectTitle:
             "min_user_reviews": 10,
         }
 
-        assert db.is_pending("vr-game") is True
-        removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, reject_title=["VR"])
+        assert db.is_backlog_pending("vr-game") is True
+        removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, reject_title=["VR"], search_mode="backlog")
         assert removed == 1, "Game with matching title should be removed"
-        assert not db.is_pending("vr-game"), "Game should no longer be pending"
+        assert not db.is_backlog_pending("vr-game"), "Game should no longer be pending"
         db.close()
 
     def test_reject_title_no_match(self, tmp_path: Path) -> None:
@@ -3999,9 +4037,10 @@ class TestRejectTitle:
             db,
             thresholds,
             reject_title=["Remake"],
+            search_mode="backlog",
         )
         assert added == 1, "Non-matching game should be added"
-        assert db.is_pending("elden-ring")
+        assert db.is_backlog_pending("elden-ring")
         db.close()
 
     def test_reject_title_empty_list(self, tmp_path: Path) -> None:
@@ -4032,6 +4071,7 @@ class TestRejectTitle:
             db,
             thresholds,
             reject_title=[],
+            search_mode="backlog",
         )
         assert added == 1, "Empty reject_title should not filter anything"
         db.close()
@@ -4064,6 +4104,7 @@ class TestRejectTitle:
             db,
             thresholds,
             reject_title=["remake"],  # lowercase, title has "Remake"
+            search_mode="backlog",
         )
         assert added == 0, "reject_title should match case-insensitively"
         db.close()
@@ -4096,6 +4137,7 @@ class TestRejectTitle:
             db,
             thresholds,
             reject_title=["Classic"],
+            search_mode="backlog",
         )
         assert added == 0, "reject_title should match on substrings"
         db.close()
@@ -4172,7 +4214,7 @@ class TestScrapeHealth:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="passing-game",
             game_title="Passing Game",
             platform="pc",
@@ -4183,7 +4225,7 @@ class TestScrapeHealth:
         )
 
         # Also add a "no details" game so we have a mix of pass/fail
-        db.record_pending(
+        db.record_backlog_pending(
             slug="no-details-game",
             game_title="No Details Game",
             platform="pc",
@@ -4230,6 +4272,7 @@ class TestScrapeHealth:
             "pc",
             thresholds,
             notifier=mock_notifier,
+            search_mode="backlog",
         )
         # At least one game succeeded, so no scrape notification
         mock_notifier.send_scrape_notification.assert_not_called()
@@ -4246,7 +4289,7 @@ class TestScrapeHealth:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="failing-game",
             game_title="Failing Game",
             platform="pc",
@@ -4268,6 +4311,7 @@ class TestScrapeHealth:
                 "pc",
                 {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10},
                 notifier=mock_notifier,
+                search_mode="backlog",
             )
 
         mock_notifier.send_scrape_notification.assert_called_once()
@@ -4284,7 +4328,7 @@ class TestScrapeHealth:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="down-game",
             game_title="Down Game",
             platform="pc",
@@ -4306,6 +4350,7 @@ class TestScrapeHealth:
                 "pc",
                 {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10},
                 notifier=mock_notifier,
+                search_mode="backlog",
             )
 
         mock_notifier.send_scrape_notification.assert_called_once()
@@ -4322,7 +4367,7 @@ class TestScrapeHealth:
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="offline-game",
             game_title="Offline Game",
             platform="pc",
@@ -4344,6 +4389,7 @@ class TestScrapeHealth:
                 "pc",
                 {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10},
                 notifier=mock_notifier,
+                search_mode="backlog",
             )
 
         mock_notifier.send_scrape_notification.assert_not_called()
@@ -4423,6 +4469,7 @@ class TestCancellation:
                 qbt_host="localhost",
                 qbt_port=8080,
                 cancel_event=cancel_event,
+                search_mode="backlog",
             )
 
         # is_cancelled check at the top of the year loop prevents the
@@ -4534,9 +4581,10 @@ class TestBrowseReviewCountPrefilter:
             db=db,
             thresholds=thresholds,
             max_queue_days=30,
+            search_mode="backlog",
         )
         assert new_count == 0, "Low-review-count game should not be added to pending"
-        pending = db.get_pending(platform="pc")
+        pending = db.get_backlog_pending(platform="pc")
         assert len(pending) == 0
         db.close()
 
@@ -4570,9 +4618,10 @@ class TestBrowseReviewCountPrefilter:
             db=db,
             thresholds=thresholds,
             max_queue_days=30,
+            search_mode="backlog",
         )
         assert new_count == 1, "Game with missing review data should enter pending"
-        pending = db.get_pending(platform="pc")
+        pending = db.get_backlog_pending(platform="pc")
         assert len(pending) == 1
         assert pending[0].slug == "no-review-data"
         db.close()
@@ -4714,7 +4763,7 @@ class TestProcessAgedGames:
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
         past = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(hours=1)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="old-checked",
             game_title="Old Checked",
             platform="pc",
@@ -4724,15 +4773,15 @@ class TestProcessAgedGames:
             expires_at=expires,
         )
         with db._session() as session:
-            from gamarr.database import PendingGame
+            from gamarr.database import PendingGameBacklog
 
-            row = session.get(PendingGame, "old-checked")
+            row = session.get(PendingGameBacklog, "old-checked")
             assert row is not None, "old-checked should exist"
             row.last_checked_at = past
             row.score_checks_passed = True
             session.commit()
 
-        db.record_pending(
+        db.record_backlog_pending(
             slug="old-unchecked",
             game_title="Old Unchecked",
             platform="pc",
@@ -4751,8 +4800,8 @@ class TestProcessAgedGames:
         )
         count = _process_aged_games(db, cfg, platform="pc")
         assert count == 1, f"Expected 1 processed, got {count}"
-        assert not db.is_pending("old-checked"), "Old checked game should be removed"
-        assert db.is_pending("old-unchecked"), "Old unchecked game should remain"
+        assert not db.is_backlog_pending("old-checked"), "Old checked game should be removed"
+        assert db.is_backlog_pending("old-unchecked"), "Old unchecked game should remain"
         stats = db.get_stats()
         assert stats["total"] == 1, "One history record should exist"
         db.close()
@@ -4769,7 +4818,7 @@ class TestProcessAgedGames:
         past = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(hours=1)).isoformat()
 
         # Game that was checked but scores failed verification
-        db.record_pending(
+        db.record_backlog_pending(
             slug="old-checked-failed",
             game_title="Old Checked Failed",
             platform="pc",
@@ -4779,9 +4828,9 @@ class TestProcessAgedGames:
             expires_at=expires,
         )
         with db._session() as session:
-            from gamarr.database import PendingGame
+            from gamarr.database import PendingGameBacklog
 
-            row = session.get(PendingGame, "old-checked-failed")
+            row = session.get(PendingGameBacklog, "old-checked-failed")
             assert row is not None
             row.last_checked_at = past
             row.score_checks_passed = False
@@ -4796,7 +4845,7 @@ class TestProcessAgedGames:
         )
         count = _process_aged_games(db, cfg, platform="pc")
         assert count == 0, f"Expected 0 processed (scores failed), got {count}"
-        assert db.is_pending("old-checked-failed"), "Failed game should remain in queue"
+        assert db.is_backlog_pending("old-checked-failed"), "Failed game should remain in queue"
         db.close()
 
     def test_process_aged_games_skips_recent_games(self, tmp_path: Path) -> None:
@@ -4810,7 +4859,7 @@ class TestProcessAgedGames:
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
         recent = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
         past = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(hours=1)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="recent-game",
             game_title="Recent Game",
             platform="pc",
@@ -4820,9 +4869,9 @@ class TestProcessAgedGames:
             expires_at=expires,
         )
         with db._session() as session:
-            from gamarr.database import PendingGame
+            from gamarr.database import PendingGameBacklog
 
-            row = session.get(PendingGame, "recent-game")
+            row = session.get(PendingGameBacklog, "recent-game")
             assert row is not None, "recent-game should exist"
             row.last_checked_at = past
             session.commit()
@@ -4836,7 +4885,7 @@ class TestProcessAgedGames:
         )
         count = _process_aged_games(db, cfg, platform="pc")
         assert count == 0, "Recent game should not be processed"
-        assert db.is_pending("recent-game"), "Recent game should remain"
+        assert db.is_backlog_pending("recent-game"), "Recent game should remain"
         db.close()
 
     def test_process_aged_games_disabled_when_none(self, tmp_path: Path) -> None:
@@ -4865,12 +4914,12 @@ class TestProcessAgedGames:
         """
         import datetime
 
-        from gamarr.database import Database, PendingGame
+        from gamarr.database import Database, PendingGameBacklog
         from gamarr.pipeline import _process_verify_result
 
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="unreviewed-game",
             game_title="Unreviewed Game",
             platform="pc",
@@ -4879,16 +4928,16 @@ class TestProcessAgedGames:
             release_date="2010-01-01",
             expires_at=expires,
         )
-        game = db.get_pending()[0]
+        game = db.get_backlog_pending()[0]
         thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10}
 
         # result=None simulates a game with no Metacritic page
-        removed = _process_verify_result(db, game, result=None, thresholds=thresholds)
+        removed = _process_verify_result(db, game, result=None, thresholds=thresholds, search_mode="backlog")
         assert removed is False, "Game with no result should stay pending"
 
         # The game should now have last_checked_at set
         with db._session() as session:
-            row = session.get(PendingGame, "unreviewed-game")
+            row = session.get(PendingGameBacklog, "unreviewed-game")
             assert row is not None
             assert row.last_checked_at is not None, (
                 "last_checked_at should be set even when result is None — "
@@ -5248,7 +5297,7 @@ class TestAgedGamesMatchOrder:
         # a matching FitGirl source title.
         db = Database(db_path)
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
+        db.record_backlog_pending(
             slug="old-but-matchable",
             game_title="Old But Matchable",
             platform="pc",
@@ -5260,7 +5309,7 @@ class TestAgedGamesMatchOrder:
             expires_at=expires,
         )
         # Mark as score-checked so _verify_pending_scores touches it
-        db.update_pending_scores(slug="old-but-matchable", metascore=85.0, user_score=8.0)
+        db.update_backlog_pending_scores(slug="old-but-matchable", metascore=85.0, user_score=8.0)
         # Pre-populate FitGirl source titles so matching works even
         # if the mocked fetch_sitemap does nothing
         db.rebuild_source_titles(
@@ -5312,6 +5361,7 @@ class TestAgedGamesMatchOrder:
                 max_pages=52,
                 max_cycle_pages=100,
                 age_recheck_weeks=4,
+                search_mode="backlog",
             )
 
             # The old game should be matched and delivered BEFORE
@@ -5354,6 +5404,7 @@ class TestScanWindowAdvancing:
                 qbt_port=8080,
                 max_pages=104,
                 max_cycle_pages=100,
+                search_mode="backlog",
             )
             assert isinstance(results, list)
             assert mock_mc.scan_recent_games.call_count > 0
@@ -5387,6 +5438,7 @@ class TestScanWindowAdvancing:
                 qbt_port=8080,
                 max_pages=104,
                 max_cycle_pages=100,
+                search_mode="backlog",
             )
             assert isinstance(results, list)
 
@@ -5419,6 +5471,7 @@ class TestScanWindowAdvancing:
                 qbt_port=8080,
                 max_pages=104,
                 max_cycle_pages=100,
+                search_mode="backlog",
             )
             assert isinstance(results, list)
 
@@ -5452,6 +5505,7 @@ class TestScanWindowAdvancing:
                 max_pages=104,
                 max_cycle_pages=100,
                 sort_order="new",
+                search_mode="backlog",
             )
             assert isinstance(results, list)
 
@@ -5495,6 +5549,7 @@ class TestBacklogAdvancing:
                 max_pages=280,
                 max_cycle_pages=4,
                 sort_order="new",
+                search_mode="backlog",
             )
 
             _, kwargs = mock_mc.scan_recent_games.call_args
@@ -5543,6 +5598,7 @@ class TestBacklogAdvancing:
                 max_cycle_pages=4,
                 sort_order="new",
                 enabled=True,
+                search_mode="backlog",
             )
 
             logger.remove(handler_id)
@@ -5551,3 +5607,495 @@ class TestBacklogAdvancing:
             assert "Backlog progress" in log_output, (
                 f"Expected 'Backlog progress' in log output, got: {log_output[:500]}"
             )
+
+
+class TestBacklogLatestMode:
+    """Tests for search_mode branching (backlog vs latest)."""
+
+    def test_backlog_at_max_pages_is_exhausted(self, mocker: Any, tmp_path: Path) -> None:
+        """When total_backlog == max_pages, the backlog is exhausted (no overshoot)."""
+        from gamarr.pipeline import run_acquisition
+
+        mock_db = mocker.patch("gamarr.pipeline.Database")
+        mock_db_instance = mock_db.return_value
+        mock_db_instance.sum_scanned_pages.return_value = 20
+        mock_db_instance.has_verified_backlog_pending.return_value = False
+        mock_db_instance.get_backlog_pending.return_value = []
+
+        mock_qbt = mocker.patch("gamarr.pipeline.QBittorrentClient")
+        mock_qbt_instance = mock_qbt.return_value
+        mock_qbt_instance.is_connected.return_value = True
+
+        mock_mc = mocker.patch("gamarr.pipeline.MetacriticClient")
+        mock_mc_instance = mock_mc.return_value
+        mock_mc_instance.scan_recent_games.return_value = []
+
+        run_acquisition(
+            platform="pc",
+            db_path=str(tmp_path / "test.db"),
+            min_metascore=75,
+            min_metascore_reviews=10,
+            min_user_score=7.5,
+            min_user_reviews=10,
+            enabled=True,
+            max_pages=20,
+            max_cycle_pages=4,
+            search_mode="backlog",
+        )
+        mock_mc_instance.scan_recent_games.assert_not_called()
+
+    def test_backlog_exhausted_when_total_exceeds_max(self, mocker: Any, tmp_path: Path) -> None:
+        """When total_backlog > max_pages, the backlog is truly exhausted and scan is skipped."""
+        from gamarr.pipeline import run_acquisition
+
+        mock_db = mocker.patch("gamarr.pipeline.Database")
+        mock_db_instance = mock_db.return_value
+        mock_db_instance.sum_scanned_pages.return_value = 24
+        mock_db_instance.has_verified_backlog_pending.return_value = False
+        mock_db_instance.get_backlog_pending.return_value = []
+
+        mock_qbt = mocker.patch("gamarr.pipeline.QBittorrentClient")
+        mock_qbt_instance = mock_qbt.return_value
+        mock_qbt_instance.is_connected.return_value = True
+
+        mock_mc = mocker.patch("gamarr.pipeline.MetacriticClient")
+        mock_mc_instance = mock_mc.return_value
+        mock_mc_instance.scan_recent_games.return_value = []
+
+        run_acquisition(
+            platform="pc",
+            db_path=str(tmp_path / "test.db"),
+            min_metascore=75,
+            min_metascore_reviews=10,
+            min_user_score=7.5,
+            min_user_reviews=10,
+            enabled=True,
+            max_pages=20,
+            max_cycle_pages=4,
+            search_mode="backlog",
+        )
+        mock_mc_instance.scan_recent_games.assert_not_called()
+
+    def test_latest_mode_scans_page1_no_progress(self, mocker: Any, tmp_path: Path) -> None:
+        """Latest mode always starts from page 1 and uses max_cycle_pages."""
+        from gamarr.pipeline import run_acquisition
+
+        mock_db = mocker.patch("gamarr.pipeline.Database")
+        mock_db_instance = mock_db.return_value
+        mock_db_instance.get_latest_pending.return_value = []
+        mock_db_instance.has_verified_latest_pending.return_value = False
+
+        mock_qbt = mocker.patch("gamarr.pipeline.QBittorrentClient")
+        mock_qbt_instance = mock_qbt.return_value
+        mock_qbt_instance.is_connected.return_value = True
+
+        mock_mc = mocker.patch("gamarr.pipeline.MetacriticClient")
+        mock_mc_instance = mock_mc.return_value
+        mock_mc_instance.scan_recent_games.return_value = []
+
+        run_acquisition(
+            platform="pc",
+            db_path=str(tmp_path / "test.db"),
+            min_metascore=75,
+            min_metascore_reviews=10,
+            min_user_score=7.5,
+            min_user_reviews=10,
+            enabled=True,
+            max_pages=500,
+            max_cycle_pages=4,
+            search_mode="latest",
+        )
+        kwargs = mock_mc_instance.scan_recent_games.call_args[1]
+        assert kwargs["start_page"] == 1
+        assert kwargs["max_pages"] == 4
+
+
+def test_process_browse_games_latest_mode(tmp_path: Path) -> None:
+    """_process_browse_games dispatches to latest pending table."""
+    from gamarr.database import Database
+    from gamarr.pipeline import _process_browse_games
+
+    db = Database(tmp_path / "test.db")
+    browse_games = [
+        {
+            "title": "Latest Game",
+            "slug": "latest-game",
+            "score": 90,
+            "user_rating": 9.0,
+            "critic_review_count": 15,
+            "user_review_count": 20,
+            "release_date": None,
+        }
+    ]
+    thresholds = {"min_metascore": 75, "min_metascore_reviews": 10, "min_user_score": 7.5, "min_user_reviews": 10}
+    count = _process_browse_games(
+        browse_games,
+        "pc",
+        db,
+        thresholds,
+        max_queue_days=30,
+        reject_title=None,
+        search_mode="latest",
+    )
+    assert count == 1
+    rows = db.get_latest_pending(platform="pc")
+    assert len(rows) == 1
+    assert rows[0].game_title == "Latest Game"
+    db.close()
+
+
+def test_process_browse_games_backlog_mode(tmp_path: Path) -> None:
+    """_process_browse_games dispatches to backlog pending table."""
+    from gamarr.database import Database
+    from gamarr.pipeline import _process_browse_games
+
+    db = Database(tmp_path / "test.db")
+    browse_games = [
+        {
+            "title": "Backlog Game",
+            "slug": "backlog-game",
+            "score": 88,
+            "user_rating": 8.5,
+            "critic_review_count": 12,
+            "user_review_count": 15,
+            "release_date": None,
+        }
+    ]
+    thresholds = {"min_metascore": 75, "min_metascore_reviews": 10, "min_user_score": 7.5, "min_user_reviews": 10}
+    count = _process_browse_games(
+        browse_games,
+        "pc",
+        db,
+        thresholds,
+        max_queue_days=30,
+        reject_title=None,
+        search_mode="backlog",
+    )
+    assert count == 1
+    rows = db.get_backlog_pending(platform="pc")
+    assert len(rows) == 1
+    assert rows[0].game_title == "Backlog Game"
+    db.close()
+
+
+def test_process_browse_games_reject_title(tmp_path: Path) -> None:
+    """_process_browse_games skips games matching reject_title."""
+    from gamarr.database import Database
+    from gamarr.pipeline import _process_browse_games
+
+    db = Database(tmp_path / "test.db")
+    browse_games = [
+        {
+            "title": "Some Game Remake",
+            "slug": "some-game-remake",
+            "score": 88,
+            "user_rating": 8.5,
+            "critic_review_count": 12,
+            "user_review_count": 15,
+            "release_date": None,
+        }
+    ]
+    thresholds = {"min_metascore": 75, "min_metascore_reviews": 10, "min_user_score": 7.5, "min_user_reviews": 10}
+    count = _process_browse_games(
+        browse_games,
+        "pc",
+        db,
+        thresholds,
+        max_queue_days=30,
+        reject_title=["Remake"],
+        search_mode="latest",
+    )
+    assert count == 0
+    assert len(db.get_latest_pending(platform="pc")) == 0
+    db.close()
+
+
+def test_process_verify_result_genre_reject_none_genres(tmp_path: Path) -> None:
+    """_process_verify_result handles None genres gracefully."""
+    from unittest.mock import MagicMock
+
+    from gamarr.database import Database
+    from gamarr.pipeline import _process_verify_result
+
+    db = Database(tmp_path / "test.db")
+    db.record_backlog_pending(slug="no-genre", game_title="No Genre", platform="pc")
+    game = db.get_backlog_pending()[0]
+    thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10}
+
+    # Simulate a ScoreResult with matching genre
+    mock_result = MagicMock()
+    mock_result.metascore = 80.0
+    mock_result.metascore_review_count = 10
+    mock_result.user_score = 8.0
+    mock_result.user_review_count = 15
+    mock_result.genres = None
+
+    removed = _process_verify_result(
+        db,
+        game,
+        mock_result,
+        thresholds,
+        reject_genre=["RPG"],
+        reject_title=None,
+        search_mode="backlog",
+    )
+    # Should not remove (None genres don't match any reject_genre)
+    assert removed is False
+    assert db.is_backlog_pending("no-genre")
+    db.close()
+
+
+def test_process_single_pending_match_no_match(tmp_path: Path) -> None:
+    """_process_single_pending_match touches pending when no source match found."""
+    from gamarr.database import Database
+    from gamarr.pipeline import _process_single_pending_match
+
+    db = Database(tmp_path / "test.db")
+    db.record_backlog_pending(
+        slug="no-match",
+        game_title="No Match Game",
+        platform="pc",
+        metascore=85.0,
+        user_score=8.5,
+    )
+    db.update_backlog_pending_scores(slug="no-match", metascore=85.0, user_score=8.5)
+
+    result = _process_single_pending_match(
+        db,
+        mc=None,
+        thresholds=None,
+        qbt=None,
+        magnet_fetcher=None,
+        notifier=None,
+        library=None,
+        can_deliver=False,
+        game_title="No Match Game",
+        game_slug="no-match",
+        game_platform="pc",
+        game_metascore=85.0,
+        game_metascore_reviews=None,
+        game_user_score=8.5,
+        game_user_reviews=None,
+        game_release_date=None,
+        source_name="fitgirl",
+        search_mode="backlog",
+    )
+    assert result is None, "No match should return None"
+    assert db.is_backlog_pending("no-match"), "Game should stay pending"
+    db.close()
+
+
+def test_jit_verify_and_update_metacritic_unavailable(tmp_path: Path) -> None:
+    """_jit_verify_and_update returns None when Metacritic is unavailable."""
+    from unittest.mock import MagicMock
+
+    from gamarr.database import Database
+    from gamarr.pipeline import _jit_verify_and_update
+
+    db = Database(tmp_path / "test.db")
+    db.record_backlog_pending(
+        slug="jit-down",
+        game_title="JIT Down",
+        platform="pc",
+        metascore=85.0,
+        user_score=8.5,
+    )
+    db.update_backlog_pending_scores(slug="jit-down", metascore=85.0, user_score=8.5)
+
+    mock_mc = MagicMock()
+    mock_mc.lookup_game.return_value = None
+
+    result = _jit_verify_and_update(
+        db,
+        mock_mc,
+        {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10},
+        game_title="JIT Down",
+        game_slug="jit-down",
+        game_platform="pc",
+    )
+    assert result is None, "Should return None when MC unavailable"
+    assert db.is_backlog_pending("jit-down"), "Game should stay pending"
+    db.close()
+
+
+def test_jit_verify_and_update_passes(tmp_path: Path) -> None:
+    """_jit_verify_and_update returns scores when game passes thresholds."""
+    from unittest.mock import MagicMock
+
+    from gamarr.database import Database
+    from gamarr.pipeline import _jit_verify_and_update
+
+    db = Database(tmp_path / "test.db")
+    db.record_backlog_pending(
+        slug="jit-pass",
+        game_title="JIT Pass",
+        platform="pc",
+        metascore=90.0,
+        user_score=9.0,
+    )
+
+    mock_result = MagicMock()
+    mock_result.metascore = 92.0
+    mock_result.metascore_review_count = 20
+    mock_result.user_score = 9.2
+    mock_result.user_review_count = 30
+    mock_result.genres = ["Action"]
+    mock_result.must_play = True
+    mock_result.description = "Great game"
+
+    mock_mc = MagicMock()
+    mock_mc.lookup_game.return_value = mock_result
+
+    result = _jit_verify_and_update(
+        db,
+        mock_mc,
+        {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10},
+        game_title="JIT Pass",
+        game_slug="jit-pass",
+        game_platform="pc",
+        search_mode="backlog",
+    )
+    assert result is not None
+    assert result[0] == 92.0  # metascore
+    assert result[1] == 9.2  # user_score
+    assert result[2] == 20  # metascore_reviews
+    assert result[3] == 30  # user_reviews
+    db.close()
+
+
+def test_jit_verify_and_update_failing_scores(tmp_path: Path) -> None:
+    """_jit_verify_and_update returns None when scores fail thresholds."""
+    from unittest.mock import MagicMock
+
+    from gamarr.database import Database
+    from gamarr.pipeline import _jit_verify_and_update
+
+    db = Database(tmp_path / "test.db")
+    db.record_backlog_pending(
+        slug="jit-fail",
+        game_title="JIT Fail",
+        platform="pc",
+        metascore=60.0,
+        user_score=5.0,
+    )
+
+    mock_result = MagicMock()
+    mock_result.metascore = 60.0
+    mock_result.metascore_review_count = 3
+    mock_result.user_score = 5.0
+    mock_result.user_review_count = 2
+
+    mock_mc = MagicMock()
+    mock_mc.lookup_game.return_value = mock_result
+
+    thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10}
+    result = _jit_verify_and_update(
+        db,
+        mock_mc,
+        thresholds,
+        game_title="JIT Fail",
+        game_slug="jit-fail",
+        game_platform="pc",
+        search_mode="backlog",
+    )
+    assert result is None, "Should return None when scores fail"
+    # Game should be removed from pending (failing scores)
+    assert not db.is_backlog_pending("jit-fail"), "Failing game should be removed from pending"
+    db.close()
+
+
+def test_jit_verify_and_update_no_mc_returns_empty_tuple(tmp_path: Path) -> None:
+    """_jit_verify_and_update returns () when mc or thresholds is None (skip verification)."""
+    from unittest.mock import MagicMock
+
+    from gamarr.database import Database
+    from gamarr.pipeline import _jit_verify_and_update
+
+    db = Database(tmp_path / "test.db")
+    result = _jit_verify_and_update(
+        db,
+        mc=None,
+        thresholds={"min_metascore": 75},
+        game_title="Skip",
+        game_slug="skip",
+        game_platform="pc",
+    )
+    assert result == (), "Should return empty tuple when mc is None"
+
+    result2 = _jit_verify_and_update(
+        db,
+        mc=MagicMock(),
+        thresholds=None,
+        game_title="Skip",
+        game_slug="skip2",
+        game_platform="pc",
+    )
+    assert result2 == (), "Should return empty tuple when thresholds is None"
+    db.close()
+
+
+def test_jit_verify_and_update_failing_scores_latest_mode(tmp_path: Path) -> None:
+    """_jit_verify_and_update removes from latest table when scores fail."""
+    from unittest.mock import MagicMock
+
+    from gamarr.database import Database
+    from gamarr.pipeline import _jit_verify_and_update
+
+    db = Database(tmp_path / "test.db")
+    db.record_latest_pending(slug="jit-lt-fail", game_title="JIT LT Fail", platform="pc")
+
+    mock_result = MagicMock()
+    mock_result.metascore = 60.0
+    mock_result.metascore_review_count = 3
+    mock_result.user_score = 5.0
+    mock_result.user_review_count = 2
+
+    mock_mc = MagicMock()
+    mock_mc.lookup_game.return_value = mock_result
+
+    thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10}
+    result = _jit_verify_and_update(
+        db,
+        mock_mc,
+        thresholds,
+        game_title="JIT LT Fail",
+        game_slug="jit-lt-fail",
+        game_platform="pc",
+        search_mode="latest",
+    )
+    assert result is None
+    assert not db.is_latest_pending("jit-lt-fail")
+    db.close()
+
+
+def test_jit_verify_and_update_passes_latest_mode(tmp_path: Path) -> None:
+    """_jit_verify_and_update updates latest table scores on pass."""
+    from unittest.mock import MagicMock
+
+    from gamarr.database import Database
+    from gamarr.pipeline import _jit_verify_and_update
+
+    db = Database(tmp_path / "test.db")
+    db.record_latest_pending(slug="jit-lt-pass", game_title="JIT LT Pass", platform="pc")
+
+    mock_result = MagicMock()
+    mock_result.metascore = 92.0
+    mock_result.metascore_review_count = 20
+    mock_result.user_score = 9.2
+    mock_result.user_review_count = 30
+
+    mock_mc = MagicMock()
+    mock_mc.lookup_game.return_value = mock_result
+
+    thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10}
+    result = _jit_verify_and_update(
+        db,
+        mock_mc,
+        thresholds,
+        game_title="JIT LT Pass",
+        game_slug="jit-lt-pass",
+        game_platform="pc",
+        search_mode="latest",
+    )
+    assert result is not None
+    assert result[0] == 92.0

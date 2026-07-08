@@ -340,23 +340,6 @@ class TestConfigModels:
         }
         _migrate_config(raw)  # Should not raise, logs warning
 
-    def test_migrate_max_verify_attempts_removed(self) -> None:
-        """Old max_verify_attempts in metacritic.platform_overrides is removed."""
-
-        from gamarr.config import _migrate_config
-
-        raw: dict[str, Any] = {
-            "metacritic": {
-                "platform_overrides": {
-                    "pc": {"max_verify_attempts": 3},
-                },
-            },
-        }
-        result = _migrate_config(raw)
-        assert result is True
-        pc = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
-        assert "max_verify_attempts" not in pc
-
     def test_qbittorrent_config_defaults(self) -> None:
         cfg = QbittorrentConfig()
         assert cfg.host == "localhost"
@@ -396,13 +379,6 @@ class TestConfigModels:
         assert fitgirl.enabled is True
         assert cfg.review_sites.metacritic.platform_overrides["pc"].min_metascore == 75
         assert cfg.torrent_client.selected == "qbittorrent"
-
-    def test_age_recheck_weeks_default(self) -> None:
-        """MetacriticPlatformConfig.age_recheck_weeks defaults to None."""
-        from gamarr.config import MetacriticPlatformConfig
-
-        cfg = MetacriticPlatformConfig()
-        assert cfg.age_recheck_weeks is None
 
     def test_max_cycle_pages_default(self) -> None:
         """MetacriticPlatformConfig.max_cycle_pages defaults to 0."""
@@ -1253,3 +1229,77 @@ class TestSortOrder:
 
         cfg = MetacriticPlatformConfig(sort_order="metascore")
         assert cfg.sort_order == "metascore"
+
+
+def test_metacritic_platform_config_search_mode_default() -> None:
+    """search_mode defaults to 'latest'."""
+    from gamarr.config import MetacriticPlatformConfig
+
+    cfg = MetacriticPlatformConfig()
+    assert cfg.search_mode == "latest"
+
+
+def test_metacritic_platform_config_search_mode_valid() -> None:
+    """search_mode accepts 'backlog' and 'latest'."""
+    from gamarr.config import MetacriticPlatformConfig
+
+    backlog_cfg = MetacriticPlatformConfig(search_mode="backlog")
+    assert backlog_cfg.search_mode == "backlog"
+
+    latest_cfg = MetacriticPlatformConfig(search_mode="latest")
+    assert latest_cfg.search_mode == "latest"
+
+
+def test_metacritic_platform_config_search_mode_invalid_raises() -> None:
+    """search_mode rejects values outside Literal."""
+    from gamarr.config import MetacriticPlatformConfig
+
+    with pytest.raises(ValidationError):
+        MetacriticPlatformConfig(search_mode="illegal")  # type: ignore[arg-type]
+
+
+def test_drop_migrated_deprecated_keys_no_deprecated() -> None:
+    """_drop_migrated_deprecated_keys returns False when no deprecated keys present."""
+    from gamarr.config import _drop_migrated_deprecated_keys
+
+    mc_pc: dict = {"enabled": True, "sort_order": "new"}
+    changed = _drop_migrated_deprecated_keys(mc_pc, "pc")
+    assert changed is False
+    assert "enabled" in mc_pc
+    assert "sort_order" in mc_pc
+
+
+def test_drop_migrated_deprecated_keys_browse_pages() -> None:
+    """_drop_migrated_deprecated_keys removes browse_max_pages and max_score_checks."""
+    from gamarr.config import _drop_migrated_deprecated_keys
+
+    mc_pc: dict = {"browse_max_pages": 10, "max_score_checks": 5, "enabled": True}
+    changed = _drop_migrated_deprecated_keys(mc_pc, "pc")
+    assert changed is True
+    assert "browse_max_pages" not in mc_pc
+    assert "max_score_checks" not in mc_pc
+    assert "enabled" in mc_pc
+
+
+def test_drop_migrated_deprecated_keys_cutoff_dates() -> None:
+    """_drop_migrated_deprecated_keys removes cutoff/date related keys."""
+    from gamarr.config import _drop_migrated_deprecated_keys
+
+    mc_pc: dict = {"cutoff_date": "2024-01-01", "browse_cutoff_date": "2024-01-01", "enabled": True}
+    changed = _drop_migrated_deprecated_keys(mc_pc, "pc")
+    assert changed is True
+    assert "cutoff_date" not in mc_pc
+    assert "browse_cutoff_date" not in mc_pc
+    assert "enabled" in mc_pc
+
+
+def test_drop_migrated_deprecated_keys_age_recheck() -> None:
+    """_drop_migrated_deprecated_keys removes age_recheck_weeks and max_verify_attempts."""
+    from gamarr.config import _drop_migrated_deprecated_keys
+
+    mc_pc: dict = {"age_recheck_weeks": 52, "max_verify_attempts": 3, "enabled": True}
+    changed = _drop_migrated_deprecated_keys(mc_pc, "pc")
+    assert changed is True
+    assert "age_recheck_weeks" not in mc_pc
+    assert "max_verify_attempts" not in mc_pc
+    assert "enabled" in mc_pc

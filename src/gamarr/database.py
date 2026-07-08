@@ -59,7 +59,6 @@ class PendingGame(Base):
     expires_at: Mapped[str] = mapped_column(String, nullable=False)
     last_checked_at: Mapped[str | None] = mapped_column(String, nullable=True)
     score_checks_passed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
-    verify_attempts: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class SourceTitle(Base):
@@ -122,6 +121,46 @@ class ScanState(Base):
     last_sort_order: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
+class PendingGameBacklog(Base):
+    """ORM mapping for the pending_games_backlog table."""
+
+    __tablename__ = "pending_games_backlog"
+
+    slug: Mapped[str] = mapped_column(String, primary_key=True)
+    game_title: Mapped[str] = mapped_column(String, nullable=False)
+    platform: Mapped[str] = mapped_column(String, nullable=False)
+    metascore: Mapped[float | None] = mapped_column(Float, nullable=True)
+    metascore_reviews: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    user_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    user_reviews: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    genres: Mapped[str | None] = mapped_column(String, nullable=True)
+    release_date: Mapped[str | None] = mapped_column(String, nullable=True)
+    discovered_at: Mapped[str] = mapped_column(String, nullable=False)
+    expires_at: Mapped[str] = mapped_column(String, nullable=False)
+    last_checked_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    score_checks_passed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
+
+class PendingGameLatest(Base):
+    """ORM mapping for the pending_games_latest table."""
+
+    __tablename__ = "pending_games_latest"
+
+    slug: Mapped[str] = mapped_column(String, primary_key=True)
+    game_title: Mapped[str] = mapped_column(String, nullable=False)
+    platform: Mapped[str] = mapped_column(String, nullable=False)
+    metascore: Mapped[float | None] = mapped_column(Float, nullable=True)
+    metascore_reviews: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    user_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    user_reviews: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    genres: Mapped[str | None] = mapped_column(String, nullable=True)
+    release_date: Mapped[str | None] = mapped_column(String, nullable=True)
+    discovered_at: Mapped[str] = mapped_column(String, nullable=False)
+    expires_at: Mapped[str] = mapped_column(String, nullable=False)
+    last_checked_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    score_checks_passed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
+
 class BacklogProgress(Base):
     """Tracks per-year backlog scan progress for each platform.
 
@@ -171,9 +210,10 @@ class Database:
         self._migrate_source_titles()
         self._migrate_scan_state()
         self._migrate_browse_cache()
+        self._migrate_pending_mode_split()
 
     def _migrate_pending_games(self) -> None:
-        """Add columns to pending_games that were added in newer versions."""
+        """Add columns and clean up deprecated columns in pending_games."""
         try:
             inspector = sa_inspect(self._engine)
             columns = [c["name"] for c in inspector.get_columns("pending_games")]
@@ -182,11 +222,11 @@ class Database:
                     session.execute(text("ALTER TABLE pending_games ADD COLUMN score_checks_passed INTEGER"))
                     session.commit()
                 logger.debug("Added score_checks_passed column to pending_games")
-            if "verify_attempts" not in columns:
+            if "verify_attempts" in columns:
                 with self._session() as session:
-                    session.execute(text("ALTER TABLE pending_games ADD COLUMN verify_attempts INTEGER DEFAULT 0"))
+                    session.execute(text("ALTER TABLE pending_games DROP COLUMN verify_attempts"))
                     session.commit()
-                logger.debug("Added verify_attempts column to pending_games")
+                logger.debug("Dropped deprecated verify_attempts column from pending_games")
         except Exception:
             logger.debug("Migration of pending_games skipped (table may not exist yet)")
 
@@ -256,6 +296,41 @@ class Database:
                 logger.debug("Recreated browse_page_cache with year in primary key")
         except Exception:
             logger.debug("Migration of browse_cache skipped (table may not exist yet)")
+
+    def _migrate_pending_mode_split(self) -> None:
+        """Copy legacy pending_games rows into pending_games_backlog."""
+        try:
+            inspector = sa_inspect(self._engine)
+            if "pending_games" not in inspector.get_table_names():
+                return
+            with self._session() as session:
+                count = session.query(PendingGame).count()
+                if count == 0:
+                    return
+                rows = session.query(PendingGame).all()
+                for row in rows:
+                    session.add(
+                        PendingGameBacklog(
+                            slug=row.slug,
+                            game_title=row.game_title,
+                            platform=row.platform,
+                            metascore=row.metascore,
+                            metascore_reviews=row.metascore_reviews,
+                            user_score=row.user_score,
+                            user_reviews=row.user_reviews,
+                            genres=row.genres,
+                            release_date=row.release_date,
+                            discovered_at=row.discovered_at,
+                            expires_at=row.expires_at,
+                            last_checked_at=row.last_checked_at,
+                            score_checks_passed=row.score_checks_passed,
+                        )
+                    )
+                    session.delete(row)
+                session.commit()
+                logger.info("Migrated {} pending games from legacy table to pending_games_backlog", count)
+        except Exception:
+            logger.debug("Migration of pending_games skipped (table may not exist yet)")
 
     def close(self) -> None:
         self._engine.dispose()
@@ -395,24 +470,6 @@ class Database:
                 row.last_checked_at = now
                 session.commit()
 
-    def increment_verify_attempts(self, slug: str) -> int:
-        """Increment the verify_attempts counter and return the new value."""
-        with self._session() as session:
-            row = session.get(PendingGame, slug)
-            if row is None:
-                return 0
-            row.verify_attempts = (row.verify_attempts or 0) + 1
-            session.commit()
-            return row.verify_attempts
-
-    def reset_verify_attempts(self, slug: str) -> None:
-        """Reset verify_attempts to 0 (e.g. after a successful score check)."""
-        with self._session() as session:
-            row = session.get(PendingGame, slug)
-            if row is not None:
-                row.verify_attempts = 0
-                session.commit()
-
     def update_pending_expiry(self, slug: str, max_queue_days: int) -> None:
         """Recalculate expires_at to now + max_queue_days for a pending game.
 
@@ -515,6 +572,294 @@ class Database:
             if platform is not None:
                 query = query.filter(PendingGame.platform == platform)
             return query.first() is not None
+
+    # ------------------------------------------------------------------
+    # Mode-specific backlog/latest pending methods
+    # ------------------------------------------------------------------
+
+    def record_backlog_pending(
+        self,
+        *,
+        slug: str,
+        game_title: str,
+        platform: str,
+        metascore: float | None = None,
+        metascore_reviews: int | None = None,
+        user_score: float | None = None,
+        user_reviews: int | None = None,
+        genres: list[str] | None = None,
+        release_date: str | None = None,
+        expires_at: str | None = None,
+    ) -> None:
+        now = datetime.datetime.now(tz=datetime.UTC).isoformat()
+        backlog_default = (
+            datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=_INDEFINITE_DAYS)
+        ).isoformat()
+        with self._session() as session:
+            existing = session.get(PendingGameBacklog, slug)
+            if existing is not None:
+                return
+            row = PendingGameBacklog(
+                slug=slug,
+                game_title=game_title,
+                platform=platform,
+                metascore=metascore,
+                metascore_reviews=metascore_reviews,
+                user_score=user_score,
+                user_reviews=user_reviews,
+                genres=json.dumps(genres) if genres else None,
+                release_date=release_date,
+                discovered_at=now,
+                expires_at=expires_at or backlog_default,
+                last_checked_at=None,
+            )
+            session.add(row)
+            session.commit()
+
+    def record_latest_pending(
+        self,
+        *,
+        slug: str,
+        game_title: str,
+        platform: str,
+        metascore: float | None = None,
+        metascore_reviews: int | None = None,
+        user_score: float | None = None,
+        user_reviews: int | None = None,
+        genres: list[str] | None = None,
+        release_date: str | None = None,
+        expires_at: str | None = None,
+    ) -> None:
+        now = datetime.datetime.now(tz=datetime.UTC).isoformat()
+        latest_default = (
+            datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=_INDEFINITE_DAYS)
+        ).isoformat()
+        with self._session() as session:
+            existing = session.get(PendingGameLatest, slug)
+            if existing is not None:
+                return
+            row = PendingGameLatest(
+                slug=slug,
+                game_title=game_title,
+                platform=platform,
+                metascore=metascore,
+                metascore_reviews=metascore_reviews,
+                user_score=user_score,
+                user_reviews=user_reviews,
+                genres=json.dumps(genres) if genres else None,
+                release_date=release_date,
+                discovered_at=now,
+                expires_at=expires_at or latest_default,
+                last_checked_at=None,
+            )
+            session.add(row)
+            session.commit()
+
+    def get_backlog_pending(self, *, platform: str | None = None) -> list[PendingGameBacklog]:
+        now = datetime.datetime.now(tz=datetime.UTC).isoformat()
+        with self._session() as session:
+            query = session.query(PendingGameBacklog).filter(PendingGameBacklog.expires_at > now)
+            if platform is not None:
+                query = query.filter(PendingGameBacklog.platform == platform)
+            rows = query.all()
+            return list(rows)
+
+    def get_latest_pending(self, *, platform: str | None = None) -> list[PendingGameLatest]:
+        now = datetime.datetime.now(tz=datetime.UTC).isoformat()
+        with self._session() as session:
+            query = session.query(PendingGameLatest).filter(PendingGameLatest.expires_at > now)
+            if platform is not None:
+                query = query.filter(PendingGameLatest.platform == platform)
+            rows = query.all()
+            return list(rows)
+
+    def remove_backlog_pending(self, slug: str) -> None:
+        with self._session() as session:
+            row = session.get(PendingGameBacklog, slug)
+            if row is not None:
+                session.delete(row)
+                session.commit()
+
+    def remove_latest_pending(self, slug: str) -> None:
+        with self._session() as session:
+            row = session.get(PendingGameLatest, slug)
+            if row is not None:
+                session.delete(row)
+                session.commit()
+
+    def touch_backlog_pending(self, slug: str) -> None:
+        now = datetime.datetime.now(tz=datetime.UTC).isoformat()
+        with self._session() as session:
+            row = session.get(PendingGameBacklog, slug)
+            if row is not None:
+                row.last_checked_at = now
+                session.commit()
+
+    def touch_latest_pending(self, slug: str) -> None:
+        now = datetime.datetime.now(tz=datetime.UTC).isoformat()
+        with self._session() as session:
+            row = session.get(PendingGameLatest, slug)
+            if row is not None:
+                row.last_checked_at = now
+                session.commit()
+
+    def update_backlog_pending_scores(
+        self,
+        *,
+        slug: str,
+        metascore: float | None = None,
+        metascore_reviews: int | None = None,
+        user_score: float | None = None,
+        user_reviews: int | None = None,
+    ) -> None:
+        with self._session() as session:
+            row = session.get(PendingGameBacklog, slug)
+            if row is None:
+                return
+            if metascore is not None:
+                row.metascore = metascore
+            if metascore_reviews is not None:
+                row.metascore_reviews = metascore_reviews
+            if user_score is not None:
+                row.user_score = user_score
+            if user_reviews is not None:
+                row.user_reviews = user_reviews
+            if any(x is not None for x in (metascore, metascore_reviews, user_score, user_reviews)):
+                row.score_checks_passed = True
+            now = datetime.datetime.now(tz=datetime.UTC).isoformat()
+            row.last_checked_at = now
+            session.commit()
+
+    def update_latest_pending_scores(
+        self,
+        *,
+        slug: str,
+        metascore: float | None = None,
+        metascore_reviews: int | None = None,
+        user_score: float | None = None,
+        user_reviews: int | None = None,
+    ) -> None:
+        with self._session() as session:
+            row = session.get(PendingGameLatest, slug)
+            if row is None:
+                return
+            if metascore is not None:
+                row.metascore = metascore
+            if metascore_reviews is not None:
+                row.metascore_reviews = metascore_reviews
+            if user_score is not None:
+                row.user_score = user_score
+            if user_reviews is not None:
+                row.user_reviews = user_reviews
+            if any(x is not None for x in (metascore, metascore_reviews, user_score, user_reviews)):
+                row.score_checks_passed = True
+            now = datetime.datetime.now(tz=datetime.UTC).isoformat()
+            row.last_checked_at = now
+            session.commit()
+
+    def update_backlog_pending_expiry(self, slug: str, max_queue_days: int) -> None:
+        days = _INDEFINITE_DAYS if max_queue_days <= 0 else max_queue_days
+        expires_at = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=days)).isoformat()
+        with self._session() as session:
+            row = session.get(PendingGameBacklog, slug)
+            if row is not None:
+                row.expires_at = expires_at
+                session.commit()
+
+    def update_latest_pending_expiry(self, slug: str, max_queue_days: int) -> None:
+        days = _INDEFINITE_DAYS if max_queue_days <= 0 else max_queue_days
+        expires_at = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=days)).isoformat()
+        with self._session() as session:
+            row = session.get(PendingGameLatest, slug)
+            if row is not None:
+                row.expires_at = expires_at
+                session.commit()
+
+    def get_expired_backlog_pending(self) -> list[PendingGameBacklog]:
+        now = datetime.datetime.now(tz=datetime.UTC).isoformat()
+        with self._session() as session:
+            rows = session.query(PendingGameBacklog).filter(PendingGameBacklog.expires_at <= now).all()
+            return list(rows)
+
+    def get_expired_latest_pending(self) -> list[PendingGameLatest]:
+        now = datetime.datetime.now(tz=datetime.UTC).isoformat()
+        with self._session() as session:
+            rows = session.query(PendingGameLatest).filter(PendingGameLatest.expires_at <= now).all()
+            return list(rows)
+
+    def is_backlog_pending(self, slug: str) -> bool:
+        with self._session() as session:
+            return session.get(PendingGameBacklog, slug) is not None
+
+    def is_latest_pending(self, slug: str) -> bool:
+        with self._session() as session:
+            return session.get(PendingGameLatest, slug) is not None
+
+    def has_verified_backlog_pending(self, *, platform: str | None = None) -> bool:
+        with self._session() as session:
+            query = session.query(PendingGameBacklog).filter(
+                PendingGameBacklog.score_checks_passed == True,  # noqa: E712
+                PendingGameBacklog.expires_at > datetime.datetime.now(tz=datetime.UTC).isoformat(),
+            )
+            if platform is not None:
+                query = query.filter(PendingGameBacklog.platform == platform)
+            return query.first() is not None
+
+    def has_verified_latest_pending(self, *, platform: str | None = None) -> bool:
+        with self._session() as session:
+            query = session.query(PendingGameLatest).filter(
+                PendingGameLatest.score_checks_passed == True,  # noqa: E712
+                PendingGameLatest.expires_at > datetime.datetime.now(tz=datetime.UTC).isoformat(),
+            )
+            if platform is not None:
+                query = query.filter(PendingGameLatest.platform == platform)
+            return query.first() is not None
+
+    def get_known_backlog_slugs(self, *, source: str, platform: str) -> set[str]:
+        known: set[str] = set()
+        with self._session() as session:
+            rows = (
+                session.query(HistoryRow.source_url)
+                .filter(HistoryRow.source == source, HistoryRow.source_url.isnot(None))
+                .all()
+            )
+            for (source_url,) in rows:
+                slug: str = str(source_url)
+                if slug.startswith("mc:"):
+                    known.add(slug[3:])
+                else:
+                    known.add(slug)
+            pending_rows = session.query(PendingGameBacklog.slug).all()
+            for (slug,) in pending_rows:
+                known.add(str(slug))
+            # Also check latest table — prevents re-discovery after mode switch
+            latest_rows = session.query(PendingGameLatest.slug).all()
+            for (slug,) in latest_rows:
+                known.add(str(slug))
+        return known
+
+    def get_known_latest_slugs(self, *, source: str, platform: str) -> set[str]:
+        known: set[str] = set()
+        with self._session() as session:
+            rows = (
+                session.query(HistoryRow.source_url)
+                .filter(HistoryRow.source == source, HistoryRow.source_url.isnot(None))
+                .all()
+            )
+            for (source_url,) in rows:
+                slug: str = str(source_url)
+                if slug.startswith("mc:"):
+                    known.add(slug[3:])
+                else:
+                    known.add(slug)
+            pending_rows = session.query(PendingGameLatest.slug).all()
+            for (slug,) in pending_rows:
+                known.add(str(slug))
+            # Also check backlog table — prevents re-discovery after mode switch
+            backlog_rows = session.query(PendingGameBacklog.slug).all()
+            for (slug,) in backlog_rows:
+                known.add(str(slug))
+        return known
 
     def store_source_title(self, *, source: str, title: str, url: str, magnet: str | None) -> None:
         """Insert a single source title entry.

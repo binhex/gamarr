@@ -162,11 +162,12 @@ download_sites:
 | `min_metascore_reviews` | Minimum number of critic reviews required. | `10` |
 | `min_user_score` | Minimum Metacritic user score (0–10). | `7.5` |
 | `min_user_reviews` | Minimum number of user reviews required. | `10` |
-| `max_pages` | Total browse page window. The backlog scanner progressively advances through `max_pages` pages across cycles, then resets to scan new releases. `0` = unlimited scan. | `500` |
-| `max_cycle_pages` | Maximum number of browse pages to scan per cycle. `0` = unlimited (scan all pages). | `0` |
-| `age_recheck_weeks` | Games older than this (weeks since release) are permanently processed once their Metacritic scores pass thresholds. `null` or `0` = disabled. | `null` |
-| `enabled` | Enable or disable the Metacritic browse step. Disabling skips game discovery entirely. | `true` |
+| `search_mode` | Scanning mode: `"backlog"` (historical deep scan) or `"latest"` (recent releases only). | `"latest"` |
+| `max_pages` | In `"backlog"` mode: total browse page window depth. The scanner progressively advances through `max_pages` pages across cycles. In `"latest"` mode: ignored. `0` = unlimited. | `500` |
+| `max_cycle_pages` | In `"backlog"` mode: max pages per cycle (pacing). In `"latest"` mode: the window of recent pages to scan (always pages 1-N). `0` = unlimited. | `0` |
+| `sort_order` | Browse sort order: `"new"` (release date) or `"metascore"` (by critic score). | `"new"` |
 | `max_queue_days` | Days a game stays in the pending queue before expiring. `0` = indefinite pending (no expiry). | `30` |
+| `enabled` | Enable or disable the Metacritic browse step. Disabling skips game discovery entirely. | `true` |
 | `cache_details_days` | Days to cache Metacritic detail-page results. | `7` |
 | `cache_pages_hours` | Hours to cache Metacritic browse-page results. | `6` |
 | `reject_genre` | Reject games whose Metacritic genre contains any of these substrings (case-insensitive). E.g. `["RPG"]` matches "Action RPG", "JRPG", "Western RPG". | `[]` |
@@ -358,19 +359,17 @@ See the [genres section](#review_sitesmetacriticplatform_overridesplatform) for 
 
 **A:** Games leave the pending queue in only two ways:
 
-1. **Downloaded** — scores pass thresholds AND a matching torrent is found on FitGirl
-2. **Aged out** — `age_recheck_weeks` is set, the game's scores passed
-   verification, AND the game's release date is old enough
+1. **Downloaded** — scores pass thresholds AND a matching torrent is found on a source
+2. **Expired** — the game has been in the queue longer than `max_queue_days`
 
-Games that are verified but **fail score thresholds**, or **pass but have no
-FitGirl match**, stay in the queue. They get re-verified each cycle because
-their scores could change or a new FitGirl repack could appear. If you find
-the queue growing indefinitely:
+Games that pass score thresholds but have **no source match** stay in the queue —
+they get re-verified each cycle because a new FitGirl/FreeGOG repack could appear.
+If you find the queue growing indefinitely:
 
-- Set `age_recheck_weeks` to a reasonable value (e.g. `52` for one year) to automatically retire old games
-- Games with no `release_date` cannot be aged out — this is expected for unreleased or obscure titles
-- The message `0 new + X from previous cycles` means browsing found nothing
-  new, and all X are carryovers from earlier cycles
+- Increase `max_pages` to catch more recently released games
+- Games with failing scores are re-verified each cycle — reduce `max_queue_days` if
+  you want them to expire faster
+- The message `0 new + X from previous cycles` means browsing found nothing new
 
 **Q: Why does `max_queue_days` have two separate settings — one for Metacritic and one for FitGirl?**
 

@@ -111,9 +111,9 @@ class MetacriticPlatformConfig(BaseModel):
     max_pages: int = Field(default=500, ge=1)
     max_cycle_pages: int | None = Field(default=0, ge=0)
     sort_order: Literal["new", "metascore"] = "new"
+    search_mode: Literal["backlog", "latest"] = "latest"
     reject_genre: list[str] = Field(default_factory=list)
     reject_title: list[str] = Field(default_factory=list)  # case-insensitive substrings
-    age_recheck_weeks: int | None = Field(default=None, ge=0)
 
 
 class MetacriticConfig(BaseModel):
@@ -258,7 +258,6 @@ def _migrate_platform_overrides(raw: dict[str, Any]) -> bool:
         changed |= _rename_config_key(mc_pc, "metacritic_cache_ttl_hours", "cache_pages_hours", platform_key)
         changed |= _rename_config_key(mc_pc, "cache_ttl_days", "cache_details_days", platform_key)
         changed |= _rename_config_key(mc_pc, "cache_ttl_hours", "cache_pages_hours", platform_key)
-        changed |= _drop_max_verify_attempts(mc_pc, platform_key)
         changed |= _rename_config_key(mc_pc, "max_cycle_weeks", "max_cycle_pages", platform_key)
         changed |= _rename_config_key(mc_pc, "max_weeks", "max_pages", platform_key)
     return changed
@@ -299,19 +298,16 @@ def _drop_migrated_deprecated_keys(mc_pc: dict[str, Any], platform_key: str) -> 
             )
             mc_pc.pop(old_key)
             changed |= True
+    for old_key in ("age_recheck_weeks", "max_verify_attempts"):
+        if old_key in mc_pc:
+            logger.info(
+                "Config: removing deprecated '{}' from platform '{}' — handled by max_queue_days",
+                old_key,
+                platform_key,
+            )
+            mc_pc.pop(old_key)
+            changed |= True
     return changed
-
-
-def _drop_max_verify_attempts(mc_pc: dict[str, Any], platform_key: str) -> bool:
-    """Remove deprecated max_verify_attempts key. Returns True if changed."""
-    if "max_verify_attempts" not in mc_pc:
-        return False
-    logger.info(
-        "Config: removing deprecated 'max_verify_attempts' for platform '{}' — max_queue_days controls expiry",
-        platform_key,
-    )
-    del mc_pc["max_verify_attempts"]
-    return True
 
 
 def _migrate_download_sites_to_ordered(raw: dict[str, Any]) -> bool:
