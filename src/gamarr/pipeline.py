@@ -75,7 +75,7 @@ def _log_game_details(mc_result: Any) -> None:
     sep = " <dim>|</dim> "
 
     logger.opt(colors=True).info(
-        f"<cyan><bold>{title}</bold></cyan>"
+        f"Title: <cyan><bold>{title}</bold></cyan>"
         f"{sep}<green>Metascore: <bold>{ms}</bold></green> <dim>({ms_r} reviews)</dim>"
         f"{sep}<yellow>User: <bold>{us}</bold></yellow> <dim>({us_r} reviews)</dim>"
         f"{sep}<magenta>Genre: {genre}</magenta>"
@@ -1932,8 +1932,9 @@ def _check_reject_keywords(
     Returns True if the match should be skipped, keeping the game
     pending for the next cycle.  Fetches the FitGirl HTML page and
     checks the **article body** first (most descriptive), then the
-    HTML ``<title>`` tag, against *reject_keywords*.  Falls back to
-    the stored sitemap title when the page cannot be fetched.
+    HTML ``<title>`` tag, against *reject_keywords*.  When the page
+    cannot be fetched, the match is kept pending for re-check in the
+    next cycle (the sitemap title is too weak a signal).
 
     The check is deliberately scoped to the ``<article>`` element to
     exclude sidebar navigation (which contains "Hypervisor" links on
@@ -1949,7 +1950,16 @@ def _check_reject_keywords(
     page_title, article_text = _fetch_fitgirl_page_content(best["url"])
 
     if page_title is None and article_text is None:
-        return _check_sitemap_title_fallback(db, best, game_title, game_slug, reject_keywords, search_mode=search_mode)
+        # Cannot verify reject_keywords against the page content.
+        # Erring on the side of caution — keep game pending so it can
+        # be re-checked in the next cycle when the page may be reachable.
+        logger.warning(
+            "Could not fetch page content for '{}' \u2014 keeping '{}' pending for re-check",
+            best["url"],
+            game_title,
+        )
+        _touch_pending_by_mode(db, game_slug, search_mode)
+        return True
 
     # Truncate article text before "Backwards Compatibility" section.
     # FitGirl pages describe backwards compatibility with previous repacks
@@ -1979,36 +1989,6 @@ def _check_reject_keywords(
     return False
 
 
-def _check_sitemap_title_fallback(
-    db: Database,
-    best: dict[str, Any],
-    game_title: str,
-    game_slug: str,
-    reject_keywords: list[str],
-    search_mode: str = "latest",
-) -> bool:
-    """Check the sitemap title against reject keywords as a fallback.
-
-    Called when the FitGirl page could not be fetched.  Logs a warning
-    and inspects the pre-indexed sitemap title.
-    """
-    logger.warning(
-        "Could not fetch page content for '{}' \u2014 checking sitemap title instead",
-        best["url"],
-    )
-    matched = _title_contains_keywords(best["title"], reject_keywords)
-    if matched:
-        logger.info(
-            "Skipping match for '{}' \u2014 sitemap title '{}' contains rejected keyword '{}'",
-            game_title,
-            best["title"],
-            matched,
-        )
-        _touch_pending_by_mode(db, game_slug, search_mode)
-        return True
-    return False
-
-
 def _truncate_at_backwards_compat(article_text: str | None) -> str | None:
     """Truncate *article_text* before the backwards-compatibility section.
 
@@ -2026,7 +2006,75 @@ def _truncate_at_backwards_compat(article_text: str | None) -> str | None:
     return article_text[:idx] if idx >= 0 else article_text
 
 
-def _process_single_pending_match(
+def _deep_search_article_body(
+    db: Database,
+    source_name: str,
+    normalized: str,
+) -> list[dict[str, str | None]]:
+    """Search repack article bodies for the game title when direct matching fails.
+
+    Handles DLC/expansion cases where the Metacritic game title is longer
+    than the FitGirl sitemap title (e.g. ``"Dark Souls III: The Ringed City"``
+    vs ``"Dark Souls Iii"`` from URL slug).  The DLC/expansion name is
+    referenced in the article body's repack features section.
+
+    Only searches when the source title is fully contained in the query
+    (reverse direction) — this prevents needless HTTP requests for games
+    with no connection to any FitGirl repack.  At most 3 article pages
+    are fetched to limit HTTP overhead.
+
+    Args:
+        db: Database instance for source title lookup.
+        source_name: Source identifier (e.g. ``"fitgirl"``).
+        normalized: The normalised Metacritic game title.
+
+    Returns:
+        A list with one match dict if found in article body, or an empty list.
+    """
+    candidates: list[dict[str, str | None]] = []
+    for entry in db.get_all_source_titles(source_name):
+        entry_title = str(entry.get("title", ""))
+        entry_norm = normalise_for_compare(entry_title)
+        if entry_norm and entry_norm in normalized and normalized != entry_norm:
+            candidates.append(entry)
+
+    # At most 3 HTTP requests to limit overhead
+    for candidate in candidates[:3]:
+        _, article_text = _fetch_fitgirl_page_content(str(candidate["url"]))
+        if article_text:
+            article_norm = normalise_for_compare(article_text)
+            if normalized in article_norm:
+                return [candidate]
+
+    return []
+
+
+def _find_first_non_rejected_match(
+    db: Database,
+    source_name: str,
+    matches: list[dict[str, str | None]],
+    game_title: str,
+    game_slug: str,
+    reject_keywords: list[str] | None,
+    search_mode: str,
+) -> dict[str, str | None] | None:
+    """Return the first match that passes reject_keywords, or None if all rejected.
+
+    Iterates through *matches* in order, skipping any whose article body
+    or page title contains a rejected keyword.  The first clean match is
+    returned; ``None`` means every candidate was rejected and the game
+    should stay pending.
+    """
+    for candidate in matches:
+        if _skip_for_reject_keywords(
+            source_name, db, candidate, game_title, game_slug, reject_keywords, search_mode=search_mode
+        ):
+            continue
+        return candidate
+    return None
+
+
+def _handle_matched_game(
     db: Database,
     mc: Any,
     thresholds: dict[str, Any] | None,
@@ -2036,6 +2084,7 @@ def _process_single_pending_match(
     library: Any,
     can_deliver: bool,
     *,
+    best: dict[str, Any],
     game_title: str,
     game_slug: str,
     game_platform: str,
@@ -2044,37 +2093,13 @@ def _process_single_pending_match(
     game_user_score: float | None,
     game_user_reviews: int | None,
     game_release_date: str | None,
-    reject_keywords: list[str] | None = None,
     source_name: str = "fitgirl",
     search_mode: str = "latest",
 ) -> dict[str, Any] | None:
-    """Match one pending game against a source sitemap and either deliver or touch."""
-    normalized = normalise_for_compare(game_title)
-    matches = db.match_source_title(source_name, normalized)
-    if not matches:
-        _touch_pending_by_mode(db, game_slug, search_mode)
-        logger.info(
-            "'{}' passed Metacritic checks but has no {} match \u2014 staying in queue",
-            game_title,
-            _source_display(source_name),
-        )
-        return None
+    """Process a matched game: library check, delivery, or record-only.
 
-    best = matches[0]
-    logger.info(
-        "{} match: '{}' \u2192 '{}' ({})",
-        _source_display(source_name),
-        game_title,
-        best["title"],
-        best["url"],
-    )
-
-    # Skip FitGirl matches whose article body contains rejected keywords.
-    if _skip_for_reject_keywords(
-        source_name, db, best, game_title, game_slug, reject_keywords, search_mode=search_mode
-    ):
-        return None
-
+    Returns a result dict or None if the match produces no delivery result.
+    """
     # Check library first — skip if already owned
     if library is not None:
         lib_match = library.check_game(game_title)
@@ -2125,6 +2150,82 @@ def _process_single_pending_match(
         game_metascore=game_metascore,
         game_user_score=game_user_score,
         best=best,
+        source_name=source_name,
+        search_mode=search_mode,
+    )
+
+
+def _process_single_pending_match(
+    db: Database,
+    mc: Any,
+    thresholds: dict[str, Any] | None,
+    qbt: Any,
+    magnet_fetcher: Callable[[str], str | None] | None,
+    notifier: Any,
+    library: Any,
+    can_deliver: bool,
+    *,
+    game_title: str,
+    game_slug: str,
+    game_platform: str,
+    game_metascore: float | None,
+    game_metascore_reviews: int | None,
+    game_user_score: float | None,
+    game_user_reviews: int | None,
+    game_release_date: str | None,
+    reject_keywords: list[str] | None = None,
+    source_name: str = "fitgirl",
+    search_mode: str = "latest",
+) -> dict[str, Any] | None:
+    """Match one pending game against a source sitemap and either deliver or touch."""
+    normalized = normalise_for_compare(game_title)
+    matches = db.match_source_title(source_name, normalized)
+    if not matches and source_name.casefold() == "fitgirl":
+        # Deep search: the game may be a DLC/expansion included in a
+        # base-game repack, referenced only in the article repack features.
+        matches = _deep_search_article_body(db, source_name, normalized)
+
+    if not matches:
+        _touch_pending_by_mode(db, game_slug, search_mode)
+        logger.info(
+            "Title: '{}' passed Metacritic checks but has no {} match \u2014 staying in queue",
+            game_title,
+            _source_display(source_name),
+        )
+        return None
+
+    # Iterate through matches — if one is rejected by keywords, try the next.
+    best = _find_first_non_rejected_match(db, source_name, matches, game_title, game_slug, reject_keywords, search_mode)
+
+    if best is None:
+        return None
+
+    logger.info(
+        "{} match: '{}' \u2192 '{}' ({})",
+        _source_display(source_name),
+        game_title,
+        best["title"],
+        best["url"],
+    )
+
+    return _handle_matched_game(
+        db,
+        mc,
+        thresholds,
+        qbt,
+        magnet_fetcher,
+        notifier,
+        library,
+        can_deliver,
+        best=best,
+        game_title=game_title,
+        game_slug=game_slug,
+        game_platform=game_platform,
+        game_metascore=game_metascore,
+        game_metascore_reviews=game_metascore_reviews,
+        game_user_score=game_user_score,
+        game_user_reviews=game_user_reviews,
+        game_release_date=game_release_date,
         source_name=source_name,
         search_mode=search_mode,
     )

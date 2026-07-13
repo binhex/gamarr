@@ -1536,8 +1536,10 @@ class TestMetacriticBrowse:
             assert result is not None, "Game should proceed — page title does not contain HV"
             db.close()
 
-    def test_reject_keywords_fallback_to_sitemap_title(self, tmp_path: Path) -> None:
-        """When page fetch fails, fall back to checking sitemap title."""
+    def test_reject_keywords_keeps_pending_when_fetch_fails(self, tmp_path: Path) -> None:
+        """When the FitGirl page cannot be fetched, keep the game pending
+        even when the sitemap title contains a reject keyword.
+        The page-fetch failure itself is enough to keep the game pending."""
         import datetime
         from unittest.mock import MagicMock, patch
 
@@ -1588,8 +1590,8 @@ class TestMetacriticBrowse:
                 game_release_date=None,
                 reject_keywords=["HV"],
             )
-            # Should be rejected — fallback to sitemap title which contains HV
-            assert result is None, "Should reject via sitemap title fallback"
+            # Should stay pending — page could not be fetched, cannot verify keywords
+            assert result is None, "Should reject — page could not be fetched"
             assert db.is_backlog_pending("hv-game"), "Should remain pending"
             db.close()
 
@@ -1802,11 +1804,13 @@ class TestMetacriticBrowse:
             assert result is not None, "Game should proceed \u2014 keywords only in backwards-compat section"
             db.close()
 
-    def test_reject_keywords_fallback_clean_sitemap_passes(self, tmp_path: Path) -> None:
-        """When HTTP fetch fails but sitemap title is clean, the game proceeds
-        (exercises the return False path in _check_sitemap_title_fallback)."""
+    def test_reject_keywords_fallback_sitemap_rejects_when_fetch_fails(self, tmp_path: Path) -> None:
+        """When the FitGirl page cannot be fetched, the game should stay pending
+        even if the sitemap title is clean.  The sitemap title never contains
+        repack metadata like "hypervisor" or "hv", so the fallback check is
+        unreliable — keeping the game pending lets it retry in the next cycle."""
         import datetime
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import patch
 
         import requests
 
@@ -1816,21 +1820,18 @@ class TestMetacriticBrowse:
         db = Database(str(tmp_path / "test.db"))
         expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
         db.record_backlog_pending(
-            slug="clean-game-fb",
+            slug="reject-fetch-fail",
             game_title="Clean Game Fallback",
             platform="pc",
             metascore=85.0,
             user_score=8.0,
             expires_at=expires,
         )
-        db.update_backlog_pending_scores(slug="clean-game-fb", metascore=85.0, user_score=8.0)
+        db.update_backlog_pending_scores(slug="reject-fetch-fail", metascore=85.0, user_score=8.0)
         db.rebuild_source_titles(
             "fitgirl",
             [{"title": "Clean Game Fallback", "url": "https://example.com/clean-game"}],
         )
-
-        mock_qbt = MagicMock()
-        mock_qbt.add_torrent.return_value = "gamarr-tag"
 
         with patch("gamarr.pipeline.requests.get") as mock_get:
             mock_get.side_effect = requests.RequestException("Connection error")
@@ -1838,13 +1839,13 @@ class TestMetacriticBrowse:
                 db,
                 mc=None,
                 thresholds=None,
-                qbt=mock_qbt,
-                magnet_fetcher=MagicMock(return_value="magnet:?xt=urn:btih:abc"),
+                qbt=None,
+                magnet_fetcher=None,
                 notifier=None,
                 library=None,
-                can_deliver=True,
+                can_deliver=False,
                 game_title="Clean Game Fallback",
-                game_slug="clean-game-fb",
+                game_slug="reject-fetch-fail",
                 game_platform="pc",
                 game_metascore=85.0,
                 game_metascore_reviews=100,
@@ -1853,7 +1854,8 @@ class TestMetacriticBrowse:
                 game_release_date=None,
                 reject_keywords=["hv", "hypervisor"],
             )
-            assert result is not None, "Game should proceed — sitemap fallback title is clean"
+            assert result is None, "Game should stay pending — page could not be fetched"
+            assert db.is_backlog_pending("reject-fetch-fail"), "Game must remain pending"
             db.close()
 
     def test_match_pending_against_source(self, tmp_path: Path) -> None:
@@ -5885,6 +5887,154 @@ def test_process_single_pending_match_no_match(tmp_path: Path) -> None:
     db.close()
 
 
+def test_process_single_pending_match_dlc_deep_search_matches(tmp_path: Path) -> None:
+    """Deep search of article body finds DLC name in repack features when title match fails.
+
+    When a Metacritic pending game has a DLC/expansion title (e.g.
+    "Dark Souls III: The Ringed City") and the FitGirl sitemap only has
+    the base game title (URL slug-derived "Dark Souls Iii"), the normal
+    title match fails. But the article body contains the DLC name in the
+    repack features section, so deep search should find the match.
+    """
+    import datetime
+    from unittest.mock import MagicMock, patch
+
+    from gamarr.database import Database
+    from gamarr.pipeline import _process_single_pending_match
+
+    db = Database(str(tmp_path / "test.db"))
+    expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+    db.record_backlog_pending(
+        slug="dark-souls-iii-the-ringed-city",
+        game_title="Dark Souls III: The Ringed City",
+        platform="pc",
+        metascore=85.0,
+        user_score=8.0,
+        expires_at=expires,
+    )
+    db.update_backlog_pending_scores(slug="dark-souls-iii-the-ringed-city", metascore=85.0, user_score=8.0)
+    # Store a FitGirl sitemap entry for the BASE game (URL slug-derived title)
+    db.rebuild_source_titles(
+        "fitgirl",
+        [{"title": "Dark Souls Iii", "url": "https://fitgirl-repacks.site/dark-souls-iii/"}],
+    )
+
+    # Article body contains repack features with the DLC name
+    html_with_dlc = (
+        "<html><head><title>Dark Souls III [FitGirl Repack]</title></head>"
+        "<body><article>"
+        "Repack Features"
+        "Based on Dark.Souls.III.The.Ringed.City-CODEX ISO release: "
+        "codex-dark.souls.iii.the.ringed.city.iso (26 GB)"
+        '<a href="magnet:?xt=urn:btih:abc">magnet</a>'
+        "</article></body></html>"
+    )
+
+    with patch("gamarr.pipeline.requests.get") as mock_get:
+        mock_resp = MagicMock()
+        mock_resp.text = html_with_dlc
+        mock_resp.raise_for_status.return_value = None
+        mock_get.return_value = mock_resp
+
+        result = _process_single_pending_match(
+            db,
+            mc=None,
+            thresholds=None,
+            qbt=None,
+            magnet_fetcher=None,
+            notifier=None,
+            library=None,
+            can_deliver=False,
+            game_title="Dark Souls III: The Ringed City",
+            game_slug="dark-souls-iii-the-ringed-city",
+            game_platform="pc",
+            game_metascore=85.0,
+            game_metascore_reviews=100,
+            game_user_score=8.0,
+            game_user_reviews=50,
+            game_release_date=None,
+            reject_keywords=None,
+            source_name="fitgirl",
+            search_mode="backlog",
+        )
+        assert result is not None, "Should match via deep search in article body"
+        assert result.get("result") is not None, "Match should produce a result"
+        mock_get.assert_called_once()
+        db.close()
+
+
+def test_process_single_pending_match_dlc_deep_search_no_match_when_article_empty(tmp_path: Path) -> None:
+    """Deep search should NOT match when article body does not contain the DLC name.
+
+    The reverse-direction partial match may exist (FitGirl title is substring
+    of MC title), but if the article body doesn't confirm the match, the game
+    should not be matched.
+    """
+    import datetime
+    from unittest.mock import MagicMock, patch
+
+    from gamarr.database import Database
+    from gamarr.pipeline import _process_single_pending_match
+
+    db = Database(str(tmp_path / "test.db"))
+    expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+    db.record_backlog_pending(
+        slug="mechwarrior-4-mercenaries",
+        game_title="MechWarrior 4: Mercenaries",
+        platform="pc",
+        metascore=80.0,
+        user_score=7.5,
+        expires_at=expires,
+    )
+    db.update_backlog_pending_scores(slug="mechwarrior-4-mercenaries", metascore=80.0, user_score=7.5)
+    db.rebuild_source_titles(
+        "fitgirl",
+        [{"title": "Mechwarrior 4", "url": "https://fitgirl-repacks.site/mechwarrior-4/"}],
+    )
+
+    # Article body does NOT contain the expansion name
+    html_other = (
+        "<html><head><title>Mechwarrior 4 [FitGirl Repack]</title></head>"
+        "<body><article>"
+        "Repack Features"
+        "Based on something else entirely"
+        '<a href="magnet:?xt=urn:btih:abc">magnet</a>'
+        "</article></body></html>"
+    )
+
+    with patch("gamarr.pipeline.requests.get") as mock_get:
+        mock_resp = MagicMock()
+        mock_resp.text = html_other
+        mock_resp.raise_for_status.return_value = None
+        mock_get.return_value = mock_resp
+
+        result = _process_single_pending_match(
+            db,
+            mc=None,
+            thresholds=None,
+            qbt=None,
+            magnet_fetcher=None,
+            notifier=None,
+            library=None,
+            can_deliver=False,
+            game_title="MechWarrior 4: Mercenaries",
+            game_slug="mechwarrior-4-mercenaries",
+            game_platform="pc",
+            game_metascore=80.0,
+            game_metascore_reviews=None,
+            game_user_score=7.5,
+            game_user_reviews=None,
+            game_release_date=None,
+            reject_keywords=None,
+            source_name="fitgirl",
+            search_mode="backlog",
+        )
+        assert result is None, "Should NOT match when article doesn't contain DLC name"
+        assert db.is_backlog_pending("mechwarrior-4-mercenaries"), "Game should stay pending"
+        mock_get.assert_called_once()
+        db.close()
+
+
 def test_jit_verify_and_update_metacritic_unavailable(tmp_path: Path) -> None:
     """_jit_verify_and_update returns None when Metacritic is unavailable."""
     from unittest.mock import MagicMock
@@ -6099,3 +6249,100 @@ def test_jit_verify_and_update_passes_latest_mode(tmp_path: Path) -> None:
     )
     assert result is not None
     assert result[0] == 92.0
+
+
+def test_process_single_pending_match_iterates_through_rejected_matches(tmp_path: Path) -> None:
+    """When the first match is rejected by reject_keywords, the function iterates
+    to the next match. If a subsequent match passes, it should be used.
+
+    Real scenario: Triangle Strategy has two FitGirl repack URLs. One mentions
+    "switch" in the article body (rejected), the other is clean.
+    """
+    import datetime
+    from unittest.mock import MagicMock, patch
+
+    from gamarr.database import Database
+    from gamarr.pipeline import _process_single_pending_match
+
+    db = Database(str(tmp_path / "test.db"))
+    expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+    db.record_backlog_pending(
+        slug="triangle-strategy",
+        game_title="Triangle Strategy",
+        platform="pc",
+        metascore=85.0,
+        user_score=8.0,
+        expires_at=expires,
+    )
+    db.update_backlog_pending_scores(slug="triangle-strategy", metascore=85.0, user_score=8.0)
+
+    # Two matching FitGirl source entries with different titles.
+    # "Triangle Strategy" gets score 2 (exact match) and sorts first.
+    # "Triangle Strategy Pc" gets score 1 (substring match) and sorts second.
+    db.rebuild_source_titles(
+        "fitgirl",
+        [
+            {"title": "Triangle Strategy", "url": "https://fitgirl-repacks.site/triangle-strategy/"},
+            {"title": "Triangle Strategy Pc", "url": "https://fitgirl-repacks.site/triangle-strategy-pc/"},
+        ],
+    )
+
+    # First URL's article body contains "switch" (rejected keyword)
+    html_with_switch = (
+        "<html><head><title>Triangle Strategy [FitGirl Repack]</title></head>"
+        "<body><article>"
+        "Repack Features"
+        "Based on Triangle.Strategy.Switch-CODEX ISO release"
+        '<a href="magnet:?xt=urn:btih:abc">magnet</a>'
+        "</article></body></html>"
+    )
+    # Second URL's article body is clean
+    html_clean = (
+        "<html><head><title>Triangle Strategy PC [FitGirl Repack]</title></head>"
+        "<body><article>"
+        "Repack Features"
+        "PC version only no console references"
+        '<a href="magnet:?xt=urn:btih:def">magnet</a>'
+        "</article></body></html>"
+    )
+
+    url_responses = {
+        "https://fitgirl-repacks.site/triangle-strategy/": html_with_switch,
+        "https://fitgirl-repacks.site/triangle-strategy-pc/": html_clean,
+    }
+
+    def mock_get(url: str, *args: object, **kwargs: object) -> MagicMock:
+        mock_resp = MagicMock()
+        mock_resp.text = url_responses.get(url, html_clean)
+        mock_resp.raise_for_status.return_value = None
+        return mock_resp
+
+    with patch("gamarr.pipeline.requests.get", side_effect=mock_get):
+        result = _process_single_pending_match(
+            db,
+            mc=None,
+            thresholds=None,
+            qbt=None,
+            magnet_fetcher=None,
+            notifier=None,
+            library=None,
+            can_deliver=False,
+            game_title="Triangle Strategy",
+            game_slug="triangle-strategy",
+            game_platform="pc",
+            game_metascore=85.0,
+            game_metascore_reviews=100,
+            game_user_score=8.0,
+            game_user_reviews=50,
+            game_release_date=None,
+            reject_keywords=["switch"],
+            source_name="fitgirl",
+            search_mode="backlog",
+        )
+        assert result is not None, "Should match the second FitGirl URL (clean, no reject keyword)"
+        assert result.get("result") == "Passed", "Match should be recorded as Passed"
+        assert not db.is_backlog_pending("triangle-strategy"), "Game should be removed from pending"
+        assert "triangle-strategy-pc" in result.get("result_details", ""), (
+            f"Should use the PC URL, got details: {result.get('result_details')}"
+        )
+        db.close()

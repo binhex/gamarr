@@ -318,6 +318,68 @@ class TestNormaliseForCompare:
         result = normalise_for_compare("Magin: The Rat Project Stories \u2013 Essence Edition")
         assert result == "magintheratprojectstoriesessenceedition"
 
+    def test_normalise_roman_to_arabic_iii(self) -> None:
+        """Roman numeral III should normalise to 3."""
+        from gamarr.utils import normalise_for_compare
+
+        assert normalise_for_compare("Dark Souls III") == "darksouls3"
+
+    def test_normalise_roman_to_arabic_iv(self) -> None:
+        """Roman numeral IV should normalise to 4."""
+        from gamarr.utils import normalise_for_compare
+
+        assert normalise_for_compare("Final Fantasy IV") == "finalfantasy4"
+
+    def test_normalise_roman_to_arabic_v(self) -> None:
+        """Roman numeral V should normalise to 5 (standalone word)."""
+        from gamarr.utils import normalise_for_compare
+
+        assert normalise_for_compare("Grand Theft Auto V") == "grandtheftauto5"
+
+    def test_normalise_roman_to_arabic_vi(self) -> None:
+        """Roman numeral VI should normalise to 6."""
+        from gamarr.utils import normalise_for_compare
+
+        assert normalise_for_compare("Civilization VI") == "civilization6"
+
+    def test_normalise_roman_to_arabic_viii(self) -> None:
+        """Roman numeral VIII should normalise to 8 (longer pattern first)."""
+        from gamarr.utils import normalise_for_compare
+
+        assert normalise_for_compare("Star Ocean VIII") == "starocean8"
+
+    def test_normalise_roman_from_fitgirl_slug(self) -> None:
+        """FitGirl URL-sourced titles (title-cased 'Iii') should normalise to 3."""
+        from gamarr.utils import normalise_for_compare
+
+        assert normalise_for_compare("Dark Souls Iii") == "darksouls3"
+
+    def test_normalise_roman_matches_arabic_iii_vs_3(self) -> None:
+        """Roman III and Arabic 3 should produce the same normalisation."""
+        from gamarr.utils import normalise_for_compare
+
+        assert normalise_for_compare("Dark Souls III") == normalise_for_compare("Dark Souls 3")
+
+    def test_normalise_roman_does_not_affect_vs(self) -> None:
+        """'vs' (versus) should not be treated as Roman V."""
+        from gamarr.utils import normalise_for_compare
+
+        # 'vs' is not a standalone 'v' — it's attached to 's'
+        assert normalise_for_compare("Marvel vs Capcom") == "marvelvscapcom"
+
+    def test_normalise_roman_to_arabic_i(self) -> None:
+        """Roman numeral I should normalise to 1 (standalone word)."""
+        from gamarr.utils import normalise_for_compare
+
+        assert normalise_for_compare("Final Fantasy I") == "finalfantasy1"
+
+    def test_normalise_roman_dlc_title(self) -> None:
+        """DLC titles with Roman numerals should normalise correctly."""
+        from gamarr.utils import normalise_for_compare
+
+        result = normalise_for_compare("Dark Souls III: The Ringed City")
+        assert result == "darksouls3theringedcity"
+
 
 class TestNuxtVal:
     """Nuxt value resolution helper."""
