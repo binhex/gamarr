@@ -112,12 +112,12 @@ def _partial_match(entry_norm: str, index_key: str) -> float | None:
     # Require at least 2 word tokens in the shorter string
     # This prevents single-word data folder names like "street"
     # from matching multi-word game titles like "carx street"
-    if len(shorter_str(entry_norm, index_key).split()) < 2:
+    if len(_shorter_str(entry_norm, index_key).split()) < 2:
         return None
     return ratio
 
 
-def shorter_str(a: str, b: str) -> str:
+def _shorter_str(a: str, b: str) -> str:
     """Return the shorter of two strings."""
     return a if len(a) <= len(b) else b
 

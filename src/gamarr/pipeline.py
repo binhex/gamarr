@@ -14,19 +14,16 @@ from typing import TYPE_CHECKING, Any, Literal
 import requests
 from loguru import logger
 
-from gamarr.database import Database
+from gamarr.database import _INDEFINITE_DAYS, Database
 from gamarr.metacritic import MetacriticClient
 from gamarr.metacritic_cache import MetacriticCache
 from gamarr.notifications import Notifier
 from gamarr.qbittorrent import QBittorrentClient
 from gamarr.sources.fitgirl import _USER_AGENT, FitGirlSource, _extract_magnet_from_html
-from gamarr.sources.freegog import FreeGOGSource
+from gamarr.sources.freegog import FreeGOGSource, _extract_magnet_from_freegog_page
 from gamarr.utils import is_cancelled, normalise_for_compare
 
 # urllib3 warnings for FitGirl self-signed cert are suppressed in gamarr.sources.fitgirl
-
-# Days to use for indefinite pending expiry (when max_queue_days is 0 or negative).
-_INDEFINITE_DAYS = 9999
 
 if TYPE_CHECKING:
     import threading
@@ -548,6 +545,7 @@ def run_acquisition(
                     reject_keywords=source_entry.reject_keywords or None,
                     source_name=source_entry.name,
                     search_mode=cfg.search_mode,
+                    platform=platform,
                 )
                 if source_matched:
                     matched.extend(source_matched)
@@ -573,7 +571,7 @@ def run_acquisition(
         # match against a sitemap before being aged out.  Previously
         # this ran before matching, silently removing every old game
         # from pending before it could be delivered.
-        _process_aged_games(db, cfg, platform, cancel_event=cancel_event)
+        _process_aged_games(db, cfg, platform, cancel_event=cancel_event, search_mode=cfg.search_mode)
 
         # Log backlog progress if max_pages is configured (backlog mode only)
         if cfg.enabled and cfg.search_mode == "backlog":
@@ -1175,6 +1173,8 @@ def _process_aged_games(
     cfg: AcquisitionConfig,
     platform: str,
     cancel_event: threading.Event | None = None,
+    *,
+    search_mode: str = "backlog",
 ) -> int:
     """Mark old verified pending games as processed.
 
@@ -1187,12 +1187,19 @@ def _process_aged_games(
     and removed from the pending queue — they are skipped on the next run
     on future cycles.
 
+    Args:
+        search_mode: "backlog" or "latest" — determines which pending queue to age out.
+
     Returns the count of games processed.
     """
     if not cfg.age_recheck_weeks:
         return 0
 
-    pending = db.get_backlog_pending(platform=platform)
+    pending = (
+        db.get_backlog_pending(platform=platform)
+        if search_mode == "backlog"
+        else db.get_latest_pending(platform=platform)
+    )
     processed = 0
     for game in pending:
         if is_cancelled(cancel_event):
@@ -1211,7 +1218,10 @@ def _process_aged_games(
             result="Processed",
             result_details=f"Game older than {cfg.age_recheck_weeks}-week threshold, not re-checked",
         )
-        db.remove_backlog_pending(str(game.slug))
+        if search_mode == "backlog":
+            db.remove_backlog_pending(str(game.slug))
+        else:
+            db.remove_latest_pending(str(game.slug))
         logger.debug(
             "Processed '{}' \u2014 release date older than {} weeks",
             game.game_title,
@@ -1687,6 +1697,7 @@ def _match_pending_games(
     reject_keywords: list[str] | None = None,
     source_name: str = "fitgirl",
     search_mode: str = "latest",
+    platform: str | None = None,
 ) -> list[dict[str, Any]]:
     """Match pending games against a torrent source index.
 
@@ -1709,6 +1720,8 @@ def _match_pending_games(
             is provided.
         source_name: Name of the source to match against ("fitgirl").
         search_mode: "backlog" or "latest" — determines which pending queue to use.
+        platform: Optional platform filter. When provided, only pending games
+            matching this platform are processed.
 
     Returns a list of result dicts.
     """
@@ -1719,7 +1732,11 @@ def _match_pending_games(
 
     # Match non-expired pending games whose scores have been checked
     # against the real Metacritic detail page.
-    pending = db.get_backlog_pending() if search_mode == "backlog" else db.get_latest_pending()
+    pending = (
+        db.get_backlog_pending(platform=platform)
+        if search_mode == "backlog"
+        else db.get_latest_pending(platform=platform)
+    )
     for game in pending:
         # ── Score-check gate ──
         # Games whose scores haven't been verified against the real
@@ -2117,7 +2134,8 @@ def _handle_matched_game(
 
     # If qbt and magnet_fetcher are provided, deliver the torrent
     if can_deliver:
-        assert qbt is not None and magnet_fetcher is not None
+        if qbt is None or magnet_fetcher is None:
+            raise RuntimeError("can_deliver requires both qbt and magnet_fetcher")
         result_dict = _deliver_with_jit_verify(
             db,
             mc,
@@ -2381,8 +2399,6 @@ def _check_scrape_health() -> str:
         - ``"metacritic_down"``: Metacritic unreachable, internet works
         - ``"internet_down"``: Both Metacritic and internet unreachable
     """
-    import requests
-
     # Step 1: Try Metacritic home page
     try:
         resp = requests.head("https://www.metacritic.com", timeout=5)
@@ -2542,10 +2558,12 @@ def _default_magnet_fetcher(url: str) -> str | None:
     """Fetch a source page and extract its magnet link.
 
     Handles both FitGirl (self-signed cert, verify=False) and
-    FreeGOG (standard HTTPS) pages.  Caches the unescaped HTML
-    ``<title>`` tag (with HTML entities decoded) in
-    ``_fitgirl_page_title_cache`` so callers can retrieve it without
-    a second HTTP request.
+    FreeGOG (standard HTTPS) pages, dispatching to the correct
+    magnet extraction function for each source.
+
+    Caches the unescaped HTML ``<title>`` tag (with HTML entities
+    decoded) in ``_fitgirl_page_title_cache`` so callers can retrieve
+    it without a second HTTP request.
     """
     try:
         if url.startswith("https://fitgirl-repacks.site"):
@@ -2568,4 +2586,8 @@ def _default_magnet_fetcher(url: str) -> str | None:
     # Cache page title for torrent rename (avoids re-fetch)
     title_match = re.search(r"<title[^>]*>(.*?)</title>", resp.text, re.IGNORECASE | re.DOTALL)
     _fitgirl_page_title_cache[url] = unescape(title_match.group(1).strip()) if title_match else None
+
+    # Dispatch to the correct magnet extractor based on URL
+    if url.startswith("https://freegogpcgames.com"):
+        return _extract_magnet_from_freegog_page(resp.text)
     return _extract_magnet_from_html(resp.text)

@@ -214,7 +214,6 @@ class FreeGOGSource:
     def _fetch_and_store_game(
         db: Database,
         entry: dict[str, str],
-        existing_urls: dict[str, str | None],
     ) -> bool:
         """Fetch a single FreeGOG game page and store its magnet.
 
@@ -274,7 +273,7 @@ class FreeGOGSource:
                     known_count += 1
                     continue
 
-                if self._fetch_and_store_game(db, entry, existing_urls):
+                if self._fetch_and_store_game(db, entry):
                     new_count += 1
 
             db.set_sitemap_cache("freegog")
