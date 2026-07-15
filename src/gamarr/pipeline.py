@@ -2041,16 +2041,63 @@ _ROMAN_PATTERNS: list[tuple[re.Pattern[str], str]] = [
 ]
 
 
+# Common English stop words excluded from token overlap matching.
+# These words appear in many game titles but carry no identifying
+# value — including them causes false positives between unrelated
+# games that happen to share generic words like "the" or "of".
+_STOP_WORDS: frozenset[str] = frozenset(
+    {
+        "the",
+        "of",
+        "and",
+        "a",
+        "an",
+        "in",
+        "for",
+        "to",
+        "it",
+        "is",
+        "on",
+        "at",
+        "or",
+        "by",
+        "be",
+        "as",
+        "no",
+        "so",
+        "we",
+        "he",
+        "she",
+        "they",
+        "this",
+        "that",
+        "with",
+        "from",
+        "but",
+        "not",
+        "if",
+        "all",
+        "its",
+        "are",
+        "was",
+    }
+)
+
+
 def _tokenize_title(title: str) -> set[str]:
-    """Tokenize a game title into lowercased word tokens, converting Roman numerals.
+    """Tokenize a game title into lowercased word tokens, converting Roman
+    numerals and excluding stop words.
 
     Applies Roman numeral -> Arabic conversion (same as normalise_for_compare),
-    then splits on non-alphanumeric boundaries.
+    then splits on non-alphanumeric boundaries.  Stop words ("the", "of",
+    etc.) are excluded so that only meaningful game-name tokens contribute
+    to the overlap count.
     """
     text = title.lower()
     for pattern, replacement in _ROMAN_PATTERNS:
         text = pattern.sub(replacement, text)
-    return {token.strip() for token in re.split(r"[^a-z0-9]+", text) if token.strip()}
+    tokens = {token.strip() for token in re.split(r"[^a-z0-9]+", text) if token.strip()}
+    return tokens - _STOP_WORDS
 
 
 def _titles_share_enough_tokens(
@@ -2067,21 +2114,34 @@ def _titles_share_enough_tokens(
 def _check_candidate_for_dlc_match(
     candidate: dict[str, str | None],
     normalized: str,
+    *,
+    substring_match: bool = True,
 ) -> bool:
     """Check whether *candidate* matches *normalized* via DLC-aware analysis.
 
     Returns True if the candidate's repack page covers *normalized*.
+
+    When *substring_match* is True (candidate found via substring containment),
+    the page-title DLC-keyword check is a reliable fast path — the sitemap
+    title is a substring of the pending title, so they are the same game.
+
+    When *substring_match* is False (candidate found via token overlap),
+    the article body MUST be checked to prevent false positives from
+    unrelated games that share token overlap with the pending title.
     """
     page_title, article_text = _fetch_fitgirl_page_content(str(candidate["url"]))
-    # Quick check: page <title> has DLC keywords (faster than normalising article body)
-    if _page_title_has_dlc_keywords(page_title):
+    # Page-title DLC keywords are a reliable signal only for substring matches.
+    # For token-overlap candidates, always require article body confirmation
+    # to prevent false positives across different games in the same franchise.
+    if substring_match and _page_title_has_dlc_keywords(page_title):
         return True
     if article_text:
         article_norm = normalise_for_compare(article_text)
         # Named DLC match
         if normalized in article_norm:
             return True
-        # All-DLCs match
+        # All-DLCs match — including the page-title keyword pattern
+        # for token-overlap candidates (the article body MUST confirm)
         if _article_contains_all_dlcs(article_text):
             return True
     return False
@@ -2116,26 +2176,20 @@ def _deep_search_article_body(
     Returns:
         A list with one match dict if found in article body, or an empty list.
     """
-    candidates: list[dict[str, str | None]] = []
+    candidates: list[tuple[dict[str, str | None], bool]] = []
     for entry in db.get_all_source_titles(source_name):
         entry_title = str(entry.get("title", ""))
         entry_norm = normalise_for_compare(entry_title)
-        if (
-            entry_norm
-            and normalized != entry_norm
-            and (
-                entry_norm in normalized  # substring check for short titles ("Cyberpunk 2077" / "Elden Ring")
-                or _titles_share_enough_tokens(  # token overlap for franchise-prefix titles ("Dungeons & Dragons ...")
-                    entry_title,
-                    pending_title,
-                )
-            )
-        ):
-            candidates.append(entry)
+        if not entry_norm or normalized == entry_norm:
+            continue
+        if entry_norm in normalized:
+            candidates.append((entry, True))  # substring match
+        elif _titles_share_enough_tokens(entry_title, pending_title):
+            candidates.append((entry, False))  # token-overlap match
 
     # At most 3 HTTP requests to limit overhead
-    for candidate in candidates[:3]:
-        if _check_candidate_for_dlc_match(candidate, normalized):
+    for candidate, substring_match in candidates[:3]:
+        if _check_candidate_for_dlc_match(candidate, normalized, substring_match=substring_match):
             return [candidate]
 
     return []
@@ -2277,6 +2331,11 @@ def _process_single_pending_match(
         # Deep search: the game may be a DLC/expansion included in a
         # base-game repack, referenced only in the article repack features.
         matches = _deep_search_article_body(db, source_name, normalized, pending_title=game_title)
+        if matches:
+            logger.debug(
+                "Deep search matched '{}'",
+                game_title,
+            )
 
     if not matches:
         _touch_pending_by_mode(db, game_slug, search_mode)
@@ -2297,6 +2356,13 @@ def _process_single_pending_match(
         "{} match: '{}' \u2192 '{}' ({})",
         _source_display(source_name),
         game_title,
+        best["title"],
+        best["url"],
+    )
+    logger.debug(
+        "Matched pending '{}' to {} source '{}' ({})",
+        game_title,
+        _source_display(source_name),
         best["title"],
         best["url"],
     )

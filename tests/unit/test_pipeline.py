@@ -321,7 +321,7 @@ class TestDeepSearchDlcMatching:
             "gamarr.pipeline._fetch_fitgirl_page_content",
             return_value=(
                 "Dungeons & Dragons Neverwinter Nights 2: Enhanced Edition – v1.110 + All Expansions [FitGirl Repack]",
-                "Some body text.",
+                "This repack includes all expansions. Requires 60 GB.",
             ),
         ):
             result = _deep_search_article_body(
@@ -378,6 +378,20 @@ class TestTitlesShareEnoughTokens:
             _titles_share_enough_tokens(
                 "Diablo 3",
                 "Diablo 4: Vessel of Hatred",
+            )
+            is False
+        )
+
+    def test_no_match_false_positive_stop_words(self) -> None:
+        """Unrelated games sharing only stop words should NOT match."""
+        from gamarr.pipeline import _titles_share_enough_tokens
+
+        # "Neverwinter Nights 2" should NOT match "Atelier Sophie 2"
+        # They share only "2", "of", "the" — meaningless generic tokens
+        assert (
+            _titles_share_enough_tokens(
+                "Atelier Sophie 2 The Alchemist Of The Mysterious Dream",
+                "Neverwinter Nights 2: Mask of The Betrayer",
             )
             is False
         )
