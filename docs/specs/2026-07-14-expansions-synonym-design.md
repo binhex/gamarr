@@ -56,7 +56,7 @@ New test cases in `tests/unit/test_pipeline.py`:
 
 1. **Page title "+ All DLCs"** — existing test, unchanged. ✅
 2. **Page title "+ All Expansions"** — new test: should return True.
-3. **Page title "+ 3 DLCs"** — existing test, unchanged. ✅  
+3. **Page title "+ 3 DLCs"** — existing test, unchanged. ✅
 4. **Page title "+ 3 Expansions"** — new test: should return True.
 5. **Article body "all expansions"** — new test: should return True.
 6. **Article body "all existing expansions"** — new test: should return True.

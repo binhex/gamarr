@@ -5,12 +5,404 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
+import pytest  # noqa: TC002 -- needed at runtime for @pytest.mark.xfail decorator
+
 from gamarr.pipeline import AcquisitionConfig, run_acquisition
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    import pytest
+
+class TestPageTitleHasDlcKeywords:
+    """Tests for _page_title_has_dlc_keywords helper."""
+
+    def test_has_dlc_keywords_all_dlcs(self) -> None:
+        from gamarr.pipeline import _page_title_has_dlc_keywords
+
+        assert _page_title_has_dlc_keywords("Total War: WARHAMMER 2 – v1.9.2 + All DLCs [FitGirl Repack]") is True
+
+    def test_has_dlc_keywords_counted_dlcs(self) -> None:
+        from gamarr.pipeline import _page_title_has_dlc_keywords
+
+        assert _page_title_has_dlc_keywords("Game Name v1.0 + 15 DLCs + Bonuses [FitGirl Repack]") is True
+
+    def test_has_dlc_keywords_no_dlcs(self) -> None:
+        from gamarr.pipeline import _page_title_has_dlc_keywords
+
+        assert _page_title_has_dlc_keywords("Game Name v1.0 [FitGirl Repack]") is False
+
+    def test_has_dlc_keywords_none_title(self) -> None:
+        from gamarr.pipeline import _page_title_has_dlc_keywords
+
+        assert _page_title_has_dlc_keywords(None) is False
+
+    def test_has_dlc_keywords_empty_title(self) -> None:
+        from gamarr.pipeline import _page_title_has_dlc_keywords
+
+        assert _page_title_has_dlc_keywords("") is False
+
+    def test_has_dlc_keywords_partial_match_avoided(self) -> None:
+        from gamarr.pipeline import _page_title_has_dlc_keywords
+
+        assert _page_title_has_dlc_keywords("Game + All DLCsPECIAL Edition [FitGirl Repack]") is False
+
+    def test_has_keywords_all_expansions(self) -> None:
+        """Page title containing '+ All Expansions' returns True."""
+        from gamarr.pipeline import _page_title_has_dlc_keywords
+
+        assert _page_title_has_dlc_keywords("Game Name v1.0 + All Expansions [FitGirl Repack]") is True
+
+    def test_has_keywords_counted_expansions(self) -> None:
+        """Page title containing '+ 4 Expansions' returns True."""
+        from gamarr.pipeline import _page_title_has_dlc_keywords
+
+        assert _page_title_has_dlc_keywords("Game v2.0 + 4 Expansions [FitGirl Repack]") is True
+
+    def test_has_keywords_singular_expansion(self) -> None:
+        """Page title containing '+ 1 Expansion' (singular) returns True."""
+        from gamarr.pipeline import _page_title_has_dlc_keywords
+
+        assert _page_title_has_dlc_keywords("Game + 1 Expansion [FitGirl Repack]") is True
+
+
+class TestArticleContainsAllDlcs:
+    """Tests for _article_contains_all_dlcs helper."""
+
+    def test_contains_all_dlcs_basic(self) -> None:
+        from gamarr.pipeline import _article_contains_all_dlcs
+
+        assert _article_contains_all_dlcs("This repack includes all DLCs released so far.") is True
+
+    def test_contains_all_dlcs_available(self) -> None:
+        from gamarr.pipeline import _article_contains_all_dlcs
+
+        assert _article_contains_all_dlcs("All available DLCs are bundled in this release.") is True
+
+    def test_contains_all_dlcs_existing(self) -> None:
+        from gamarr.pipeline import _article_contains_all_dlcs
+
+        assert _article_contains_all_dlcs("Includes all existing DLCs and updates.") is True
+
+    def test_contains_all_dlcs_includes_all(self) -> None:
+        from gamarr.pipeline import _article_contains_all_dlcs
+
+        assert (
+            _article_contains_all_dlcs("Includes all DLCs: Curse of the Vampire Coast, Rise of the Tomb Kings...")
+            is True
+        )
+
+    def test_contains_all_dlcs_casing(self) -> None:
+        from gamarr.pipeline import _article_contains_all_dlcs
+
+        assert _article_contains_all_dlcs("This pack includes ALL DLCS ever released.") is True
+
+    def test_contains_all_dlcs_no_match(self) -> None:
+        from gamarr.pipeline import _article_contains_all_dlcs
+
+        assert _article_contains_all_dlcs("This repack is based on the latest Steam release v1.9.2.") is False
+
+    def test_contains_all_dlcs_none(self) -> None:
+        from gamarr.pipeline import _article_contains_all_dlcs
+
+        assert _article_contains_all_dlcs(None) is False
+
+    def test_contains_all_dlcs_empty(self) -> None:
+        from gamarr.pipeline import _article_contains_all_dlcs
+
+        assert _article_contains_all_dlcs("") is False
+
+    def test_contains_all_dlcs_partial_match_avoided(self) -> None:
+        from gamarr.pipeline import _article_contains_all_dlcs
+
+        assert _article_contains_all_dlcs("The installer validates all dlcschemas before extracting.") is False
+
+    def test_contains_all_expansions_basic(self) -> None:
+        """Article body with 'all expansions' returns True."""
+        from gamarr.pipeline import _article_contains_all_dlcs
+
+        assert _article_contains_all_dlcs("This repack includes all expansions released so far.") is True
+
+    def test_contains_all_expansions_available(self) -> None:
+        """Article body with 'all available expansions' returns True."""
+        from gamarr.pipeline import _article_contains_all_dlcs
+
+        assert _article_contains_all_dlcs("All available expansions are bundled here.") is True
+
+    def test_contains_all_expansions_existing(self) -> None:
+        """Article body with 'all existing expansions' returns True."""
+        from gamarr.pipeline import _article_contains_all_dlcs
+
+        assert _article_contains_all_dlcs("Includes all existing expansions.") is True
+
+
+class TestDeepSearchDlcMatching:
+    """Integration tests for DLC-aware deep search via _deep_search_article_body."""
+
+    def test_page_title_all_dlcs(self, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _deep_search_article_body
+        from gamarr.utils import normalise_for_compare
+
+        db = Database(str(tmp_path / "test.db"))
+        db.rebuild_source_titles(
+            "fitgirl",
+            [
+                {
+                    "title": "Total War Warhammer 2",
+                    "url": "https://fitgirl-repacks.site/total-war-warhammer-2/",
+                    "magnet": None,
+                },
+            ],
+        )
+        with patch(
+            "gamarr.pipeline._fetch_fitgirl_page_content",
+            return_value=(
+                "Total War: WARHAMMER 2 – v1.9.2 + All DLCs [FitGirl Repack]",
+                "Some body text.",
+            ),
+        ):
+            result = _deep_search_article_body(
+                db,
+                "fitgirl",
+                normalise_for_compare("Total War: WARHAMMER II - Curse of the Vampire Coast"),
+                pending_title="Total War: WARHAMMER II - Curse of the Vampire Coast",
+            )
+        db.close()
+        assert len(result) == 1
+
+    def test_page_title_counted_dlcs(self, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _deep_search_article_body
+        from gamarr.utils import normalise_for_compare
+
+        db = Database(str(tmp_path / "test.db"))
+        db.rebuild_source_titles(
+            "fitgirl",
+            [
+                {
+                    "title": "Game Name Ultimate",
+                    "url": "https://fitgirl-repacks.site/game-name-ultimate/",
+                    "magnet": None,
+                },
+            ],
+        )
+        with patch(
+            "gamarr.pipeline._fetch_fitgirl_page_content",
+            return_value=("Game Name Ultimate v1.0 + 15 DLCs + Bonuses [FitGirl Repack]", None),
+        ):
+            result = _deep_search_article_body(
+                db,
+                "fitgirl",
+                normalise_for_compare("Game Name Ultimate - The Lost Chapters"),
+                pending_title="Game Name Ultimate - The Lost Chapters",
+            )
+        db.close()
+        assert len(result) == 1
+
+    def test_article_body_all_dlcs_fallback(self, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _deep_search_article_body
+        from gamarr.utils import normalise_for_compare
+
+        db = Database(str(tmp_path / "test.db"))
+        db.rebuild_source_titles(
+            "fitgirl",
+            [
+                {
+                    "title": "Base Game Edition",
+                    "url": "https://fitgirl-repacks.site/base-game-edition/",
+                    "magnet": None,
+                },
+            ],
+        )
+        with patch(
+            "gamarr.pipeline._fetch_fitgirl_page_content",
+            return_value=(
+                "Base Game Edition [FitGirl Repack]",
+                "This repack includes all existing DLCs. Requires 60 GB.",
+            ),
+        ):
+            result = _deep_search_article_body(
+                db,
+                "fitgirl",
+                normalise_for_compare("Base Game Edition - Expansion Pack"),
+                pending_title="Base Game Edition - Expansion Pack",
+            )
+        db.close()
+        assert len(result) == 1
+
+    def test_original_named_dlc_still_works(self, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _deep_search_article_body
+        from gamarr.utils import normalise_for_compare
+
+        db = Database(str(tmp_path / "test.db"))
+        db.rebuild_source_titles(
+            "fitgirl",
+            [
+                {"title": "Dark Souls Iii", "url": "https://fitgirl-repacks.site/dark-souls-3/", "magnet": None},
+            ],
+        )
+        with patch(
+            "gamarr.pipeline._fetch_fitgirl_page_content",
+            return_value=(
+                "Dark Souls III [FitGirl Repack]",
+                "Repack features: Dark Souls III - The Ringed City DLC, Ashes of Ariandel included.",
+            ),
+        ):
+            result = _deep_search_article_body(
+                db,
+                "fitgirl",
+                normalise_for_compare("Dark Souls III: The Ringed City"),
+                pending_title="Dark Souls III: The Ringed City",
+            )
+        db.close()
+        assert len(result) == 1
+
+    def test_no_match_when_no_dlc_indicators(self, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _deep_search_article_body
+        from gamarr.utils import normalise_for_compare
+
+        db = Database(str(tmp_path / "test.db"))
+        db.rebuild_source_titles(
+            "fitgirl",
+            [
+                {"title": "Simple Game", "url": "https://fitgirl-repacks.site/simple-game/", "magnet": None},
+            ],
+        )
+        with patch(
+            "gamarr.pipeline._fetch_fitgirl_page_content",
+            return_value=(
+                "Simple Game [FitGirl Repack]",
+                "Based on Steam release v1.0. Requires 20 GB.",
+            ),
+        ):
+            result = _deep_search_article_body(
+                db,
+                "fitgirl",
+                normalise_for_compare("Simple Game - Unrelated Expansion"),
+                pending_title="Simple Game - Unrelated Expansion",
+            )
+        db.close()
+        assert result == []
+
+    def test_page_title_all_expansions(self, tmp_path: Path) -> None:
+        """When page <title> contains '+ All Expansions', deep search matches."""
+        from unittest.mock import patch
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _deep_search_article_body
+        from gamarr.utils import normalise_for_compare
+
+        db = Database(str(tmp_path / "test.db"))
+        db.rebuild_source_titles(
+            "fitgirl",
+            [
+                {
+                    "title": "Dungeons And Dragons Neverwinter Nights 2 Enhanced Edition",
+                    "url": "https://fitgirl-repacks.site/dungeons-and-dragons-neverwinter-nights-2-enhanced-edition/",
+                    "magnet": None,
+                },
+            ],
+        )
+
+        with patch(
+            "gamarr.pipeline._fetch_fitgirl_page_content",
+            return_value=(
+                "Dungeons & Dragons Neverwinter Nights 2: Enhanced Edition – v1.110 + All Expansions [FitGirl Repack]",
+                "Some body text.",
+            ),
+        ):
+            result = _deep_search_article_body(
+                db,
+                "fitgirl",
+                normalise_for_compare("Neverwinter Nights 2: Mask of The Betrayer"),
+                pending_title="Neverwinter Nights 2: Mask of The Betrayer",
+            )
+        db.close()
+        assert len(result) == 1
+
+
+class TestTitlesShareEnoughTokens:
+    """Tests for _titles_share_enough_tokens helper."""
+
+    def test_match_three_tokens(self) -> None:
+        """Two titles sharing 3 word tokens returns True."""
+        from gamarr.pipeline import _titles_share_enough_tokens
+
+        assert (
+            _titles_share_enough_tokens(
+                "Dungeons & Dragons Neverwinter Nights 2 Enhanced Edition",
+                "Neverwinter Nights 2: Mask of The Betrayer",
+            )
+            is True
+        )
+
+    def test_match_four_tokens(self) -> None:
+        from gamarr.pipeline import _titles_share_enough_tokens
+
+        assert (
+            _titles_share_enough_tokens(
+                "Total War WARHAMMER II",
+                "Total War: WARHAMMER II - Curse of the Vampire Coast",
+            )
+            is True
+        )
+
+    def test_no_match_two_tokens(self) -> None:
+        from gamarr.pipeline import _titles_share_enough_tokens
+
+        assert (
+            _titles_share_enough_tokens(
+                "Star Wars Battlefront II",
+                "Star Wars Jedi: Fallen Order",
+            )
+            is False
+        )
+
+    def test_no_match_one_token(self) -> None:
+        from gamarr.pipeline import _titles_share_enough_tokens
+
+        assert (
+            _titles_share_enough_tokens(
+                "Diablo 3",
+                "Diablo 4: Vessel of Hatred",
+            )
+            is False
+        )
+
+    def test_roman_numeral_token_matching(self) -> None:
+        from gamarr.pipeline import _titles_share_enough_tokens
+
+        assert (
+            _titles_share_enough_tokens(
+                "Dark Souls III",
+                "Dark Souls 3: The Ringed City",
+            )
+            is True
+        )
+
+    def test_no_match_completely_different(self) -> None:
+        from gamarr.pipeline import _titles_share_enough_tokens
+
+        assert (
+            _titles_share_enough_tokens(
+                "Minecraft",
+                "The Witcher 3: Wild Hunt",
+            )
+            is False
+        )
 
 
 class TestAcquisitionConfig:
@@ -5966,9 +6358,8 @@ def test_process_single_pending_match_dlc_deep_search_matches(tmp_path: Path) ->
 def test_process_single_pending_match_dlc_deep_search_no_match_when_article_empty(tmp_path: Path) -> None:
     """Deep search should NOT match when article body does not contain the DLC name.
 
-    The reverse-direction partial match may exist (FitGirl title is substring
-    of MC title), but if the article body doesn't confirm the match, the game
-    should not be matched.
+    Token overlap picks the candidate (>= 3 shared tokens), but if the article
+    body doesn't confirm the match, the game should not be matched.
     """
     import datetime
     from unittest.mock import MagicMock, patch
@@ -5979,22 +6370,22 @@ def test_process_single_pending_match_dlc_deep_search_no_match_when_article_empt
     db = Database(str(tmp_path / "test.db"))
     expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
     db.record_backlog_pending(
-        slug="mechwarrior-4-mercenaries",
-        game_title="MechWarrior 4: Mercenaries",
+        slug="mhw-2-curse-vampire",
+        game_title="Total War: WARHAMMER II - Curse of the Vampire Coast",
         platform="pc",
-        metascore=80.0,
-        user_score=7.5,
+        metascore=85.0,
+        user_score=8.0,
         expires_at=expires,
     )
-    db.update_backlog_pending_scores(slug="mechwarrior-4-mercenaries", metascore=80.0, user_score=7.5)
+    db.update_backlog_pending_scores(slug="mhw-2-curse-vampire", metascore=85.0, user_score=8.0)
     db.rebuild_source_titles(
         "fitgirl",
-        [{"title": "Mechwarrior 4", "url": "https://fitgirl-repacks.site/mechwarrior-4/"}],
+        [{"title": "Total War Warhammer", "url": "https://fitgirl-repacks.site/total-war-warhammer/"}],
     )
 
     # Article body does NOT contain the expansion name
     html_other = (
-        "<html><head><title>Mechwarrior 4 [FitGirl Repack]</title></head>"
+        "<html><head><title>Total War Warhammer [FitGirl Repack]</title></head>"
         "<body><article>"
         "Repack Features"
         "Based on something else entirely"
@@ -6017,12 +6408,12 @@ def test_process_single_pending_match_dlc_deep_search_no_match_when_article_empt
             notifier=None,
             library=None,
             can_deliver=False,
-            game_title="MechWarrior 4: Mercenaries",
-            game_slug="mechwarrior-4-mercenaries",
+            game_title="Total War: WARHAMMER II - Curse of the Vampire Coast",
+            game_slug="mhw-2-curse-vampire",
             game_platform="pc",
-            game_metascore=80.0,
+            game_metascore=85.0,
             game_metascore_reviews=None,
-            game_user_score=7.5,
+            game_user_score=8.0,
             game_user_reviews=None,
             game_release_date=None,
             reject_keywords=None,
@@ -6030,7 +6421,7 @@ def test_process_single_pending_match_dlc_deep_search_no_match_when_article_empt
             search_mode="backlog",
         )
         assert result is None, "Should NOT match when article doesn't contain DLC name"
-        assert db.is_backlog_pending("mechwarrior-4-mercenaries"), "Game should stay pending"
+        assert db.is_backlog_pending("mhw-2-curse-vampire"), "Game should stay pending"
         mock_get.assert_called_once()
         db.close()
 

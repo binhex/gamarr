@@ -2023,10 +2023,75 @@ def _truncate_at_backwards_compat(article_text: str | None) -> str | None:
     return article_text[:idx] if idx >= 0 else article_text
 
 
+# Roman numeral -> Arabic substitution patterns used by _tokenize_title.
+# Must match the order in gamarr.utils._ROMAN_TO_ARABIC (longer patterns first).
+_ROMAN_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\bxii\b"), "12"),
+    (re.compile(r"\bxi\b"), "11"),
+    (re.compile(r"\bix\b"), "9"),
+    (re.compile(r"\bviii\b"), "8"),
+    (re.compile(r"\bvii\b"), "7"),
+    (re.compile(r"\bvi\b"), "6"),
+    (re.compile(r"\biv\b"), "4"),
+    (re.compile(r"\biii\b"), "3"),
+    (re.compile(r"\bii\b"), "2"),
+    (re.compile(r"\bx\b"), "10"),
+    (re.compile(r"\bv\b"), "5"),
+    (re.compile(r"\bi\b"), "1"),
+]
+
+
+def _tokenize_title(title: str) -> set[str]:
+    """Tokenize a game title into lowercased word tokens, converting Roman numerals.
+
+    Applies Roman numeral -> Arabic conversion (same as normalise_for_compare),
+    then splits on non-alphanumeric boundaries.
+    """
+    text = title.lower()
+    for pattern, replacement in _ROMAN_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return {token.strip() for token in re.split(r"[^a-z0-9]+", text) if token.strip()}
+
+
+def _titles_share_enough_tokens(
+    title_a: str,
+    title_b: str,
+    min_tokens: int = 3,
+) -> bool:
+    """Return True if *title_a* and *title_b* share at least *min_tokens* word tokens."""
+    tokens_a = _tokenize_title(title_a)
+    tokens_b = _tokenize_title(title_b)
+    return len(tokens_a & tokens_b) >= min_tokens
+
+
+def _check_candidate_for_dlc_match(
+    candidate: dict[str, str | None],
+    normalized: str,
+) -> bool:
+    """Check whether *candidate* matches *normalized* via DLC-aware analysis.
+
+    Returns True if the candidate's repack page covers *normalized*.
+    """
+    page_title, article_text = _fetch_fitgirl_page_content(str(candidate["url"]))
+    # Quick check: page <title> has DLC keywords (faster than normalising article body)
+    if _page_title_has_dlc_keywords(page_title):
+        return True
+    if article_text:
+        article_norm = normalise_for_compare(article_text)
+        # Named DLC match
+        if normalized in article_norm:
+            return True
+        # All-DLCs match
+        if _article_contains_all_dlcs(article_text):
+            return True
+    return False
+
+
 def _deep_search_article_body(
     db: Database,
     source_name: str,
     normalized: str,
+    pending_title: str = "",
 ) -> list[dict[str, str | None]]:
     """Search repack article bodies for the game title when direct matching fails.
 
@@ -2035,15 +2100,18 @@ def _deep_search_article_body(
     vs ``"Dark Souls Iii"`` from URL slug).  The DLC/expansion name is
     referenced in the article body's repack features section.
 
-    Only searches when the source title is fully contained in the query
-    (reverse direction) — this prevents needless HTTP requests for games
-    with no connection to any FitGirl repack.  At most 3 article pages
-    are fetched to limit HTTP overhead.
+    Candidates are selected when the source title is a normalised
+    substring of the pending title, OR when they share at least 3 word
+    tokens (after Roman numeral conversion).  This prevents needless
+    HTTP requests for games with no connection to any FitGirl repack.
+    At most 3 article pages are fetched to limit HTTP overhead.
 
     Args:
         db: Database instance for source title lookup.
         source_name: Source identifier (e.g. ``"fitgirl"``).
         normalized: The normalised Metacritic game title.
+        pending_title: The original (pre-normalisation) Metacritic game
+            title, used for token overlap matching.
 
     Returns:
         A list with one match dict if found in article body, or an empty list.
@@ -2052,16 +2120,23 @@ def _deep_search_article_body(
     for entry in db.get_all_source_titles(source_name):
         entry_title = str(entry.get("title", ""))
         entry_norm = normalise_for_compare(entry_title)
-        if entry_norm and entry_norm in normalized and normalized != entry_norm:
+        if (
+            entry_norm
+            and normalized != entry_norm
+            and (
+                entry_norm in normalized  # substring check for short titles ("Cyberpunk 2077" / "Elden Ring")
+                or _titles_share_enough_tokens(  # token overlap for franchise-prefix titles ("Dungeons & Dragons ...")
+                    entry_title,
+                    pending_title,
+                )
+            )
+        ):
             candidates.append(entry)
 
     # At most 3 HTTP requests to limit overhead
     for candidate in candidates[:3]:
-        _, article_text = _fetch_fitgirl_page_content(str(candidate["url"]))
-        if article_text:
-            article_norm = normalise_for_compare(article_text)
-            if normalized in article_norm:
-                return [candidate]
+        if _check_candidate_for_dlc_match(candidate, normalized):
+            return [candidate]
 
     return []
 
@@ -2201,7 +2276,7 @@ def _process_single_pending_match(
     if not matches and source_name.casefold() == "fitgirl":
         # Deep search: the game may be a DLC/expansion included in a
         # base-game repack, referenced only in the article repack features.
-        matches = _deep_search_article_body(db, source_name, normalized)
+        matches = _deep_search_article_body(db, source_name, normalized, pending_title=game_title)
 
     if not matches:
         _touch_pending_by_mode(db, game_slug, search_mode)
@@ -2494,12 +2569,64 @@ def _record_result(
 
 _SITEMAP_TIMEOUT = 30.0
 
+# Regex patterns for detecting DLC-inclusion keywords in the
+# FitGirl repack page HTML <title> tag.
+_PAGE_TITLE_DLC_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"\+\s*all\s+(?:dlcs?|expansions?)\b", re.IGNORECASE),
+    re.compile(r"\+\s*\d+\s+(?:dlcs?|expansions?)\b", re.IGNORECASE),
+]
+
+# Regex patterns for detecting "All DLCs" keyword variants in the
+# FitGirl repack article body text.
+_ALL_DLCS_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"\ball\s+(?:dlcs?|expansions?)\b", re.IGNORECASE),
+    re.compile(r"\ball\s+available\s+(?:dlcs?|expansions?)\b", re.IGNORECASE),
+    re.compile(r"\ball\s+existing\s+(?:dlcs?|expansions?)\b", re.IGNORECASE),
+]
+
 # Cache: URL → HTML <title> tag, populated by _default_magnet_fetcher
 # to avoid a second HTTP request for torrent rename.
 # Each entry is consumed (popped) by _deliver_match on the very next line
 # after magnet_fetcher returns — callers must honour this implicit cleanup
 # contract to prevent unbounded growth.
 _fitgirl_page_title_cache: dict[str, str | None] = {}
+
+
+def _page_title_has_dlc_keywords(page_title: str | None) -> bool:
+    """Check if the HTML <title> tag contains DLC/expansion-inclusion patterns.
+
+    Scans the page title (already extracted by
+    ``_fetch_fitgirl_page_content``) for patterns like ``"+ All DLCs"``,
+    ``"+ 3 Expansions"``, or ``"+ 15 DLCs"``.  Case-insensitive.
+
+    Args:
+        page_title: The unescaped HTML ``<title>`` tag content, or None.
+
+    Returns:
+        True if a DLC-inclusion pattern was found.
+    """
+    if not page_title:
+        return False
+    return any(pattern.search(page_title) for pattern in _PAGE_TITLE_DLC_PATTERNS)
+
+
+def _article_contains_all_dlcs(article_text: str | None) -> bool:
+    """Check if the article body text contains "All DLCs" / "All Expansions" patterns.
+
+    Scans the article text (extracted from the ``<article>`` HTML element
+    by ``_fetch_fitgirl_page_content``) for patterns like
+    ``"all DLCs"``, ``"all existing DLCs"``, and ``"all expansions"``.
+    Case-insensitive.
+
+    Args:
+        article_text: The article body text content, or None.
+
+    Returns:
+        True if an "All DLCs" keyword pattern was found.
+    """
+    if not article_text:
+        return False
+    return any(pattern.search(article_text) for pattern in _ALL_DLCS_PATTERNS)
 
 
 def _fetch_fitgirl_page_content(url: str) -> tuple[str | None, str | None]:
