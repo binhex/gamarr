@@ -135,17 +135,16 @@ class QBittorrentClient:
                 logger.warning("Failed to fetch metadata for torrent '{}': {}; skipping.", torrent.hash, exc)
                 continue
 
-            results.append({
-                "torrent_tag": tag,
-                "torrent_hash": torrent.hash,
-                "torrent_name": torrent.name,
-                "torrent_save_path": props.save_path or torrent.save_path,
-                "torrent_state": torrent.state,
-                "torrent_file_list": [
-                    {"file_name": f.name, "file_size": f.size}
-                    for f in files
-                ],
-            })
+            results.append(
+                {
+                    "torrent_tag": tag,
+                    "torrent_hash": torrent.hash,
+                    "torrent_name": torrent.name,
+                    "torrent_save_path": props.save_path or torrent.save_path,
+                    "torrent_state": torrent.state,
+                    "torrent_file_list": [{"file_name": f.name, "file_size": f.size} for f in files],
+                }
+            )
         return results
 
     def delete_torrent(self, torrent_hash: str, *, delete_data: bool = False) -> None:

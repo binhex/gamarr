@@ -63,7 +63,9 @@ def _verify_existing(src: Path, dst: Path) -> bool | None:
     if src_hash == dst_hash:
         logger.info("Destination '{}' already matches source (sha256={}); skipping copy.", dst, src_hash[:12])
         return True
-    logger.warning("Destination '{}' checksum mismatch (src={}, dst={}); re-copying.", dst, src_hash[:12], dst_hash[:12])
+    logger.warning(
+        "Destination '{}' checksum mismatch (src={}, dst={}); re-copying.", dst, src_hash[:12], dst_hash[:12]
+    )
     try:
         dst.unlink()
     except OSError as exc:

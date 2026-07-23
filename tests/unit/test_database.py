@@ -1192,17 +1192,23 @@ class TestPostProcessColumns:
         # Create a DB with old schema (no new columns)
         engine = create_engine(f"sqlite:///{db_path}")
         with engine.connect() as conn:
-            conn.execute(text(
-                "CREATE TABLE history ("
-                "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-                "source VARCHAR NOT NULL, source_title VARCHAR NOT NULL, "
-                "source_url VARCHAR, game_title VARCHAR, platform VARCHAR NOT NULL, "
-                "metascore FLOAT, user_score FLOAT, result VARCHAR NOT NULL, "
-                "result_details TEXT, magnet_url VARCHAR, torrent_tag VARCHAR, "
-                "processed_at VARCHAR NOT NULL)"
-            ))
-            conn.execute(text("INSERT INTO history (source, source_title, platform, result, processed_at) "
-                            "VALUES ('fitgirl', 'Test Game', 'pc', 'Passed', '2025-01-01T00:00:00')"))
+            conn.execute(
+                text(
+                    "CREATE TABLE history ("
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                    "source VARCHAR NOT NULL, source_title VARCHAR NOT NULL, "
+                    "source_url VARCHAR, game_title VARCHAR, platform VARCHAR NOT NULL, "
+                    "metascore FLOAT, user_score FLOAT, result VARCHAR NOT NULL, "
+                    "result_details TEXT, magnet_url VARCHAR, torrent_tag VARCHAR, "
+                    "processed_at VARCHAR NOT NULL)"
+                )
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO history (source, source_title, platform, result, processed_at) "
+                    "VALUES ('fitgirl', 'Test Game', 'pc', 'Passed', '2025-01-01T00:00:00')"
+                )
+            )
             conn.commit()
 
         db = Database(db_path)

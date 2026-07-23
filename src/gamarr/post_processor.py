@@ -111,7 +111,6 @@ def _process_one(
 ) -> None:
     """Handle a single completed torrent: copy or delete based on state."""
     tag = torrent["torrent_tag"]
-    torrent_hash = torrent["torrent_hash"]
 
     row: HistoryRow | None = db.find_by_tag(tag)
     if row is None:
@@ -278,6 +277,4 @@ def run_post_processing(config: Config, qbt: QBittorrentClient, db: Database) ->
         try:
             _process_one(torrent, config, qbt, db)
         except Exception:  # noqa: BLE001
-            logger.exception(
-                "Post-processing failed for torrent '{}'.", torrent.get("torrent_tag", "unknown")
-            )
+            logger.exception("Post-processing failed for torrent '{}'.", torrent.get("torrent_tag", "unknown"))

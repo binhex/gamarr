@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from gamarr.post_processor import (
     _build_destination_path,
@@ -146,14 +144,16 @@ class TestRunPostProcessing:
         config.post_process.library_path = "/lib/{title}"
         qbt = MagicMock()
         qbt.is_connected.return_value = True
-        qbt.list_completed.return_value = [{
-            "torrent_tag": "gamarr-unknown",
-            "torrent_hash": "abc",
-            "torrent_name": "Unknown Game",
-            "torrent_save_path": "/dl",
-            "torrent_state": "uploading",
-            "torrent_file_list": [{"file_name": "game.iso", "file_size": 999999}],
-        }]
+        qbt.list_completed.return_value = [
+            {
+                "torrent_tag": "gamarr-unknown",
+                "torrent_hash": "abc",
+                "torrent_name": "Unknown Game",
+                "torrent_save_path": "/dl",
+                "torrent_state": "uploading",
+                "torrent_file_list": [{"file_name": "game.iso", "file_size": 999999}],
+            }
+        ]
         db = MagicMock()
         db.find_by_tag.return_value = None
         run_post_processing(config, qbt, db)
@@ -161,7 +161,6 @@ class TestRunPostProcessing:
         db.find_by_tag.assert_called_once_with("gamarr-unknown")
 
     def test_copy_phase_success(self) -> None:
-        from datetime import datetime, timezone
 
         from gamarr.config import Config
         from gamarr.database import HistoryRow
@@ -175,14 +174,16 @@ class TestRunPostProcessing:
 
         qbt = MagicMock()
         qbt.is_connected.return_value = True
-        qbt.list_completed.return_value = [{
-            "torrent_tag": "gamarr-test",
-            "torrent_hash": "abc",
-            "torrent_name": "Elden Ring",
-            "torrent_save_path": "/dl/Elden Ring",
-            "torrent_state": "uploading",
-            "torrent_file_list": [{"file_name": "game.iso", "file_size": 999999}],
-        }]
+        qbt.list_completed.return_value = [
+            {
+                "torrent_tag": "gamarr-test",
+                "torrent_hash": "abc",
+                "torrent_name": "Elden Ring",
+                "torrent_save_path": "/dl/Elden Ring",
+                "torrent_state": "uploading",
+                "torrent_file_list": [{"file_name": "game.iso", "file_size": 999999}],
+            }
+        ]
 
         db = MagicMock()
         fake_row = MagicMock(spec=HistoryRow)
@@ -214,14 +215,16 @@ class TestRunPostProcessing:
 
         qbt = MagicMock()
         qbt.is_connected.return_value = True
-        qbt.list_completed.return_value = [{
-            "torrent_tag": "gamarr-test",
-            "torrent_hash": "abc",
-            "torrent_name": "Elden Ring",
-            "torrent_save_path": "/dl/Elden Ring",
-            "torrent_state": "uploading",
-            "torrent_file_list": [{"file_name": "game.iso", "file_size": 999999}],
-        }]
+        qbt.list_completed.return_value = [
+            {
+                "torrent_tag": "gamarr-test",
+                "torrent_hash": "abc",
+                "torrent_name": "Elden Ring",
+                "torrent_save_path": "/dl/Elden Ring",
+                "torrent_state": "uploading",
+                "torrent_file_list": [{"file_name": "game.iso", "file_size": 999999}],
+            }
+        ]
 
         db = MagicMock()
         fake_row = MagicMock(spec=HistoryRow)
@@ -249,14 +252,16 @@ class TestRunPostProcessing:
 
         qbt = MagicMock()
         qbt.is_connected.return_value = True
-        qbt.list_completed.return_value = [{
-            "torrent_tag": "gamarr-test",
-            "torrent_hash": "abc",
-            "torrent_name": "Elden Ring",
-            "torrent_save_path": "/dl/Elden Ring",
-            "torrent_state": "pausedUP",  # seeding goal met
-            "torrent_file_list": [],
-        }]
+        qbt.list_completed.return_value = [
+            {
+                "torrent_tag": "gamarr-test",
+                "torrent_hash": "abc",
+                "torrent_name": "Elden Ring",
+                "torrent_save_path": "/dl/Elden Ring",
+                "torrent_state": "pausedUP",  # seeding goal met
+                "torrent_file_list": [],
+            }
+        ]
 
         db = MagicMock()
         fake_row = MagicMock(spec=HistoryRow)
@@ -278,14 +283,16 @@ class TestRunPostProcessing:
 
         qbt = MagicMock()
         qbt.is_connected.return_value = True
-        qbt.list_completed.return_value = [{
-            "torrent_tag": "gamarr-test",
-            "torrent_hash": "abc",
-            "torrent_name": "Elden Ring",
-            "torrent_save_path": "/dl/Elden Ring",
-            "torrent_state": "uploading",  # still seeding
-            "torrent_file_list": [],
-        }]
+        qbt.list_completed.return_value = [
+            {
+                "torrent_tag": "gamarr-test",
+                "torrent_hash": "abc",
+                "torrent_name": "Elden Ring",
+                "torrent_save_path": "/dl/Elden Ring",
+                "torrent_state": "uploading",  # still seeding
+                "torrent_file_list": [],
+            }
+        ]
 
         db = MagicMock()
         fake_row = MagicMock(spec=HistoryRow)
@@ -308,14 +315,16 @@ class TestRunPostProcessing:
 
         qbt = MagicMock()
         qbt.is_connected.return_value = True
-        qbt.list_completed.return_value = [{
-            "torrent_tag": "gamarr-done",
-            "torrent_hash": "abc",
-            "torrent_name": "Done Game",
-            "torrent_save_path": "/dl",
-            "torrent_state": "pausedUP",
-            "torrent_file_list": [],
-        }]
+        qbt.list_completed.return_value = [
+            {
+                "torrent_tag": "gamarr-done",
+                "torrent_hash": "abc",
+                "torrent_name": "Done Game",
+                "torrent_save_path": "/dl",
+                "torrent_state": "pausedUP",
+                "torrent_file_list": [],
+            }
+        ]
 
         db = MagicMock()
         fake_row = MagicMock(spec=HistoryRow)

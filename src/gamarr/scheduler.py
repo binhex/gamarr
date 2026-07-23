@@ -266,7 +266,9 @@ def _run_daemon(config: Config) -> None:
         name="Post-processing (copy to library)",
         max_instances=1,
         coalesce=True,
-        next_run_time=datetime.now(UTC) if pp_cfg.run_on_start else datetime.now(UTC) + timedelta(minutes=pp_cfg.schedule_time_mins),
+        next_run_time=datetime.now(UTC)
+        if pp_cfg.run_on_start
+        else datetime.now(UTC) + timedelta(minutes=pp_cfg.schedule_time_mins),
     )
 
     # Register the listener BEFORE starting the scheduler to avoid missing

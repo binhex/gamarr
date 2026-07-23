@@ -239,14 +239,10 @@ class TestDeleteTorrent:
         client = QBittorrentClient()
         client._client = MagicMock()
         client.delete_torrent("abc123", delete_data=True)
-        client._client.torrents_delete.assert_called_once_with(
-            delete_files=True, torrent_hashes="abc123"
-        )
+        client._client.torrents_delete.assert_called_once_with(delete_files=True, torrent_hashes="abc123")
 
     def test_delete_torrent_without_data(self) -> None:
         client = QBittorrentClient()
         client._client = MagicMock()
         client.delete_torrent("abc123", delete_data=False)
-        client._client.torrents_delete.assert_called_once_with(
-            delete_files=False, torrent_hashes="abc123"
-        )
+        client._client.torrents_delete.assert_called_once_with(delete_files=False, torrent_hashes="abc123")

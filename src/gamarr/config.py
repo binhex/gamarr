@@ -182,7 +182,9 @@ class PostProcessConfig(BaseModel):
     library_path: str = ""
     copy_completed: bool = True
     remove_completed: bool = True
-    max_seed_wait_hours: int = Field(default=168, ge=0, description="Fallback: delete after hours even if seeding. 0 = never.")
+    max_seed_wait_hours: int = Field(
+        default=168, ge=0, description="Fallback: delete after hours even if seeding. 0 = never."
+    )
     exclude_file_min_kb: int = 0
     exclude_file_regex_list: list[str] = Field(default_factory=list)
     exclude_folder_regex_list: list[str] = Field(default_factory=list)
