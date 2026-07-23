@@ -245,6 +245,16 @@ class TestDaemonMode:
                 config.notification.on_download = True
                 config.notification.on_failure = False
                 config.notification.on_error = False
+                config.post_process.post_process_enabled = True
+                config.post_process.schedule_time_mins = 5
+                config.post_process.run_on_start = True
+                config.post_process.library_path = ""
+                config.post_process.copy_completed = True
+                config.post_process.remove_completed = True
+                config.post_process.max_seed_wait_hours = 168
+                config.post_process.exclude_file_min_kb = 0
+                config.post_process.exclude_file_regex_list = []
+                config.post_process.exclude_folder_regex_list = []
 
                 # Interrupt the wait() to prevent infinite loop
                 mock_shutdown_event = MagicMock()
@@ -252,7 +262,7 @@ class TestDaemonMode:
 
                 with patch("gamarr.scheduler._ShutdownEvent", return_value=mock_shutdown_event):
                     _run_daemon(config)
-                    mock_sched.add_job.assert_called_once()
+                    assert mock_sched.add_job.call_count == 2
                     mock_sched.start.assert_called_once()
                     mock_signal.signal.assert_any_call(mock_signal.SIGINT, mock_shutdown_event)
                     mock_sched.shutdown.assert_called_once_with(wait=False)
@@ -290,13 +300,23 @@ class TestDaemonMode:
             config.notification.on_download = True
             config.notification.on_failure = False
             config.notification.on_error = False
+            config.post_process.post_process_enabled = True
+            config.post_process.schedule_time_mins = 5
+            config.post_process.run_on_start = False
+            config.post_process.library_path = ""
+            config.post_process.copy_completed = True
+            config.post_process.remove_completed = True
+            config.post_process.max_seed_wait_hours = 168
+            config.post_process.exclude_file_min_kb = 0
+            config.post_process.exclude_file_regex_list = []
+            config.post_process.exclude_folder_regex_list = []
 
             mock_shutdown_event = MagicMock()
             mock_shutdown_event.wait.return_value = None
 
             with patch("gamarr.scheduler._ShutdownEvent", return_value=mock_shutdown_event):
                 _run_daemon(config)
-                mock_sched.add_job.assert_called_once()
+                assert mock_sched.add_job.call_count == 2
                 mock_sched.start.assert_called_once()
 
 

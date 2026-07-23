@@ -20,6 +20,14 @@ if TYPE_CHECKING:
     from gamarr.config import Config
 
 
+def _run_guarded(label: str, fn: Any, *args: Any) -> None:
+    """Call fn(*args), logging any exception at ERROR level so one bad cycle cannot crash the scheduler."""
+    try:
+        fn(*args)
+    except Exception:
+        logger.exception("{} task failed.", label)
+
+
 def _write_pid(pid_path: str) -> None:
     """Write the current process PID to a file under *pid_path*."""
     pid_file = pid_path if os.path.splitext(pid_path)[1] else os.path.join(pid_path, "gamarr.pid")
@@ -197,6 +205,20 @@ def run_once(config: Config) -> None:
     errors = sum(1 for r in results if r["result"] == "Error")
     logger.info("Acquisition complete: {} passed, {} failed, {} errors", passed, failed, errors)
 
+    from gamarr.database import Database
+    from gamarr.post_processor import run_post_processing
+    from gamarr.qbittorrent import QBittorrentClient
+
+    qbt = QBittorrentClient(
+        host=kwargs["qbt_host"],
+        port=kwargs["qbt_port"],
+        username=kwargs["qbt_username"],
+        password=kwargs["qbt_password"],
+        category=kwargs["qbt_category"],
+    )
+    db = Database(kwargs["db_path"])
+    _run_guarded("Post-processing", run_post_processing, config, qbt, db)
+
 
 def _run_daemon(config: Config) -> None:
     """Run the scheduler in continuous schedule mode."""
@@ -222,6 +244,29 @@ def _run_daemon(config: Config) -> None:
         id="acquisition",
         name="Acquisition",
         next_run_time=_next_run,
+    )
+
+    from gamarr.database import Database
+    from gamarr.post_processor import run_post_processing
+    from gamarr.qbittorrent import QBittorrentClient
+
+    pp_cfg = config.post_process
+    pp_qbt = QBittorrentClient(
+        host=kwargs["qbt_host"],
+        port=kwargs["qbt_port"],
+        username=kwargs["qbt_username"],
+        password=kwargs["qbt_password"],
+        category=kwargs["qbt_category"],
+    )
+    pp_db = Database(kwargs["db_path"])
+    scheduler.add_job(
+        lambda: _run_guarded("Post-processing", run_post_processing, config, pp_qbt, pp_db),
+        trigger=IntervalTrigger(minutes=pp_cfg.schedule_time_mins),
+        id="post_processing",
+        name="Post-processing (copy to library)",
+        max_instances=1,
+        coalesce=True,
+        next_run_time=datetime.now(UTC) if pp_cfg.run_on_start else datetime.now(UTC) + timedelta(minutes=pp_cfg.schedule_time_mins),
     )
 
     # Register the listener BEFORE starting the scheduler to avoid missing
