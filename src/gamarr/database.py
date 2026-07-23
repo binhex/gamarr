@@ -38,6 +38,9 @@ class HistoryRow(Base):
     result_details: Mapped[str | None] = mapped_column(Text, nullable=True)
     magnet_url: Mapped[str | None] = mapped_column(String, nullable=True)
     torrent_tag: Mapped[str | None] = mapped_column(String, nullable=True)
+    genres: Mapped[str | None] = mapped_column(String, nullable=True)
+    post_process_state: Mapped[str | None] = mapped_column(String, nullable=True)
+    post_process_copied_at: Mapped[str | None] = mapped_column(String, nullable=True)
     processed_at: Mapped[str] = mapped_column(String, nullable=False)
 
 
@@ -211,6 +214,7 @@ class Database:
         self._migrate_scan_state()
         self._migrate_browse_cache()
         self._migrate_pending_mode_split()
+        self._migrate_history_post_process()
 
     def _migrate_pending_games(self) -> None:
         """Add columns and clean up deprecated columns in pending_games."""
@@ -331,6 +335,20 @@ class Database:
                 logger.info("Migrated {} pending games from legacy table to pending_games_backlog", count)
         except Exception:
             logger.debug("Migration of pending_games skipped (table may not exist yet)")
+
+    def _migrate_history_post_process(self) -> None:
+        """Add genres, post_process_state, post_process_copied_at columns to history if missing."""
+        from sqlalchemy import inspect, text
+
+        inspector = inspect(self._engine)
+        if "history" not in inspector.get_table_names():
+            return
+        columns = [c["name"] for c in inspector.get_columns("history")]
+        for col_name in ("genres", "post_process_state", "post_process_copied_at"):
+            if col_name not in columns:
+                with self._session() as session:
+                    session.execute(text(f"ALTER TABLE history ADD COLUMN {col_name} VARCHAR"))
+                logger.debug("Added {} column to history", col_name)
 
     def close(self) -> None:
         self._engine.dispose()
@@ -1204,6 +1222,7 @@ class Database:
         result_details: str = "",
         magnet_url: str | None = None,
         torrent_tag: str | None = None,
+        genres: str | None = None,
     ) -> None:
         with self._session() as session:
             row = HistoryRow(
@@ -1218,10 +1237,19 @@ class Database:
                 result_details=result_details,
                 magnet_url=magnet_url,
                 torrent_tag=torrent_tag,
+                genres=genres,
                 processed_at=datetime.datetime.now(tz=datetime.UTC).isoformat(),
             )
             session.add(row)
             session.commit()
+
+    def find_by_tag(self, tag: str) -> HistoryRow | None:
+        """Look up a history row by its torrent tag.
+
+        Returns None if no matching row is found.
+        """
+        with self._session() as session:
+            return session.query(HistoryRow).filter(HistoryRow.torrent_tag == tag).first()
 
     def get_stats(self) -> dict[str, Any]:
         with self._session() as session:

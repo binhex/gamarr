@@ -1181,6 +1181,94 @@ class TestBacklogProgress:
         db.close()
 
 
+class TestPostProcessColumns:
+    """Tests for post_process_state and post_process_copied_at columns."""
+
+    def test_history_columns_migrated(self, tmp_path: Path) -> None:
+        """New columns should exist after Database init on an existing DB."""
+        from sqlalchemy import create_engine, text
+
+        db_path = str(tmp_path / "old_history.db")
+        # Create a DB with old schema (no new columns)
+        engine = create_engine(f"sqlite:///{db_path}")
+        with engine.connect() as conn:
+            conn.execute(text(
+                "CREATE TABLE history ("
+                "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "source VARCHAR NOT NULL, source_title VARCHAR NOT NULL, "
+                "source_url VARCHAR, game_title VARCHAR, platform VARCHAR NOT NULL, "
+                "metascore FLOAT, user_score FLOAT, result VARCHAR NOT NULL, "
+                "result_details TEXT, magnet_url VARCHAR, torrent_tag VARCHAR, "
+                "processed_at VARCHAR NOT NULL)"
+            ))
+            conn.execute(text("INSERT INTO history (source, source_title, platform, result, processed_at) "
+                            "VALUES ('fitgirl', 'Test Game', 'pc', 'Passed', '2025-01-01T00:00:00')"))
+            conn.commit()
+
+        db = Database(db_path)
+        # After init, new columns should exist
+        with db._session() as session:
+            columns = [row[1] for row in session.execute(text("PRAGMA table_info(history)"))]
+        assert "genres" in columns
+        assert "post_process_state" in columns
+        assert "post_process_copied_at" in columns
+        db.close()
+
+    def test_record_processed_with_genres(self, tmp_path: Path) -> None:
+        """record_processed should accept and store a genres string."""
+        from sqlalchemy import text
+
+        db_path = str(tmp_path / "test.db")
+        db = Database(db_path)
+        db.record_processed(
+            source="fitgirl",
+            source_title="Elden Ring [Repack]",
+            source_url="http://example.com/elden",
+            game_title="Elden Ring",
+            platform="pc",
+            result="Passed",
+            torrent_tag="gamarr-test123",
+            genres="Action, RPG",
+        )
+        with db._session() as session:
+            row = session.execute(
+                text("SELECT genres, torrent_tag FROM history WHERE torrent_tag = 'gamarr-test123'")
+            ).first()
+        assert row is not None
+        assert row[0] == "Action, RPG"
+        db.close()
+
+    def test_find_by_tag_returns_row(self, tmp_path: Path) -> None:
+        """find_by_tag should return the matching HistoryRow."""
+        db_path = str(tmp_path / "test.db")
+        db = Database(db_path)
+        db.record_processed(
+            source="fitgirl",
+            source_title="Test Game",
+            source_url="http://example.com/test",
+            game_title="Test Game",
+            platform="pc",
+            result="Passed",
+            torrent_tag="gamarr-findme",
+            genres="Action",
+        )
+        row = db.find_by_tag("gamarr-findme")
+        assert row is not None
+        assert row.game_title == "Test Game"
+        assert row.source == "fitgirl"
+        assert row.platform == "pc"
+        assert row.genres == "Action"
+        db.close()
+
+    def test_find_by_tag_returns_none_for_unknown_tag(self, tmp_path: Path) -> None:
+        """find_by_tag should return None for a non-existent tag."""
+        db_path = str(tmp_path / "test.db")
+        db = Database(db_path)
+        row = db.find_by_tag("gamarr-nope")
+        assert row is None
+        db.close()
+
+
 class TestClearCache:
     """Database.clear_cache method tests."""
 
