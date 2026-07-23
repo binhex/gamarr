@@ -1890,6 +1890,7 @@ def _deliver_match(
         result_details=f"Downloaded from {best['url']}",
         magnet_url=magnet,
         torrent_tag=str(tag),
+        genres=", ".join(game_genres) if game_genres else None,
     )
     record_result["slug"] = game_slug
     if search_mode == "backlog":
@@ -2609,6 +2610,7 @@ def _record_result(
     result_details: str = "",
     magnet_url: str | None = None,
     torrent_tag: str | None = None,
+    genres: str | None = None,
 ) -> dict[str, Any]:
     """Persist a result row and return the result dict for the caller."""
     db.record_processed(
@@ -2623,6 +2625,7 @@ def _record_result(
         result_details=result_details,
         magnet_url=magnet_url,
         torrent_tag=torrent_tag,
+        genres=genres,
     )
     return {
         "result": result,
