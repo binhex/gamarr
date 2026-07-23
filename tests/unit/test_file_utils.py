@@ -67,3 +67,60 @@ class TestCopyWithVerify:
         dst = tmp_path / "deep" / "nested" / "dst.bin"
         assert copy_with_verify(str(src), str(dst)) is True
         assert dst.is_file()
+
+    def test_copy_permission_error_returns_false(self, tmp_path: Path) -> None:
+        src = tmp_path / "src.bin"
+        dst_dir = tmp_path / "dst"
+        dst_dir.mkdir()
+        dst = dst_dir / "src.bin"
+        src.write_bytes(b"test data")
+        from gamarr import file_utils
+        with patch.object(file_utils, "_do_copy", side_effect=PermissionError("denied")):
+            assert copy_with_verify(str(src), str(dst)) is False
+
+    def test_copy_verification_source_disappeared(self, tmp_path: Path) -> None:
+        src = tmp_path / "src.bin"
+        dst_dir = tmp_path / "dst"
+        dst_dir.mkdir()
+        dst = dst_dir / "src.bin"
+        src.write_bytes(b"test data")
+        from gamarr import file_utils
+        # After _do_copy succeeds, _sha256 of src raises OSError
+        with (
+            patch.object(file_utils, "_do_copy"),
+            patch.object(file_utils, "_sha256", side_effect=OSError("gone")),
+        ):
+            assert copy_with_verify(str(src), str(dst)) is False
+
+    def test_copy_verification_checksum_mismatch(self, tmp_path: Path) -> None:
+        src = tmp_path / "src.bin"
+        dst_dir = tmp_path / "dst"
+        dst_dir.mkdir()
+        dst = dst_dir / "src.bin"
+        src.write_bytes(b"test data")
+        from gamarr import file_utils
+        with (
+            patch.object(file_utils, "_do_copy"),
+            patch.object(file_utils, "_sha256", side_effect=["abc123", "def456"]),
+        ):
+            assert copy_with_verify(str(src), str(dst)) is False
+
+    def test_copy_src_not_found_returns_false(self, tmp_path: Path) -> None:
+        src = tmp_path / "src.bin"
+        src.write_bytes(b"data")
+        dst = tmp_path / "dst" / "src.bin"
+        # Remove src before copy
+        with patch("pathlib.Path.open") as mock_open:
+            mock_open.side_effect = FileNotFoundError("gone")
+            assert copy_with_verify(str(src), str(dst)) is False
+
+    def test_copy_os_error_returns_false(self, tmp_path: Path) -> None:
+        src = tmp_path / "src.bin"
+        src.write_bytes(b"data")
+        dst = tmp_path / "dst" / "src.bin"
+        with patch("pathlib.Path.open", side_effect=OSError("disk full")):
+            assert copy_with_verify(str(src), str(dst)) is False
+
+    def test_make_directory_permission_error(self, tmp_path: Path) -> None:
+        with patch("pathlib.Path.mkdir", side_effect=PermissionError("denied")):
+            assert make_directory(str(tmp_path / "nope")) is False

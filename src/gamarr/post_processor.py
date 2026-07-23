@@ -153,12 +153,10 @@ def _run_copy_phase(
         logger.debug("Empty library_path; skipping copy for '{}'.", row.game_title)
         return
 
-    # Skip if destination already exists
     if os.path.isdir(dst_dir):
         logger.info("Destination '{}' already exists; skipping '{}'.", dst_dir, row.game_title)
         return
 
-    # Build file copy list
     src_files = _build_copy_list(torrent, pp)
     if not src_files:
         logger.debug("No files to copy for '{}'.", row.game_title)
@@ -168,21 +166,24 @@ def _run_copy_phase(
         logger.error("Cannot create destination directory '{}'; skipping.", dst_dir)
         return
 
-    all_ok = True
-    for src_path in src_files:
-        fname = os.path.basename(src_path)
-        dst_path = os.path.join(dst_dir, fname)
-        if not copy_with_verify(src_path, dst_path):
-            logger.error("Copy/verify failed for '{}'; aborting.", src_path)
-            all_ok = False
-            break
-
+    all_ok = _copy_all_files(src_files, dst_dir)
     if all_ok:
         row.post_process_state = "copied"
         row.post_process_copied_at = datetime.datetime.now(tz=UTC).isoformat()
         logger.info("Copied '{}' to '{}'.", row.game_title, dst_dir)
     else:
         logger.warning("Copy failed for '{}'; will retry on next cycle.", row.game_title)
+
+
+def _copy_all_files(src_files: list[str], dst_dir: str) -> bool:
+    """Copy all files to dst_dir. Returns True if all succeeded, False on first failure."""
+    for src_path in src_files:
+        fname = os.path.basename(src_path)
+        dst_path = os.path.join(dst_dir, fname)
+        if not copy_with_verify(src_path, dst_path):
+            logger.error("Copy/verify failed for '{}'; aborting.", src_path)
+            return False
+    return True
 
 
 def _run_delete_phase(
@@ -234,23 +235,33 @@ def _build_copy_list(torrent: dict, pp: object) -> list[str]:
 
     result: list[str] = []
     for f in file_list:
-        rel_path = f.get("file_name") or ""
-        if not rel_path:
-            continue
-        abs_path = os.path.join(save_path, rel_path)
-
-        try:
-            file_size = int(f.get("file_size") or 0)
-        except (ValueError, TypeError):
-            file_size = 0
-        file_size_kb = file_size >> 10
-        folder_part = os.path.dirname(rel_path)
-
-        if _file_excluded(rel_path, folder_part, file_size_kb, file_regexes, folder_regexes, min_kb):
-            continue
-
-        result.append(abs_path)
+        abs_path = _process_file_entry(f, save_path, min_kb, file_regexes, folder_regexes)
+        if abs_path:
+            result.append(abs_path)
     return result
+
+
+def _process_file_entry(
+    file_entry: dict,
+    save_path: str,
+    min_kb: int,
+    file_regexes: list[re.Pattern[str]],
+    folder_regexes: list[re.Pattern[str]],
+) -> str | None:
+    """Process a single file entry. Returns absolute path or None if excluded."""
+    rel_path = file_entry.get("file_name") or ""
+    if not rel_path:
+        return None
+    abs_path = os.path.join(save_path, rel_path)
+    try:
+        file_size = int(file_entry.get("file_size") or 0)
+    except (ValueError, TypeError):
+        file_size = 0
+    file_size_kb = file_size >> 10
+    folder_part = os.path.dirname(rel_path)
+    if _file_excluded(rel_path, folder_part, file_size_kb, file_regexes, folder_regexes, min_kb):
+        return None
+    return abs_path
 
 
 def run_post_processing(config: Config, qbt: QBittorrentClient, db: Database) -> None:

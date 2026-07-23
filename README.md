@@ -41,10 +41,14 @@ Sources are checked in config-defined priority order.
 - **Notifications** — sends alerts via any
   [apprise](https://github.com/caronc/apprise)-compatible service (ntfy,
   Discord, Telegram, email, and more).
-- **Schedule mode** — runs as a scheduled background process, or in foreground mode for
+- **Schedule mode** — runs as a scheduled background process with separate
+  intervals for acquisition and post-processing, or in foreground mode for
   single-pass execution.
 - **Automatic config migration** — upgrades the YAML config schema
   automatically on startup when new fields are added.
+- **Post-processing** — a background thread polls qBittorrent for completed
+  downloads, copies them to a configurable library path with SHA-256
+  verification, and cleans up source torrents after seeding goals are met.
 
 ## Prerequisites
 
@@ -207,6 +211,35 @@ download_sites:
 | --- | ----------- | ------- |
 | `paths` | List of library root paths to scan when checking whether a game already exists. | `[]` |
 
+### `post_process`
+
+Controls automatic copying of completed downloads to a game library.
+Mirrors [movarr](https://github.com/binhex/movarr)'s post-processing pattern.
+
+| Key | Description | Default |
+| --- | ----------- | ------- |
+| `post_process_enabled` | Master toggle for post-processing. | `true` |
+| `schedule_time_mins` | Polling interval in minutes. | `5` |
+| `run_on_start` | Run immediately on daemon start. | `true` |
+| `library_path` | Destination path template. Supports `{site}`, `{platform}`, `{genre}`, `{title}`. Empty string disables copying. | `""` |
+| `copy_completed` | Copy files to library after download completes. | `true` |
+| `remove_completed` | Delete torrent + data after seeding goals are met. | `true` |
+| `max_seed_wait_hours` | Fallback: delete after this many hours even if still seeding. `0` = never force-delete. | `168` |
+| `exclude_file_min_kb` | Skip files smaller than this (0 = no minimum). | `0` |
+| `exclude_file_regex_list` | Case-insensitive regex patterns to exclude files. | `[]` |
+| `exclude_folder_regex_list` | Case-insensitive regex patterns to exclude folders. | `[]` |
+
+**Template variables** in `library_path`:
+
+| Variable | Source | Example |
+| --- | --- | --- |
+| `{site}` | Download source name | `fitgirl`, `freegog` |
+| `{platform}` | Target platform | `pc` |
+| `{genre}` | First Metacritic genre | `Action` |
+| `{title}` | Metacritic game title | `Elden Ring` |
+
+Example: `"/data/library/{site}/{platform}/{genre}/{title}"` produces `"/data/library/fitgirl/pc/Action/Elden Ring"`.
+
 ## How It Works
 
 ### Acquisition pipeline
@@ -297,11 +330,15 @@ The codebase is structured as a **Metacritic-first** pipeline:
 
 ```text
 metacritic.py  →  pipeline.py  →  sources/freegog.py  →  qbittorrent.py
-                sources/fitgirl.py
+                sources/fitgirl.py                 →  post_processor.py
 _(Note: `sources/` is the Python package name for download site implementations — distinct from the config key.)
        ↓              ↓                   ↓                    ↓
    Browse new    Score filter +      Sitemap match         Add torrent
-   releases      pending queue       + magnet fetch
+   releases      pending queue       + magnet fetch     post_processor.py
+                                                        ↓
+                                              Copy to library
+                                              + SHA-256 verify
+                                              + cleanup
 ```
 
 All configuration is driven by a YAML file (`configs/gamarr.yml`) validated
