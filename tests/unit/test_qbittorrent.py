@@ -166,3 +166,87 @@ class TestQBittorrentRename:
             assert result is not False
             mock_client.torrents_rename.assert_not_called()
             mock_client.torrents_reannounce.assert_not_called()
+
+
+class TestListCompleted:
+    """Tests for list_completed method."""
+
+    def test_returns_empty_when_api_fails(self) -> None:
+        client = QBittorrentClient()
+        client._client = MagicMock()
+        client._client.torrents_info.side_effect = Exception("API down")
+        result = client.list_completed()
+        assert result == []
+
+    def test_skips_non_gamarr_tags(self) -> None:
+        client = QBittorrentClient()
+        client._client = MagicMock()
+        fake_torrent = MagicMock()
+        fake_torrent.tags = "other-tag, no-gamarr"
+        fake_torrent.amount_left = 0
+        client._client.torrents_info.return_value = [fake_torrent]
+        result = client.list_completed()
+        assert result == []
+
+    def test_skips_incomplete_torrents(self) -> None:
+        client = QBittorrentClient()
+        client._client = MagicMock()
+        fake_torrent = MagicMock()
+        fake_torrent.tags = "gamarr-abc123"
+        fake_torrent.amount_left = 1024  # not done
+        client._client.torrents_info.return_value = [fake_torrent]
+        result = client.list_completed()
+        assert result == []
+
+    def test_returns_completed_gamarr_torrents(self) -> None:
+        client = QBittorrentClient()
+        client._client = MagicMock()
+        fake = MagicMock()
+        fake.tags = "gamarr-xyz789"
+        fake.amount_left = 0
+        fake.hash = "deadbeef"
+        fake.name = "Game Title [Repack]"
+        fake.state = "uploading"
+        fake.save_path = "/downloads/Game"
+        client._client.torrents_info.return_value = [fake]
+
+        fake_file = MagicMock()
+        fake_file.name = "setup.exe"
+        fake_file.size = 123456
+        client._client.torrents_files.return_value = [fake_file]
+
+        fake_props = MagicMock()
+        fake_props.save_path = "/downloads/Game"
+        client._client.torrents_properties.return_value = fake_props
+
+        result = client.list_completed()
+        assert len(result) == 1
+        entry = result[0]
+        assert entry["torrent_tag"] == "gamarr-xyz789"
+        assert entry["torrent_hash"] == "deadbeef"
+        assert entry["torrent_name"] == "Game Title [Repack]"
+        assert entry["torrent_state"] == "uploading"
+        assert entry["torrent_save_path"] == "/downloads/Game"
+        assert len(entry["torrent_file_list"]) == 1
+        assert entry["torrent_file_list"][0]["file_name"] == "setup.exe"
+        assert entry["torrent_file_list"][0]["file_size"] == 123456
+
+
+class TestDeleteTorrent:
+    """Tests for delete_torrent method."""
+
+    def test_delete_torrent_with_data(self) -> None:
+        client = QBittorrentClient()
+        client._client = MagicMock()
+        client.delete_torrent("abc123", delete_data=True)
+        client._client.torrents_delete.assert_called_once_with(
+            delete_files=True, torrent_hashes="abc123"
+        )
+
+    def test_delete_torrent_without_data(self) -> None:
+        client = QBittorrentClient()
+        client._client = MagicMock()
+        client.delete_torrent("abc123", delete_data=False)
+        client._client.torrents_delete.assert_called_once_with(
+            delete_files=False, torrent_hashes="abc123"
+        )

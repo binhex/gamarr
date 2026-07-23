@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 import qbittorrentapi
 from loguru import logger
 
 _TAG_PREFIX = "gamarr-"
+
+
+def _extract_gamarr_tag(tags_str: str) -> str:
+    """Return the first 'gamarr-' tag from a comma-separated tag string, or ''."""
+    return next(
+        (t.strip() for t in tags_str.split(",") if t.strip().startswith(_TAG_PREFIX)),
+        "",
+    )
 
 
 class QBittorrentError(Exception):
@@ -98,3 +107,56 @@ class QBittorrentClient:
             logger.warning("Reannounce failed for '{}': {}; continuing.", title, exc)
 
         return tag
+
+    def list_completed(self) -> list[dict[str, Any]]:
+        """Return details for all 100%-complete gamarr-tagged torrents.
+
+        Queries by category, filters to gamarr-tagged torrents with
+        ``amount_left == 0`` — no status filter (mirrors movarr).
+        """
+        try:
+            all_torrents = self._client.torrents_info(category=self._category)
+        except Exception as exc:
+            logger.warning("Failed to list completed torrents: {}", exc)
+            return []
+
+        results: list[dict[str, Any]] = []
+        for torrent in all_torrents:
+            tag = _extract_gamarr_tag(torrent.tags)
+            if not tag:
+                continue
+            if int(torrent.amount_left) != 0:
+                continue
+
+            try:
+                files = self._client.torrents_files(torrent.hash)
+                props = self._client.torrents_properties(torrent.hash)
+            except Exception as exc:
+                logger.warning("Failed to fetch metadata for torrent '{}': {}; skipping.", torrent.hash, exc)
+                continue
+
+            results.append({
+                "torrent_tag": tag,
+                "torrent_hash": torrent.hash,
+                "torrent_name": torrent.name,
+                "torrent_save_path": props.save_path or torrent.save_path,
+                "torrent_state": torrent.state,
+                "torrent_file_list": [
+                    {"file_name": f.name, "file_size": f.size}
+                    for f in files
+                ],
+            })
+        return results
+
+    def delete_torrent(self, torrent_hash: str, *, delete_data: bool = False) -> None:
+        """Delete a torrent and optionally its downloaded data.
+
+        Args:
+            torrent_hash: The torrent hash to delete.
+            delete_data: If True, also delete the downloaded files.
+        """
+        try:
+            self._client.torrents_delete(delete_files=delete_data, torrent_hashes=torrent_hash)
+            logger.info("Deleted torrent '{}' (delete_data={}).", torrent_hash, delete_data)
+        except Exception as exc:
+            logger.warning("Failed to delete torrent '{}': {}", torrent_hash, exc)
