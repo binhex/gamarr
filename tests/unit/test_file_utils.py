@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 from gamarr.file_utils import copy_with_verify, make_directory
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class TestMakeDirectory:
@@ -75,6 +78,7 @@ class TestCopyWithVerify:
         dst = dst_dir / "src.bin"
         src.write_bytes(b"test data")
         from gamarr import file_utils
+
         with patch.object(file_utils, "_do_copy", side_effect=PermissionError("denied")):
             assert copy_with_verify(str(src), str(dst)) is False
 
@@ -85,6 +89,7 @@ class TestCopyWithVerify:
         dst = dst_dir / "src.bin"
         src.write_bytes(b"test data")
         from gamarr import file_utils
+
         # After _do_copy succeeds, _sha256 of src raises OSError
         with (
             patch.object(file_utils, "_do_copy"),
@@ -99,6 +104,7 @@ class TestCopyWithVerify:
         dst = dst_dir / "src.bin"
         src.write_bytes(b"test data")
         from gamarr import file_utils
+
         with (
             patch.object(file_utils, "_do_copy"),
             patch.object(file_utils, "_sha256", side_effect=["abc123", "def456"]),

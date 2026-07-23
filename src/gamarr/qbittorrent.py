@@ -108,23 +108,31 @@ class QBittorrentClient:
 
         return tag
 
-    def list_completed(self) -> list[dict[str, Any]]:
-        """Return details for all 100%-complete gamarr-tagged torrents.
+    def list_completed(self) -> tuple[list[dict[str, Any]], int]:
+        """Return (completed_list, total_gamarr_count) for gamarr-tagged torrents.
 
         Queries by category, filters to gamarr-tagged torrents with
         ``amount_left == 0`` — no status filter (mirrors movarr).
+
+        Returns:
+            A tuple of (completed_torrents, total_gamarr_torrents) where
+            ``completed_torrents`` contains 100%%-complete torrents and
+            ``total_gamarr_torrents`` is the count of ALL gamarr-tagged
+            torrents (including in-progress downloads).
         """
         try:
             all_torrents = self._client.torrents_info(category=self._category)
         except Exception as exc:
             logger.warning("Failed to list completed torrents: {}", exc)
-            return []
+            return [], 0
 
         results: list[dict[str, Any]] = []
+        gamarr_count = 0
         for torrent in all_torrents:
             tag = _extract_gamarr_tag(torrent.tags)
             if not tag:
                 continue
+            gamarr_count += 1
             if int(torrent.amount_left) != 0:
                 continue
 
@@ -145,7 +153,7 @@ class QBittorrentClient:
                     "torrent_file_list": [{"file_name": f.name, "file_size": f.size} for f in files],
                 }
             )
-        return results
+        return results, gamarr_count
 
     def delete_torrent(self, torrent_hash: str, *, delete_data: bool = False) -> None:
         """Delete a torrent and optionally its downloaded data.

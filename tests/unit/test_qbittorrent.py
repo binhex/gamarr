@@ -175,8 +175,8 @@ class TestListCompleted:
         client = QBittorrentClient()
         client._client = MagicMock()
         client._client.torrents_info.side_effect = Exception("API down")
-        result = client.list_completed()
-        assert result == []
+        completed, total_count = client.list_completed()
+        assert completed == []
 
     def test_skips_non_gamarr_tags(self) -> None:
         client = QBittorrentClient()
@@ -185,8 +185,8 @@ class TestListCompleted:
         fake_torrent.tags = "other-tag, no-gamarr"
         fake_torrent.amount_left = 0
         client._client.torrents_info.return_value = [fake_torrent]
-        result = client.list_completed()
-        assert result == []
+        completed, total_count = client.list_completed()
+        assert completed == []
 
     def test_skips_incomplete_torrents(self) -> None:
         client = QBittorrentClient()
@@ -195,8 +195,8 @@ class TestListCompleted:
         fake_torrent.tags = "gamarr-abc123"
         fake_torrent.amount_left = 1024  # not done
         client._client.torrents_info.return_value = [fake_torrent]
-        result = client.list_completed()
-        assert result == []
+        completed, total_count = client.list_completed()
+        assert completed == []
 
     def test_returns_completed_gamarr_torrents(self) -> None:
         client = QBittorrentClient()
@@ -219,9 +219,9 @@ class TestListCompleted:
         fake_props.save_path = "/downloads/Game"
         client._client.torrents_properties.return_value = fake_props
 
-        result = client.list_completed()
-        assert len(result) == 1
-        entry = result[0]
+        completed, total_count = client.list_completed()
+        assert len(completed) == 1
+        entry = completed[0]
         assert entry["torrent_tag"] == "gamarr-xyz789"
         assert entry["torrent_hash"] == "deadbeef"
         assert entry["torrent_name"] == "Game Title [Repack]"

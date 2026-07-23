@@ -6757,48 +6757,45 @@ class TestRecordResultGenres:
     """Tests that _record_result passes genres to record_processed."""
 
     def test_record_result_passes_genres(self, tmp_path: Path) -> None:
-        from unittest.mock import MagicMock
 
         from gamarr.database import Database
         from gamarr.pipeline import _record_result
 
         db = Database(str(tmp_path / "test.db"))
-        db.record_processed = MagicMock()
-
-        _record_result(
-            db,
-            source="fitgirl",
-            source_title="Test Game",
-            source_url="mc:test-game",
-            game_title="Test Game",
-            platform="pc",
-            result="Passed",
-            torrent_tag="gamarr-test",
-            genres="Action, RPG",
-        )
-        db.record_processed.assert_called_once()
-        call_kwargs = db.record_processed.call_args.kwargs
-        assert call_kwargs.get("genres") == "Action, RPG"
+        with patch.object(db, "record_processed") as mock_record:
+            _record_result(
+                db,
+                source="fitgirl",
+                source_title="Test Game",
+                source_url="mc:test-game",
+                game_title="Test Game",
+                platform="pc",
+                result="Passed",
+                torrent_tag="gamarr-test",
+                genres="Action, RPG",
+            )
+            mock_record.assert_called_once()
+            call_kwargs = mock_record.call_args.kwargs
+            assert call_kwargs.get("genres") == "Action, RPG"
 
     def test_record_result_passes_none_genres(self, tmp_path: Path) -> None:
-        from unittest.mock import MagicMock
+        from unittest.mock import patch
 
         from gamarr.database import Database
         from gamarr.pipeline import _record_result
 
         db = Database(str(tmp_path / "test.db"))
-        db.record_processed = MagicMock()
-
-        _record_result(
-            db,
-            source="fitgirl",
-            source_title="Test Game",
-            source_url="mc:test-game",
-            game_title="Test Game",
-            platform="pc",
-            result="Passed",
-            torrent_tag="gamarr-test",
-            genres=None,
-        )
-        call_kwargs = db.record_processed.call_args.kwargs
-        assert call_kwargs.get("genres") is None
+        with patch.object(db, "record_processed") as mock_record:
+            _record_result(
+                db,
+                source="fitgirl",
+                source_title="Test Game",
+                source_url="mc:test-game",
+                game_title="Test Game",
+                platform="pc",
+                result="Passed",
+                torrent_tag="gamarr-test",
+                genres=None,
+            )
+            call_kwargs = mock_record.call_args.kwargs
+            assert call_kwargs.get("genres") is None

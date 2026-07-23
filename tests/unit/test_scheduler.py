@@ -392,9 +392,10 @@ class TestNextRunTimeLogging:
         # Loguru separates format string (args[0]) from positional values
         format_str = args[0]
         assert "minute(s)" in format_str, f"Expected 'minute(s)' in format, got: {format_str}"
-        assert args[1] == 30, f"Expected interval 30, got {args[1]}"
+        assert args[1] == "scheduled cycle", f"Expected label 'scheduled cycle', got {args[1]}"
+        assert args[2] == 30, f"Expected interval 30, got {args[2]}"
         next_time_str = future.strftime("%Y-%m-%d %H:%M:%S")
-        assert next_time_str == args[2], f"Expected next time '{next_time_str}', got {args[2]}"
+        assert next_time_str == args[3], f"Expected next time '{next_time_str}', got {args[3]}"
 
 
 def test_log_next_run_time_says_scheduled_not_acquisition() -> None:
@@ -415,8 +416,8 @@ def test_log_next_run_time_says_scheduled_not_acquisition() -> None:
 
     mock_logger.info.assert_called_once()
     args, _ = mock_logger.info.call_args
-    format_str = args[0]
-    assert "Next scheduled cycle" in format_str, f"Expected 'Next scheduled cycle' in log message, got: {format_str}"
+    # The format string uses {} for the label; args[1] carries the label text
+    assert args[1] == "scheduled cycle", f"Expected label 'scheduled cycle', got {args[1]}"
 
 
 class TestRescheduleAcquisition:
@@ -507,3 +508,47 @@ class TestCancelEvent:
 
         # After the signal fires, the cancel_event should ALSO be set
         assert cancel_event.is_set()
+
+
+class TestPostProcessingReschedule:
+    """Post-processing job must log its next run time after completion."""
+
+    def test_post_processing_rescheduler_logs_next_run(self) -> None:
+        """The post-processing rescheduler should log 'Next post_processing run at...' at INFO."""
+        from datetime import datetime, timedelta
+
+        from loguru import logger
+
+        from gamarr.scheduler import _reschedule_post_processing
+
+        scheduler = MagicMock()
+        mock_job = MagicMock()
+        mock_job.id = "post_processing"
+        mock_job.next_run_time = datetime.now(UTC) + timedelta(minutes=5)
+        scheduler.get_job.return_value = mock_job
+
+        event = MagicMock()
+        event.job_id = "post_processing"
+
+        captured: list[str] = []
+        sink_id = logger.add(
+            lambda msg: captured.append(f"{msg.record['level'].name}: {msg}"),
+            level="INFO",
+            format="{message}",
+        )
+        try:
+            _reschedule_post_processing(scheduler, event, 5)
+
+            # Verify the job was rescheduled with a 5-minute interval
+            scheduler.reschedule_job.assert_called_once()
+            call_args = scheduler.reschedule_job.call_args
+            assert call_args[0][0] == "post_processing"  # positional arg: job_id
+            interval = call_args[1]["trigger"].interval
+            assert interval.total_seconds() == 300
+
+            # Verify the next-run INFO log message
+            assert any(m.startswith("INFO:") and "Next post_processing run in ~5" in m for m in captured), (
+                'Must log "Next post_processing run in ~5 minute(s) at..."'
+            )
+        finally:
+            logger.remove(sink_id)

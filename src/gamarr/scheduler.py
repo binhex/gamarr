@@ -39,12 +39,13 @@ def _write_pid(pid_path: str) -> None:
     logger.debug("PID {} written to '{}'.", os.getpid(), pid_file)
 
 
-def _log_next_run_time(scheduler: Any, job_id: str) -> None:
+def _log_next_run_time(scheduler: Any, job_id: str, label: str = "scheduled cycle") -> None:
     """Log the next scheduled run time for a completed job.
 
-    Reads the job's ``next_run_time`` from APScheduler and emits an
-    info-level message with the approximate wait duration (in minutes)
-    and the absolute date/time of the next run.
+    Args:
+        scheduler: The APScheduler instance.
+        job_id: The job ID to query.
+        label: Label for the log message (e.g. "scheduled cycle", "post_processing run").
     """
     from datetime import datetime
 
@@ -60,7 +61,8 @@ def _log_next_run_time(scheduler: Any, job_id: str) -> None:
     wait_minutes = max(1, math.ceil(remaining / 60))
     next_str = job.next_run_time.strftime("%Y-%m-%d %H:%M:%S")
     logger.info(
-        "Next scheduled cycle in ~{} minute(s) at {}",
+        "Next {} in ~{} minute(s) at {}",
+        label,
         wait_minutes,
         next_str,
     )
@@ -73,15 +75,11 @@ def _reschedule_acquisition(
 ) -> None:
     """Reschedule the acquisition job to run *interval_mins* from now.
 
-    APScheduler's ``IntervalTrigger`` counts intervals from job **start**
-    time, not job **end** time.  For long cycles (e.g. 26 minutes out of
-    a 30-minute interval), this means the next cycle fires only 4 minutes
-    after the previous one finishes.
-
-    By calling ``reschedule_job`` after the job completes, we reset the
-    interval timer to count from the current time (when the job actually
-    finished).
+    Only handles events for the "acquisition" job — other job events
+    are ignored.
     """
+    if event.job_id != "acquisition":
+        return
     from apscheduler.jobstores.base import JobLookupError
     from apscheduler.triggers.interval import IntervalTrigger
 
@@ -100,6 +98,37 @@ def _reschedule_acquisition(
     # Log the next run time AFTER rescheduling, so the message
     # shows the correct wait time (interval from job end).
     _log_next_run_time(scheduler, event.job_id)
+
+
+def _reschedule_post_processing(
+    scheduler: Any,
+    event: Any,
+    interval_mins: int,
+) -> None:
+    """Reschedule the post-processing job to run *interval_mins* from now.
+
+    Only handles events for the "post_processing" job — other job events
+    are ignored.
+    """
+    if event.job_id != "post_processing":
+        return
+
+    from apscheduler.jobstores.base import JobLookupError
+    from apscheduler.triggers.interval import IntervalTrigger
+
+    try:
+        scheduler.reschedule_job(
+            event.job_id,
+            trigger=IntervalTrigger(minutes=interval_mins),
+        )
+    except JobLookupError:
+        logger.debug(
+            "Post-processing job '{}' not found for rescheduling (expected during shutdown)",
+            event.job_id,
+        )
+        return
+
+    _log_next_run_time(scheduler, event.job_id, label="post_processing run")
 
 
 def _cleanup_pid_file(pid_path: str | None) -> None:
@@ -275,6 +304,10 @@ def _run_daemon(config: Config) -> None:
     # completion events from a fast first cycle (run_on_start+immediate).
     scheduler.add_listener(
         lambda event: _reschedule_acquisition(scheduler, event, acq_cfg.schedule_time_mins),
+        EVENT_JOB_EXECUTED | EVENT_JOB_ERROR,
+    )
+    scheduler.add_listener(
+        lambda event: _reschedule_post_processing(scheduler, event, pp_cfg.schedule_time_mins),
         EVENT_JOB_EXECUTED | EVENT_JOB_ERROR,
     )
 

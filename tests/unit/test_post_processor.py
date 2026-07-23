@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC
 from unittest.mock import MagicMock, patch
-
 
 from gamarr.post_processor import (
     _build_destination_path,
@@ -131,7 +131,7 @@ class TestRunPostProcessing:
         config.post_process.library_path = "/lib/{title}"
         qbt = MagicMock()
         qbt.is_connected.return_value = True
-        qbt.list_completed.return_value = []
+        qbt.list_completed.return_value = ([], 0)
         db = MagicMock()
         run_post_processing(config, qbt, db)
         db.find_by_tag.assert_not_called()
@@ -144,16 +144,19 @@ class TestRunPostProcessing:
         config.post_process.library_path = "/lib/{title}"
         qbt = MagicMock()
         qbt.is_connected.return_value = True
-        qbt.list_completed.return_value = [
-            {
-                "torrent_tag": "gamarr-unknown",
-                "torrent_hash": "abc",
-                "torrent_name": "Unknown Game",
-                "torrent_save_path": "/dl",
-                "torrent_state": "uploading",
-                "torrent_file_list": [{"file_name": "game.iso", "file_size": 999999}],
-            }
-        ]
+        qbt.list_completed.return_value = (
+            [
+                {
+                    "torrent_tag": "gamarr-unknown",
+                    "torrent_hash": "abc",
+                    "torrent_name": "Unknown Game",
+                    "torrent_save_path": "/dl",
+                    "torrent_state": "uploading",
+                    "torrent_file_list": [{"file_name": "game.iso", "file_size": 999999}],
+                }
+            ],
+            1,
+        )
         db = MagicMock()
         db.find_by_tag.return_value = None
         run_post_processing(config, qbt, db)
@@ -174,16 +177,19 @@ class TestRunPostProcessing:
 
         qbt = MagicMock()
         qbt.is_connected.return_value = True
-        qbt.list_completed.return_value = [
-            {
-                "torrent_tag": "gamarr-test",
-                "torrent_hash": "abc",
-                "torrent_name": "Elden Ring",
-                "torrent_save_path": "/dl/Elden Ring",
-                "torrent_state": "uploading",
-                "torrent_file_list": [{"file_name": "game.iso", "file_size": 999999}],
-            }
-        ]
+        qbt.list_completed.return_value = (
+            [
+                {
+                    "torrent_tag": "gamarr-test",
+                    "torrent_hash": "abc",
+                    "torrent_name": "Elden Ring",
+                    "torrent_save_path": "/dl/Elden Ring",
+                    "torrent_state": "uploading",
+                    "torrent_file_list": [{"file_name": "game.iso", "file_size": 999999}],
+                }
+            ],
+            1,
+        )
 
         db = MagicMock()
         fake_row = MagicMock(spec=HistoryRow)
@@ -215,16 +221,19 @@ class TestRunPostProcessing:
 
         qbt = MagicMock()
         qbt.is_connected.return_value = True
-        qbt.list_completed.return_value = [
-            {
-                "torrent_tag": "gamarr-test",
-                "torrent_hash": "abc",
-                "torrent_name": "Elden Ring",
-                "torrent_save_path": "/dl/Elden Ring",
-                "torrent_state": "uploading",
-                "torrent_file_list": [{"file_name": "game.iso", "file_size": 999999}],
-            }
-        ]
+        qbt.list_completed.return_value = (
+            [
+                {
+                    "torrent_tag": "gamarr-test",
+                    "torrent_hash": "abc",
+                    "torrent_name": "Elden Ring",
+                    "torrent_save_path": "/dl/Elden Ring",
+                    "torrent_state": "uploading",
+                    "torrent_file_list": [{"file_name": "game.iso", "file_size": 999999}],
+                }
+            ],
+            1,
+        )
 
         db = MagicMock()
         fake_row = MagicMock(spec=HistoryRow)
@@ -252,16 +261,19 @@ class TestRunPostProcessing:
 
         qbt = MagicMock()
         qbt.is_connected.return_value = True
-        qbt.list_completed.return_value = [
-            {
-                "torrent_tag": "gamarr-test",
-                "torrent_hash": "abc",
-                "torrent_name": "Elden Ring",
-                "torrent_save_path": "/dl/Elden Ring",
-                "torrent_state": "pausedUP",  # seeding goal met
-                "torrent_file_list": [],
-            }
-        ]
+        qbt.list_completed.return_value = (
+            [
+                {
+                    "torrent_tag": "gamarr-test",
+                    "torrent_hash": "abc",
+                    "torrent_name": "Elden Ring",
+                    "torrent_save_path": "/dl/Elden Ring",
+                    "torrent_state": "pausedUP",  # seeding goal met
+                    "torrent_file_list": [],
+                }
+            ],
+            1,
+        )
 
         db = MagicMock()
         fake_row = MagicMock(spec=HistoryRow)
@@ -283,16 +295,19 @@ class TestRunPostProcessing:
 
         qbt = MagicMock()
         qbt.is_connected.return_value = True
-        qbt.list_completed.return_value = [
-            {
-                "torrent_tag": "gamarr-test",
-                "torrent_hash": "abc",
-                "torrent_name": "Elden Ring",
-                "torrent_save_path": "/dl/Elden Ring",
-                "torrent_state": "uploading",  # still seeding
-                "torrent_file_list": [],
-            }
-        ]
+        qbt.list_completed.return_value = (
+            [
+                {
+                    "torrent_tag": "gamarr-test",
+                    "torrent_hash": "abc",
+                    "torrent_name": "Elden Ring",
+                    "torrent_save_path": "/dl/Elden Ring",
+                    "torrent_state": "uploading",  # still seeding
+                    "torrent_file_list": [],
+                }
+            ],
+            1,
+        )
 
         db = MagicMock()
         fake_row = MagicMock(spec=HistoryRow)
@@ -315,16 +330,19 @@ class TestRunPostProcessing:
 
         qbt = MagicMock()
         qbt.is_connected.return_value = True
-        qbt.list_completed.return_value = [
-            {
-                "torrent_tag": "gamarr-done",
-                "torrent_hash": "abc",
-                "torrent_name": "Done Game",
-                "torrent_save_path": "/dl",
-                "torrent_state": "pausedUP",
-                "torrent_file_list": [],
-            }
-        ]
+        qbt.list_completed.return_value = (
+            [
+                {
+                    "torrent_tag": "gamarr-done",
+                    "torrent_hash": "abc",
+                    "torrent_name": "Done Game",
+                    "torrent_save_path": "/dl",
+                    "torrent_state": "pausedUP",
+                    "torrent_file_list": [],
+                }
+            ],
+            1,
+        )
 
         db = MagicMock()
         fake_row = MagicMock(spec=HistoryRow)
@@ -349,11 +367,11 @@ class TestCopiedAgeHours:
         assert _copied_age_hours("") == 0.0
 
     def test_valid_timestamp_returns_positive(self) -> None:
-        from datetime import datetime, timezone, timedelta
+        from datetime import datetime, timedelta
 
         from gamarr.post_processor import _copied_age_hours
 
-        past = (datetime.now(tz=timezone.utc) - timedelta(hours=3)).isoformat()
+        past = (datetime.now(tz=UTC) - timedelta(hours=3)).isoformat()
         age = _copied_age_hours(past)
         assert 2.9 < age < 3.1
 
@@ -386,9 +404,9 @@ class TestEdgeCases:
         from gamarr.post_processor import _build_copy_list
 
         class FakePP:
-            exclude_file_min_kb = 0
-            exclude_file_regex_list = []
-            exclude_folder_regex_list = []
+            exclude_file_min_kb: int = 0
+            exclude_file_regex_list: list[str] = []
+            exclude_folder_regex_list: list[str] = []
 
         torrent = {"torrent_save_path": "", "torrent_file_list": []}
         result = _build_copy_list(torrent, FakePP())
@@ -398,9 +416,9 @@ class TestEdgeCases:
         from gamarr.post_processor import _build_copy_list
 
         class FakePP:
-            exclude_file_min_kb = 0
-            exclude_file_regex_list = []
-            exclude_folder_regex_list = []
+            exclude_file_min_kb: int = 0
+            exclude_file_regex_list: list[str] = []
+            exclude_folder_regex_list: list[str] = []
 
         torrent = {
             "torrent_save_path": "/dl",
@@ -414,9 +432,9 @@ class TestEdgeCases:
         from gamarr.post_processor import _build_copy_list
 
         class FakePP:
-            exclude_file_min_kb = 0
-            exclude_file_regex_list = []
-            exclude_folder_regex_list = []
+            exclude_file_min_kb: int = 0
+            exclude_file_regex_list: list[str] = []
+            exclude_folder_regex_list: list[str] = []
 
         torrent = {
             "torrent_save_path": "/dl",
@@ -432,7 +450,7 @@ class TestEdgeCases:
         assert len(result) == 1  # Only valid regex compiled
 
     def test_delete_phase_age_timeout_triggers(self) -> None:
-        from datetime import datetime, timezone, timedelta
+        from datetime import datetime, timedelta
 
         from gamarr.config import Config
         from gamarr.database import HistoryRow
@@ -444,7 +462,7 @@ class TestEdgeCases:
         fake_row = MagicMock(spec=HistoryRow)
         torrent = {"torrent_hash": "abc", "torrent_state": "uploading"}
         # Set copied_at to 2 hours ago to exceed max_seed_wait_hours=1
-        old = (datetime.now(tz=timezone.utc) - timedelta(hours=2)).isoformat()
+        old = (datetime.now(tz=UTC) - timedelta(hours=2)).isoformat()
         fake_row.post_process_copied_at = old
         fake_row.post_process_state = "copied"
         _run_delete_phase(torrent, config, qbt, fake_row)
@@ -459,14 +477,19 @@ class TestEdgeCases:
         config.post_process.post_process_enabled = True
         qbt = MagicMock()
         qbt.is_connected.return_value = True
-        qbt.list_completed.return_value = [{
-            "torrent_tag": "gamarr-bad",
-            "torrent_hash": "abc",
-            "torrent_name": "Bad",
-            "torrent_save_path": "/dl",
-            "torrent_state": "uploading",
-            "torrent_file_list": [],
-        }]
+        qbt.list_completed.return_value = (
+            [
+                {
+                    "torrent_tag": "gamarr-bad",
+                    "torrent_hash": "abc",
+                    "torrent_name": "Bad",
+                    "torrent_save_path": "/dl",
+                    "torrent_state": "uploading",
+                    "torrent_file_list": [],
+                }
+            ],
+            1,
+        )
         db = MagicMock()
         db.find_by_tag.side_effect = RuntimeError("DB crash")
         # Should not raise — exception is caught and logged
@@ -474,10 +497,10 @@ class TestEdgeCases:
         # If we get here without exception, the guard works
 
     def test_copy_phase_make_directory_failure(self) -> None:
+        from gamarr import post_processor as pp_mod
         from gamarr.config import Config
         from gamarr.database import HistoryRow
         from gamarr.post_processor import _run_copy_phase
-        from gamarr import post_processor as pp_mod
 
         config = Config()
         config.post_process.library_path = "/lib/{title}"
@@ -502,10 +525,10 @@ class TestEdgeCases:
         # make_directory failed — should NOT set post_process_state
 
     def test_copy_phase_copy_with_verify_failure(self) -> None:
+        from gamarr import post_processor as pp_mod
         from gamarr.config import Config
         from gamarr.database import HistoryRow
         from gamarr.post_processor import _run_copy_phase
-        from gamarr import post_processor as pp_mod
 
         config = Config()
         config.post_process.library_path = "/lib/{title}"
@@ -529,3 +552,57 @@ class TestEdgeCases:
         ):
             _run_copy_phase(torrent, config, fake_row)
         # copy_with_verify failed — should NOT set post_process_state
+
+
+class TestDownloadingCount:
+    """Post-processing summary must acknowledge in-progress downloads."""
+
+    def test_summary_includes_downloading_count(self) -> None:
+        """When there are in-progress gamarr torrents, the summary must show 'X downloading'."""
+        from loguru import logger as loguru_logger
+
+        from gamarr.config import Config
+        from gamarr.post_processor import run_post_processing
+
+        captured: list[str] = []
+        sink_id = loguru_logger.add(
+            lambda msg: captured.append(f"{msg.record['level'].name}: {msg}"),
+            level="DEBUG",
+            format="{message}",
+        )
+        try:
+            config = Config()
+            config.post_process.post_process_enabled = True
+            config.post_process.library_path = "/lib/{title}"
+
+            qbt = MagicMock()
+            qbt.is_connected.return_value = True
+            # list_completed returns (completed_list, total_gamarr_count)
+            # 1 completed + 1 downloading = 2 total
+            qbt.list_completed.return_value = (
+                [
+                    {
+                        "torrent_tag": "gamarr-done",
+                        "torrent_hash": "abc",
+                        "torrent_name": "Done Game",
+                        "torrent_save_path": "/dl",
+                        "torrent_state": "pausedUP",
+                        "torrent_file_list": [{"file_name": "game.iso", "file_size": 999999}],
+                    },
+                ],
+                2,
+            )
+            db = MagicMock()
+
+            run_post_processing(config, qbt, db)
+
+            # Should mention the downloading count
+            assert any(m.startswith("INFO:") and "downloading" in m.lower() for m in captured), (
+                "Summary must mention 'downloading' count"
+            )
+            # Should show total: 1 completed + 1 downloading = 2 total
+            assert any(m.startswith("INFO:") and "1 downloading" in m for m in captured), (
+                "Summary must show '1 downloading' when there's 1 in-progress torrent"
+            )
+        finally:
+            loguru_logger.remove(sink_id)

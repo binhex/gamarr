@@ -11,7 +11,7 @@ import datetime
 import os
 import re
 from datetime import UTC
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
@@ -87,9 +87,7 @@ def _file_excluded(
         return True
     if any(rx.search(folder_part) for rx in folder_regexes):
         return True
-    if min_kb and file_size_kb < min_kb:
-        return True
-    return False
+    return bool(min_kb and file_size_kb < min_kb)
 
 
 def _copied_age_hours(copied_at: str | None) -> float:
@@ -108,38 +106,55 @@ def _process_one(
     config: Config,
     qbt: QBittorrentClient,
     db: Database,
-) -> None:
-    """Handle a single completed torrent: copy or delete based on state."""
+) -> str | None:
+    """Handle a single completed torrent: copy or delete based on state.
+
+    Returns:
+        "copied" if files were successfully copied.
+        "deleted" if source torrent was deleted after seeding.
+        None if no action was taken (no-op).
+    """
     tag = torrent["torrent_tag"]
 
     row: HistoryRow | None = db.find_by_tag(tag)
+    if _is_no_op_row(row, tag):
+        return None
+    assert row is not None  # narrowed by _is_no_op_row
+
+    if row.post_process_state is None and config.post_process.copy_completed:
+        if _run_copy_phase(torrent, config, row):
+            return "copied"
+        return None
+
+    if (
+        row.post_process_state == "copied"
+        and config.post_process.remove_completed
+        and _run_delete_phase(torrent, config, qbt, row)
+    ):
+        return "deleted"
+    return None
+
+
+def _is_no_op_row(row: HistoryRow | None, tag: str) -> bool:
+    """Return True if the row should be skipped (no history or already deleted)."""
     if row is None:
         logger.warning("No history record for tag '{}'; skipping.", tag)
-        return
-
-    state = row.post_process_state
-
-    # Already deleted — nothing to do.
-    if state == "deleted":
-        logger.debug("Torrent '{}' already deleted; skipping.", tag)
-        return
-
-    # Copy phase
-    if state is None and config.post_process.copy_completed:
-        _run_copy_phase(torrent, config, row)
-        return
-
-    # Delete phase: copied, waiting for seeding to finish
-    if state == "copied" and config.post_process.remove_completed:
-        _run_delete_phase(torrent, config, qbt, row)
+        return True
+    if row.post_process_state == "deleted":
+        logger.info("Torrent '{}' already deleted; skipping.", tag)
+        return True
+    return False
 
 
 def _run_copy_phase(
     torrent: dict,
     config: Config,
     row: HistoryRow,
-) -> None:
-    """Copy completed torrent files to the library."""
+) -> bool:
+    """Copy completed torrent files to the library.
+
+    Returns True if files were successfully copied, False otherwise.
+    """
     pp = config.post_process
 
     dst_dir = _build_destination_path(
@@ -150,29 +165,31 @@ def _run_copy_phase(
         game_title=row.game_title or "Unknown",
     )
     if not dst_dir:
-        logger.debug("Empty library_path; skipping copy for '{}'.", row.game_title)
-        return
+        logger.info("Empty library_path; skipping copy for '{}'.", row.game_title)
+        return False
 
     if os.path.isdir(dst_dir):
         logger.info("Destination '{}' already exists; skipping '{}'.", dst_dir, row.game_title)
-        return
+        return False
 
     src_files = _build_copy_list(torrent, pp)
     if not src_files:
         logger.debug("No files to copy for '{}'.", row.game_title)
-        return
+        return False
 
     if not make_directory(dst_dir):
         logger.error("Cannot create destination directory '{}'; skipping.", dst_dir)
-        return
+        return False
 
     all_ok = _copy_all_files(src_files, dst_dir)
     if all_ok:
         row.post_process_state = "copied"
         row.post_process_copied_at = datetime.datetime.now(tz=UTC).isoformat()
         logger.info("Copied '{}' to '{}'.", row.game_title, dst_dir)
+        return True
     else:
         logger.warning("Copy failed for '{}'; will retry on next cycle.", row.game_title)
+        return False
 
 
 def _copy_all_files(src_files: list[str], dst_dir: str) -> bool:
@@ -191,8 +208,11 @@ def _run_delete_phase(
     config: Config,
     qbt: QBittorrentClient,
     row: HistoryRow,
-) -> None:
-    """Delete source torrent if seeding goal is met or timeout exceeded."""
+) -> bool:
+    """Delete source torrent if seeding goal is met or timeout exceeded.
+
+    Returns True if the torrent was deleted, False otherwise.
+    """
     torrent_state = torrent.get("torrent_state", "")
     pp = config.post_process
 
@@ -212,15 +232,17 @@ def _run_delete_phase(
         qbt.delete_torrent(torrent["torrent_hash"], delete_data=True)
         row.post_process_state = "deleted"
         logger.info("Deleted torrent '{}' after post-processing.", row.game_title)
+        return True
     else:
-        logger.debug(
+        logger.info(
             "Torrent '{}' still seeding (state={}); waiting for seeding to finish.",
             row.game_title,
             torrent_state,
         )
+        return False
 
 
-def _build_copy_list(torrent: dict, pp: object) -> list[str]:
+def _build_copy_list(torrent: dict, pp: Any) -> list[str]:
     """Return absolute file paths that pass exclusion rules."""
     save_path = torrent.get("torrent_save_path") or ""
     if not save_path:
@@ -279,13 +301,31 @@ def run_post_processing(config: Config, qbt: QBittorrentClient, db: Database) ->
         logger.warning("qBittorrent is unreachable; skipping post-processing.")
         return
 
-    completed = qbt.list_completed()
-    if not completed:
+    completed, total_gamarr = qbt.list_completed()
+    if total_gamarr == 0:
         logger.debug("No completed torrents to post-process.")
         return
 
+    downloading = total_gamarr - len(completed)
+    copied = 0
+    deleted = 0
+    errors = 0
+
     for torrent in completed:
         try:
-            _process_one(torrent, config, qbt, db)
+            result = _process_one(torrent, config, qbt, db)
+            if result == "copied":
+                copied += 1
+            elif result == "deleted":
+                deleted += 1
         except Exception:  # noqa: BLE001
             logger.exception("Post-processing failed for torrent '{}'.", torrent.get("torrent_tag", "unknown"))
+            errors += 1
+
+    logger.info(
+        "Post-processing: {} downloading, {} copied, {} deleted, {} errors",
+        downloading,
+        copied,
+        deleted,
+        errors,
+    )
