@@ -173,6 +173,21 @@ class ReviewSitesConfig(BaseModel):
     metacritic: MetacriticConfig = Field(default_factory=MetacriticConfig)
 
 
+class PostProcessConfig(BaseModel):
+    """Post-processing settings for copying completed downloads to library."""
+
+    post_process_enabled: bool = True
+    schedule_time_mins: int = Field(default=5, gt=0, description="Polling interval in minutes (must be > 0).")
+    run_on_start: bool = True
+    library_path: str = ""
+    copy_completed: bool = True
+    remove_completed: bool = True
+    max_seed_wait_hours: int = Field(default=168, ge=0, description="Fallback: delete after hours even if seeding. 0 = never.")
+    exclude_file_min_kb: int = 0
+    exclude_file_regex_list: list[str] = Field(default_factory=list)
+    exclude_folder_regex_list: list[str] = Field(default_factory=list)
+
+
 class Config(BaseModel):
     """Root configuration model that aggregates all sub-configs."""
 
@@ -191,6 +206,7 @@ class Config(BaseModel):
     notification: NotificationConfig = Field(default_factory=NotificationConfig)
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     library: LibraryConfig = Field(default_factory=LibraryConfig)
+    post_process: PostProcessConfig = Field(default_factory=PostProcessConfig)
 
 
 def _normalize_date_values(d: Any) -> Any:
