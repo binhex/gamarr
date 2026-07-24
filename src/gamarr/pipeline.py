@@ -326,11 +326,25 @@ def run_acquisition(
                         max_pages_cfg,
                     )
                 else:
+                    # Track remaining pages across all years so max_pages is a
+                    # single global budget, not a per-year budget.
+                    remaining_pages = max_pages_cfg - total_backlog if max_pages_cfg > 0 else 0
                     for scan_year in range(cutoff_year, current_year + 1):
                         if is_cancelled(cancel_event):
                             break
+                        if max_pages_cfg > 0 and remaining_pages <= 0:
+                            break
                         start_page = db.get_last_scanned_page(platform, scan_year) + 1
                         try:
+                            # Per-call limit: honour both max_cycle_pages and remaining budget
+                            if max_pages_cfg > 0:
+                                if cfg.max_cycle_pages and cfg.max_cycle_pages > 0:
+                                    per_call_max = min(cfg.max_cycle_pages, remaining_pages)
+                                else:
+                                    per_call_max = remaining_pages
+                            else:
+                                per_call_max = cfg.max_cycle_pages if cfg.max_cycle_pages else 0
+
                             year_games = mc.scan_recent_games(
                                 platform,
                                 cache_pages_hours=cfg.cache_pages_hours,
@@ -339,13 +353,16 @@ def run_acquisition(
                                 start_page=start_page,
                                 show_progress=True,
                                 year=scan_year if cfg.sort_order == "new" else None,
-                                max_pages=cfg.max_cycle_pages
-                                if cfg.max_cycle_pages
-                                else (cfg.max_pages if cfg.max_pages else 0),
+                                max_pages=per_call_max,
                             )
                             browse_games.extend(year_games)
                             last_page = mc._recent_games_last_page if isinstance(mc._recent_games_last_page, int) else 0
                             db.set_last_scanned_page(platform, scan_year, last_page)
+
+                            # Deduct actually-scanned pages from the global budget
+                            if max_pages_cfg > 0 and last_page >= start_page:
+                                pages_scanned = last_page - start_page + 1
+                                remaining_pages -= pages_scanned
                         except Exception:
                             logger.exception("Scan failed for year {} — will retry next cycle", scan_year)
 

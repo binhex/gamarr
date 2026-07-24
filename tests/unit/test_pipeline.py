@@ -6117,6 +6117,59 @@ class TestBacklogLatestMode:
         assert kwargs["start_page"] == 1
         assert kwargs["max_pages"] == 4
 
+    def test_backlog_shared_budget_respects_max_pages(self, mocker: Any, tmp_path: Path) -> None:
+        """Backlog mode should cap total pages across all years, not per-year.
+
+        With max_pages=5 on a fresh database (sum_scanned_pages=0), the year
+        loop has 2 years. The old code gave each year an independent max_pages
+        budget of 5 (total potential: 10). The fix shares the budget globally,
+        so after the first year exhausts the 5-page budget with a single
+        10-page scan, no more years are scanned.
+        """
+        from unittest.mock import MagicMock
+
+        from gamarr.pipeline import run_acquisition
+
+        mock_db = mocker.patch("gamarr.pipeline.Database")
+        mock_db_instance = mock_db.return_value
+        mock_db_instance.sum_scanned_pages.return_value = 0
+        mock_db_instance.has_verified_backlog_pending.return_value = False
+        mock_db_instance.get_backlog_pending.return_value = []
+        mock_db_instance.get_last_scanned_page.return_value = 0
+
+        mock_qbt = mocker.patch("gamarr.pipeline.QBittorrentClient")
+        mock_qbt_instance = mock_qbt.return_value
+        mock_qbt_instance.is_connected.return_value = True
+
+        mock_mc = mocker.patch("gamarr.pipeline.MetacriticClient")
+        mock_mc_instance = mock_mc.return_value
+
+        # Simulate scanning 10 pages per year call
+        def _mock_scan(*args: Any, **kwargs: Any) -> list:
+            mock_mc_instance._recent_games_last_page = 10
+            return []
+
+        scan_mock = MagicMock(side_effect=_mock_scan)
+        mock_mc_instance.scan_recent_games = scan_mock
+
+        # sort_order "new" and max_pages=5 → years_back = ceil(5/52) = 1 → 2 years
+        run_acquisition(
+            platform="pc",
+            db_path=str(tmp_path / "test.db"),
+            min_metascore=75,
+            min_metascore_reviews=10,
+            min_user_score=7.5,
+            min_user_reviews=10,
+            enabled=True,
+            max_pages=5,
+            max_cycle_pages=0,
+            search_mode="backlog",
+        )
+        # The shared budget should limit to 1 year (5 pages exhausted after first call)
+        assert scan_mock.call_count == 1
+        # First call should use the full initial budget (5 pages remaining)
+        assert scan_mock.call_args[1]["max_pages"] == 5
+
 
 def test_process_browse_games_latest_mode(tmp_path: Path) -> None:
     """_process_browse_games dispatches to latest pending table."""
