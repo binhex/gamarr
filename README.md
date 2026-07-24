@@ -1,9 +1,13 @@
 # gamarr
 
-Metadata game downloader — browses Metacritic for newly released games that
-pass configured score thresholds, matches them against download sources
-(FreeGOGPCGames and FitGirl repacks), and sends qualifying games to qBittorrent.
-Sources are checked in config-defined priority order.
+**gamarr** finds great games and puts them in your library — no browsing,
+no manual searches, no cleanup. A configurable pipeline scrapes Metacritic
+for critically-acclaimed releases, filters out unwanted genres and keywords,
+matches titles against FitGirl repacks and FreeGOGPCGames, and delivers
+torrents to qBittorrent. Once downloads complete, a post-processing thread
+SHA-256-verifies and copies each game to your library with customizable path
+templates, then cleans up source torrents. Runs as a daemon so your library
+stays fresh without lifting a finger.
 
 ## Features
 
