@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import tomllib
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _pkg_version
@@ -62,7 +63,8 @@ def _resolve_version() -> str:
 
 _VERSION = _resolve_version()
 _PROJECT_ROOT = get_project_root()
-_DEFAULT_LOGS_PATH = f"{_PROJECT_ROOT}/logs/gamarr.log"
+_LOG_BASENAME = "gamarr.log"
+_DEFAULT_LOGS_DIR = f"{_PROJECT_ROOT}/logs"
 
 
 def _apply_general_overrides(config: Config, overrides: dict[str, Any]) -> None:
@@ -70,11 +72,9 @@ def _apply_general_overrides(config: Config, overrides: dict[str, Any]) -> None:
         config.general.db_path = str(overrides["db_path"])
     if overrides.get("pid_path") is not None:
         config.general.pid_path = str(overrides["pid_path"])
-    import os as _os
-
     paths_override = overrides.get("library_path_list")
     if paths_override:
-        config.library.paths = [_os.path.abspath(p.strip()) for p in paths_override.split("|") if p.strip()]
+        config.library.paths = [os.path.abspath(p.strip()) for p in paths_override.split("|") if p.strip()]
 
 
 def _apply_qbt_overrides(config: Config, overrides: dict[str, Any]) -> None:
@@ -113,11 +113,11 @@ def _apply_cli_overrides(config: Config, **overrides: Any) -> None:
 )
 @click.option(
     "--log-path",
-    type=click.Path(file_okay=True, dir_okay=False, resolve_path=True),
+    type=click.Path(file_okay=False, dir_okay=True, resolve_path=True),
     default=None,
     show_default=False,
-    metavar="<path>",
-    help="Override the log file path from config.",
+    metavar="<dir>",
+    help="Override the log file directory from config (logs are written to <dir>/gamarr.log).",
 )
 @click.option(
     "--test",
@@ -237,7 +237,8 @@ def cli(
     )
 
     log_format = "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>"
-    effective_log_path = log_path or _DEFAULT_LOGS_PATH
+    effective_log_dir = log_path or _DEFAULT_LOGS_DIR
+    effective_log_path = os.path.join(effective_log_dir, _LOG_BASENAME)
     effective_log_level = log_level.upper() if log_level else config.general.log_level_console
     create_logger(
         log_format=log_format,

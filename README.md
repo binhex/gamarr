@@ -3,7 +3,7 @@
 **gamarr** finds great games and puts them in your library — no browsing,
 no manual searches, no cleanup. A configurable pipeline scrapes Metacritic
 for critically-acclaimed releases, filters out unwanted genres and keywords,
-matches titles against FitGirl repacks and FreeGOGPCGames, and delivers
+matches titles against FitGirl repacks and FreeGOG, and delivers
 torrents to qBittorrent. Once downloads complete, a post-processing thread
 SHA-256-verifies and copies each game to your library with customizable path
 templates, then cleans up source torrents. Runs as a daemon so your library
@@ -87,7 +87,7 @@ gamarr
 | ------ | ----------- |
 | `--config-path <dir>` | Directory containing `gamarr.yml` (default: `configs`) |
 | `--log-level <level>` | Override console log level (DEBUG, INFO, SUCCESS, WARNING, ERROR) |
-| `--log-path <path>` | Override log file path |
+| `--log-path <dir>` | Override the log file directory from config (logs are written to `<dir>/gamarr.log`). |
 | `--db-path <dir>` | Override the database directory from config |
 | `--pid-path <dir>` | Override the PID file directory from config |
 | `--library-path <paths>` | Override library paths (pipe-separated: `--library-path /a\|/b`) |

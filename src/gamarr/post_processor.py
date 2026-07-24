@@ -126,13 +126,14 @@ def _process_one(
             return "copied"
         return None
 
-    if (
-        row.post_process_state == "copied"
-        and config.post_process.remove_completed
-        and _run_delete_phase(torrent, config, qbt, row)
-    ):
+    if _is_delete_eligible(row, config) and _run_delete_phase(torrent, config, qbt, row):
         return "deleted"
     return None
+
+
+def _is_delete_eligible(row: HistoryRow, config: Config) -> bool:
+    """Return True if the torrent is in the copied state and deletion is enabled."""
+    return row.post_process_state == "copied" and config.post_process.remove_completed
 
 
 def _is_no_op_row(row: HistoryRow | None, tag: str) -> bool:

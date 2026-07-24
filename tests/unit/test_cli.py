@@ -131,6 +131,31 @@ class TestCli:
         mock_db.return_value.clear_cache.assert_not_called()
         mock_logger.warning.assert_any_call("Unknown cache source '{}' — skipping", "bogus")
 
+    def test_log_path_accepts_directory(self) -> None:
+        """--log-path should accept a directory and write gamarr.log inside it."""
+        import os
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_dir = tempfile.mkdtemp(dir=tmpdir)
+            with patch("gamarr.scheduler.run"):
+                result = self.runner.invoke(cli, ["--config-path", tmpdir, "--log-path", log_dir])
+            assert result.exit_code == 0, f"CLI failed with: {result.output}"
+            expected_log = os.path.join(log_dir, "gamarr.log")
+            assert os.path.exists(expected_log), f"Log file not created at {expected_log}"
+
+    def test_log_path_rejects_existing_file(self) -> None:
+        """--log-path should reject an existing file (must be a directory)."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create a file and pass it as --log-path
+            existing_file = tempfile.mkstemp(dir=tmpdir, suffix=".log")[1]
+            with patch("gamarr.scheduler.run"):
+                result = self.runner.invoke(cli, ["--config-path", tmpdir, "--log-path", existing_file])
+            assert result.exit_code != 0, f"CLI should reject file path, got exit code 0. Output: {result.output}"
+            assert "is a file" in result.output.lower() or "not a directory" in result.output.lower()
+
 
 class TestCliOverrides:
     """Tests for CLI override functions."""
