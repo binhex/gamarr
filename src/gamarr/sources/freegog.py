@@ -20,10 +20,18 @@ if TYPE_CHECKING:
     import threading
 
 
-def _sb_fetch_with_browser(sb: SB, url: str) -> str:
-    """Fetch a URL using an existing SeleniumBase browser session."""
-    sb.uc_open_with_reconnect(url, 4)
-    sb.uc_gui_click_captcha()
+def _sb_fetch_with_browser(sb: SB, url: str, *, fast: bool = False) -> str:
+    """Fetch a URL using an existing SeleniumBase browser session.
+
+    When *fast* is False (A-Z page), uses uc_open_with_reconnect for
+    Cloudflare bypass. When *fast* is True (game pages), uses sb.get()
+    — no reconnect needed since cf_clearance cookie is already set.
+    """
+    if fast:
+        sb.get(url)
+    else:
+        sb.uc_open_with_reconnect(url, 4)
+        sb.uc_gui_click_captcha()
     return sb.get_page_source()  # type: ignore[no-any-return]
 
 
@@ -230,7 +238,7 @@ class FreeGOGSource:
         Returns True if a new game was indexed, False otherwise.
         """
         try:
-            html = _sb_fetch_with_browser(sb, entry["url"])
+            html = _sb_fetch_with_browser(sb, entry["url"], fast=True)
             magnet = _extract_magnet_from_freegog_page(html)
         except Exception as exc:
             logger.warning(

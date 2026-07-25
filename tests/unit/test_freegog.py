@@ -248,7 +248,7 @@ class TestFreeGOGFetchSitemap:
 
         with patch("gamarr.sources.freegog._sb_fetch_with_browser") as mock_get:
 
-            def side_effect(_sb: object, url: str) -> str:
+            def side_effect(_sb: object, url: str, **kwargs: object) -> str:
                 if "game-list" in url:
                     return az_html
                 return game_html
@@ -300,7 +300,7 @@ class TestFreeGOGFetchSitemap:
         with patch("gamarr.sources.freegog._sb_fetch_with_browser") as mock_get:
             call_count = 0
 
-            def side_effect(_sb: object, url: str) -> str:
+            def side_effect(_sb: object, url: str, **kwargs: object) -> str:
                 nonlocal call_count
                 call_count += 1
                 if "game-list" in url:
@@ -354,7 +354,7 @@ class TestFreeGOGFetchSitemap:
         with patch("gamarr.sources.freegog._sb_fetch_with_browser") as mock_get:
             call_count = 0
 
-            def side_effect(_sb: object, url: str) -> str:
+            def side_effect(_sb: object, url: str, **kwargs: object) -> str:
                 nonlocal call_count
                 call_count += 1
                 if "game-list" in url:
