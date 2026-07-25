@@ -529,8 +529,6 @@ def run_acquisition(
             # If no download_sites provided, fall back to a default FitGirl entry
             # using the legacy parameters for backward compatibility.
             sites = download_sites if download_sites else [_make_fitgirl_entry()]
-            # Phase 2-3: Index all sources (indexing must happen before matching
-            # so _match_pending_games sees fresh sitemap data).
             # Per-source: index, then immediately match, so a slow or failing
             # source doesn't block matching from faster sources.
             for source_entry in sites:
