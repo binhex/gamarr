@@ -56,8 +56,8 @@ class DownloadSitesConfig(RootModel[list[SourceConfigEntry]]):
     """
 
     root: list[SourceConfigEntry] = [
-        SourceConfigEntry(name="freegog"),
         SourceConfigEntry(name="fitgirl"),
+        SourceConfigEntry(name="freegog"),
     ]
 
     @field_validator("root", mode="before")
@@ -198,8 +198,8 @@ class Config(BaseModel):
     download_sites: DownloadSitesConfig = Field(
         default_factory=lambda: DownloadSitesConfig(
             root=[
-                SourceConfigEntry(name="freegog"),
                 SourceConfigEntry(name="fitgirl"),
+                SourceConfigEntry(name="freegog"),
             ]
         )
     )
