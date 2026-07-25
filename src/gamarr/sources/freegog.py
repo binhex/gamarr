@@ -263,25 +263,42 @@ class FreeGOGSource:
 
             new_count = 0
             known_count = 0
+            missing_magnet_count = 0
             total_entries = len(az_entries)
 
             for entry in az_entries:
                 if entry["url"] in existing_urls and existing_urls[entry["url"]] is not None:
-                    # Skip only if we already have a valid magnet for this URL.
-                    # Re-fetch entries with magnet=None (broken from earlier buggy indexing).
                     known_count += 1
                     continue
 
+                # Log progress for entries that need fetching (new or missing magnet)
+                if new_count == 0 and missing_magnet_count == 0:
+                    logger.info(
+                        "FreeGOG: fetching {} game pages ({} known, {} need magnets)",
+                        total_entries - known_count,
+                        known_count,
+                        total_entries - known_count,
+                    )
+                elif (new_count + missing_magnet_count) % 10 == 0:
+                    logger.info(
+                        "FreeGOG progress: {}/{} games fetched",
+                        new_count + missing_magnet_count,
+                        total_entries - known_count,
+                    )
+
                 if self._fetch_and_store_game(db, entry):
                     new_count += 1
+                else:
+                    missing_magnet_count += 1
 
             db.set_sitemap_cache("freegog")
-            if new_count > 0:
+            if new_count > 0 or missing_magnet_count > 0:
                 logger.info(
-                    "FreeGOG: {} new games found ({} entries checked, {} already known)",
+                    "FreeGOG: {} new games indexed ({} checked, {} known, {} failed)",
                     new_count,
                     total_entries,
                     known_count,
+                    missing_magnet_count,
                 )
             else:
                 logger.info(
