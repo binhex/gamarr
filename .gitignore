@@ -3,3 +3,4 @@ htmlcov/
 coverage.xml
 pids/
 configs/gamarr.yml
+downloaded_files/
