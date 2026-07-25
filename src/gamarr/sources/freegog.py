@@ -279,7 +279,7 @@ class FreeGOGSource:
                         known_count,
                         total_entries - known_count,
                     )
-                elif (new_count + missing_magnet_count) % 10 == 0:
+                elif (new_count + missing_magnet_count) % 20 == 0:
                     logger.info(
                         "FreeGOG progress: {}/{} games fetched",
                         new_count + missing_magnet_count,
