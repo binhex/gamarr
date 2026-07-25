@@ -246,9 +246,9 @@ class TestFreeGOGFetchSitemap:
             f'{self.ENCODED_MAGNET}.dummy123" data-type="magnet">Magnet</a>'
         )
 
-        with patch("gamarr.sources.freegog._sb_uc_get") as mock_get:
+        with patch("gamarr.sources.freegog._sb_fetch_with_browser") as mock_get:
 
-            def side_effect(url: str) -> str:
+            def side_effect(_sb: object, url: str) -> str:
                 if "game-list" in url:
                     return az_html
                 return game_html
@@ -297,10 +297,10 @@ class TestFreeGOGFetchSitemap:
             f'{self.ENCODED_MAGNET}.dummy123" data-type="magnet">Magnet</a>'
         )
 
-        with patch("gamarr.sources.freegog._sb_uc_get") as mock_get:
+        with patch("gamarr.sources.freegog._sb_fetch_with_browser") as mock_get:
             call_count = 0
 
-            def side_effect(url: str) -> str:
+            def side_effect(_sb: object, url: str) -> str:
                 nonlocal call_count
                 call_count += 1
                 if "game-list" in url:
@@ -351,10 +351,10 @@ class TestFreeGOGFetchSitemap:
             f'{self.ENCODED_MAGNET}.dummy123" data-type="magnet">Magnet</a>'
         )
 
-        with patch("gamarr.sources.freegog._sb_uc_get") as mock_get:
+        with patch("gamarr.sources.freegog._sb_fetch_with_browser") as mock_get:
             call_count = 0
 
-            def side_effect(url: str) -> str:
+            def side_effect(_sb: object, url: str) -> str:
                 nonlocal call_count
                 call_count += 1
                 if "game-list" in url:
@@ -398,7 +398,7 @@ class TestFreeGOGFetchSitemap:
             )
             session.commit()
 
-        with patch("gamarr.sources.freegog._sb_uc_get") as mock_get:
+        with patch("gamarr.sources.freegog._sb_fetch_with_browser") as mock_get:
             source.fetch_sitemap(db)
             mock_get.assert_not_called()
 
@@ -415,7 +415,7 @@ class TestFreeGOGFetchSitemap:
         source = FreeGOGSource(db=db, cache_pages_hours=0)
 
         with patch(
-            "gamarr.sources.freegog._sb_uc_get",
+            "gamarr.sources.freegog._sb_fetch_with_browser",
             side_effect=Exception("Connection error"),
         ):
             source.fetch_sitemap(db)
@@ -441,7 +441,7 @@ class TestFreeGOGFetchSitemap:
         cancel_event = threading.Event()
         cancel_event.set()
 
-        with patch("gamarr.sources.freegog._sb_uc_get") as mock_get:
+        with patch("gamarr.sources.freegog._sb_fetch_with_browser") as mock_get:
             source.fetch_sitemap(db, cancel_event=cancel_event)
             mock_get.assert_not_called()
 
@@ -460,7 +460,7 @@ class TestFreeGOGFetchSitemap:
 
         cancel_event = threading.Event()
 
-        with patch("gamarr.sources.freegog._sb_uc_get") as mock_get:
+        with patch("gamarr.sources.freegog._sb_fetch_with_browser") as mock_get:
             mock_get.return_value = ""
             # Should not raise TypeError
             source.fetch_sitemap(db, cancel_event=cancel_event)
@@ -517,7 +517,7 @@ class TestFreeGOGFetchSitemap:
 
         with (
             patch("gamarr.sources.freegog.logger") as mock_logger,
-            patch("gamarr.sources.freegog._sb_uc_get") as mock_get,
+            patch("gamarr.sources.freegog._sb_fetch_with_browser") as mock_get,
         ):
             mock_get.return_value = az_html
 

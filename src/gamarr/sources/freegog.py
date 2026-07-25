@@ -20,12 +20,11 @@ if TYPE_CHECKING:
     import threading
 
 
-def _sb_uc_get(url: str) -> str:
-    """Fetch a URL through SeleniumBase UC Mode, returning HTML."""
-    with SB(uc=True) as sb:
-        sb.uc_open_with_reconnect(url, 4)
-        sb.uc_gui_click_captcha()
-        return sb.get_page_source()  # type: ignore[no-any-return]
+def _sb_fetch_with_browser(sb: SB, url: str) -> str:
+    """Fetch a URL using an existing SeleniumBase browser session."""
+    sb.uc_open_with_reconnect(url, 4)
+    sb.uc_gui_click_captcha()
+    return sb.get_page_source()  # type: ignore[no-any-return]
 
 
 # Edition suffixes to strip (adapted from fitgirl.py with Sunset Edition added)
@@ -219,13 +218,19 @@ class FreeGOGSource:
     def _fetch_and_store_game(
         db: Database,
         entry: dict[str, str],
+        sb: SB,
     ) -> bool:
         """Fetch a single FreeGOG game page and store its magnet.
+
+        Args:
+            db: Database instance.
+            entry: Dict with ``title`` and ``url`` keys.
+            sb: Active SeleniumBase browser session.
 
         Returns True if a new game was indexed, False otherwise.
         """
         try:
-            html = _sb_uc_get(entry["url"])
+            html = _sb_fetch_with_browser(sb, entry["url"])
             magnet = _extract_magnet_from_freegog_page(html)
         except Exception as exc:
             logger.warning(
@@ -249,47 +254,49 @@ class FreeGOGSource:
         """Fetch the FreeGOG A-Z page and index new games.
 
         Cross-references against existing ``source_titles`` entries and
-        only fetches game pages for new URLs.
+        only fetches game pages for new URLs. Uses a single SeleniumBase
+        browser session for all fetches to avoid per-page startup overhead.
 
         Args:
             db: The database instance to store results in.
         """
         url = "https://freegogpcgames.com/game-list/"
         try:
-            html = _sb_uc_get(url)
-            az_entries = _parse_freegog_az_page(html)
+            with SB(uc=True) as sb:
+                html = _sb_fetch_with_browser(sb, url)
+                az_entries = _parse_freegog_az_page(html)
 
-            existing_urls = self._build_existing_urls(db)
+                existing_urls = self._build_existing_urls(db)
 
-            new_count = 0
-            known_count = 0
-            missing_magnet_count = 0
-            total_entries = len(az_entries)
+                new_count = 0
+                known_count = 0
+                missing_magnet_count = 0
+                total_entries = len(az_entries)
 
-            for entry in az_entries:
-                if entry["url"] in existing_urls and existing_urls[entry["url"]] is not None:
-                    known_count += 1
-                    continue
+                for entry in az_entries:
+                    if entry["url"] in existing_urls and existing_urls[entry["url"]] is not None:
+                        known_count += 1
+                        continue
 
-                # Log progress for entries that need fetching (new or missing magnet)
-                if new_count == 0 and missing_magnet_count == 0:
-                    logger.info(
-                        "FreeGOG: fetching {} game pages ({} known, {} need magnets)",
-                        total_entries - known_count,
-                        known_count,
-                        total_entries - known_count,
-                    )
-                elif (new_count + missing_magnet_count) % 20 == 0:
-                    logger.info(
-                        "FreeGOG progress: {}/{} games fetched",
-                        new_count + missing_magnet_count,
-                        total_entries - known_count,
-                    )
+                    # Log progress for entries that need fetching (new or missing magnet)
+                    if new_count == 0 and missing_magnet_count == 0:
+                        logger.info(
+                            "FreeGOG: fetching {} game pages ({} known, {} need magnets)",
+                            total_entries - known_count,
+                            known_count,
+                            total_entries - known_count,
+                        )
+                    elif (new_count + missing_magnet_count) % 20 == 0:
+                        logger.info(
+                            "FreeGOG progress: {}/{} games fetched",
+                            new_count + missing_magnet_count,
+                            total_entries - known_count,
+                        )
 
-                if self._fetch_and_store_game(db, entry):
-                    new_count += 1
-                else:
-                    missing_magnet_count += 1
+                    if self._fetch_and_store_game(db, entry, sb):
+                        new_count += 1
+                    else:
+                        missing_magnet_count += 1
 
             db.set_sitemap_cache("freegog")
             if new_count > 0 or missing_magnet_count > 0:
