@@ -775,6 +775,84 @@ class TestRunAcquisition:
             )
             verify_db.close()
 
+    def test_source_error_does_not_block_other_source_matches(self, mocker: Any) -> None:
+        """When one source errors during fetch_sitemap, other sources still match.
+
+        Currently FETCH ALL → MATCH ALL. If FreeGOG crashes during fetch_sitemap,
+        FitGirl's matching phase never runs. The fix: per-source index+match
+        so FitGirl matches before FreeGOG gets a chance to crash.
+        """
+        import types
+
+        from gamarr.pipeline import run_acquisition
+
+        mock_db = mocker.patch("gamarr.pipeline.Database")
+        mock_db_instance = mock_db.return_value
+        mock_db_instance.has_verified_backlog_pending.return_value = True
+        mock_db_instance.sum_scanned_pages.return_value = 0
+        mock_db_instance.get_last_scanned_page.return_value = 0
+        mock_db_instance.get_backlog_pending.return_value = []
+
+        mock_qbt = mocker.patch("gamarr.pipeline.QBittorrentClient")
+        mock_qbt_instance = mock_qbt.return_value
+        mock_qbt_instance.is_connected.return_value = True
+
+        mock_mc = mocker.patch("gamarr.pipeline.MetacriticClient")
+        mock_mc_instance = mock_mc.return_value
+        mock_mc_instance.scan_recent_games.return_value = []
+
+        # Track which sources were matched (never call the real function)
+        matched_sources = []
+
+        def _track_match(*args: Any, source_name: str = "", **kwargs: Any) -> list:
+            matched_sources.append(source_name)
+            return []
+
+        mocker.patch("gamarr.pipeline._match_pending_games", side_effect=_track_match)
+
+        # FitGirl: succeeds
+        mock_fitgirl = MagicMock()
+        mocker.patch("gamarr.pipeline.FitGirlSource", return_value=mock_fitgirl)
+
+        # FreeGOG: raises during fetch_sitemap (simulating the slow/scraping failure)
+        mock_freegog = MagicMock()
+        mock_freegog.fetch_sitemap.side_effect = Exception("FreeGOG scraper failed")
+        mocker.patch("gamarr.pipeline.FreeGOGSource", return_value=mock_freegog)
+
+        fitgirl_entry = types.SimpleNamespace()
+        fitgirl_entry.name = "fitgirl"
+        fitgirl_entry.enabled = True
+        fitgirl_entry.platform = "pc"
+        fitgirl_entry.cache_pages_hours = 6
+        fitgirl_entry.reject_keywords = []
+        fitgirl_entry.max_queue_days = 60
+
+        freegog_entry = types.SimpleNamespace()
+        freegog_entry.name = "freegog"
+        freegog_entry.enabled = True
+        freegog_entry.platform = "pc"
+        freegog_entry.cache_pages_hours = 6
+        freegog_entry.reject_keywords = []
+        freegog_entry.max_queue_days = 60
+
+        with pytest.raises(Exception, match="FreeGOG scraper failed"):
+            run_acquisition(
+                db_path=":memory:",
+                platform="pc",
+                qbt_host="localhost",
+                qbt_port=8080,
+                min_metascore=75,
+                search_mode="backlog",
+                download_sites=[fitgirl_entry, freegog_entry],
+            )
+
+        # RED phase: this assertion FAILS because the old sequential code
+        # crashes at FreeGOG's fetch_sitemap before _match_pending_games
+        # is ever called for FitGirl.
+        # GREEN phase: per-source matching runs FitGirl match before
+        # FreeGOG's fetch_sitemap, so this passes.
+        assert "fitgirl" in matched_sources
+
 
 class TestGamePassesThresholds:
     """_game_passes_thresholds browse-phase score checks."""

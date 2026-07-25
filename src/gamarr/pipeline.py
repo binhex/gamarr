@@ -531,23 +531,21 @@ def run_acquisition(
             sites = download_sites if download_sites else [_make_fitgirl_entry()]
             # Phase 2-3: Index all sources (indexing must happen before matching
             # so _match_pending_games sees fresh sitemap data).
-            sources_built: list[tuple[Any, Any]] = []
+            # Per-source: index, then immediately match, so a slow or failing
+            # source doesn't block matching from faster sources.
             for source_entry in sites:
                 if not source_entry.enabled:
                     continue
                 source = _build_source(source_entry, db)
-                sources_built.append((source_entry, source))
 
+                # Phase N: Index this source
                 phase += 1
                 display = _source_display(source_entry.name)
                 logger.opt(colors=True).info("<cyan>━━━ Phase {}: Indexing {} ━━━</>", phase, display)
-
                 source.fetch_sitemap(db, cancel_event=cancel_event)
 
-            # Per-source matching phases
-            for source_entry, _source in sources_built:
+                # Phase N+1: Match pending games against this source immediately
                 phase += 1
-                display = _source_display(source_entry.name)
                 logger.opt(colors=True).info(
                     "<magenta>━━━ Phase {}: Searching for matching games on {} ━━━</>", phase, display
                 )
