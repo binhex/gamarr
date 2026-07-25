@@ -122,18 +122,23 @@ def _process_one(
     assert row is not None  # narrowed by _is_no_op_row
 
     if row.post_process_state is None and config.post_process.copy_completed:
-        if _run_copy_phase(torrent, config, row):
+        if _run_copy_phase(torrent, config, row, db):
             return "copied"
         return None
 
-    if _is_delete_eligible(row, config) and _run_delete_phase(torrent, config, qbt, row):
+    if _is_delete_eligible(row, config) and _run_delete_phase(torrent, config, qbt, row, db):
         return "deleted"
     return None
 
 
 def _is_delete_eligible(row: HistoryRow, config: Config) -> bool:
     """Return True if the torrent is in the copied state and deletion is enabled."""
-    return row.post_process_state == "copied" and config.post_process.remove_completed
+    if not config.post_process.remove_completed:
+        return False
+    # Allow direct delete when copy_completed is False (skip copy entirely).
+    return row.post_process_state == "copied" or (
+        row.post_process_state is None and not config.post_process.copy_completed
+    )
 
 
 def _is_no_op_row(row: HistoryRow | None, tag: str) -> bool:
@@ -151,12 +156,15 @@ def _run_copy_phase(
     torrent: dict,
     config: Config,
     row: HistoryRow,
+    db: Database,
 ) -> bool:
     """Copy completed torrent files to the library.
 
-    Returns True if files were successfully copied, False otherwise.
+    Returns True if files were successfully copied (or already present),
+    False only if a retryable error occurred.
     """
     pp = config.post_process
+    tag = torrent["torrent_tag"]
 
     dst_dir = _build_destination_path(
         template=pp.library_path,
@@ -170,8 +178,9 @@ def _run_copy_phase(
         return False
 
     if os.path.isdir(dst_dir):
-        logger.info("Destination '{}' already exists; skipping '{}'.", dst_dir, row.game_title)
-        return False
+        logger.info("Destination '{}' already exists; marking as copied.", dst_dir)
+        db.set_post_process_state(tag, "copied", copied_at=row.post_process_copied_at)
+        return True
 
     src_files = _build_copy_list(torrent, pp)
     if not src_files:
@@ -184,12 +193,14 @@ def _run_copy_phase(
 
     all_ok = _copy_all_files(src_files, dst_dir)
     if all_ok:
-        row.post_process_state = "copied"
-        row.post_process_copied_at = datetime.datetime.now(tz=UTC).isoformat()
+        copied_at = datetime.datetime.now(tz=UTC).isoformat()
+        db.set_post_process_state(tag, "copied", copied_at=copied_at)
         logger.info("Copied '{}' to '{}'.", row.game_title, dst_dir)
         return True
     else:
-        logger.warning("Copy failed for '{}'; will retry on next cycle.", row.game_title)
+        # Clean up partially-populated destination so the next cycle can retry.
+        logger.warning("Copy failed for '{}'; cleaning up partial destination.", row.game_title)
+        _remove_directory_if_empty(dst_dir)
         return False
 
 
@@ -209,6 +220,7 @@ def _run_delete_phase(
     config: Config,
     qbt: QBittorrentClient,
     row: HistoryRow,
+    db: Database,
 ) -> bool:
     """Delete source torrent if seeding goal is met or timeout exceeded.
 
@@ -216,6 +228,7 @@ def _run_delete_phase(
     """
     torrent_state = torrent.get("torrent_state", "")
     pp = config.post_process
+    tag = torrent["torrent_tag"]
 
     should_delete = torrent_state in ("pausedUP", "stoppedUP")
     if not should_delete:
@@ -231,7 +244,7 @@ def _run_delete_phase(
 
     if should_delete:
         qbt.delete_torrent(torrent["torrent_hash"], delete_data=True)
-        row.post_process_state = "deleted"
+        db.set_post_process_state(tag, "deleted")
         logger.info("Deleted torrent '{}' after post-processing.", row.game_title)
         return True
     else:
@@ -241,6 +254,32 @@ def _run_delete_phase(
             torrent_state,
         )
         return False
+
+
+def _remove_directory_if_empty(path: str) -> None:
+    """Remove *path* and all its contents if it exists.
+
+    Walks *path* bottom-up, deleting files and directories.
+    If *path* does not exist or is not a directory, this is a no-op.
+    """
+    import contextlib
+
+    if not os.path.isdir(path):
+        return
+    try:
+        # Walk bottom-up so we remove empty children before their parents.
+        for root, dirs, files in os.walk(path, topdown=False):
+            for name in files:
+                fp = os.path.join(root, name)
+                with contextlib.suppress(OSError):
+                    os.unlink(fp)
+            for name in dirs:
+                dp = os.path.join(root, name)
+                with contextlib.suppress(OSError):
+                    os.rmdir(dp)
+        os.rmdir(path)
+    except OSError:
+        logger.debug("Could not fully remove '{}'.", path)
 
 
 def _build_copy_list(torrent: dict, pp: Any) -> list[str]:

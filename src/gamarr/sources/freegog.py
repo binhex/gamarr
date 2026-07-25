@@ -258,6 +258,51 @@ class FreeGOGSource:
         )
         return True
 
+    @staticmethod
+    def _log_az_progress(
+        new_count: int,
+        missing_magnet_count: int,
+        total_entries: int,
+        known_count: int,
+    ) -> None:
+        """Log periodic progress during FreeGOG A-Z page indexing."""
+        remaining = total_entries - known_count
+        if new_count == 0 and missing_magnet_count == 0:
+            logger.info(
+                "FreeGOG: fetching {} game pages ({} known, {} need magnets)",
+                remaining,
+                known_count,
+                remaining,
+            )
+        elif (new_count + missing_magnet_count) % 500 == 0:
+            logger.info(
+                "FreeGOG progress: {}/{} games fetched",
+                new_count + missing_magnet_count,
+                remaining,
+            )
+
+    @staticmethod
+    def _log_az_summary(
+        new_count: int,
+        total_entries: int,
+        known_count: int,
+        missing_magnet_count: int,
+    ) -> None:
+        """Log a summary line after A-Z page indexing completes."""
+        if new_count > 0 or missing_magnet_count > 0:
+            logger.info(
+                "FreeGOG: {} new games indexed ({} checked, {} known, {} failed)",
+                new_count,
+                total_entries,
+                known_count,
+                missing_magnet_count,
+            )
+        else:
+            logger.info(
+                "FreeGOG: all {} entries already known — nothing new",
+                total_entries,
+            )
+
     def _index_az_page(self, db: Database) -> None:
         """Fetch the FreeGOG A-Z page and index new games.
 
@@ -286,20 +331,7 @@ class FreeGOGSource:
                         known_count += 1
                         continue
 
-                    # Log progress for entries that need fetching (new or missing magnet)
-                    if new_count == 0 and missing_magnet_count == 0:
-                        logger.info(
-                            "FreeGOG: fetching {} game pages ({} known, {} need magnets)",
-                            total_entries - known_count,
-                            known_count,
-                            total_entries - known_count,
-                        )
-                    elif (new_count + missing_magnet_count) % 500 == 0:
-                        logger.info(
-                            "FreeGOG progress: {}/{} games fetched",
-                            new_count + missing_magnet_count,
-                            total_entries - known_count,
-                        )
+                    self._log_az_progress(new_count, missing_magnet_count, total_entries, known_count)
 
                     if self._fetch_and_store_game(db, entry, sb):
                         new_count += 1
@@ -307,19 +339,7 @@ class FreeGOGSource:
                         missing_magnet_count += 1
 
             db.set_sitemap_cache("freegog")
-            if new_count > 0 or missing_magnet_count > 0:
-                logger.info(
-                    "FreeGOG: {} new games indexed ({} checked, {} known, {} failed)",
-                    new_count,
-                    total_entries,
-                    known_count,
-                    missing_magnet_count,
-                )
-            else:
-                logger.info(
-                    "FreeGOG: all {} entries already known — nothing new",
-                    total_entries,
-                )
+            self._log_az_summary(new_count, total_entries, known_count, missing_magnet_count)
         except Exception as exc:
             logger.warning("Failed to fetch FreeGOG A-Z page: {}", exc)
             db.set_sitemap_cache("freegog")

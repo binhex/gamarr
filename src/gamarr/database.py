@@ -348,6 +348,7 @@ class Database:
             if col_name not in columns:
                 with self._session() as session:
                     session.execute(text(f"ALTER TABLE history ADD COLUMN {col_name} VARCHAR"))
+                    session.commit()
                 logger.debug("Added {} column to history", col_name)
 
     def close(self) -> None:
@@ -1250,6 +1251,24 @@ class Database:
         """
         with self._session() as session:
             return session.query(HistoryRow).filter(HistoryRow.torrent_tag == tag).first()
+
+    def set_post_process_state(self, tag: str, state: str, copied_at: str | None = None) -> None:
+        """Persist a post-processing state transition for a tagged torrent.
+
+        Args:
+            tag: The torrent tag to update.
+            state: New post_process_state value ("copied" or "deleted").
+            copied_at: ISO timestamp for when the game was copied. Only set
+                when *state* is "copied" and *copied_at* is provided.
+        """
+        with self._session() as session:
+            row = session.query(HistoryRow).filter(HistoryRow.torrent_tag == tag).first()
+            if row is None:
+                return
+            row.post_process_state = state
+            if copied_at is not None:
+                row.post_process_copied_at = copied_at
+            session.commit()
 
     def get_stats(self) -> dict[str, Any]:
         with self._session() as session:

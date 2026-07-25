@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 from datetime import UTC
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 from gamarr.post_processor import (
     _build_destination_path,
@@ -208,8 +212,11 @@ class TestRunPostProcessing:
         ):
             run_post_processing(config, qbt, db)
 
-        assert fake_row.post_process_state == "copied"
-        assert fake_row.post_process_copied_at is not None
+        db.set_post_process_state.assert_called_once()
+        args, kwargs = db.set_post_process_state.call_args
+        assert args[0] == "gamarr-test"
+        assert args[1] == "copied"
+        assert kwargs.get("copied_at") is not None
 
     def test_skip_when_dest_exists(self) -> None:
         from gamarr.config import Config
@@ -249,7 +256,10 @@ class TestRunPostProcessing:
         ):
             run_post_processing(config, qbt, db)
 
-        assert fake_row.post_process_state is None  # unchanged — dest existed
+        db.set_post_process_state.assert_called_once()
+        args = db.set_post_process_state.call_args[0]
+        assert args[0] == "gamarr-test"
+        assert args[1] == "copied"
 
     def test_delete_phase_paused_state(self) -> None:
         from gamarr.config import Config
@@ -283,7 +293,7 @@ class TestRunPostProcessing:
 
         run_post_processing(config, qbt, db)
         qbt.delete_torrent.assert_called_once_with("abc", delete_data=True)
-        assert fake_row.post_process_state == "deleted"
+        db.set_post_process_state.assert_called_once_with("gamarr-test", "deleted")
 
     def test_delete_phase_stays_if_still_seeding(self) -> None:
         from gamarr.config import Config
@@ -397,8 +407,9 @@ class TestEdgeCases:
         fake_row.genres = "Action"
         fake_row.game_title = "Test Game"
         torrent = {"torrent_tag": "t", "torrent_save_path": "/dl"}
-        _run_copy_phase(torrent, config, fake_row)
-        # Should return without setting post_process_state (library_path is empty)
+        db_mock = MagicMock()
+        _run_copy_phase(torrent, config, fake_row, db_mock)
+        # Should not call set_post_process_state (library_path is empty)
 
     def test_build_copy_list_empty_save_path(self) -> None:
         from gamarr.post_processor import _build_copy_list
@@ -460,14 +471,15 @@ class TestEdgeCases:
         config.post_process.max_seed_wait_hours = 1
         qbt = MagicMock()
         fake_row = MagicMock(spec=HistoryRow)
-        torrent = {"torrent_hash": "abc", "torrent_state": "uploading"}
+        torrent = {"torrent_tag": "abc", "torrent_hash": "abc", "torrent_state": "uploading"}
         # Set copied_at to 2 hours ago to exceed max_seed_wait_hours=1
         old = (datetime.now(tz=UTC) - timedelta(hours=2)).isoformat()
         fake_row.post_process_copied_at = old
         fake_row.post_process_state = "copied"
-        _run_delete_phase(torrent, config, qbt, fake_row)
+        db_mock = MagicMock()
+        _run_delete_phase(torrent, config, qbt, fake_row, db_mock)
         qbt.delete_torrent.assert_called_once_with("abc", delete_data=True)
-        assert fake_row.post_process_state == "deleted"
+        db_mock.set_post_process_state.assert_called_once_with("abc", "deleted")
 
     def test_run_post_processing_handles_torrent_exception(self) -> None:
         from gamarr.config import Config
@@ -517,11 +529,12 @@ class TestEdgeCases:
             "torrent_save_path": "/dl",
             "torrent_file_list": [{"file_name": "game.iso", "file_size": 999999}],
         }
+        db_mock = MagicMock()
         with (
             patch.object(pp_mod.os.path, "isdir", return_value=False),
             patch.object(pp_mod, "make_directory", return_value=False),
         ):
-            _run_copy_phase(torrent, config, fake_row)
+            _run_copy_phase(torrent, config, fake_row, db_mock)
         # make_directory failed — should NOT set post_process_state
 
     def test_copy_phase_copy_with_verify_failure(self) -> None:
@@ -540,6 +553,7 @@ class TestEdgeCases:
         fake_row.platform = "pc"
         fake_row.genres = "Action"
         fake_row.game_title = "Test"
+        db_mock = MagicMock()
         torrent = {
             "torrent_tag": "t",
             "torrent_save_path": "/dl",
@@ -550,7 +564,7 @@ class TestEdgeCases:
             patch.object(pp_mod, "make_directory", return_value=True),
             patch.object(pp_mod, "copy_with_verify", return_value=False),
         ):
-            _run_copy_phase(torrent, config, fake_row)
+            _run_copy_phase(torrent, config, fake_row, db_mock)
         # copy_with_verify failed — should NOT set post_process_state
 
 
@@ -606,3 +620,33 @@ class TestDownloadingCount:
             )
         finally:
             loguru_logger.remove(sink_id)
+
+
+class TestRemoveDirectoryIfEmpty:
+    """Tests for the _remove_directory_if_empty cleanup helper."""
+
+    def test_removes_empty_directory(self, tmp_path: Path) -> None:
+        """An empty directory is removed."""
+        from gamarr.post_processor import _remove_directory_if_empty
+
+        empty_dir = tmp_path / "empty"
+        empty_dir.mkdir()
+        _remove_directory_if_empty(str(empty_dir))
+        assert not empty_dir.exists()
+
+    def test_noop_nonexistent_path(self) -> None:
+        """Non-existent path is silently skipped."""
+        from gamarr.post_processor import _remove_directory_if_empty
+
+        _remove_directory_if_empty("/nonexistent/path/xyz123")
+        # Should not raise
+
+    def test_removes_empty_dir_with_empty_child(self, tmp_path: Path) -> None:
+        """A dir with an empty child dir is fully removed."""
+        from gamarr.post_processor import _remove_directory_if_empty
+
+        parent = tmp_path / "parent"
+        child = parent / "child"
+        child.mkdir(parents=True)
+        _remove_directory_if_empty(str(parent))
+        assert not parent.exists()

@@ -221,6 +221,7 @@ def _build_kwargs(config: Config) -> dict[str, Any]:
         "fitgirl_max_queue_days": fitgirl_entry.max_queue_days if fitgirl_entry else 60,
         "library_paths": config.library.paths,
         "download_sites": list(config.download_sites),
+        "age_recheck_weeks": mc_cfg.age_recheck_weeks if hasattr(mc_cfg, "age_recheck_weeks") else None,
     }
 
 

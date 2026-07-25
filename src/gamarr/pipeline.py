@@ -1413,7 +1413,15 @@ def _process_verify_batch(
 
             checked = verified + 1
             _log_verify_progress(verified, max_verify, total_pending)
-            result = fut.result()
+            try:
+                result = fut.result()
+            except Exception:
+                logger.exception(
+                    "Lookup failed for '{}' (slug={}); treating as None.",
+                    game.game_title,
+                    game.slug,
+                )
+                result = None
             if result is not None:
                 any_success = True
             if _process_verify_result(

@@ -6,6 +6,11 @@ import datetime
 from datetime import UTC
 from typing import TYPE_CHECKING
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+import pytest
+
 from gamarr.database import Database
 
 if TYPE_CHECKING:
@@ -1724,3 +1729,47 @@ class TestPendingModeSplit:
         legacy = conn2.execute("SELECT COUNT(*) FROM pending_games").fetchone()[0]
         assert legacy == 0, f"Legacy table should be empty, got {legacy}"
         conn2.close()
+
+
+class TestSetPostProcessState:
+    """Tests for the Database.set_post_process_state method."""
+
+    @pytest.fixture
+    def db(self) -> Iterator[Database]:
+        """Return an in-memory Database pre-populated with a history row."""
+        from gamarr.database import Database
+
+        db_instance = Database(":memory:")
+        db_instance.record_processed(
+            source="metacritic",
+            source_title="Test Game",
+            source_url="mc:test-game",
+            game_title="Test Game",
+            platform="pc",
+            result="Passed",
+            magnet_url="magnet:?xt=urn:btih:abc",
+            torrent_tag="gamarr-test-tag",
+        )
+        yield db_instance
+        db_instance.close()
+
+    def test_sets_copied_state(self, db: Database) -> None:
+        """Setting state to 'copied' persists with optional copied_at."""
+        copied_at = "2025-07-25T12:00:00"
+        db.set_post_process_state("gamarr-test-tag", "copied", copied_at=copied_at)
+        row = db.find_by_tag("gamarr-test-tag")
+        assert row is not None
+        assert row.post_process_state == "copied"
+        assert row.post_process_copied_at == copied_at
+
+    def test_sets_deleted_state(self, db: Database) -> None:
+        """Setting state to 'deleted' persists."""
+        db.set_post_process_state("gamarr-test-tag", "deleted")
+        row = db.find_by_tag("gamarr-test-tag")
+        assert row is not None
+        assert row.post_process_state == "deleted"
+
+    def test_unknown_tag_is_noop(self, db: Database) -> None:
+        """Calling with an unknown tag does not raise."""
+        db.set_post_process_state("nonexistent-tag", "copied")
+        # Should not raise

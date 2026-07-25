@@ -4924,6 +4924,123 @@ class TestCancellation:
         assert any_success is False
         mock_mc.lookup_game.assert_not_called()
 
+    def test_process_verify_batch_handles_lookup_exception(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """When lookup_game raises, the exception is caught and the game stays pending."""
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _process_verify_batch
+
+        db = Database(str(tmp_path / "test.db"))
+        mock_mc = MagicMock()
+        mock_mc.lookup_game.side_effect = RuntimeError("Network timeout")
+
+        batch = [MagicMock()]
+        batch[0].game_title = "Test Game"
+        batch[0].slug = "test-game"
+        batch[0].metascore = 85.0
+        batch[0].metascore_reviews = 20
+        batch[0].user_score = 8.5
+        batch[0].user_reviews = 50
+        batch[0].release_date = "2025-01-01"
+        batch[0].expires_at = "2099-01-01T00:00:00"
+        batch[0].platform = "pc"
+        batch[0].score_checks_passed = False
+
+        removed, any_success = _process_verify_batch(
+            db,
+            mock_mc,
+            "pc",
+            {
+                "min_metascore": 75,
+                "min_metascore_reviews": 5,
+                "min_user_score": 7.5,
+                "min_user_reviews": 10,
+            },
+            batch,
+            max_verify=1,
+            total_pending=1,
+        )
+
+        assert any_success is False
+        mock_mc.lookup_game.assert_called_once()
+        mock_mc.reset_cache_hits.assert_called_once()
+
+    def test_process_verify_batch_cancels_mid_batch(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """When cancel_event fires mid-batch, remaining futures are cancelled."""
+        from unittest.mock import patch
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _process_verify_batch
+
+        db = Database(str(tmp_path / "test.db"))
+        mock_mc = MagicMock()
+
+        fake_result = MagicMock()
+        fake_result.metascore = 85.0
+        fake_result.metascore_review_count = 20
+        fake_result.user_score = 8.5
+        fake_result.user_review_count = 50
+        fake_result.genres = ["Action"]
+        fake_result.must_play = True
+        fake_result.release_date = "2025-01-01"
+        fake_result.description = None
+        mock_mc.lookup_game.return_value = fake_result
+
+        # Fire cancel_event after the first result is checked
+        call_count = 0
+
+        import threading
+
+        cancel_event = threading.Event()
+
+        def fire_cancel_on_second_call(*args: object, **kwargs: object) -> bool:
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 2:
+                cancel_event.set()
+            return cancel_event.is_set()
+
+        batch = []
+        for i in range(3):
+            g = MagicMock()
+            g.game_title = f"Test Game {i}"
+            g.slug = f"test-game-{i}"
+            g.metascore = 85.0
+            g.metascore_reviews = 20
+            g.user_score = 8.5
+            g.user_reviews = 50
+            g.release_date = "2025-01-01"
+            g.expires_at = "2099-01-01T00:00:00"
+            g.platform = "pc"
+            g.score_checks_passed = False
+            batch.append(g)
+
+        with patch("gamarr.pipeline.is_cancelled", side_effect=fire_cancel_on_second_call):
+            removed, any_success = _process_verify_batch(
+                db,
+                mock_mc,
+                "pc",
+                {
+                    "min_metascore": 75,
+                    "min_metascore_reviews": 5,
+                    "min_user_score": 7.5,
+                    "min_user_reviews": 10,
+                },
+                batch,
+                max_verify=3,
+                total_pending=3,
+                cancel_event=cancel_event,
+            )
+
+        assert call_count >= 2
+
     def test_run_acquisition_returns_early_when_precancelled(self) -> None:
         """When cancel_event is pre-set, run_acquisition returns
         early — the year loop breaks before calling scan_recent_games
