@@ -230,7 +230,7 @@ class TestFreeGOGFetchSitemap:
     )
 
     def test_indexes_new_games(self, tmp_path: Path) -> None:
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import patch
 
         from gamarr.database import Database
         from gamarr.sources.freegog import FreeGOGSource
@@ -246,16 +246,12 @@ class TestFreeGOGFetchSitemap:
             f'{self.ENCODED_MAGNET}.dummy123" data-type="magnet">Magnet</a>'
         )
 
-        with patch("gamarr.sources.freegog.requests.get") as mock_get:
+        with patch("gamarr.sources.freegog._sb_uc_get") as mock_get:
 
-            def side_effect(url: str, **kwargs: object) -> MagicMock:
-                resp = MagicMock()
-                resp.raise_for_status = MagicMock()
+            def side_effect(url: str) -> str:
                 if "game-list" in url:
-                    resp.text = az_html
-                else:
-                    resp.text = game_html
-                return resp
+                    return az_html
+                return game_html
 
             mock_get.side_effect = side_effect
 
@@ -272,7 +268,7 @@ class TestFreeGOGFetchSitemap:
         db.close()
 
     def test_skips_known_games(self, tmp_path: Path) -> None:
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import patch
 
         from gamarr.database import Database, SourceTitle
         from gamarr.sources.freegog import FreeGOGSource
@@ -301,19 +297,15 @@ class TestFreeGOGFetchSitemap:
             f'{self.ENCODED_MAGNET}.dummy123" data-type="magnet">Magnet</a>'
         )
 
-        with patch("gamarr.sources.freegog.requests.get") as mock_get:
+        with patch("gamarr.sources.freegog._sb_uc_get") as mock_get:
             call_count = 0
 
-            def side_effect(url: str, **kwargs: object) -> MagicMock:
+            def side_effect(url: str) -> str:
                 nonlocal call_count
                 call_count += 1
-                resp = MagicMock()
-                resp.raise_for_status = MagicMock()
                 if "game-list" in url:
-                    resp.text = az_html
-                else:
-                    resp.text = game_html
-                return resp
+                    return az_html
+                return game_html
 
             mock_get.side_effect = side_effect
 
@@ -331,7 +323,7 @@ class TestFreeGOGFetchSitemap:
 
     def test_re_fetches_missing_magnet(self, tmp_path: Path) -> None:
         """Entries with magnet=None should be re-fetched, not skipped."""
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import patch
 
         from gamarr.database import Database, SourceTitle
         from gamarr.sources.freegog import FreeGOGSource
@@ -359,19 +351,15 @@ class TestFreeGOGFetchSitemap:
             f'{self.ENCODED_MAGNET}.dummy123" data-type="magnet">Magnet</a>'
         )
 
-        with patch("gamarr.sources.freegog.requests.get") as mock_get:
+        with patch("gamarr.sources.freegog._sb_uc_get") as mock_get:
             call_count = 0
 
-            def side_effect(url: str, **kwargs: object) -> MagicMock:
+            def side_effect(url: str) -> str:
                 nonlocal call_count
                 call_count += 1
-                resp = MagicMock()
-                resp.raise_for_status = MagicMock()
                 if "game-list" in url:
-                    resp.text = az_html
-                else:
-                    resp.text = game_html
-                return resp
+                    return az_html
+                return game_html
 
             mock_get.side_effect = side_effect
             source.fetch_sitemap(db)
@@ -410,7 +398,7 @@ class TestFreeGOGFetchSitemap:
             )
             session.commit()
 
-        with patch("gamarr.sources.freegog.requests.get") as mock_get:
+        with patch("gamarr.sources.freegog._sb_uc_get") as mock_get:
             source.fetch_sitemap(db)
             mock_get.assert_not_called()
 
@@ -420,8 +408,6 @@ class TestFreeGOGFetchSitemap:
     def test_handles_az_failure(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
-        import requests
-
         from gamarr.database import Database
         from gamarr.sources.freegog import FreeGOGSource
 
@@ -429,8 +415,8 @@ class TestFreeGOGFetchSitemap:
         source = FreeGOGSource(db=db, cache_pages_hours=0)
 
         with patch(
-            "gamarr.sources.freegog.requests.get",
-            side_effect=requests.exceptions.ConnectionError("nope"),
+            "gamarr.sources.freegog._sb_uc_get",
+            side_effect=Exception("Connection error"),
         ):
             source.fetch_sitemap(db)
 
@@ -455,7 +441,7 @@ class TestFreeGOGFetchSitemap:
         cancel_event = threading.Event()
         cancel_event.set()
 
-        with patch("gamarr.sources.freegog.requests.get") as mock_get:
+        with patch("gamarr.sources.freegog._sb_uc_get") as mock_get:
             source.fetch_sitemap(db, cancel_event=cancel_event)
             mock_get.assert_not_called()
 
@@ -464,7 +450,7 @@ class TestFreeGOGFetchSitemap:
 
     def test_accepts_cancel_event_kwarg(self) -> None:
         import threading
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import patch
 
         from gamarr.database import Database
         from gamarr.sources.freegog import FreeGOGSource
@@ -474,11 +460,8 @@ class TestFreeGOGFetchSitemap:
 
         cancel_event = threading.Event()
 
-        with patch("gamarr.sources.freegog.requests.get") as mock_get:
-            mock_resp = MagicMock()
-            mock_resp.text = ""
-            mock_resp.raise_for_status = MagicMock()
-            mock_get.return_value = mock_resp
+        with patch("gamarr.sources.freegog._sb_uc_get") as mock_get:
+            mock_get.return_value = ""
             # Should not raise TypeError
             source.fetch_sitemap(db, cancel_event=cancel_event)
 
@@ -487,7 +470,7 @@ class TestFreeGOGFetchSitemap:
 
     def test_logs_batch_progress_instead_of_per_letter(self, tmp_path: Path) -> None:
         """Should log batch progress every 500 entries, not per-letter."""
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import patch
 
         from gamarr.database import Database, SourceTitle
         from gamarr.sources.freegog import FreeGOGSource
@@ -534,12 +517,9 @@ class TestFreeGOGFetchSitemap:
 
         with (
             patch("gamarr.sources.freegog.logger") as mock_logger,
-            patch("gamarr.sources.freegog.requests.get") as mock_get,
+            patch("gamarr.sources.freegog._sb_uc_get") as mock_get,
         ):
-            mock_resp = MagicMock()
-            mock_resp.text = az_html
-            mock_resp.raise_for_status = MagicMock()
-            mock_get.return_value = mock_resp
+            mock_get.return_value = az_html
 
             source.fetch_sitemap(db)
 

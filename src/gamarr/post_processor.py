@@ -139,7 +139,7 @@ def _is_delete_eligible(row: HistoryRow, config: Config) -> bool:
 def _is_no_op_row(row: HistoryRow | None, tag: str) -> bool:
     """Return True if the row should be skipped (no history or already deleted)."""
     if row is None:
-        logger.warning("No history record for tag '{}'; skipping.", tag)
+        logger.debug("No history record for tag '{}'; skipping.", tag)
         return True
     if row.post_process_state == "deleted":
         logger.info("Torrent '{}' already deleted; skipping.", tag)

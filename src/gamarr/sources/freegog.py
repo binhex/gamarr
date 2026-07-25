@@ -11,17 +11,22 @@ import re
 from html import unescape
 from typing import TYPE_CHECKING
 
-import requests
 from loguru import logger
+from seleniumbase import SB
 
 from gamarr.database import Database
 
 if TYPE_CHECKING:
     import threading
 
-_USER_AGENT = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-)
+
+def _sb_uc_get(url: str) -> str:
+    """Fetch a URL through SeleniumBase UC Mode, returning HTML."""
+    with SB(uc=True) as sb:
+        sb.uc_open_with_reconnect(url, 4)
+        sb.uc_gui_click_captcha()
+        return sb.get_page_source()  # type: ignore[no-any-return]
+
 
 # Edition suffixes to strip (adapted from fitgirl.py with Sunset Edition added)
 _EDITION_PATTERN = re.compile(
@@ -220,14 +225,9 @@ class FreeGOGSource:
         Returns True if a new game was indexed, False otherwise.
         """
         try:
-            game_resp = requests.get(
-                entry["url"],
-                timeout=30,
-                headers={"User-Agent": _USER_AGENT},
-            )
-            game_resp.raise_for_status()
-            magnet = _extract_magnet_from_freegog_page(game_resp.text)
-        except requests.RequestException as exc:
+            html = _sb_uc_get(entry["url"])
+            magnet = _extract_magnet_from_freegog_page(html)
+        except Exception as exc:
             logger.warning(
                 "Failed to fetch FreeGOG game page '{}': {}",
                 entry["url"],
@@ -256,9 +256,8 @@ class FreeGOGSource:
         """
         url = "https://freegogpcgames.com/game-list/"
         try:
-            resp = requests.get(url, timeout=30, headers={"User-Agent": _USER_AGENT})
-            resp.raise_for_status()
-            az_entries = _parse_freegog_az_page(resp.text)
+            html = _sb_uc_get(url)
+            az_entries = _parse_freegog_az_page(html)
 
             existing_urls = self._build_existing_urls(db)
 
@@ -289,7 +288,7 @@ class FreeGOGSource:
                     "FreeGOG: all {} entries already known — nothing new",
                     total_entries,
                 )
-        except requests.RequestException as exc:
+        except Exception as exc:
             logger.warning("Failed to fetch FreeGOG A-Z page: {}", exc)
             db.set_sitemap_cache("freegog")
 
