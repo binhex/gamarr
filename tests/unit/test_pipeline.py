@@ -2143,6 +2143,81 @@ class TestMetacriticBrowse:
             assert db.is_backlog_pending("game-with-body-keyword"), "Should remain pending"
             db.close()
 
+    def test_reject_keywords_ignores_download_link_anchor_text(self, tmp_path: Path) -> None:
+        """When reject keyword only appears inside a download link's anchor text (e.g. "Hypervisor" in
+        a filename like "Persona.5.Royal.v1.04.Hypervisor.Bypass-DenuvOwO.rar"), do NOT reject.
+
+        Download link filenames contain structural metadata about the crack method used by
+        the Denuvo community — they do not describe the game's requirements.
+        """
+        import datetime
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _process_single_pending_match
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_backlog_pending(
+            slug="game-with-link-only-keyword",
+            game_title="Game With Link Only Keyword",
+            platform="pc",
+            metascore=85.0,
+            user_score=8.0,
+            expires_at=expires,
+        )
+        db.update_backlog_pending_scores(slug="game-with-link-only-keyword", metascore=85.0, user_score=8.0)
+        db.rebuild_source_titles(
+            "fitgirl",
+            [
+                {
+                    "title": "Game With Link Only Keyword",
+                    "url": "https://fitgirl-repacks.site/game-with-link-only-keyword/",
+                }
+            ],
+        )
+
+        # Article body text is clean (no keywords), but the download link anchor text
+        # contains "Hypervisor" in the filename — the exact false positive scenario.
+        html = (
+            "<html><head><title>Game With Link Only Keyword [FitGirl Repack]</title></head>"
+            "<body>"
+            "<article>"
+            "<p>Lossless repack of Game With Link Only Keyword</p>"
+            '<p><a href="https://example.com/dl">Persona.5.Royal.v1.04.Hypervisor.Bypass-DenuvOwO.rar</a></p>'
+            "</article>"
+            "</body></html>"
+        )
+
+        with patch("gamarr.pipeline.requests.get") as mock_get:
+            mock_resp = MagicMock()
+            mock_resp.text = html
+            mock_resp.raise_for_status.return_value = None
+            mock_get.return_value = mock_resp
+
+            result = _process_single_pending_match(
+                db,
+                mc=None,
+                thresholds=None,
+                qbt=None,
+                magnet_fetcher=None,
+                notifier=None,
+                library=None,
+                can_deliver=False,
+                game_title="Game With Link Only Keyword",
+                game_slug="game-with-link-only-keyword",
+                game_platform="pc",
+                game_metascore=85.0,
+                game_metascore_reviews=100,
+                game_user_score=8.0,
+                game_user_reviews=50,
+                game_release_date=None,
+                reject_keywords=["Hypervisor"],
+            )
+            # The game should NOT be rejected — keyword only appears in download link text
+            assert result is not None, "Game should NOT be rejected — keyword only in download link"
+            db.close()
+
     def test_reject_keywords_ignores_comments_section(self, tmp_path: Path) -> None:
         """When keyword only appears in comments (outside <article>), do NOT reject."""
         import datetime

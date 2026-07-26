@@ -1340,6 +1340,21 @@ def _process_verify_result(
     return False
 
 
+def _log_batch_summary(checked: int, cache_hits: int) -> None:
+    """Log a single summary line after a batch of pending game lookups.
+
+    Clamps subtraction: on cancellation, *cache_hits* from still-running
+    futures may exceed the count of consumed results.
+    """
+    if checked > 0:
+        logger.info(
+            "Score check: {} verified ({} from cache, {} from Metacritic API)",
+            checked,
+            cache_hits,
+            max(0, checked - cache_hits),
+        )
+
+
 def _process_verify_batch(
     db: Database,
     mc: MetacriticClient,
@@ -1439,13 +1454,7 @@ def _process_verify_batch(
         # Single summary line per batch instead of per-100-game progress spam.
         # Clamp subtraction: on cancellation, cache_hits from still-running
         # futures may exceed the count of consumed results.
-        if checked > 0:
-            logger.info(
-                "Score check: {} verified ({} from cache, {} from Metacritic API)",
-                checked,
-                mc.cache_hits,
-                max(0, checked - int(mc.cache_hits)),
-            )
+        _log_batch_summary(checked, int(mc.cache_hits))
     finally:
         pool.shutdown(wait=False)
 
@@ -2725,7 +2734,9 @@ def _fetch_fitgirl_page_content(url: str) -> tuple[str | None, str | None]:
     Returns ``(title, article_text)`` where both are ``None`` if the page
     could not be fetched or the tag is missing.  The title has HTML entities
     decoded (e.g. ``&#039;`` → ``'``, ``&quot;`` → ``"``).  The article
-    text has HTML tags stripped and whitespace collapsed.
+    text has HTML tags stripped (including link anchor text from ``<a>``
+    elements to exclude download filenames from keyword scanning) and
+    whitespace collapsed.
 
     Returns:
         A ``(title, article_text)`` tuple.
@@ -2755,7 +2766,13 @@ def _fetch_fitgirl_page_content(url: str) -> tuple[str | None, str | None]:
     article_text: str | None = None
     article_match = re.search(r"<article[^>]*>(.*?)</article>", html, re.IGNORECASE | re.DOTALL)
     if article_match:
-        article_text = re.sub(r"<[^>]+>", " ", article_match.group(1))
+        article_html = article_match.group(1)
+        # Strip <a> tags AND their content to avoid false positives from
+        # download link filenames (e.g. "Persona.5.Royal.v1.04.Hypervisor.Bypass-"
+        # in anchor text).  These filenames contain structural metadata about
+        # the cracking method and do not describe the game's requirements.
+        article_html = re.sub(r"<a[^>]*>.*?</a>", "", article_html, flags=re.IGNORECASE | re.DOTALL)
+        article_text = re.sub(r"<[^>]+>", " ", article_html)
         article_text = re.sub(r"\s+", " ", article_text).strip()
 
     return title, article_text
