@@ -342,7 +342,8 @@ class FreeGOGSource:
             self._log_az_summary(new_count, total_entries, known_count, missing_magnet_count)
         except Exception as exc:
             logger.warning("Failed to fetch FreeGOG A-Z page: {}", exc)
-            db.set_sitemap_cache("freegog")
+            # Do NOT update the cache on failure — a transient error should not
+            # suppress retries for the full TTL window.
 
     def fetch_sitemap(
         self,

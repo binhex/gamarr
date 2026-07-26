@@ -420,8 +420,8 @@ class TestFreeGOGFetchSitemap:
         ):
             source.fetch_sitemap(db)
 
-        # Cache should be set even on failure (prevents retry loop)
-        assert db.get_sitemap_cache("freegog", 6) is True
+        # Cache should NOT be set on failure — transient errors should retry next cycle.
+        assert db.get_sitemap_cache("freegog", 6) is False
         # No titles should be stored
         assert len(db.get_all_source_titles("freegog")) == 0
 

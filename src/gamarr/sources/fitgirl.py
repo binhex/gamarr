@@ -296,7 +296,8 @@ class FitGirlSource:
             logger.info("FitGirl: {} new game titles indexed", len(titles))
         except requests.RequestException as exc:
             logger.warning("Failed to fetch FitGirl sitemap: {}", exc)
-            db.set_sitemap_cache("fitgirl")
+            # Do NOT update the cache on failure — a transient error should not
+            # suppress retries for the full TTL window.
 
     def fetch_sitemap(self, db: Database, cancel_event: threading.Event | None = None) -> None:
         """Fetch the FitGirl sitemap and rebuild the source_titles index.
