@@ -48,7 +48,7 @@ class TestBuildDestinationPath:
             genres="Action, RPG",
             game_title="Elden Ring",
         )
-        assert result == "/lib/fitgirl/pc/Action/Elden Ring"
+        assert result == "/lib/FitGirl/pc/Action/Elden Ring"
 
     def test_uses_first_genre_only(self) -> None:
         result = _build_destination_path(
@@ -650,3 +650,95 @@ class TestRemoveDirectoryIfEmpty:
         child.mkdir(parents=True)
         _remove_directory_if_empty(str(parent))
         assert not parent.exists()
+
+
+class TestPathCaseFormatting:
+    """Tests for path_case formatting in _build_destination_path."""
+
+    def test_pretty_source_name_is_display_name(self) -> None:
+        """fitgirl becomes FitGirl, freegog becomes FreeGOG."""
+        from gamarr.post_processor import _build_destination_path
+
+        result = _build_destination_path(
+            template="/lib/{site}",
+            source="fitgirl",
+            platform="pc",
+            genres="Action",
+            game_title="Test",
+            path_case="pretty",
+        )
+        assert result == "/lib/FitGirl"
+
+        result = _build_destination_path(
+            template="/lib/{site}",
+            source="freegog",
+            platform="pc",
+            genres="Action",
+            game_title="Test",
+            path_case="pretty",
+        )
+        assert result == "/lib/FreeGOG"
+
+    def test_pretty_unknown_source_is_pass_through(self) -> None:
+        from gamarr.post_processor import _build_destination_path
+
+        result = _build_destination_path(
+            template="/lib/{site}",
+            source="unknown-source",
+            platform="pc",
+            genres="Action",
+            game_title="Test",
+            path_case="pretty",
+        )
+        assert result == "/lib/unknown-source"
+
+    def test_pretty_platform_genre_title_are_pass_through(self) -> None:
+        from gamarr.post_processor import _build_destination_path
+
+        result = _build_destination_path(
+            template="/lib/{platform}/{genre}/{title}",
+            source="fitgirl",
+            platform="Nintendo Switch",
+            genres="Action, RPG",
+            game_title="Zelda",
+            path_case="pretty",
+        )
+        assert result == "/lib/Nintendo Switch/Action/Zelda"
+
+    def test_lowercase_downs_everything(self) -> None:
+        from gamarr.post_processor import _build_destination_path
+
+        result = _build_destination_path(
+            template="/lib/{site}/{platform}/{genre}/{title}",
+            source="fitgirl",
+            platform="PC",
+            genres="Action,RPG",
+            game_title="Elden Ring",
+            path_case="lowercase",
+        )
+        assert result == "/lib/fitgirl/pc/action/elden ring"
+
+    def test_default_is_pretty(self) -> None:
+        from gamarr.post_processor import _build_destination_path
+
+        result = _build_destination_path(
+            template="/lib/{site}",
+            source="fitgirl",
+            platform="pc",
+            genres="Action",
+            game_title="Test",
+        )
+        assert result == "/lib/FitGirl"
+
+    def test_empty_template_returns_empty(self) -> None:
+        from gamarr.post_processor import _build_destination_path
+
+        result = _build_destination_path(
+            template="",
+            source="fitgirl",
+            platform="pc",
+            genres="Action",
+            game_title="Test",
+            path_case="lowercase",
+        )
+        assert result == ""

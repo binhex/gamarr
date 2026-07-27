@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 from loguru import logger
 
 from gamarr.file_utils import copy_with_verify, make_directory
+from gamarr.models import SOURCE_DISPLAY
 
 if TYPE_CHECKING:
     from gamarr.config import Config
@@ -35,6 +36,22 @@ def _safe_path_component(value: str) -> str:
     return stripped
 
 
+def _format_path_value(value: str, key: str, path_case: str) -> str:
+    """Format a single template value according to *path_case*.
+
+    In ``"pretty"`` mode, only the ``site`` key is transformed via the
+    display-name lookup table.  All other keys pass through unchanged
+    (their values are already correctly capitalised from Metacritic /
+    user config).  In ``"lowercase"`` mode, every value is downcased.
+    """
+    if path_case == "lowercase":
+        return value.lower()
+    # default: "pretty" or unknown (treat as pretty for forward compat)
+    if key == "site":
+        return SOURCE_DISPLAY.get(value, value)
+    return value
+
+
 def _build_destination_path(
     *,
     template: str,
@@ -42,11 +59,14 @@ def _build_destination_path(
     platform: str,
     genres: str | None,
     game_title: str,
+    path_case: str = "pretty",
 ) -> str:
     """Resolve a library path template into a concrete filesystem path.
 
     Supported placeholders: {site}, {platform}, {genre}, {title}.
     {genre} uses only the first genre from a comma-separated list.
+    ``path_case`` controls casing: ``"pretty"`` (default) for display
+    names, ``"lowercase"`` to downcase all values.
     """
     if not template:
         return ""
@@ -59,7 +79,8 @@ def _build_destination_path(
     }
     result = template
     for key, value in replacements.items():
-        result = result.replace("{" + key + "}", _safe_path_component(value))
+        formatted = _format_path_value(value, key, path_case)
+        result = result.replace("{" + key + "}", _safe_path_component(formatted))
     return result
 
 
@@ -172,6 +193,7 @@ def _run_copy_phase(
         platform=row.platform,
         genres=row.genres,
         game_title=row.game_title or "Unknown",
+        path_case=pp.path_case,
     )
     if not dst_dir:
         logger.info("Empty library_path; skipping copy for '{}'.", row.game_title)

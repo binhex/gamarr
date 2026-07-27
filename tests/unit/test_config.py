@@ -1303,3 +1303,16 @@ def test_drop_migrated_deprecated_keys_age_recheck() -> None:
     assert "age_recheck_weeks" not in mc_pc
     assert "max_verify_attempts" not in mc_pc
     assert "enabled" in mc_pc
+
+
+def test_migrate_config_adds_post_process_path_case() -> None:
+    """_migrate_config should add path_case field to post_process when missing."""
+    from gamarr.config import _migrate_config
+
+    raw: dict[str, Any] = {
+        "post_process": {"post_process_enabled": True},
+    }
+    result = _migrate_config(raw)
+    assert result is True, "Migration should return True when adding path_case"
+    assert "path_case" in raw["post_process"], "path_case should be added"
+    assert raw["post_process"]["path_case"] == "pretty", "path_case should default to 'pretty'"

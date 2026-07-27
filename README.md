@@ -232,17 +232,20 @@ Mirrors [movarr](https://github.com/binhex/movarr)'s post-processing pattern.
 | `exclude_file_min_kb` | Skip files smaller than this (0 = no minimum). | `0` |
 | `exclude_file_regex_list` | Case-insensitive regex patterns to exclude files. | `[]` |
 | `exclude_folder_regex_list` | Case-insensitive regex patterns to exclude folders. | `[]` |
+| `path_case` | Controls casing of template variables. `"pretty"` uses display-friendly names for source (`FitGirl`, `FreeGOG`); `"lowercase"` downcases everything. Platform, genre, and title pass through unchanged (already correctly capitalized from Metacritic/user config). | `"pretty"` |
 
 **Template variables** in `library_path`:
 
 | Variable | Source | Example |
 | --- | --- | --- |
-| `{site}` | Download source name | `fitgirl`, `freegog` |
-| `{platform}` | Target platform | `pc` |
+| `{site}` | Download source name | `fitgirl` (lowercase) or `FitGirl` (pretty) |
+| `{platform}` | Target platform | `pc` or `PC` |
 | `{genre}` | First Metacritic genre | `Action` |
+
+Casing of all variables is controlled by `path_case` above.
 | `{title}` | Metacritic game title | `Elden Ring` |
 
-Example: `"/data/library/{site}/{platform}/{genre}/{title}"` produces `"/data/library/fitgirl/pc/Action/Elden Ring"`.
+Example: `"/data/library/{site}/{platform}/{genre}/{title}"` produces `"/data/library/FitGirl/pc/Action/Elden Ring"` (with default `path_case: "pretty"`).
 
 ## How It Works
 

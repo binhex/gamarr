@@ -188,6 +188,7 @@ class PostProcessConfig(BaseModel):
     exclude_file_min_kb: int = 0
     exclude_file_regex_list: list[str] = Field(default_factory=list)
     exclude_folder_regex_list: list[str] = Field(default_factory=list)
+    path_case: Literal["pretty", "lowercase"] = "pretty"
 
 
 class Config(BaseModel):
@@ -742,6 +743,19 @@ def _migrate_flatten_schedule_acquisition(raw: dict[str, Any]) -> bool:
     return True
 
 
+def _migrate_add_post_process_path_case(raw: dict[str, Any]) -> bool:
+    """Add path_case field to post_process if missing.
+
+    Returns True if the field was added.
+    """
+    pp = raw.get("post_process")
+    if isinstance(pp, dict) and "path_case" not in pp:
+        pp["path_case"] = "pretty"
+        logger.info("Config: added post_process.path_case = 'pretty'")
+        return True
+    return False
+
+
 def _migrate_add_freegog_to_download_sites(raw: dict[str, Any]) -> bool:
     """Ensure freegog is present in download_sites with full defaults.
 
@@ -818,6 +832,7 @@ def _migrate_config(raw: dict[str, Any]) -> bool:
             # silently overriding the user's explicit setting.
             _migrate_flatten_schedule_acquisition,
             _migrate_daemon_mode,
+            _migrate_add_post_process_path_case,
             _migrate_add_freegog_to_download_sites,
         ]
         for fn in _migrations:

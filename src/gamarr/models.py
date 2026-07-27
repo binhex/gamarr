@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-__all__ = ["GameEntry"]
+__all__ = ["GameEntry", "SOURCE_DISPLAY"]
+
+# Maps internal source identifiers to display-friendly names.
+# Shared across pipeline (log display) and post-processor (path templates).
+SOURCE_DISPLAY: dict[str, str] = {"fitgirl": "FitGirl", "freegog": "FreeGOG"}
 
 
 @dataclass(frozen=True)

@@ -17,6 +17,7 @@ from loguru import logger
 from gamarr.database import _INDEFINITE_DAYS, Database
 from gamarr.metacritic import MetacriticClient
 from gamarr.metacritic_cache import MetacriticCache
+from gamarr.models import SOURCE_DISPLAY
 from gamarr.notifications import Notifier
 from gamarr.qbittorrent import QBittorrentClient
 from gamarr.sources.fitgirl import _USER_AGENT, FitGirlSource, _extract_magnet_from_html
@@ -674,12 +675,9 @@ def _title_matches_reject(title: str, reject_title: list[str] | None) -> bool:
     return any(term.lower() in title_lower for term in reject_title)
 
 
-_SOURCE_DISPLAY: dict[str, str] = {"fitgirl": "FitGirl", "freegog": "FreeGOG"}
-
-
 def _source_display(name: str) -> str:
     """Return the display-cased form of a source name."""
-    return _SOURCE_DISPLAY.get(name, name.title())
+    return SOURCE_DISPLAY.get(name, name.title())
 
 
 def _game_passes_thresholds(game: dict[str, Any], thresholds: dict[str, Any]) -> bool:
