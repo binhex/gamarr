@@ -170,9 +170,8 @@ download_sites:
 | `min_metascore_reviews` | Minimum number of critic reviews required. | `10` |
 | `min_user_score` | Minimum Metacritic user score (0–10). | `7.5` |
 | `min_user_reviews` | Minimum number of user reviews required. | `10` |
-| `search_mode` | Scanning mode: `"backlog"` (historical deep scan) or `"latest"` (recent releases only). | `"latest"` |
-| `max_pages` | In `"backlog"` mode: total browse page window depth. The scanner progressively advances through `max_pages` pages across cycles. In `"latest"` mode: ignored. `0` = unlimited. | `500` |
-| `max_cycle_pages` | In `"backlog"` mode: max pages per cycle (pacing). In `"latest"` mode: the window of recent pages to scan (always pages 1-N). `0` = unlimited. | `0` |
+| `max_pages` | Total browse page depth budget. The scanner progressively advances through pages across cycles. When the budget is exhausted, scanning resets to page 1. `0` = unlimited. | `500` |
+| `max_cycle_pages` | Maximum pages per cycle (pacing). `0` = unlimited. | `0` |
 | `sort_order` | Browse sort order: `"new"` (release date) or `"metascore"` (by critic score). | `"new"` |
 | `max_queue_days` | Days a game stays in the pending queue before expiring. `0` = indefinite pending (no expiry). | `30` |
 | `enabled` | Enable or disable the Metacritic browse step. Disabling skips game discovery entirely. | `true` |
@@ -301,7 +300,7 @@ flowchart TD
    are skipped. `max_cycle_pages` controls the per-cycle page limit
    (default `0` = unlimited). The scanner advances through the
    `max_pages` window progressively — each cycle resumes where the
-   last one left off, draining the backlog page by page.
+   last one left off, with auto-reset to page 1 when the `max_pages` budget is exhausted.
    **Note:** browse scores are on a different scale and always
    exceed the configured thresholds — score filtering effectively starts
    at the verification step (phase 4), not here.

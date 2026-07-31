@@ -176,14 +176,14 @@ class TestReadmeYamlDefaults:
 
     def test_general_defaults_match(self) -> None:
         """Compare all general section defaults against the default config dict."""
-        from gamarr.config import _default_config_dict
+        from gamarr.config import _CONFIG_VERSION, _default_config_dict
 
         defaults = _default_config_dict()
         general = defaults.get("general", {})
 
         # Keys and defaults from README (correct ones that should be there)
         expected: dict[str, str] = {
-            "config_version": "1.0.0",
+            "config_version": _CONFIG_VERSION,
             "daemon_mode": "foreground",
             "log_level_console": "INFO",
             "log_level_file": "INFO",

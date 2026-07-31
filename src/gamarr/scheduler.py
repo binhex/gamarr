@@ -207,7 +207,6 @@ def _build_kwargs(config: Config) -> dict[str, Any]:
         "max_pages": mc_cfg.max_pages,
         "max_cycle_pages": mc_cfg.max_cycle_pages,
         "sort_order": mc_cfg.sort_order,
-        "search_mode": mc_cfg.search_mode,
         "reject_genre": mc_cfg.reject_genre,
         "reject_title": mc_cfg.reject_title,
         "max_queue_days": mc_cfg.max_queue_days,

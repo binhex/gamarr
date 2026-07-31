@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime
 from datetime import UTC
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -1046,7 +1046,7 @@ class TestKnownSlugs:
             expires_at="2099-01-01T00:00:00",
         )
 
-        slugs = db.get_known_slugs(source="metacritic", platform="pc")
+        slugs = db.get_known_slugs(source="metacritic")
         assert "game-a" in slugs, "Should include processed slug"
         assert "game-b" in slugs, "Should include processed slug"
         assert "game-c" in slugs, "Should include pending-only slug"
@@ -1057,7 +1057,7 @@ class TestKnownSlugs:
     def test_get_known_slugs_empty(self, tmp_path: Path) -> None:
         """get_known_slugs returns empty set when nothing is known."""
         db = Database(str(tmp_path / "empty.db"))
-        slugs = db.get_known_slugs(source="metacritic", platform="pc")
+        slugs = db.get_known_slugs(source="metacritic")
         assert isinstance(slugs, set)
         assert len(slugs) == 0
         db.close()
@@ -1083,7 +1083,7 @@ class TestKnownSlugs:
             platform="pc",
             expires_at="2099-01-01T00:00:00",
         )
-        slugs = db.get_known_slugs(source="metacritic", platform="pc")
+        slugs = db.get_known_slugs(source="metacritic")
         assert "pc-game" in slugs
         assert "ps5-game" in slugs, "Should include cross-platform pending slugs"
         assert len(slugs) == 2
@@ -1162,25 +1162,25 @@ class TestBacklogProgress:
         assert db.sum_scanned_pages("pc", 2020, 2025) == 0
         db.close()
 
-    def test_reset_backlog_progress_new_sort(self, tmp_path: Path) -> None:
+    def test_reset_progress_new_sort(self, tmp_path: Path) -> None:
         from gamarr.database import Database
 
         db = Database(str(tmp_path / "test.db"))
         db.set_last_scanned_page("pc", 2026, 10)
         db.set_last_scanned_page("pc", 2025, 50)
-        db.reset_backlog_progress("pc", "new")
+        db.reset_progress("pc", "new")
         assert db.get_last_scanned_page("pc", 2026) == 0
         assert db.get_last_scanned_page("pc", 2025) == 0
         db.close()
 
-    def test_reset_backlog_progress_metascore_sentinel(self, tmp_path: Path) -> None:
+    def test_reset_progress_metascore_sentinel(self, tmp_path: Path) -> None:
         """Reset deletes all rows for the platform regardless of sort_order."""
         from gamarr.database import Database
 
         db = Database(str(tmp_path / "test.db"))
         db.set_last_scanned_page("pc", 0, 25)
         db.set_last_scanned_page("pc", 2026, 10)
-        db.reset_backlog_progress("pc", "metascore")
+        db.reset_progress("pc", "metascore")
         assert db.get_last_scanned_page("pc", 0) == 0
         assert db.get_last_scanned_page("pc", 2026) == 0  # all rows deleted
         db.close()
@@ -1342,393 +1342,301 @@ class TestClearCache:
         db.close()
 
 
-class TestPendingModeSplit:
-    """Tests for backlog/latest mode-split pending tables."""
+class TestPendingUnified:
+    """Tests for unified pending_games methods (post mode-split consolidation)."""
 
-    def test_record_and_get_backlog_pending(self, tmp_path: Path) -> None:
+    def test_record_and_get_pending(self, tmp_path: Path) -> None:
         from gamarr.database import Database
 
-        db = Database(tmp_path / "test.db")
-        db.record_backlog_pending(slug="bg-test", game_title="Backlog Game", platform="pc", metascore=85.0)
-        rows = db.get_backlog_pending(platform="pc")
+        db = Database(str(tmp_path / "test.db"))
+        db.record_pending(slug="bg-test", game_title="Unified Game", platform="pc", metascore=85.0)
+        rows = db.get_pending(platform="pc")
         assert len(rows) == 1
-        assert rows[0].game_title == "Backlog Game"
+        assert rows[0].game_title == "Unified Game"
         assert rows[0].metascore == 85.0
         db.close()
 
-    def test_record_and_get_latest_pending(self, tmp_path: Path) -> None:
+    def test_get_pending_filters_by_platform(self, tmp_path: Path) -> None:
         from gamarr.database import Database
 
-        db = Database(tmp_path / "test.db")
-        db.record_latest_pending(slug="lt-test", game_title="Latest Game", platform="pc", metascore=90.0)
-        rows = db.get_latest_pending(platform="pc")
-        assert len(rows) == 1
-        assert rows[0].game_title == "Latest Game"
-        assert rows[0].metascore == 90.0
+        db = Database(str(tmp_path / "test.db"))
+        db.record_pending(slug="pc-game", game_title="PC Game", platform="pc", metascore=90.0)
+        db.record_pending(slug="ps5-game", game_title="PS5 Game", platform="ps5", metascore=85.0)
+        pc_rows = db.get_pending(platform="pc")
+        assert len(pc_rows) == 1
+        assert pc_rows[0].slug == "pc-game"
+        all_rows = db.get_pending()
+        assert len(all_rows) == 2
         db.close()
 
-    def test_backlog_and_latest_are_independent(self, tmp_path: Path) -> None:
+    def test_duplicate_slug_is_noop(self, tmp_path: Path) -> None:
         from gamarr.database import Database
 
-        db = Database(tmp_path / "test.db")
-        db.record_backlog_pending(slug="shared-slug", game_title="Backlog Only", platform="pc")
-        db.record_latest_pending(slug="shared-slug", game_title="Latest Only", platform="pc")
-        assert len(db.get_backlog_pending()) == 1
-        assert len(db.get_latest_pending()) == 1
-        assert db.get_backlog_pending()[0].game_title == "Backlog Only"
-        assert db.get_latest_pending()[0].game_title == "Latest Only"
-        db.close()
-
-    def test_remove_pending_mode_specific(self, tmp_path: Path) -> None:
-        from gamarr.database import Database
-
-        db = Database(tmp_path / "test.db")
-        db.record_backlog_pending(slug="x", game_title="X", platform="pc")
-        db.record_latest_pending(slug="x", game_title="X", platform="pc")
-        db.remove_backlog_pending("x")
-        assert len(db.get_backlog_pending()) == 0
-        assert len(db.get_latest_pending()) == 1
-        db.close()
-
-    def test_update_pending_scores_mode_specific(self, tmp_path: Path) -> None:
-        from gamarr.database import Database
-
-        db = Database(tmp_path / "test.db")
-        db.record_backlog_pending(slug="bg", game_title="BG", platform="pc")
-        db.update_backlog_pending_scores(slug="bg", metascore=92.0, metascore_reviews=15)
-        rows = db.get_backlog_pending()
-        assert rows[0].score_checks_passed is True
-        assert rows[0].metascore == 92.0
-        assert rows[0].metascore_reviews == 15
-        db.close()
-
-    def test_has_verified_pending_mode_specific(self, tmp_path: Path) -> None:
-        from gamarr.database import Database
-
-        db = Database(tmp_path / "test.db")
-        assert not db.has_verified_backlog_pending(platform="pc")
-        db.record_backlog_pending(slug="v", game_title="V", platform="pc")
-        db.update_backlog_pending_scores(slug="v", metascore=80.0)
-        assert db.has_verified_backlog_pending(platform="pc")
-        assert not db.has_verified_latest_pending(platform="pc")
-        db.close()
-
-    def test_known_slugs_mixed_mode_shared_history(self, tmp_path: Path) -> None:
-        from gamarr.database import Database
-
-        db = Database(tmp_path / "test.db")
-        db.record_processed(source="metacritic", source_url="mc:old-game", source_title="Old", result="Passed")
-        db.record_backlog_pending(slug="bg-pending", game_title="BG", platform="pc")
-        db.record_latest_pending(slug="lt-pending", game_title="LT", platform="pc")
-        backlog_known = db.get_known_backlog_slugs(source="metacritic", platform="pc")
-        latest_known = db.get_known_latest_slugs(source="metacritic", platform="pc")
-        assert "old-game" in backlog_known
-        assert "old-game" in latest_known
-        assert "bg-pending" in backlog_known
-        assert "bg-pending" in latest_known  # cross-mode dedup: latest sees backlog slugs too
-        assert "lt-pending" in latest_known
-        assert "lt-pending" in backlog_known  # cross-mode dedup: backlog sees latest slugs too
-        db.close()
-
-    def test_touch_backlog_pending_updates_timestamp(self, tmp_path: Path) -> None:
-        from gamarr.database import Database
-
-        db = Database(tmp_path / "test.db")
-        db.record_backlog_pending(slug="bg", game_title="BG", platform="pc")
-        db.touch_backlog_pending("bg")
-        rows = db.get_backlog_pending()
-        assert len(rows) == 1
-        assert rows[0].last_checked_at is not None
-        db.close()
-
-    def test_touch_latest_pending_updates_timestamp(self, tmp_path: Path) -> None:
-        from gamarr.database import Database
-
-        db = Database(tmp_path / "test.db")
-        db.record_latest_pending(slug="lt", game_title="LT", platform="pc")
-        db.touch_latest_pending("lt")
-        rows = db.get_latest_pending()
-        assert len(rows) == 1
-        assert rows[0].last_checked_at is not None
-        db.close()
-
-    def test_touch_backlog_pending_nonexistent(self, tmp_path: Path) -> None:
-        from gamarr.database import Database
-
-        db = Database(tmp_path / "test.db")
-        db.touch_backlog_pending("does-not-exist")  # should not raise
-        db.close()
-
-    def test_touch_latest_pending_nonexistent(self, tmp_path: Path) -> None:
-        from gamarr.database import Database
-
-        db = Database(tmp_path / "test.db")
-        db.touch_latest_pending("does-not-exist")  # should not raise
-        db.close()
-
-    def test_update_backlog_pending_scores_nonexistent(self, tmp_path: Path) -> None:
-        from gamarr.database import Database
-
-        db = Database(tmp_path / "test.db")
-        db.update_backlog_pending_scores(slug="nonexistent", metascore=85.0)  # should not raise
-        assert not db.is_backlog_pending("nonexistent")
-        db.close()
-
-    def test_update_latest_pending_scores_nonexistent(self, tmp_path: Path) -> None:
-        from gamarr.database import Database
-
-        db = Database(tmp_path / "test.db")
-        db.update_latest_pending_scores(slug="nonexistent", metascore=85.0)
-        assert not db.is_latest_pending("nonexistent")
-        db.close()
-
-    def test_is_backlog_pending_returns_true(self, tmp_path: Path) -> None:
-        from gamarr.database import Database
-
-        db = Database(tmp_path / "test.db")
-        db.record_backlog_pending(slug="bg", game_title="BG", platform="pc")
-        assert db.is_backlog_pending("bg") is True
-        assert db.is_backlog_pending("unknown") is False
-        db.close()
-
-    def test_is_latest_pending_returns_true(self, tmp_path: Path) -> None:
-        from gamarr.database import Database
-
-        db = Database(tmp_path / "test.db")
-        db.record_latest_pending(slug="lt", game_title="LT", platform="pc")
-        assert db.is_latest_pending("lt") is True
-        assert db.is_latest_pending("unknown") is False
-        db.close()
-
-    def test_update_backlog_pending_expiry(self, tmp_path: Path) -> None:
-        import datetime
-
-        from gamarr.database import Database
-
-        db = Database(tmp_path / "test.db")
-        db.record_backlog_pending(slug="bg", game_title="BG", platform="pc")
-        db.update_backlog_pending_expiry("bg", 60)
-        rows = db.get_backlog_pending()
-        assert len(rows) == 1
-        new_expiry = datetime.datetime.fromisoformat(rows[0].expires_at)
-        expected_min = datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=59)
-        expected_max = datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=61)
-        assert expected_min < new_expiry < expected_max
-        db.close()
-
-    def test_update_latest_pending_expiry(self, tmp_path: Path) -> None:
-        import datetime
-
-        from gamarr.database import Database
-
-        db = Database(tmp_path / "test.db")
-        db.record_latest_pending(slug="lt", game_title="LT", platform="pc")
-        db.update_latest_pending_expiry("lt", 30)
-        rows = db.get_latest_pending()
-        assert len(rows) == 1
-        new_expiry = datetime.datetime.fromisoformat(rows[0].expires_at)
-        expected_min = datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=29)
-        expected_max = datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=31)
-        assert expected_min < new_expiry < expected_max
-        db.close()
-
-    def test_update_backlog_pending_expiry_nonexistent(self, tmp_path: Path) -> None:
-        from gamarr.database import Database
-
-        db = Database(tmp_path / "test.db")
-        db.update_backlog_pending_expiry("does-not-exist", 60)  # should not raise
-        db.close()
-
-    def test_update_latest_pending_expiry_nonexistent(self, tmp_path: Path) -> None:
-        from gamarr.database import Database
-
-        db = Database(tmp_path / "test.db")
-        db.update_latest_pending_expiry("does-not-exist", 60)  # should not raise
-        db.close()
-
-    def test_get_expired_backlog_pending(self, tmp_path: Path) -> None:
-        import datetime
-
-        from gamarr.database import Database
-
-        db = Database(tmp_path / "test.db")
-        past = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=1)).isoformat()
-        db.record_backlog_pending(slug="old", game_title="Old", platform="pc", expires_at=past)
-        expired = db.get_expired_backlog_pending()
-        assert len(expired) == 1
-        assert expired[0].slug == "old"
-        db.close()
-
-    def test_get_expired_latest_pending(self, tmp_path: Path) -> None:
-        import datetime
-
-        from gamarr.database import Database
-
-        db = Database(tmp_path / "test.db")
-        past = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=1)).isoformat()
-        db.record_latest_pending(slug="old", game_title="Old", platform="pc", expires_at=past)
-        expired = db.get_expired_latest_pending()
-        assert len(expired) == 1
-        assert expired[0].slug == "old"
-        db.close()
-
-    def test_record_backlog_pending_duplicate_slug(self, tmp_path: Path) -> None:
-        from gamarr.database import Database
-
-        db = Database(tmp_path / "test.db")
-        db.record_backlog_pending(slug="bg", game_title="Original", platform="pc")
-        db.record_backlog_pending(slug="bg", game_title="Duplicate", platform="pc")
-        rows = db.get_backlog_pending()
+        db = Database(str(tmp_path / "test.db"))
+        db.record_pending(slug="dup", game_title="Original", platform="pc")
+        db.record_pending(slug="dup", game_title="Duplicate", platform="pc")
+        rows = db.get_pending()
         assert len(rows) == 1
         assert rows[0].game_title == "Original"
         db.close()
 
-    def test_record_latest_pending_duplicate_slug(self, tmp_path: Path) -> None:
+    def test_update_pending_scores_full(self, tmp_path: Path) -> None:
         from gamarr.database import Database
 
-        db = Database(tmp_path / "test.db")
-        db.record_latest_pending(slug="lt", game_title="Original", platform="pc")
-        db.record_latest_pending(slug="lt", game_title="Duplicate", platform="pc")
-        rows = db.get_latest_pending()
-        assert len(rows) == 1
-        assert rows[0].game_title == "Original"
-        db.close()
-
-    def test_update_pending_scores_all_params(self, tmp_path: Path) -> None:
-        """Legacy update_pending_scores covers all branches."""
-        from gamarr.database import Database, PendingGame, PendingGameBacklog
-
-        db = Database(tmp_path / "test.db")
-        db.record_backlog_pending(slug="full", game_title="Full", platform="pc")
-        with db._session() as session:
-            row = session.get(PendingGameBacklog, "full")
-            assert row is not None
-            # Simulate the legacy table access by writing to the old table
-            from gamarr.database import PendingGame
-
-            session.add(
-                PendingGame(
-                    slug="full",
-                    game_title="Full",
-                    platform="pc",
-                    discovered_at=row.discovered_at,
-                    expires_at=row.expires_at,
-                )
-            )
-            session.commit()
+        db = Database(str(tmp_path / "test.db"))
+        db.record_pending(slug="full", game_title="Full", platform="pc")
         db.update_pending_scores(slug="full", metascore=88.0, metascore_reviews=12, user_score=8.5, user_reviews=30)
-        with db._session() as session:
-            from gamarr.database import PendingGame
-
-            pg_row = session.get(PendingGame, "full")
-            assert pg_row is not None
-            assert pg_row.metascore == 88.0
-            assert pg_row.metascore_reviews == 12
-            assert pg_row.user_score == 8.5
-            assert pg_row.user_reviews == 30
-            assert pg_row.score_checks_passed is True
-            assert pg_row.last_checked_at is not None
+        rows = db.get_pending()
+        assert rows[0].metascore == 88.0
+        assert rows[0].metascore_reviews == 12
+        assert rows[0].user_score == 8.5
+        assert rows[0].user_reviews == 30
+        assert rows[0].score_checks_passed is True
+        assert rows[0].last_checked_at is not None
         db.close()
 
     def test_update_pending_scores_partial(self, tmp_path: Path) -> None:
-        """Legacy update_pending_scores with only metascore updates partial fields."""
-        from gamarr.database import Database, PendingGame, PendingGameBacklog
+        from gamarr.database import Database
 
-        db = Database(tmp_path / "test.db")
-        db.record_backlog_pending(slug="partial", game_title="Partial", platform="pc")
-        with db._session() as session:
-            bg_row = session.get(PendingGameBacklog, "partial")
-            assert bg_row is not None
-            session.add(
-                PendingGame(
-                    slug="partial",
-                    game_title="Partial",
-                    platform="pc",
-                    discovered_at=bg_row.discovered_at,
-                    expires_at=bg_row.expires_at,
-                )
-            )
-            session.commit()
+        db = Database(str(tmp_path / "test.db"))
+        db.record_pending(slug="partial", game_title="Partial", platform="pc")
         db.update_pending_scores(slug="partial", metascore=75.0)
-        with db._session() as session:
-            pg_row = session.get(PendingGame, "partial")
-            assert pg_row is not None
-            assert pg_row.metascore == 75.0
-            assert pg_row.score_checks_passed is True
-        db.close()
-
-    def test_update_latest_pending_scores_full(self, tmp_path: Path) -> None:
-        """update_latest_pending_scores handles full score update."""
-        from gamarr.database import Database
-
-        db = Database(tmp_path / "test.db")
-        db.record_latest_pending(slug="lt-full", game_title="LT Full", platform="pc")
-        db.update_latest_pending_scores(
-            slug="lt-full", metascore=92.0, metascore_reviews=15, user_score=8.8, user_reviews=25
-        )
-        rows = db.get_latest_pending()
-        assert rows[0].metascore == 92.0
-        assert rows[0].metascore_reviews == 15
-        assert rows[0].user_score == 8.8
-        assert rows[0].user_reviews == 25
+        rows = db.get_pending()
+        assert rows[0].metascore == 75.0
         assert rows[0].score_checks_passed is True
         db.close()
 
-    def test_update_latest_pending_scores_partial(self, tmp_path: Path) -> None:
-        """update_latest_pending_scores with only user_score updates partial."""
+    def test_update_pending_scores_empty(self, tmp_path: Path) -> None:
         from gamarr.database import Database
 
-        db = Database(tmp_path / "test.db")
-        db.record_latest_pending(slug="lt-partial", game_title="LT Partial", platform="pc")
-        db.update_latest_pending_scores(slug="lt-partial", user_score=9.0)
-        rows = db.get_latest_pending()
-        assert rows[0].user_score == 9.0
-        assert rows[0].metascore is None
-        assert rows[0].score_checks_passed is True
-        db.close()
-
-    def test_update_latest_pending_scores_empty(self, tmp_path: Path) -> None:
-        """update_latest_pending_scores with no scores does not flag as checked."""
-        from gamarr.database import Database
-
-        db = Database(tmp_path / "test.db")
-        db.record_latest_pending(slug="lt-empty", game_title="LT Empty", platform="pc")
-        db.update_latest_pending_scores(slug="lt-empty")
-        rows = db.get_latest_pending()
+        db = Database(str(tmp_path / "test.db"))
+        db.record_pending(slug="empty", game_title="Empty", platform="pc")
+        db.update_pending_scores(slug="empty")
+        rows = db.get_pending()
         assert rows[0].score_checks_passed is None
         db.close()
 
-    def test_migrate_pending_mode_split_with_data(self, tmp_path: Path) -> None:
-        """Migration copies legacy pending_games rows to backlog table."""
+    def test_update_pending_scores_nonexistent(self, tmp_path: Path) -> None:
+        from gamarr.database import Database
+
+        db = Database(str(tmp_path / "test.db"))
+        db.update_pending_scores(slug="nonexistent", metascore=85.0)  # should not raise
+        assert not db.is_pending("nonexistent")
+        db.close()
+
+    def test_has_verified_pending(self, tmp_path: Path) -> None:
+        from gamarr.database import Database
+
+        db = Database(str(tmp_path / "test.db"))
+        assert not db.has_verified_pending(platform="pc")
+        db.record_pending(slug="v", game_title="V", platform="pc")
+        db.update_pending_scores(slug="v", metascore=80.0)
+        assert db.has_verified_pending(platform="pc")
+        db.close()
+
+    def test_has_verified_pending_other_platform(self, tmp_path: Path) -> None:
+        from gamarr.database import Database
+
+        db = Database(str(tmp_path / "test.db"))
+        db.record_pending(slug="v", game_title="V", platform="pc")
+        db.update_pending_scores(slug="v", metascore=80.0)
+        assert db.has_verified_pending(platform="pc")
+        assert not db.has_verified_pending(platform="ps5")
+        db.close()
+
+    def test_is_pending(self, tmp_path: Path) -> None:
+        from gamarr.database import Database
+
+        db = Database(str(tmp_path / "test.db"))
+        db.record_pending(slug="test", game_title="Test", platform="pc")
+        assert db.is_pending("test") is True
+        assert db.is_pending("unknown") is False
+        db.close()
+
+    def test_known_slugs_includes_history_and_pending(self, tmp_path: Path) -> None:
+        from gamarr.database import Database
+
+        db = Database(str(tmp_path / "test.db"))
+        db.record_processed(source="metacritic", source_url="mc:old-game", source_title="Old", result="Passed")
+        db.record_pending(slug="pending-game", game_title="Pending", platform="pc")
+        known = db.get_known_slugs(source="metacritic")
+        assert "old-game" in known
+        assert "pending-game" in known
+        db.close()
+
+
+class TestTableMigration:
+    """Tests for the pending_games_backlog / pending_games_latest -> pending_games migration."""
+
+    def test_migrate_mode_tables_to_pending_games(self, tmp_path: Path) -> None:
+        """On startup, rows from backlog/latest tables should be migrated to pending_games and old tables dropped."""
         import datetime
         import os
-        import sqlite3
 
-        db_path = os.path.join(str(tmp_path), "test.db")
-        conn = sqlite3.connect(db_path)
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS pending_games (slug TEXT PRIMARY KEY, game_title TEXT NOT NULL, platform TEXT NOT NULL, metascore REAL, metascore_reviews INTEGER, user_score REAL, user_reviews INTEGER, genres TEXT, release_date TEXT, discovered_at TEXT NOT NULL, expires_at TEXT NOT NULL, last_checked_at TEXT, score_checks_passed INTEGER)"
-        )
-        future = (datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=365)).isoformat()
-        now = datetime.datetime.now(datetime.UTC).isoformat()
-        conn.execute(
-            "INSERT INTO pending_games VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            ("migrate-test", "Migrate Game", "pc", 85.0, 20, 8.5, 50, None, "2024-01-01", now, future, None, 1),
-        )
-        conn.commit()
-        conn.close()
+        from sqlalchemy import Boolean, Column, Float, Integer, MetaData, String, Table, create_engine
+        from sqlalchemy import inspect as sa_inspect
+
+        db_path = os.path.join(str(tmp_path), "migrate.db")
+
+        # Create a database with both old mode-specific tables pre-populated
+        engine = create_engine(f"sqlite:///{db_path}")
+        metadata = MetaData()
+
+        def _make_columns() -> list[Column[Any]]:
+            return [
+                Column("slug", String, primary_key=True),
+                Column("game_title", String, nullable=False),
+                Column("platform", String, nullable=False),
+                Column("metascore", Float),
+                Column("metascore_reviews", Integer),
+                Column("user_score", Float),
+                Column("user_reviews", Integer),
+                Column("genres", String),
+                Column("release_date", String),
+                Column("discovered_at", String, nullable=False),
+                Column("expires_at", String, nullable=False),
+                Column("last_checked_at", String),
+                Column("score_checks_passed", Boolean),
+            ]
+
+        backlog_table = Table("pending_games_backlog", metadata, *_make_columns())
+        latest_table = Table("pending_games_latest", metadata, *_make_columns())
+        metadata.create_all(engine)
+
+        now_iso = datetime.datetime.now(datetime.UTC).isoformat()
+        future_iso = (datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=365)).isoformat()
+
+        with engine.connect() as conn:
+            # Insert a row in backlog table
+            conn.execute(
+                backlog_table.insert().values(
+                    slug="bg-migrate",
+                    game_title="Backlog Game",
+                    platform="pc",
+                    metascore=85.0,
+                    metascore_reviews=20,
+                    user_score=8.5,
+                    user_reviews=50,
+                    genres='["Action", "RPG"]',
+                    release_date="2024-01-01",
+                    discovered_at=now_iso,
+                    expires_at=future_iso,
+                    last_checked_at=None,
+                    score_checks_passed=True,
+                )
+            )
+            # Insert a row in latest table
+            conn.execute(
+                latest_table.insert().values(
+                    slug="lt-migrate",
+                    game_title="Latest Game",
+                    platform="ps5",
+                    metascore=90.0,
+                    metascore_reviews=15,
+                    user_score=9.0,
+                    user_reviews=100,
+                    genres=None,
+                    release_date="2025-06-15",
+                    discovered_at=now_iso,
+                    expires_at=future_iso,
+                    last_checked_at=None,
+                    score_checks_passed=True,
+                )
+            )
+            # Insert the SAME slug in both tables (INSERT OR IGNORE test)
+            conn.execute(
+                backlog_table.insert().values(
+                    slug="shared-slug",
+                    game_title="Backlog Version",
+                    platform="pc",
+                    metascore=75.0,
+                    discovered_at=now_iso,
+                    expires_at=future_iso,
+                    score_checks_passed=None,
+                )
+            )
+            conn.execute(
+                latest_table.insert().values(
+                    slug="shared-slug",
+                    game_title="Latest Version",
+                    platform="pc",
+                    metascore=80.0,
+                    discovered_at=now_iso,
+                    expires_at=future_iso,
+                    score_checks_passed=False,
+                )
+            )
+            conn.commit()
+
+        engine.dispose()
+
+        # Now open with Database — __init__ should trigger the migration
         from gamarr.database import Database
 
         db = Database(db_path)
-        backlog = db.get_backlog_pending(platform="pc")
-        assert len(backlog) >= 1, f"Expected >=1 backlog row, got {len(backlog)}"
-        assert any(r.slug == "migrate-test" for r in backlog)
+
+        # Verify: old tables are gone
+        inspector = sa_inspect(db._engine)
+        remaining_tables = inspector.get_table_names()
+        assert "pending_games_backlog" not in remaining_tables, (
+            f"pending_games_backlog should be dropped, but found: {remaining_tables}"
+        )
+        assert "pending_games_latest" not in remaining_tables, (
+            f"pending_games_latest should be dropped, but found: {remaining_tables}"
+        )
+        assert "pending_games" in remaining_tables, "pending_games table should exist"
+
+        # Verify: data migrated correctly
+        pending = db.get_pending()
+        assert len(pending) == 3, f"Expected 3 rows (bg-migrate, lt-migrate, shared-slug), got {len(pending)}"
+
+        slugs = {row.slug: row for row in pending}
+        assert "bg-migrate" in slugs
+        assert slugs["bg-migrate"].game_title == "Backlog Game"
+        assert slugs["bg-migrate"].platform == "pc"
+        assert slugs["bg-migrate"].metascore == 85.0
+        assert slugs["bg-migrate"].score_checks_passed is True
+
+        assert "lt-migrate" in slugs
+        assert slugs["lt-migrate"].game_title == "Latest Game"
+        assert slugs["lt-migrate"].platform == "ps5"
+        assert slugs["lt-migrate"].metascore == 90.0
+
+        assert "shared-slug" in slugs
+        # INSERT OR IGNORE: first row written (backlog) wins
+        assert slugs["shared-slug"].game_title == "Backlog Version"
+        assert slugs["shared-slug"].metascore == 75.0
+
         db.close()
-        # Verify legacy table is now empty
-        conn2 = sqlite3.connect(db_path)
-        legacy = conn2.execute("SELECT COUNT(*) FROM pending_games").fetchone()[0]
-        assert legacy == 0, f"Legacy table should be empty, got {legacy}"
-        conn2.close()
+
+    def test_migration_idempotent_no_old_tables(self, tmp_path: Path) -> None:
+        """Migration should be a no-op when no backlog/latest tables exist."""
+        from gamarr.database import Database
+
+        db = Database(str(tmp_path / "fresh.db"))
+        from sqlalchemy import inspect as sa_inspect
+
+        inspector = sa_inspect(db._engine)
+        tables = inspector.get_table_names()
+        assert "pending_games" in tables
+        # No crash, no error
+        db.close()
+
+
+class TestResetProgressRename:
+    """Tests for the renamed reset_progress method (was reset_backlog_progress)."""
+
+    def test_reset_progress_clears_all_years(self, tmp_path: Path) -> None:
+        """reset_progress should clear all BacklogProgress rows for the platform."""
+        from gamarr.database import Database
+
+        db = Database(str(tmp_path / "test.db"))
+        db.set_last_scanned_page("pc", 2026, 10)
+        db.set_last_scanned_page("pc", 2025, 50)
+        db.reset_progress("pc", "new")
+        assert db.get_last_scanned_page("pc", 2026) == 0
+        assert db.get_last_scanned_page("pc", 2025) == 0
+        db.close()
 
 
 class TestSetPostProcessState:

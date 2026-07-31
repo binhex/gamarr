@@ -1231,33 +1231,6 @@ class TestSortOrder:
         assert cfg.sort_order == "metascore"
 
 
-def test_metacritic_platform_config_search_mode_default() -> None:
-    """search_mode defaults to 'latest'."""
-    from gamarr.config import MetacriticPlatformConfig
-
-    cfg = MetacriticPlatformConfig()
-    assert cfg.search_mode == "latest"
-
-
-def test_metacritic_platform_config_search_mode_valid() -> None:
-    """search_mode accepts 'backlog' and 'latest'."""
-    from gamarr.config import MetacriticPlatformConfig
-
-    backlog_cfg = MetacriticPlatformConfig(search_mode="backlog")
-    assert backlog_cfg.search_mode == "backlog"
-
-    latest_cfg = MetacriticPlatformConfig(search_mode="latest")
-    assert latest_cfg.search_mode == "latest"
-
-
-def test_metacritic_platform_config_search_mode_invalid_raises() -> None:
-    """search_mode rejects values outside Literal."""
-    from gamarr.config import MetacriticPlatformConfig
-
-    with pytest.raises(ValidationError):
-        MetacriticPlatformConfig(search_mode="illegal")  # type: ignore[arg-type]
-
-
 def test_drop_migrated_deprecated_keys_no_deprecated() -> None:
     """_drop_migrated_deprecated_keys returns False when no deprecated keys present."""
     from gamarr.config import _drop_migrated_deprecated_keys
@@ -1316,3 +1289,50 @@ def test_migrate_config_adds_post_process_path_case() -> None:
     assert result is True, "Migration should return True when adding path_case"
     assert "path_case" in raw["post_process"], "path_case should be added"
     assert raw["post_process"]["path_case"] == "pretty", "path_case should default to 'pretty'"
+
+
+def test_migration_removes_search_mode() -> None:
+    """A config containing search_mode should load and the field should be stripped from the model."""
+    from gamarr.config import _migrate_config
+
+    raw: dict[str, Any] = {
+        "general": {"config_version": "1.0.0"},
+        "review_sites": {
+            "metacritic": {
+                "platform_overrides": {
+                    "pc": {"search_mode": "backlog", "min_metascore": 75},
+                }
+            }
+        },
+    }
+    _migrate_config(raw)
+    pc = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
+    assert "search_mode" not in pc, "search_mode should be stripped from the raw dict by migration"
+
+    # Also verify the parsed model has no search_mode attribute
+
+    # Use load_config which merges with defaults for full-path validation
+    import os
+    import tempfile
+
+    from gamarr.config import load_config
+
+    config_text = (
+        "general:\n"
+        "  config_version: '1.0.0'\n"
+        "review_sites:\n"
+        "  metacritic:\n"
+        "    platform_overrides:\n"
+        "      pc:\n"
+        "        search_mode: backlog\n"
+        "        min_metascore: 75\n"
+    )
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
+        f.write(config_text)
+        f.flush()
+        try:
+            cfg = load_config(f.name)
+            pc_cfg = cfg.review_sites.metacritic.platform_overrides["pc"]
+            assert not hasattr(pc_cfg, "search_mode"), "search_mode should not exist on the parsed config model"
+        finally:
+            os.unlink(f.name)

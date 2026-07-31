@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
 
-_CONFIG_VERSION = "1.0.0"
+_CONFIG_VERSION = "1.58.0"
 _CONFIG_FILENAME = "gamarr.yml"
 
 
@@ -111,7 +111,6 @@ class MetacriticPlatformConfig(BaseModel):
     max_pages: int = Field(default=500, ge=1)
     max_cycle_pages: int | None = Field(default=0, ge=0)
     sort_order: Literal["new", "metascore"] = "new"
-    search_mode: Literal["backlog", "latest"] = "latest"
     reject_genre: list[str] = Field(default_factory=list)
     reject_title: list[str] = Field(default_factory=list)  # case-insensitive substrings
 
@@ -800,6 +799,25 @@ def _upgrade_freegog_entry(fg: dict[str, Any], defaults: dict[str, Any]) -> bool
     return True
 
 
+def _migrate_remove_search_mode(raw: dict[str, Any]) -> bool:
+    """Remove deprecated search_mode from metacritic platform overrides.
+
+    search_mode is no longer needed — the browse loop is unified.
+    Returns True if any search_mode keys were removed.
+    """
+    changed = False
+    overrides = raw.get("review_sites", {}).get("metacritic", {}).get("platform_overrides", {})
+    for platform_key, platform_config in overrides.items():
+        if isinstance(platform_config, dict) and "search_mode" in platform_config:
+            del platform_config["search_mode"]
+            logger.info(
+                "Config: removed deprecated 'search_mode' from platform '{}' — browse loop is unified",
+                platform_key,
+            )
+            changed = True
+    return changed
+
+
 def _migrate_config(raw: dict[str, Any]) -> bool:
     """Migrate renamed config keys in-place for all platforms.
 
@@ -834,6 +852,7 @@ def _migrate_config(raw: dict[str, Any]) -> bool:
             _migrate_daemon_mode,
             _migrate_add_post_process_path_case,
             _migrate_add_freegog_to_download_sites,
+            _migrate_remove_search_mode,
         ]
         for fn in _migrations:
             if fn(raw):
