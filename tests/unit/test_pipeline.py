@@ -5611,7 +5611,7 @@ class TestProcessAgedGames:
 
         # result=None simulates a game with no Metacritic page
         removed = _process_verify_result(db, game, result=None, thresholds=thresholds, search_mode="backlog")
-        assert removed is False, "Game with no result should stay pending"
+        assert removed == -1, "Game with no result should stay pending (kept, failed scores)"
 
         # The game should now have last_checked_at set
         with db._session() as session:
@@ -6623,7 +6623,8 @@ def test_process_verify_result_genre_reject_none_genres(tmp_path: Path) -> None:
         search_mode="backlog",
     )
     # Should not remove (None genres don't match any reject_genre)
-    assert removed is False
+    # Game passes scores, so returns 1 (passed)
+    assert removed == 1
     assert db.is_backlog_pending("no-genre")
     db.close()
 
@@ -7174,3 +7175,175 @@ class TestRecordResultGenres:
             )
             call_kwargs = mock_record.call_args.kwargs
             assert call_kwargs.get("genres") is None
+
+
+# ---------------------------------------------------------------------------
+# Bug 1: _process_browse_games overcounts when duplicate slugs exist in batch
+# ---------------------------------------------------------------------------
+
+
+def test_process_browse_games_indefinite_max_queue_days(tmp_path: Path) -> None:
+    """_process_browse_games with max_queue_days=0 uses indefinite expiry."""
+    from gamarr.database import Database
+    from gamarr.pipeline import _process_browse_games
+
+    db = Database(tmp_path / "test.db")
+    browse_games = [
+        {
+            "title": "Indefinite Game",
+            "slug": "indefinite-game",
+            "score": 90,
+            "user_rating": 9.0,
+            "critic_review_count": 15,
+            "user_review_count": 20,
+            "release_date": None,
+        }
+    ]
+    thresholds = {"min_metascore": 75, "min_metascore_reviews": 10, "min_user_score": 7.5, "min_user_reviews": 10}
+    count = _process_browse_games(
+        browse_games,
+        "pc",
+        db,
+        thresholds,
+        max_queue_days=0,
+        reject_title=None,
+        search_mode="latest",
+    )
+    assert count == 1
+    rows = db.get_latest_pending(platform="pc")
+    assert len(rows) == 1
+    # Indefinite expiry should be far in the future
+    import datetime
+
+    assert rows[0].expires_at > (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=365)).isoformat()
+    db.close()
+
+
+def test_process_browse_games_handles_duplicate_slugs(tmp_path: Path) -> None:
+    """_process_browse_games returns actual unique games added, not attempted.
+
+    When the same game appears on multiple browse pages (duplicate slug),
+    _process_browse_games should count it only once — not once per occurrence.
+    """
+    from gamarr.database import Database
+    from gamarr.pipeline import _process_browse_games
+
+    db = Database(tmp_path / "test.db")
+    browse_games = [
+        {
+            "title": "Awesome Game",
+            "slug": "awesome-game",
+            "score": 90,
+            "user_rating": 9.0,
+            "critic_review_count": 15,
+            "user_review_count": 20,
+            "release_date": None,
+        },
+        {
+            "title": "Awesome Game",
+            "slug": "awesome-game",  # DUPLICATE — same game on page 2
+            "score": 90,
+            "user_rating": 9.0,
+            "critic_review_count": 15,
+            "user_review_count": 20,
+            "release_date": None,
+        },
+    ]
+    thresholds = {"min_metascore": 75, "min_metascore_reviews": 10, "min_user_score": 7.5, "min_user_reviews": 10}
+    count = _process_browse_games(
+        browse_games,
+        "pc",
+        db,
+        thresholds,
+        max_queue_days=30,
+        reject_title=None,
+        search_mode="latest",
+    )
+    assert count == 1, f"Expected 1 unique game added, got {count}"
+    rows = db.get_latest_pending(platform="pc")
+    assert len(rows) == 1, "Should have 1 game in pending queue"
+    db.close()
+
+
+# ---------------------------------------------------------------------------
+# Bug 2: No log when matching phase is skipped (no verified games)
+# ---------------------------------------------------------------------------
+
+
+class TestRunAcquisitionNoVerifiedLogging:
+    """Tests that run_acquisition logs when no verified games are available."""
+
+    def test_logs_when_no_verified_pending_skips_matching(self, tmp_path: Path) -> None:
+        """run_acquisition emits a clear log when matching is skipped.
+
+        When has_verified_latest_pending returns False (no games passed score
+        thresholds), the matching phase is skipped.  The absence of this log
+        currently leaves users confused about why 0 games matched.
+        """
+        from gamarr.pipeline import run_acquisition
+
+        # Use an in-memory DB and block the browse step so no games are
+        # discovered.  With no verified games, matching should be explicitly
+        # skipped with a log message — not silently.
+        db_path = str(tmp_path / "test.db")
+
+        with (
+            patch("gamarr.pipeline.logger") as mock_logger,
+            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+        ):
+            mock_mc = MagicMock()
+            mock_mc.fetch_browse_pages.return_value = []
+            mock_mc_cls.return_value = mock_mc
+            mock_qbt = MagicMock()
+            mock_qbt.is_connected.return_value = True
+            mock_qbt_cls.return_value = mock_qbt
+
+            run_acquisition(
+                db_path=db_path,
+                platform="pc",
+                search_mode="latest",
+                max_pages=0,
+                enabled=True,
+            )
+
+        # After run_acquisition, verify an INFO log was emitted about
+        # skipping matching because no verified games are available.
+        info_messages = []
+        for call_args in mock_logger.info.call_args_list:
+            if call_args[0]:
+                info_messages.append(str(call_args[0][0]))
+        combined = " ".join(info_messages)
+        assert "no verified" in combined.lower() or "skip" in combined.lower(), (
+            f"Expected a log about no verified games / skipping matching, got: {info_messages}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Bug 3: "Score check: 88 verified" is misleading — doesn't show passed vs failed
+# ---------------------------------------------------------------------------
+
+
+class TestScoreCheckSummary:
+    """Tests that the score verification summary distinguishes passed vs failed."""
+
+    def test_batch_summary_breaks_down_passed_and_failed(self) -> None:
+        """_log_batch_summary includes counts of games that passed vs failed scores.
+
+        Currently the log says "88 verified" which means "88 looked up" —
+        not "88 passed".  Users assume all 88 passed and are confused when
+        0 match.  The summary should distinguish.
+        """
+        from gamarr.pipeline import _log_batch_summary
+
+        # Simulate: 88 games checked, 0 passed scores, 60 kept (below thresholds),
+        # 28 removed by genre
+        with patch("gamarr.pipeline.logger") as mock_logger:
+            _log_batch_summary(checked=88, cache_hits=0, passed=0, removed=28, kept_failed=60)
+
+        info_calls = [
+            call_args[0][0] if call_args[0] else str(call_args) for call_args in mock_logger.info.call_args_list
+        ]
+        combined = " ".join(str(c) for c in info_calls)
+        # Should mention how many passed vs failed, not just "verified"
+        assert "passed" in combined.lower(), f"Expected 'passed' count in summary, got: {info_calls}"

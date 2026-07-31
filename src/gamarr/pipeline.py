@@ -495,7 +495,7 @@ def run_acquisition(
             )
             if removed:
                 logger.info(
-                    "Removed {} games from queue — rejected by genre, title, or not found on Metacritic",
+                    "Removed {} games from queue — rejected by genre or title",
                     removed,
                 )
 
@@ -572,6 +572,14 @@ def run_acquisition(
                 if source_matched:
                     matched.extend(source_matched)
                     logger.info("{} queued games found on {}", len(source_matched), display)
+        else:
+            if is_cancelled(cancel_event):
+                logger.info("Skipping match phase — pipeline is shutting down")
+            else:
+                logger.info(
+                    "Skipping match phase — no verified games available "
+                    "(all pending games either failed score thresholds or were rejected)"
+                )
 
         # Mandatory end-of-cycle phase
         phase += 1
@@ -743,6 +751,18 @@ def _is_game_eligible(
     return _game_passes_thresholds(game, thresholds)
 
 
+def _calculate_pending_expiry(max_queue_days: int) -> str:
+    """Return an ISO-format expiry timestamp for a pending game.
+
+    When *max_queue_days* is 0 or negative, uses an indefinite
+    (far-future) expiry.
+    """
+    now = datetime.datetime.now(tz=datetime.UTC)
+    if max_queue_days <= 0:
+        return (now + datetime.timedelta(days=_INDEFINITE_DAYS)).isoformat()
+    return (now + datetime.timedelta(days=max_queue_days)).isoformat()
+
+
 def _process_browse_games(
     browse_games: list[dict[str, Any]],
     platform: str,
@@ -775,6 +795,7 @@ def _process_browse_games(
     """
     known_slugs = _get_known_slugs_by_mode(db, search_mode, source="metacritic", platform=platform)
     new_count = 0
+    seen_slugs: set[str] = set()
     for game in browse_games:
         if not _is_game_eligible(game, db, thresholds, known_slugs=known_slugs):
             continue
@@ -797,12 +818,14 @@ def _process_browse_games(
 
         g_slug = game.get("slug", "")
         g_title = game.get("title", "")
-        if max_queue_days <= 0:
-            expires_at = (
-                datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=_INDEFINITE_DAYS)
-            ).isoformat()
-        else:
-            expires_at = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=max_queue_days)).isoformat()
+
+        # Skip duplicate slugs within this batch — the DB layer would
+        # silently no-op, but we avoid the unnecessary roundtrip.
+        if g_slug in seen_slugs:
+            continue
+        seen_slugs.add(g_slug)
+
+        expires_at = _calculate_pending_expiry(max_queue_days)
 
         _record_pending_by_mode(
             db,
@@ -1267,22 +1290,14 @@ def _process_verify_result(
     reject_title: list[str] | None = None,
     fitgirl_max_queue_days: int = 60,
     search_mode: str = "latest",
-) -> bool:
-    """Process one score-check result. Returns True if the game was removed.
+) -> int:
+    """Process one score-check result.
 
-    Games that fail the score check are kept in the pending queue for
-    re-verification on subsequent cycles.
-
-    Args:
-        db: Database instance.
-        game: The pending game row.
-        result: ScoreResult from the Metacritic lookup.
-        thresholds: Dict with score threshold keys.
-        reject_genre: Genre substrings to reject (case-insensitive).
-        reject_title: Title substrings to reject (case-insensitive).
-        fitgirl_max_queue_days: Days to extend pending expiry when scores pass.
-            Set to 0 for indefinite pending (far-future expiry).
-        search_mode: "backlog" or "latest" — determines which pending queue to use.
+    Returns:
+        -2 if the game was removed (rejected by genre or title).
+        -1 if the game was kept but did not pass score thresholds
+            (including when the game was not found on Metacritic).
+         1 if the game was kept and scores passed thresholds.
     """
     matched_genre = _reject_by_genre(game, result, reject_genre)
     if matched_genre is not None:
@@ -1298,7 +1313,7 @@ def _process_verify_result(
             result_details=f"Game '{game.game_title}' — genre '{matched_genre}' is in reject_genre list",
         )
         _remove_pending_by_mode(db, str(game.slug), search_mode)
-        return True
+        return -2
 
     matched_title = _reject_by_title(game, reject_title)
     if matched_title is not None:
@@ -1314,7 +1329,7 @@ def _process_verify_result(
             result_details=f"Game '{game.game_title}' — title matches reject_title '{matched_title}'",
         )
         _remove_pending_by_mode(db, str(game.slug), search_mode)
-        return True
+        return -2
 
     if result is None:
         _touch_pending_by_mode(db, str(game.slug), search_mode)
@@ -1322,7 +1337,7 @@ def _process_verify_result(
             "Keeping '{}' in queue \u2014 game not found on Metacritic page",
             game.game_title,
         )
-        return False
+        return -1
 
     if _scores_fail_check(result, thresholds):
         _touch_pending_by_mode(db, str(game.slug), search_mode)
@@ -1332,7 +1347,7 @@ def _process_verify_result(
             result.metascore,
             result.user_score,
         )
-        return False
+        return -1
 
     _update_pending_scores_by_mode(db, str(game.slug), result, search_mode, fitgirl_max_queue_days)
     logger.debug(
@@ -1343,22 +1358,48 @@ def _process_verify_result(
         result.metascore_review_count,
         result.user_review_count,
     )
-    return False
+    return 1
 
 
-def _log_batch_summary(checked: int, cache_hits: int) -> None:
+def _log_batch_summary(
+    checked: int, cache_hits: int, *, passed: int = 0, removed: int = 0, kept_failed: int = 0
+) -> None:
     """Log a single summary line after a batch of pending game lookups.
+
+    Args:
+        checked: Number of games looked up this batch.
+        cache_hits: Number of results served from the cache.
+        passed: Number of games whose detail-page scores met thresholds.
+        removed: Number of games removed (rejected by genre or title).
+        kept_failed: Number of games kept but below score thresholds.
 
     Clamps subtraction: on cancellation, *cache_hits* from still-running
     futures may exceed the count of consumed results.
     """
     if checked > 0:
         logger.info(
-            "Score check: {} verified ({} from cache, {} from Metacritic API)",
+            "Score check: {} checked, {} passed, {} kept (below thresholds), {} removed (genre/title) "
+            "({} from cache, {} from Metacritic API)",
             checked,
+            passed,
+            kept_failed,
+            removed,
             cache_hits,
             max(0, checked - cache_hits),
         )
+
+
+def _safe_result(fut: Any, game: Any) -> Any:
+    """Call ``fut.result()`` and return the value, or None on any exception."""
+    try:
+        return fut.result()
+    except Exception:
+        logger.exception(
+            "Lookup failed for '{}' (slug={}); treating as None.",
+            game.game_title,
+            game.slug,
+        )
+        return None
 
 
 def _process_verify_batch(
@@ -1398,6 +1439,8 @@ def _process_verify_batch(
     """
 
     removed = 0
+    passed = 0
+    kept_failed = 0
     any_success = False
 
     # Check for pre-set cancellation before submitting any work
@@ -1434,18 +1477,10 @@ def _process_verify_batch(
 
             checked = verified + 1
             _log_verify_progress(verified, max_verify, total_pending)
-            try:
-                result = fut.result()
-            except Exception:
-                logger.exception(
-                    "Lookup failed for '{}' (slug={}); treating as None.",
-                    game.game_title,
-                    game.slug,
-                )
-                result = None
+            result = _safe_result(fut, game)
             if result is not None:
                 any_success = True
-            if _process_verify_result(
+            verdict = _process_verify_result(
                 db,
                 game,
                 result,
@@ -1454,13 +1489,18 @@ def _process_verify_batch(
                 reject_title=reject_title,
                 fitgirl_max_queue_days=fitgirl_max_queue_days,
                 search_mode=search_mode,
-            ):
+            )
+            if verdict == -2:
                 removed += 1
+            elif verdict == 1:
+                passed += 1
+            else:
+                kept_failed += 1
 
         # Single summary line per batch instead of per-100-game progress spam.
         # Clamp subtraction: on cancellation, cache_hits from still-running
         # futures may exceed the count of consumed results.
-        _log_batch_summary(checked, int(mc.cache_hits))
+        _log_batch_summary(checked, int(mc.cache_hits), passed=passed, removed=removed, kept_failed=kept_failed)
     finally:
         pool.shutdown(wait=False)
 

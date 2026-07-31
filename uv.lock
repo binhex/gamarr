@@ -385,7 +385,7 @@ wheels = [
 
 [[package]]
 name = "gamarr"
-version = "2.0.7"
+version = "2.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "apprise" },
