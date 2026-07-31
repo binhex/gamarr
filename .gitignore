@@ -1,6 +1,8 @@
+!docs/agent/specs/
 *.py,cover
 htmlcov/
 coverage.xml
 pids/
 configs/gamarr.yml
 downloaded_files/
+!docs/agent/
