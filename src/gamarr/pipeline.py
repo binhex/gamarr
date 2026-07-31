@@ -371,8 +371,16 @@ def run_acquisition(
 
             else:
                 # ── Latest mode: simple page-1..N scan, no progress tracking ──
-                mc.sort_order = cfg.sort_order
-                year = scan_year_anchor if cfg.sort_order == "new" else None
+                # Latest mode must use "new" sort order regardless of config.
+                # Metascore sort returns static all-time top games already known
+                # from the backlog phase, resulting in 0 new pending games.
+                if cfg.sort_order != "new":
+                    logger.debug(
+                        "Overriding sort_order from '{}' to 'new' in latest mode",
+                        cfg.sort_order,
+                    )
+                mc.sort_order = "new"
+                year = scan_year_anchor
                 try:
                     browse_games = mc.scan_recent_games(
                         platform,

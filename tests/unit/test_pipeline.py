@@ -6387,6 +6387,58 @@ class TestBacklogLatestMode:
         assert kwargs["start_page"] == 1
         assert kwargs["max_pages"] == 4
 
+    def test_latest_mode_overrides_sort_order(self, mocker: Any) -> None:
+        """Latest mode must use 'new' sort order even when config has 'metascore'.
+
+        When search_mode='latest' and sort_order='metascore', the browse would
+        return the same all-time top games every cycle — all already known from
+        backlog phase. Latest mode should force 'new' sort so genuinely recent
+        games are discovered each cycle.
+        """
+        import datetime
+
+        from gamarr.pipeline import run_acquisition
+
+        mock_db = mocker.patch("gamarr.pipeline.Database")
+        mock_db_instance = mock_db.return_value
+        mock_db_instance.get_latest_pending.return_value = []
+        mock_db_instance.has_verified_latest_pending.return_value = False
+
+        mock_qbt = mocker.patch("gamarr.pipeline.QBittorrentClient")
+        mock_qbt_instance = mock_qbt.return_value
+        mock_qbt_instance.is_connected.return_value = True
+
+        mock_mc = mocker.patch("gamarr.pipeline.MetacriticClient")
+        mock_mc_instance = mock_mc.return_value
+        mock_mc_instance.scan_recent_games.return_value = []
+
+        run_acquisition(
+            platform="pc",
+            db_path=":memory:",
+            min_metascore=75,
+            min_metascore_reviews=10,
+            min_user_score=7.5,
+            min_user_reviews=10,
+            enabled=True,
+            max_pages=500,
+            max_cycle_pages=4,
+            search_mode="latest",
+            sort_order="metascore",
+        )
+
+        # The fix must force sort_order to "new" in latest mode, which
+        # causes year=current_year to be passed to scan_recent_games.
+        # Without the fix, year would be None (metascore = no year filter).
+        kwargs = mock_mc_instance.scan_recent_games.call_args[1]
+        assert mock_mc_instance.sort_order == "new", (
+            f"Latest mode must set sort_order='new' regardless of config. Got sort_order={mock_mc_instance.sort_order}."
+        )
+        assert kwargs.get("year") == datetime.datetime.now(tz=datetime.UTC).year, (
+            f"Latest mode with metascore config must use year=current_year. "
+            f"Got year={kwargs.get('year')}. "
+            f"This means sort_order was NOT overridden to 'new'."
+        )
+
     def test_backlog_shared_budget_respects_max_pages(self, mocker: Any, tmp_path: Path) -> None:
         """Backlog mode should cap total pages across all years, not per-year.
 
