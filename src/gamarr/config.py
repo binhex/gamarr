@@ -779,9 +779,10 @@ def _migrate_add_freegog_to_download_sites(raw: dict[str, Any]) -> bool:
             if name.casefold() == "freegog":
                 return _upgrade_freegog_entry(entry[name], _freegog_defaults)
 
-    # Not present at all — add it
-    ds.insert(0, {"freegog": dict(_freegog_defaults)})
-    logger.info("Config: added freegog to download_sites")
+    # Not present at all — append to preserve existing source order
+    # (typically FitGirl first, matching the Config class default).
+    ds.append({"freegog": dict(_freegog_defaults)})
+    logger.info("Config: added freegog to download_sites (appended)")
     return True
 
 

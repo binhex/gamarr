@@ -2518,10 +2518,10 @@ class TestMetacriticBrowse:
 
         assert len(matched) == 1
         assert matched[0]["result"] == "Error"
-        assert "delivery failed" in matched[0]["result_details"].lower()
         magnet_fetcher.assert_called_once()
         mock_qbt.add_torrent.assert_not_called()
-        assert db.is_pending("elden-ring") is False
+        # Delivery failures keep games pending for retry on next cycle.
+        assert db.is_pending("elden-ring") is True
         db.close()
 
     def test_match_pending_delivers_magnet_qbt_fails(self, tmp_path: Path) -> None:
@@ -2560,10 +2560,10 @@ class TestMetacriticBrowse:
 
         assert len(matched) == 1
         assert matched[0]["result"] == "Error"
-        assert "delivery failed" in matched[0]["result_details"].lower()
         magnet_fetcher.assert_called_once()
         mock_qbt.add_torrent.assert_called_once()
-        assert db.is_pending("elden-ring") is False
+        # Delivery failures keep games pending for retry on next cycle.
+        assert db.is_pending("elden-ring") is True
         db.close()
 
     def test_match_pending_expired_game(self, tmp_path: Path) -> None:
@@ -2647,7 +2647,7 @@ class TestMetacriticBrowse:
         db.close()
 
     def test_match_pending_sends_failure_notification_on_qbt_failure(self, tmp_path: Path) -> None:
-        """When qBittorrent rejects, notifier.send_failure_notification should be called."""
+        """When qBittorrent rejects, the game stays pending for retry — no notification spam."""
         import datetime
         from unittest.mock import MagicMock
 
@@ -2686,14 +2686,13 @@ class TestMetacriticBrowse:
             notifier=mock_notifier,
         )
         assert len(matched) == 1
-        mock_notifier.send_failure_notification.assert_called_once()
-        call = mock_notifier.send_failure_notification.call_args
-        assert call.kwargs["title"] == "Elden Ring"
-        assert "qBittorrent" in call.kwargs["reason"]
+        # Delivery failures are transient — game stays pending for retry.
+        # Failure notifications are NOT sent to avoid spam on persistent failures.
+        mock_notifier.send_failure_notification.assert_not_called()
         db.close()
 
     def test_match_pending_sends_failure_notification_on_magnet_failure(self, tmp_path: Path) -> None:
-        """When the magnet fetch fails, notifier.send_failure_notification should be called."""
+        """When the magnet fetch fails, the game stays pending for retry — no notification spam."""
         import datetime
         from unittest.mock import MagicMock
 
@@ -2733,10 +2732,8 @@ class TestMetacriticBrowse:
             notifier=mock_notifier,
         )
         assert len(matched) == 1
-        mock_notifier.send_failure_notification.assert_called_once()
-        call = mock_notifier.send_failure_notification.call_args
-        assert call.kwargs["title"] == "Elden Ring"
-        assert "magnet" in call.kwargs["reason"].lower()
+        # Delivery failures are transient — game stays pending for retry.
+        mock_notifier.send_failure_notification.assert_not_called()
         # qbt.add_torrent must NOT be called when magnet fetch fails
         mock_qbt.add_torrent.assert_not_called()
         db.close()

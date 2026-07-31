@@ -199,8 +199,8 @@ class TestConfigModels:
         names = [list(e.keys())[0] for e in ds]
         assert "freegog" in names, "freegog should be in download_sites after migration"
         assert "fitgirl" in names, "fitgirl should remain in download_sites"
-        # freegog should come first (default order)
-        assert names[0] == "freegog", f"freegog should be first, got {names}"
+        # freegog should be appended after fitgirl (preserving default source priority)
+        assert names[-1] == "freegog", f"freegog should be last (appended), got {names}"
         # freegog entry should have full defaults, not just "enabled: true"
         fg_entry = next(e["freegog"] for e in ds if isinstance(e, dict) and "freegog" in e)
         assert fg_entry["enabled"] is True

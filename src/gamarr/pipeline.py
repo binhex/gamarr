@@ -22,7 +22,13 @@ from gamarr.notifications import Notifier
 from gamarr.qbittorrent import QBittorrentClient
 from gamarr.sources.fitgirl import _USER_AGENT, FitGirlSource, _extract_magnet_from_html
 from gamarr.sources.freegog import FreeGOGSource, _extract_magnet_from_freegog_page
-from gamarr.utils import is_cancelled, normalise_for_compare
+
+# Re-exported for use by _tokenize_title()
+from gamarr.utils import (
+    _ROMAN_TO_ARABIC,
+    is_cancelled,
+    normalise_for_compare,
+)
 
 # urllib3 warnings for FitGirl self-signed cert are suppressed in gamarr.sources.fitgirl
 
@@ -1672,9 +1678,10 @@ def _deliver_match(
 
     Uses the pre-stored magnet from the source index if available,
     otherwise fetches the magnet from the source page.  Adds the
-    torrent to qBittorrent, and sends a download notification on success
-    or a failure notification on error.  Always returns a result dict and
-    removes the pending row.
+    torrent to qBittorrent, and sends a download notification on success.
+    On transient delivery failure the game stays in the pending queue
+    for retry on the next cycle — no permanent failure notification is
+    sent, since the game may succeed later.
 
     Returns:
         A result dict with ``result`` set to ``"Passed"`` on successful
@@ -1696,12 +1703,6 @@ def _deliver_match(
             game_user_score=game_user_score,
             best=best,
         )
-        _safe_notify(
-            notifier,
-            "send_failure_notification",
-            title=game_title,
-            reason=f"No magnet found at {source_url}",
-        )
         return record_result
 
     display_name = _source_display(source_name)
@@ -1715,12 +1716,6 @@ def _deliver_match(
             game_metascore=game_metascore,
             game_user_score=game_user_score,
             best=best,
-        )
-        _safe_notify(
-            notifier,
-            "send_failure_notification",
-            title=game_title,
-            reason=f"qBittorrent rejected: source={best['url']}",
         )
         return record_result
 
@@ -1881,24 +1876,6 @@ def _truncate_at_backwards_compat(article_text: str | None) -> str | None:
     return article_text[:idx] if idx >= 0 else article_text
 
 
-# Roman numeral -> Arabic substitution patterns used by _tokenize_title.
-# Must match the order in gamarr.utils._ROMAN_TO_ARABIC (longer patterns first).
-_ROMAN_PATTERNS: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r"\bxii\b"), "12"),
-    (re.compile(r"\bxi\b"), "11"),
-    (re.compile(r"\bix\b"), "9"),
-    (re.compile(r"\bviii\b"), "8"),
-    (re.compile(r"\bvii\b"), "7"),
-    (re.compile(r"\bvi\b"), "6"),
-    (re.compile(r"\biv\b"), "4"),
-    (re.compile(r"\biii\b"), "3"),
-    (re.compile(r"\bii\b"), "2"),
-    (re.compile(r"\bx\b"), "10"),
-    (re.compile(r"\bv\b"), "5"),
-    (re.compile(r"\bi\b"), "1"),
-]
-
-
 # Common English stop words excluded from token overlap matching.
 # These words appear in many game titles but carry no identifying
 # value — including them causes false positives between unrelated
@@ -1952,7 +1929,7 @@ def _tokenize_title(title: str) -> set[str]:
     to the overlap count.
     """
     text = title.lower()
-    for pattern, replacement in _ROMAN_PATTERNS:
+    for pattern, replacement in _ROMAN_TO_ARABIC:
         text = pattern.sub(replacement, text)
     tokens = {token.strip() for token in re.split(r"[^a-z0-9]+", text) if token.strip()}
     return tokens - _STOP_WORDS
@@ -2044,6 +2021,11 @@ def _deep_search_article_body(
             candidates.append((entry, True))  # substring match
         elif _titles_share_enough_tokens(entry_title, pending_title):
             candidates.append((entry, False))  # token-overlap match
+
+    # Sort candidates: substring matches first (more reliable), then
+    # token-overlap matches.  Without sorting, high-confidence substring
+    # matches can get pushed out of the top-3 by URL-alphabetical ordering.
+    candidates.sort(key=lambda x: (not x[1], x[0].get("url", "")))
 
     # At most 3 HTTP requests to limit overhead
     for candidate, substring_match in candidates[:3]:
@@ -2340,25 +2322,27 @@ def _record_delivery_error(
     game_user_score: float | None,
     best: dict[str, Any],
 ) -> dict[str, Any]:
-    """Record an error result for a failed delivery and remove the pending row.
+    """Record a delivery error and keep the game pending for retry.
 
-    Returns the result dict with the ``slug`` key set.
+    Unlike permanent failures (genre/title rejection, expired scores),
+    delivery failures are transient — the source site may be down or
+    qBittorrent temporarily unreachable.  The game stays in the pending
+    queue so it can be retried on the next cycle.  Only the last-checked
+    timestamp is bumped to prevent the same game from dominating every
+    cycle.
     """
-    record_result = _record_result(
-        db,
-        source="metacritic",
-        source_title=game_title,
-        source_url=f"mc:{game_slug}",
-        game_title=game_title,
-        platform=game_platform,
-        metascore=game_metascore,
-        user_score=game_user_score,
-        result="Error",
-        result_details=f"Match found at {best['url']} but delivery failed",
+    db.touch_pending(game_slug)
+    logger.warning(
+        "Delivery failed for '{}' at {} — keeping pending for retry",
+        game_title,
+        best.get("url", "unknown"),
     )
-    record_result["slug"] = game_slug
-    db.remove_pending(game_slug)
-    return record_result
+    return {
+        "result": "Error",
+        "title": game_title,
+        "slug": game_slug,
+        "platform": game_platform,
+    }
 
 
 def _check_scrape_health() -> str:

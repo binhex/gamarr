@@ -200,9 +200,14 @@ def _run_copy_phase(
         return False
 
     if os.path.isdir(dst_dir):
-        logger.info("Destination '{}' already exists; marking as copied.", dst_dir)
-        db.set_post_process_state(tag, "copied", copied_at=row.post_process_copied_at)
-        return True
+        if _dir_contains_files(dst_dir):
+            logger.info("Destination '{}' already exists with files; marking as copied.", dst_dir)
+            db.set_post_process_state(tag, "copied", copied_at=row.post_process_copied_at)
+            return True
+        # Directory exists but is empty — a failed partial copy. Remove it so
+        # the copy phase can retry on the next cycle.
+        logger.warning("Destination '{}' exists but is empty; removing to allow retry.", dst_dir)
+        _remove_directory_contents(dst_dir)
 
     src_files = _build_copy_list(torrent, pp)
     if not src_files:
@@ -222,7 +227,7 @@ def _run_copy_phase(
     else:
         # Clean up partially-populated destination so the next cycle can retry.
         logger.warning("Copy failed for '{}'; cleaning up partial destination.", row.game_title)
-        _remove_directory_if_empty(dst_dir)
+        _remove_directory_contents(dst_dir)
         return False
 
 
@@ -253,7 +258,10 @@ def _run_delete_phase(
     tag = torrent["torrent_tag"]
 
     should_delete = torrent_state in ("pausedUP", "stoppedUP")
-    if not should_delete:
+    # Only apply the seed-wait timeout when we have a copy timestamp.
+    # When copy was skipped (post_process_copied_at is None), the torrent
+    # is deleted when it naturally reaches paused/stopped state.
+    if not should_delete and row.post_process_copied_at is not None:
         age = _copied_age_hours(row.post_process_copied_at)
         if pp.max_seed_wait_hours > 0 and age >= pp.max_seed_wait_hours:
             logger.info(
@@ -265,10 +273,11 @@ def _run_delete_phase(
             should_delete = True
 
     if should_delete:
-        qbt.delete_torrent(torrent["torrent_hash"], delete_data=True)
-        db.set_post_process_state(tag, "deleted")
-        logger.info("Deleted torrent '{}' after post-processing.", row.game_title)
-        return True
+        if qbt.delete_torrent(torrent["torrent_hash"], delete_data=True):
+            db.set_post_process_state(tag, "deleted")
+            logger.info("Deleted torrent '{}' after post-processing.", row.game_title)
+            return True
+        return False
     else:
         logger.info(
             "Torrent '{}' still seeding (state={}); waiting for seeding to finish.",
@@ -278,7 +287,20 @@ def _run_delete_phase(
         return False
 
 
-def _remove_directory_if_empty(path: str) -> None:
+def _dir_contains_files(directory: str) -> bool:
+    """Return True if *directory* contains at least one file.
+
+    Walks the directory tree with early exit — stops as soon as any
+    file is found.  No depth limit, so nested directory structures
+    created by users or external tools are correctly detected.
+    """
+    try:
+        return any(files for _root, _dirs, files in os.walk(directory))
+    except OSError:
+        return False
+
+
+def _remove_directory_contents(path: str) -> None:
     """Remove *path* and all its contents if it exists.
 
     Walks *path* bottom-up, deleting files and directories.

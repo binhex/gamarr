@@ -261,88 +261,112 @@ class Database:
         except Exception:
             logger.debug("Migration of browse_cache skipped (table may not exist yet)")
 
+    _LEGACY_PENDING_TABLES: tuple[str, ...] = (
+        "pending_games_backlog",
+        "pending_games_latest",
+    )
+
+    @staticmethod
+    def _migrate_one_legacy_table(session: Any, table_name: str) -> bool:
+        """Migrate rows from one legacy pending table and drop it.
+
+        Returns True if the table existed and was migrated.
+        """
+        # Whitelist guard — *table_name* is interpolated into SQL, so it must
+        # be one of the hardcoded legacy table names.  This is belt-and-braces
+        # on top of the caller's fixed tuple (database.py::_migrate_unify_pending_tables).
+        if table_name not in Database._LEGACY_PENDING_TABLES:
+            logger.warning("Refusing to migrate unknown legacy table '{}'", table_name)
+            return False
+        # Explicit per-table SELECT statements — no interpolation.  The two
+        # legacy tables share the identical column layout.
+        _legacy_selects = {
+            "pending_games_backlog": (
+                "SELECT slug, game_title, platform, metascore, metascore_reviews, "
+                "user_score, user_reviews, genres, release_date, discovered_at, "
+                "expires_at, last_checked_at, score_checks_passed "
+                "FROM pending_games_backlog"
+            ),
+            "pending_games_latest": (
+                "SELECT slug, game_title, platform, metascore, metascore_reviews, "
+                "user_score, user_reviews, genres, release_date, discovered_at, "
+                "expires_at, last_checked_at, score_checks_passed "
+                "FROM pending_games_latest"
+            ),
+        }
+        select_sql = _legacy_selects[table_name]
+        rows = session.execute(text(select_sql)).fetchall()
+        for row in rows:
+            session.execute(
+                text(
+                    "INSERT OR IGNORE INTO pending_games "
+                    "(slug, game_title, platform, metascore, metascore_reviews, "
+                    "user_score, user_reviews, genres, release_date, discovered_at, "
+                    "expires_at, last_checked_at, score_checks_passed) "
+                    "VALUES (:slug, :game_title, :platform, :metascore, :metascore_reviews, "
+                    ":user_score, :user_reviews, :genres, :release_date, :discovered_at, "
+                    ":expires_at, :last_checked_at, :score_checks_passed)"
+                ),
+                {
+                    "slug": row[0],
+                    "game_title": row[1],
+                    "platform": row[2],
+                    "metascore": row[3],
+                    "metascore_reviews": row[4],
+                    "user_score": row[5],
+                    "user_reviews": row[6],
+                    "genres": row[7],
+                    "release_date": row[8],
+                    "discovered_at": row[9],
+                    "expires_at": row[10],
+                    "last_checked_at": row[11],
+                    "score_checks_passed": row[12],
+                },
+            )
+        # DROP statements are also explicit per table — no interpolation.
+        _legacy_drops = {
+            "pending_games_backlog": "DROP TABLE IF EXISTS pending_games_backlog",
+            "pending_games_latest": "DROP TABLE IF EXISTS pending_games_latest",
+        }
+        session.execute(text(_legacy_drops[table_name]))
+        session.commit()
+        logger.info("Migrated and dropped table: {}", table_name)
+        return True
+
     def _migrate_unify_pending_tables(self) -> None:
         """Migrate pending_games_backlog / pending_games_latest -> pending_games, then drop old tables."""
         try:
             inspector = sa_inspect(self._engine)
             existing_tables = inspector.get_table_names()
-            if "pending_games_backlog" not in existing_tables and "pending_games_latest" not in existing_tables:
+            legacy_names = Database._LEGACY_PENDING_TABLES
+            if not any(t in existing_tables for t in legacy_names):
                 return
             logger.info("Migrating pending_games_backlog / pending_games_latest -> pending_games")
-            # Table names are hardcoded internal constants — not user input.
-            # Both source tables have the identical column layout, so a single
-            # parameterised statement is used per table with the name supplied
-            # from this fixed mapping only.
-            _legacy_selects = {
-                "pending_games_backlog": (
-                    "SELECT slug, game_title, platform, metascore, metascore_reviews, "
-                    "user_score, user_reviews, genres, release_date, discovered_at, "
-                    "expires_at, last_checked_at, score_checks_passed "
-                    "FROM pending_games_backlog"
-                ),
-                "pending_games_latest": (
-                    "SELECT slug, game_title, platform, metascore, metascore_reviews, "
-                    "user_score, user_reviews, genres, release_date, discovered_at, "
-                    "expires_at, last_checked_at, score_checks_passed "
-                    "FROM pending_games_latest"
-                ),
-            }
             with self._session() as session:
-                for source_table, select_sql in _legacy_selects.items():
-                    if source_table not in existing_tables:
-                        continue
-                    rows = session.execute(text(select_sql)).fetchall()
-                    for row in rows:
-                        session.execute(
-                            text(
-                                "INSERT OR IGNORE INTO pending_games "
-                                "(slug, game_title, platform, metascore, metascore_reviews, "
-                                "user_score, user_reviews, genres, release_date, discovered_at, "
-                                "expires_at, last_checked_at, score_checks_passed) "
-                                "VALUES (:slug, :game_title, :platform, :metascore, :metascore_reviews, "
-                                ":user_score, :user_reviews, :genres, :release_date, :discovered_at, "
-                                ":expires_at, :last_checked_at, :score_checks_passed)"
-                            ),
-                            {
-                                "slug": row[0],
-                                "game_title": row[1],
-                                "platform": row[2],
-                                "metascore": row[3],
-                                "metascore_reviews": row[4],
-                                "user_score": row[5],
-                                "user_reviews": row[6],
-                                "genres": row[7],
-                                "release_date": row[8],
-                                "discovered_at": row[9],
-                                "expires_at": row[10],
-                                "last_checked_at": row[11],
-                                "score_checks_passed": row[12],
-                            },
-                        )
-                    _drops = {
-                        "pending_games_backlog": "DROP TABLE IF EXISTS pending_games_backlog",
-                        "pending_games_latest": "DROP TABLE IF EXISTS pending_games_latest",
-                    }
-                    session.execute(text(_drops[source_table]))
-                    session.commit()
-                    logger.info("Migrated and dropped table: {}", source_table)
+                for table_name in legacy_names:
+                    if table_name in existing_tables:
+                        self._migrate_one_legacy_table(session, table_name)
         except Exception:
             logger.debug("Migration of pending_games_unify skipped (tables may not exist yet)")
 
     def _migrate_history_post_process(self) -> None:
         """Add genres, post_process_state, post_process_copied_at columns to history if missing."""
-        from sqlalchemy import inspect, text
+        try:
+            from sqlalchemy import inspect, text
 
-        inspector = inspect(self._engine)
-        if "history" not in inspector.get_table_names():
-            return
-        columns = [c["name"] for c in inspector.get_columns("history")]
-        for col_name in ("genres", "post_process_state", "post_process_copied_at"):
-            if col_name not in columns:
-                with self._session() as session:
-                    session.execute(text(f"ALTER TABLE history ADD COLUMN {col_name} VARCHAR"))
-                    session.commit()
-                logger.debug("Added {} column to history", col_name)
+            inspector = inspect(self._engine)
+            if "history" not in inspector.get_table_names():
+                return
+            columns = [c["name"] for c in inspector.get_columns("history")]
+            for col_name in ("genres", "post_process_state", "post_process_copied_at"):
+                if col_name not in columns:
+                    with self._session() as session:
+                        # col_name is from a hardcoded tuple — not user input.
+                        session.execute(text(f"ALTER TABLE history ADD COLUMN {col_name} VARCHAR"))
+                        session.commit()
+                    logger.debug("Added {} column to history", col_name)
+        except Exception:
+            logger.debug("Migration of history post_process columns skipped (table may not exist yet)")
 
     def close(self) -> None:
         self._engine.dispose()

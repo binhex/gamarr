@@ -14,6 +14,10 @@ from typing import TYPE_CHECKING, Final
 # "1ambread", "V Rising" → "5rising"), but this is vanishingly rare
 # in game catalogues compared to Roman numeral use.
 _ROMAN_TO_ARABIC: Final[list[tuple[re.Pattern[str], str]]] = [
+    (re.compile(r"\bxviii\b"), "18"),
+    (re.compile(r"\bxvii\b"), "17"),
+    (re.compile(r"\bxiv\b"), "14"),
+    (re.compile(r"\bxiii\b"), "13"),
     (re.compile(r"\bxii\b"), "12"),
     (re.compile(r"\bxi\b"), "11"),
     (re.compile(r"\bix\b"), "9"),
@@ -23,6 +27,9 @@ _ROMAN_TO_ARABIC: Final[list[tuple[re.Pattern[str], str]]] = [
     (re.compile(r"\biv\b"), "4"),
     (re.compile(r"\biii\b"), "3"),
     (re.compile(r"\bii\b"), "2"),
+    (re.compile(r"\bxix\b"), "19"),
+    (re.compile(r"\bxv\b"), "15"),
+    (re.compile(r"\bxvi\b"), "16"),
     (re.compile(r"\bx\b"), "10"),
     (re.compile(r"\bv\b"), "5"),
     (re.compile(r"\bi\b"), "1"),

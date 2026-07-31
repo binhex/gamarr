@@ -338,7 +338,13 @@ class FreeGOGSource:
                     else:
                         missing_magnet_count += 1
 
-            db.set_sitemap_cache("freegog")
+            # Only update the cache when we actually parsed entries.
+            # An empty parse (0 entries) likely means the site structure changed
+            # — caching would suppress retries for the full TTL window.
+            if total_entries > 0:
+                db.set_sitemap_cache("freegog")
+            else:
+                logger.warning("FreeGOG A-Z page returned 0 entries — site structure may have changed")
             self._log_az_summary(new_count, total_entries, known_count, missing_magnet_count)
         except Exception as exc:
             logger.warning("Failed to fetch FreeGOG A-Z page: {}", exc)

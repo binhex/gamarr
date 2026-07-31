@@ -19,10 +19,6 @@ def _extract_gamarr_tag(tags_str: str) -> str:
     )
 
 
-class QBittorrentError(Exception):
-    """Raised when a qBittorrent API call fails."""
-
-
 class QBittorrentClient:
     """Wraps the qBittorrent WebUI API for gamarr operations."""
 
@@ -155,15 +151,20 @@ class QBittorrentClient:
             )
         return results, gamarr_count
 
-    def delete_torrent(self, torrent_hash: str, *, delete_data: bool = False) -> None:
+    def delete_torrent(self, torrent_hash: str, *, delete_data: bool = False) -> bool:
         """Delete a torrent and optionally its downloaded data.
 
         Args:
             torrent_hash: The torrent hash to delete.
             delete_data: If True, also delete the downloaded files.
+
+        Returns:
+            True if deletion succeeded, False otherwise.
         """
         try:
             self._client.torrents_delete(delete_files=delete_data, torrent_hashes=torrent_hash)
             logger.info("Deleted torrent '{}' (delete_data={}).", torrent_hash, delete_data)
+            return True
         except Exception as exc:
             logger.warning("Failed to delete torrent '{}': {}", torrent_hash, exc)
+            return False

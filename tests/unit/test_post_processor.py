@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import UTC
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 from gamarr.post_processor import (
     _build_destination_path,
@@ -16,6 +13,9 @@ from gamarr.post_processor import (
     _safe_path_component,
     run_post_processing,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class TestSafePathComponent:
@@ -253,6 +253,7 @@ class TestRunPostProcessing:
 
         with (
             patch("gamarr.post_processor.os.path.isdir", return_value=True),
+            patch("gamarr.post_processor._dir_contains_files", return_value=True),
         ):
             run_post_processing(config, qbt, db)
 
@@ -377,7 +378,7 @@ class TestCopiedAgeHours:
         assert _copied_age_hours("") == 0.0
 
     def test_valid_timestamp_returns_positive(self) -> None:
-        from datetime import datetime, timedelta
+        from datetime import timedelta
 
         from gamarr.post_processor import _copied_age_hours
 
@@ -461,7 +462,7 @@ class TestEdgeCases:
         assert len(result) == 1  # Only valid regex compiled
 
     def test_delete_phase_age_timeout_triggers(self) -> None:
-        from datetime import datetime, timedelta
+        from datetime import timedelta
 
         from gamarr.config import Config
         from gamarr.database import HistoryRow
@@ -622,33 +623,33 @@ class TestDownloadingCount:
             loguru_logger.remove(sink_id)
 
 
-class TestRemoveDirectoryIfEmpty:
-    """Tests for the _remove_directory_if_empty cleanup helper."""
+class TestRemoveDirectoryContents:
+    """Tests for the _remove_directory_contents cleanup helper."""
 
     def test_removes_empty_directory(self, tmp_path: Path) -> None:
         """An empty directory is removed."""
-        from gamarr.post_processor import _remove_directory_if_empty
+        from gamarr.post_processor import _remove_directory_contents
 
         empty_dir = tmp_path / "empty"
         empty_dir.mkdir()
-        _remove_directory_if_empty(str(empty_dir))
+        _remove_directory_contents(str(empty_dir))
         assert not empty_dir.exists()
 
     def test_noop_nonexistent_path(self) -> None:
         """Non-existent path is silently skipped."""
-        from gamarr.post_processor import _remove_directory_if_empty
+        from gamarr.post_processor import _remove_directory_contents
 
-        _remove_directory_if_empty("/nonexistent/path/xyz123")
+        _remove_directory_contents("/nonexistent/path/xyz123")
         # Should not raise
 
     def test_removes_empty_dir_with_empty_child(self, tmp_path: Path) -> None:
         """A dir with an empty child dir is fully removed."""
-        from gamarr.post_processor import _remove_directory_if_empty
+        from gamarr.post_processor import _remove_directory_contents
 
         parent = tmp_path / "parent"
         child = parent / "child"
         child.mkdir(parents=True)
-        _remove_directory_if_empty(str(parent))
+        _remove_directory_contents(str(parent))
         assert not parent.exists()
 
 
@@ -742,3 +743,195 @@ class TestPathCaseFormatting:
             path_case="lowercase",
         )
         assert result == ""
+
+
+class TestDirContainsFiles:
+    """Tests for the _dir_contains_files helper."""
+
+    def test_empty_directory(self, tmp_path: Path) -> None:
+        """Empty directory returns False."""
+        from gamarr.post_processor import _dir_contains_files
+
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        assert _dir_contains_files(str(empty)) is False
+
+    def test_file_at_depth_1(self, tmp_path: Path) -> None:
+        """Directory with a direct file returns True."""
+        from gamarr.post_processor import _dir_contains_files
+
+        d = tmp_path / "has_file"
+        d.mkdir()
+        (d / "game.iso").touch()
+        assert _dir_contains_files(str(d)) is True
+
+    def test_file_at_depth_3(self, tmp_path: Path) -> None:
+        """Files at depth 3+ are detected via os.walk."""
+        from gamarr.post_processor import _dir_contains_files
+
+        d = tmp_path / "deep"
+        nested = d / "bin" / "win64"
+        nested.mkdir(parents=True)
+        (nested / "game.exe").touch()
+        assert _dir_contains_files(str(d)) is True
+
+    def test_only_empty_subdirs(self, tmp_path: Path) -> None:
+        """Directory with only empty subdirectories returns False."""
+        from gamarr.post_processor import _dir_contains_files
+
+        d = tmp_path / "empty_tree"
+        (d / "sub" / "deep").mkdir(parents=True)
+        assert _dir_contains_files(str(d)) is False
+
+    def test_nonexistent_path(self) -> None:
+        """Non-existent path returns False (OSError caught)."""
+        from gamarr.post_processor import _dir_contains_files
+
+        assert _dir_contains_files("/nonexistent/path/xyz") is False
+
+
+class TestRunCopyPhaseEmptyDirRetry:
+    """Tests for the empty-dir removal and retry path in _run_copy_phase."""
+
+    def test_empty_dir_removed_and_retried(self) -> None:
+        """When destination exists but is empty, it is removed and copy proceeds."""
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.config import Config
+        from gamarr.database import HistoryRow
+        from gamarr.post_processor import _run_copy_phase
+
+        config = Config()
+        config.post_process.library_path = "/lib/{title}"
+
+        row = MagicMock(spec=HistoryRow)
+        row.source = "fitgirl"
+        row.platform = "pc"
+        row.genres = "Action"
+        row.game_title = "Test Game"
+        row.post_process_state = None
+
+        db = MagicMock()
+        torrent = {
+            "torrent_tag": "gamarr-test",
+            "torrent_hash": "abc",
+            "torrent_save_path": "/dl/Test Game",
+            "torrent_file_list": [{"file_name": "game.iso", "file_size": 999999}],
+        }
+
+        with (
+            patch("gamarr.post_processor.os.path.isdir", return_value=True),
+            patch("gamarr.post_processor._dir_contains_files", return_value=False),
+            patch("gamarr.post_processor._remove_directory_contents") as mock_remove,
+            patch("gamarr.post_processor.make_directory", return_value=True),
+            patch("gamarr.post_processor.copy_with_verify", return_value=True),
+        ):
+            result = _run_copy_phase(torrent, config, row, db)
+
+        mock_remove.assert_called_once()
+        assert result is True
+        db.set_post_process_state.assert_called_once()
+
+    def test_empty_src_files_returns_false(self) -> None:
+        """When no files match (all excluded), return False without copying."""
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.config import Config
+        from gamarr.database import HistoryRow
+        from gamarr.post_processor import _run_copy_phase
+
+        config = Config()
+        config.post_process.library_path = "/lib/{title}"
+        config.post_process.exclude_file_min_kb = 999999  # exclude everything
+
+        row = MagicMock(spec=HistoryRow)
+        row.source = "fitgirl"
+        row.platform = "pc"
+        row.genres = "Action"
+        row.game_title = "Test Game"
+        row.post_process_state = None
+
+        db = MagicMock()
+        torrent = {
+            "torrent_tag": "gamarr-test",
+            "torrent_hash": "abc",
+            "torrent_save_path": "/dl/Test Game",
+            "torrent_file_list": [{"file_name": "game.iso", "file_size": 1}],
+        }
+
+        with (
+            patch("gamarr.post_processor.os.path.isdir", return_value=False),
+        ):
+            result = _run_copy_phase(torrent, config, row, db)
+
+        assert result is False
+        db.set_post_process_state.assert_not_called()
+
+    def test_make_directory_fails_returns_false(self) -> None:
+        """When destination directory cannot be created, return False."""
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.config import Config
+        from gamarr.database import HistoryRow
+        from gamarr.post_processor import _run_copy_phase
+
+        config = Config()
+        config.post_process.library_path = "/lib/{title}"
+
+        row = MagicMock(spec=HistoryRow)
+        row.source = "fitgirl"
+        row.platform = "pc"
+        row.genres = "Action"
+        row.game_title = "Test Game"
+        row.post_process_state = None
+
+        db = MagicMock()
+        torrent = {
+            "torrent_tag": "gamarr-test",
+            "torrent_hash": "abc",
+            "torrent_save_path": "/dl/Test Game",
+            "torrent_file_list": [{"file_name": "game.iso", "file_size": 999999}],
+        }
+
+        with (
+            patch("gamarr.post_processor.os.path.isdir", return_value=False),
+            patch("gamarr.post_processor.make_directory", return_value=False),
+        ):
+            result = _run_copy_phase(torrent, config, row, db)
+
+        assert result is False
+        db.set_post_process_state.assert_not_called()
+
+
+class TestRunDeletePhaseFailure:
+    """Tests for delete_torrent returning False."""
+
+    def test_state_not_set_when_delete_fails(self) -> None:
+        """When qbt.delete_torrent returns False, post_process_state is NOT set to deleted."""
+        from unittest.mock import MagicMock
+
+        from gamarr.config import Config
+        from gamarr.database import HistoryRow
+        from gamarr.post_processor import _run_delete_phase
+
+        config = Config()
+        config.post_process.remove_completed = True
+
+        qbt = MagicMock()
+        qbt.delete_torrent.return_value = False
+
+        row = MagicMock(spec=HistoryRow)
+        row.game_title = "Test Game"
+        row.post_process_copied_at = "2025-01-01T00:00:00"
+
+        db = MagicMock()
+        torrent = {
+            "torrent_tag": "gamarr-test",
+            "torrent_hash": "abc",
+            "torrent_state": "pausedUP",
+        }
+
+        result = _run_delete_phase(torrent, config, qbt, row, db)
+
+        assert result is False
+        db.set_post_process_state.assert_not_called()

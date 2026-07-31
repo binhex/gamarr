@@ -291,6 +291,12 @@ class FitGirlSource:
                 fetcher=lambda url: requests.get(url, timeout=30, headers={"User-Agent": _USER_AGENT}, verify=False),
             )
             titles = _filter_game_urls(titles)
+            if not titles:
+                # Don't wipe the source index or cache an empty state —
+                # a site structure change could cause 0 entries, and
+                # caching would suppress retries for the full TTL window.
+                logger.warning("FitGirl sitemap returned 0 entries — site structure may have changed")
+                return
             db.rebuild_source_titles("fitgirl", [{"magnet": None, **t} for t in titles])
             db.set_sitemap_cache("fitgirl")
             logger.info("FitGirl: {} new game titles indexed", len(titles))
@@ -298,6 +304,8 @@ class FitGirlSource:
             logger.warning("Failed to fetch FitGirl sitemap: {}", exc)
             # Do NOT update the cache on failure — a transient error should not
             # suppress retries for the full TTL window.
+        except Exception as exc:
+            logger.warning("FitGirl sitemap parse failed ({}: {}); will retry next cycle", type(exc).__name__, exc)
 
     def fetch_sitemap(self, db: Database, cancel_event: threading.Event | None = None) -> None:
         """Fetch the FitGirl sitemap and rebuild the source_titles index.
