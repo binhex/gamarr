@@ -834,11 +834,19 @@ class MetacriticClient:
             page_number += 1
 
         n_pages = max(page_number - 1, 0)
-        logger.info(
-            "Scan result: {} pages browsed, {} games collected",
-            n_pages,
-            len(all_games),
-        )
+        if year is not None:
+            logger.info(
+                "Scan result for {}: {} pages browsed, {} games collected",
+                year,
+                n_pages,
+                len(all_games),
+            )
+        else:
+            logger.info(
+                "Scan result: {} pages browsed, {} games collected",
+                n_pages,
+                len(all_games),
+            )
         self._recent_games_last_page = n_pages
         return all_games
 
