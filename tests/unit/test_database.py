@@ -1062,6 +1062,62 @@ class TestKnownSlugs:
         assert len(slugs) == 0
         db.close()
 
+    def test_get_known_slugs_finds_rows_regardless_of_source(self, tmp_path: Path) -> None:
+        """get_known_slugs must find processed slugs even when source differs.
+
+        The source column now reflects the download origin (fitgirl, freegog)
+        rather than a fixed "metacritic" marker.  Deduplication must work
+        regardless of what source value was written — a delivered game must
+        not be re-queued on the next cycle just because source changed.
+        """
+        db = Database(str(tmp_path / "test.db"))
+        db.record_processed(
+            source="fitgirl",
+            source_title="Game X",
+            source_url="mc:game-x",
+            game_title="Game X",
+            result="Passed",
+        )
+        db.record_processed(
+            source="freegog",
+            source_title="Game Y",
+            source_url="mc:game-y",
+            game_title="Game Y",
+            result="Passed",
+        )
+        db.record_processed(
+            source="metacritic",
+            source_title="Game Z",
+            source_url="mc:game-z",
+            game_title="Game Z",
+            result="Failed",
+        )
+
+        slugs = db.get_known_slugs(source="metacritic")
+        assert "game-x" in slugs, "fitgirl-sourced slug must be deduped"
+        assert "game-y" in slugs, "freegog-sourced slug must be deduped"
+        assert "game-z" in slugs, "metacritic-sourced slug must be deduped"
+        assert len(slugs) == 3, f"Expected 3, got {len(slugs)}"
+        db.close()
+
+    def test_is_processed_finds_row_regardless_of_source(self, tmp_path: Path) -> None:
+        """is_processed must match by source_url alone, ignoring source."""
+        db = Database(str(tmp_path / "test.db"))
+        db.record_processed(
+            source="fitgirl",
+            source_title="Game A",
+            source_url="mc:game-a",
+            game_title="Game A",
+            result="Passed",
+        )
+        # Dedupe check uses source="metacritic" like the pipeline does,
+        # but the stored row has source="fitgirl". Must still match.
+        assert db.is_processed("metacritic", "mc:game-a") is True, (
+            "is_processed must find row by source_url regardless of source mismatch"
+        )
+        assert db.is_processed("metacritic", "mc:game-unknown") is False
+        db.close()
+
     def test_get_known_slugs_includes_all_platforms(self, tmp_path: Path) -> None:
         """get_known_slugs includes pending slugs regardless of platform.
 

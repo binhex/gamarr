@@ -581,12 +581,12 @@ class Database:
 
         known: set[str] = set()
         with self._session() as session:
-            # Slugs from history table: source_url is "mc:{slug}"
-            rows = (
-                session.query(HistoryRow.source_url)
-                .filter(HistoryRow.source == source, HistoryRow.source_url.isnot(None))
-                .all()
-            )
+            # Slugs from history table: source_url is "mc:{slug}".
+            # The *source* parameter is not used in the filter because
+            # the source column now reflects the download origin (fitgirl,
+            # freegog) rather than a fixed "metacritic" value.  Deduping
+            # by source_url alone is correct — it is globally unique per game.
+            rows = session.query(HistoryRow.source_url).filter(HistoryRow.source_url.isnot(None)).all()
             for (source_url,) in rows:
                 slug: str = str(source_url)
                 if slug.startswith("mc:"):
@@ -933,7 +933,6 @@ class Database:
             count = (
                 session.query(HistoryRow)
                 .filter(
-                    HistoryRow.source == source,
                     HistoryRow.source_url == source_url,
                 )
                 .count()

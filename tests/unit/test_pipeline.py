@@ -1353,6 +1353,113 @@ class TestMetacriticBrowse:
         assert kwargs["title"] == "[FreeGOG] Test Game 2", f"Expected '[FreeGOG] Test Game 2', got '{kwargs['title']}'"
         db.close()
 
+    def test_deliver_match_records_download_source_not_metacritic(self, tmp_path: Path) -> None:
+        """_deliver_match should persist the download source name in the history row.
+
+        The stored ``source`` feeds the ``{site}`` template placeholder during
+        post-processing.  It must be the download source (e.g. "fitgirl"), not
+        the critic site "metacritic".
+        """
+        import datetime
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _deliver_match
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="cyberpunk-2077",
+            game_title="Cyberpunk 2077",
+            platform="pc",
+            metascore=90.0,
+            user_score=8.5,
+            expires_at=expires,
+        )
+        db.update_pending_scores(slug="cyberpunk-2077", metascore=90.0, user_score=8.5)
+
+        mock_qbt = MagicMock()
+        mock_qbt.add_torrent.return_value = "gamarr-tag"
+        mock_notifier = MagicMock()
+
+        best = {
+            "title": "Cyberpunk 2077",
+            "url": "https://fitgirl-repacks.site/cyberpunk-2077/",
+            "magnet": "magnet:?xt=urn:btih:xyz",
+        }
+
+        _deliver_match(
+            db,
+            qbt=mock_qbt,
+            magnet_fetcher=MagicMock(),
+            notifier=mock_notifier,
+            best=best,
+            game_slug="cyberpunk-2077",
+            game_title="Cyberpunk 2077",
+            game_platform="pc",
+            game_metascore=90.0,
+            game_user_score=8.5,
+            source_name="fitgirl",
+        )
+
+        row = db.find_by_tag("gamarr-tag")
+        assert row is not None, "Expected a history row to be recorded"
+        assert row.source == "fitgirl", (
+            f"Expected history source 'fitgirl' (used for {{site}} in post-processing), got '{row.source}'"
+        )
+        db.close()
+
+    def test_deliver_match_records_freegog_source(self, tmp_path: Path) -> None:
+        """_deliver_match should persist "freegog" as the history source for FreeGOG matches."""
+        import datetime
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _deliver_match
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="hollow-knight-silksong",
+            game_title="Hollow Knight Silksong",
+            platform="pc",
+            metascore=88.0,
+            user_score=8.2,
+            expires_at=expires,
+        )
+        db.update_pending_scores(slug="hollow-knight-silksong", metascore=88.0, user_score=8.2)
+
+        mock_qbt = MagicMock()
+        mock_qbt.add_torrent.return_value = "gamarr-tag2"
+        mock_notifier = MagicMock()
+
+        best = {
+            "title": "Hollow Knight Silksong",
+            "url": "https://freegogpcgames.com/42/hollow-knight-silksong/",
+            "magnet": "magnet:?xt=urn:btih:abc2",
+        }
+
+        _deliver_match(
+            db,
+            qbt=mock_qbt,
+            magnet_fetcher=MagicMock(),
+            notifier=mock_notifier,
+            best=best,
+            game_slug="hollow-knight-silksong",
+            game_title="Hollow Knight Silksong",
+            game_platform="pc",
+            game_metascore=88.0,
+            game_user_score=8.2,
+            source_name="freegog",
+        )
+
+        row = db.find_by_tag("gamarr-tag2")
+        assert row is not None, "Expected a history row to be recorded"
+        assert row.source == "freegog", (
+            f"Expected history source 'freegog' (used for {{site}} in post-processing), got '{row.source}'"
+        )
+        db.close()
+
     def test_verify_pending_keeps_game_with_failing_real_scores_for_recheck(self, tmp_path: Path) -> None:
         """A game with failing real scores should stay pending for re-verification."""
         import datetime

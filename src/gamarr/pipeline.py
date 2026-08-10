@@ -1736,7 +1736,7 @@ def _deliver_match(
     logger.info("\u2713 Sent matched '{}' to qBittorrent (tag: {})", _escape_markup(game_title), tag)
     record_result = _record_result(
         db,
-        source="metacritic",
+        source=source_name,
         source_title=game_title,
         source_url=f"mc:{game_slug}",
         game_title=game_title,
@@ -2094,6 +2094,7 @@ def _handle_matched_game(
                 game_metascore=game_metascore,
                 game_user_score=game_user_score,
                 lib_match=lib_match,
+                source_name=source_name,
             )
 
     # If qbt and magnet_fetcher are provided, deliver the torrent
@@ -2258,11 +2259,12 @@ def _record_library_match(
     game_metascore: float | None,
     game_user_score: float | None,
     lib_match: Any,
+    source_name: str = "fitgirl",
 ) -> dict[str, Any]:
     """Record that a matched game was already found in the local library."""
     record_result = _record_result(
         db,
-        source="metacritic",
+        source=source_name,
         source_title=game_title,
         source_url=f"mc:{game_slug}",
         game_title=game_title,
@@ -2296,7 +2298,7 @@ def _record_match_only(
     """Record a matched game to history without delivering to qBittorrent."""
     record_result = _record_result(
         db,
-        source="metacritic",
+        source=source_name,
         source_title=game_title,
         source_url=f"mc:{game_slug}",
         game_title=game_title,

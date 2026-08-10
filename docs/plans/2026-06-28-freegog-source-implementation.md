@@ -950,7 +950,7 @@ def _build_source(entry: Any, db: Database) -> Any:
 
 - [ ] **Step 4: Run config tests to verify**
 
-Run: `uv run pytest tests/unit/test_config.py -v -k "download_sites or source or default"`  
+Run: `uv run pytest tests/unit/test_config.py -v -k "download_sites or source or default"`
 Expected: All matching tests pass.  The new default `download_sites` should have `freegog` first.
 
 - [ ] **Step 5: Run full test suite**
