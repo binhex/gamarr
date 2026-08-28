@@ -36,6 +36,10 @@ class ScheduleConfig(BaseModel):
     enabled: bool = False
     schedule_time_mins: int = Field(default=60, gt=0)
     run_on_start: bool = True
+    # Hard watchdog budget for one acquisition cycle: a cycle that exceeds
+    # this (e.g. a wedged browser) is aborted so the next scheduled run can
+    # proceed. Bump this for very large fresh source indexes.
+    acquisition_timeout_mins: int = Field(default=25, gt=0)
 
 
 class SourceConfigEntry(BaseModel):

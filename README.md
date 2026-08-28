@@ -126,6 +126,7 @@ on first run. The file is divided into the sections below.
 | `enabled` | Enable or disable scheduled background mode. | `false` |
 | `schedule_time_mins` | Interval in minutes between scheduled cycles. | `60` |
 | `run_on_start` | Run immediately on start, before the first interval. | `true` |
+| `acquisition_timeout_mins` | Hard watchdog budget (minutes) for one acquisition cycle. A cycle that exceeds this is aborted so the next scheduled run can proceed. Bump for very large fresh source indexes. | `25` |
 
 ### `download_sites`
 

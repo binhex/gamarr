@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import itertools
 import re
+import threading
+from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final, Protocol, cast
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 # Roman numeral → Arabic numeral substitution patterns.
 # Each pattern matches standalone word-bounded Roman numerals only,
@@ -35,8 +41,85 @@ _ROMAN_TO_ARABIC: Final[list[tuple[re.Pattern[str], str]]] = [
     (re.compile(r"\bi\b"), "1"),
 ]
 
-if TYPE_CHECKING:
-    import threading
+
+class CancelSignal(Protocol):
+    """Structural type for any cancel signal with ``is_set()``.
+
+    Covers :class:`threading.Event` as well as composite signals (e.g.
+    the scheduler's per-run watchdog + shutdown event wrapper).
+    """
+
+    def is_set(self) -> bool: ...
+
+
+class TimeoutExceededError(RuntimeError):
+    """Raised when a callable run under a watchdog exceeds its time budget."""
+
+
+_WATCHDOG_THREAD_IDS = itertools.count(1)
+
+
+def run_with_timeout[T](
+    func: Callable[[], T],
+    timeout_seconds: float,
+    *,
+    on_timeout: Callable[[], None] | None = None,
+) -> T:
+    """Run *func* to completion or abort it after *timeout_seconds*.
+
+    Executes func on a daemon worker thread and waits up to
+    *timeout_seconds*.  If the worker is still running when the budget
+    expires, *on_timeout* is invoked (best effort) and
+    :class:`TimeoutExceededError` is raised in the caller.  The worker
+    thread keeps running until it finishes; callers that cannot tolerate
+    a detached worker must arrange cleanup via *on_timeout*.
+
+    Any exception raised by func is re-raised in the caller; nothing is
+    silently swallowed.
+
+    Raises:
+        TimeoutExceededError: When the time budget is exceeded.
+    """
+    outcome_ok: bool | None = None
+    outcome_value: Any = None
+    outcome_error: BaseException | None = None
+
+    def _run() -> None:
+        nonlocal outcome_ok, outcome_value, outcome_error
+        try:
+            outcome_value = func()
+            # Only mark complete AFTER func returns — while func runs the
+            # outcome must stay unset so the watchdog can detect a hang.
+            outcome_ok = True
+        except BaseException as exc:
+            # Deliberately forward worker failures (incl. SystemExit/KeyboardInterrupt).
+            outcome_ok = False
+            outcome_error = exc
+
+    worker = threading.Thread(
+        target=_run,
+        name=f"watchdog-worker-{next(_WATCHDOG_THREAD_IDS)}",
+        daemon=True,
+    )
+    worker.start()
+    worker.join(timeout_seconds)
+    if worker.is_alive() and outcome_ok is None and outcome_error is None:
+        # The worker may have returned from func() without recording its
+        # outcome yet (a few bytecodes before the assignment). Give it a
+        # brief grace window before declaring a timeout.
+        worker.join(0.01)
+    if worker.is_alive() and outcome_ok is None and outcome_error is None:
+        if on_timeout is not None:
+            # Best effort: a failing callback must not mask TimeoutExceededError.
+            with suppress(Exception):
+                on_timeout()
+        raise TimeoutExceededError(f"function did not complete within {timeout_seconds:g}s and was aborted")
+
+    if outcome_ok:
+        return cast("T", outcome_value)
+    if outcome_error is not None:
+        raise outcome_error
+    raise RuntimeError("watchdog worker terminated without a result")  # pragma: no cover
 
 
 def get_project_root() -> Path:
@@ -58,6 +141,6 @@ def normalise_for_compare(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", text)
 
 
-def is_cancelled(cancel_event: threading.Event | None) -> bool:
+def is_cancelled(cancel_event: CancelSignal | None) -> bool:
     """Return True if *cancel_event* is not None and is set."""
     return cancel_event is not None and cancel_event.is_set()

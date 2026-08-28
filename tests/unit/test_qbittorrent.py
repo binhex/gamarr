@@ -246,3 +246,20 @@ class TestDeleteTorrent:
         client._client = MagicMock()
         client.delete_torrent("abc123", delete_data=False)
         client._client.torrents_delete.assert_called_once_with(delete_files=False, torrent_hashes="abc123")
+
+
+class TestClientTimeoutBounds:
+    """qBittorrent WebUI HTTP calls must be bounded so a hung client
+    cannot block the acquisition thread forever."""
+
+    def test_client_constructed_with_bounded_timeouts(self) -> None:
+        from unittest.mock import patch
+
+        from gamarr.qbittorrent import QBittorrentClient
+
+        with patch("gamarr.qbittorrent.qbittorrentapi.Client") as mock_client:
+            QBittorrentClient(host="localhost", port=8080, username="admin", password="secret")
+
+        mock_client.assert_called_once()
+        _, call_kwargs = mock_client.call_args
+        assert call_kwargs.get("REQUESTS_ARGS") == {"timeout": (5, 30)}, call_kwargs

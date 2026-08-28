@@ -1336,3 +1336,21 @@ def test_migration_removes_search_mode() -> None:
             assert not hasattr(pc_cfg, "search_mode"), "search_mode should not exist on the parsed config model"
         finally:
             os.unlink(f.name)
+
+
+class TestScheduleAcquisitionTimeout:
+    """schedule.acquisition_timeout_mins watchdog default."""
+
+    def test_default_is_25(self) -> None:
+        from gamarr.config import ScheduleConfig
+
+        cfg = ScheduleConfig()
+        assert cfg.acquisition_timeout_mins == 25
+
+    def test_positive_only(self) -> None:
+        import pydantic
+
+        from gamarr.config import ScheduleConfig
+
+        with pytest.raises(pydantic.ValidationError):
+            ScheduleConfig(acquisition_timeout_mins=0)

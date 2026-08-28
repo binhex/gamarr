@@ -8,16 +8,39 @@ import os
 import signal
 import threading
 from datetime import UTC
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED
 from apscheduler.schedulers.background import BackgroundScheduler
 from loguru import logger
 
 from gamarr.pipeline import run_acquisition
+from gamarr.utils import TimeoutExceededError, run_with_timeout
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from gamarr.config import Config
+
+# Hard budget for one full acquisition cycle. If a cycle exceeds this
+# (e.g. a wedged browser), it is aborted so the next scheduled run can
+# proceed instead of being skipped forever by max_instances=1.
+_ACQUISITION_RUN_TIMEOUT_SECONDS: Final[float] = 25 * 60.0
+
+
+class _CancelSignal:
+    """Read-only composite of the daemon shutdown event and a per-run watchdog event.
+
+    The pipeline only ever calls :meth:`is_set`, so a composite lets the
+    run-level watchdog cancel the CURRENT cycle without mutating the sticky
+    daemon-level shutdown event (a per-run event is set instead).
+    """
+
+    def __init__(self, events: list[threading.Event]) -> None:
+        self._events = events
+
+    def is_set(self) -> bool:
+        return any(event.is_set() for event in self._events)
 
 
 def _run_guarded(label: str, fn: Any, *args: Any) -> None:
@@ -26,6 +49,59 @@ def _run_guarded(label: str, fn: Any, *args: Any) -> None:
         fn(*args)
     except Exception:
         logger.exception("{} task failed.", label)
+
+
+def _run_acquisition_guarded(
+    job: Callable[..., Any],
+    *,
+    timeout_seconds: float = _ACQUISITION_RUN_TIMEOUT_SECONDS,
+    **kwargs: Any,
+) -> Any:
+    """Run the acquisition job under a hard watchdog.
+
+    A hung cycle (e.g. a wedged browser) is aborted after *timeout_seconds*
+    instead of occupying the job's single instance slot forever. The abort
+    raises TimeoutExceededError, which surfaces to APScheduler as a job
+    error so the next scheduled run proceeds, and sets a FRESH per-run
+    cancel event so the aborted pipeline stops at its next checkpoint.
+    Later cycles are unaffected: the daemon-level shutdown event
+    (``kwargs["cancel_event"]``, if any) is combined with the per-run
+    event into a composite signal and is never mutated by this wrapper.
+
+    Note: on abort the wrapped pipeline thread keeps running detached
+    until its own per-fetch watchdog/recycling bounds it (residual risk —
+    see run_with_timeout).
+
+    Args:
+        job: The callable to run (usually :func:`~gamarr.pipeline.run_acquisition`).
+        timeout_seconds: Hard budget for one full acquisition cycle.
+        kwargs: Forwarded to the job; an existing ``cancel_event`` (the
+            daemon shutdown event) is wrapped into a composite signal.
+
+    Returns:
+        Whatever the job returns.
+
+    Raises:
+        TimeoutExceededError: If the job exceeds *timeout_seconds*.
+    """
+    shutdown_event = kwargs.get("cancel_event")
+    run_event = threading.Event()
+    if shutdown_event is not None:
+        if not isinstance(shutdown_event, threading.Event):
+            # A composite signal must never be wrapped twice.
+            raise TypeError("cancel_event must be a threading.Event")
+        kwargs["cancel_event"] = _CancelSignal([shutdown_event, run_event])
+    else:
+        kwargs["cancel_event"] = run_event
+
+    def _on_timeout() -> None:
+        run_event.set()
+        logger.critical(
+            "Acquisition run exceeded {}s watchdog — aborting cycle so the next scheduled run can proceed",
+            timeout_seconds,
+        )
+
+    return run_with_timeout(lambda: job(**kwargs), timeout_seconds, on_timeout=_on_timeout)
 
 
 def _write_pid(pid_path: str) -> None:
@@ -228,7 +304,18 @@ def run_once(config: Config) -> None:
     """Run a single scan cycle (foreground mode)."""
     logger.info("gamarr running in single-pass mode.")
     kwargs = _build_kwargs(config)
-    results = run_acquisition(**kwargs)
+    # Foreground mode gets the same cycle watchdog as the daemon so a
+    # wedged browser cannot hang a single-pass run forever either. An abort
+    # must surface cleanly instead of an uncaught traceback.
+    try:
+        results = _run_acquisition_guarded(
+            run_acquisition,
+            timeout_seconds=config.schedule.acquisition_timeout_mins * 60.0,
+            **kwargs,
+        )
+    except TimeoutExceededError as exc:
+        logger.critical("Acquisition cycle aborted by the watchdog: {}", exc)
+        results = []
     passed = sum(1 for r in results if r["result"] == "Passed")
     failed = sum(1 for r in results if r["result"] == "Failed")
     errors = sum(1 for r in results if r["result"] == "Error")
@@ -267,9 +354,14 @@ def _run_daemon(config: Config) -> None:
 
     cancel_event = threading.Event()
     scheduler.add_job(
-        run_acquisition,
+        _run_acquisition_guarded,
         trigger=IntervalTrigger(minutes=acq_cfg.schedule_time_mins),
-        kwargs={**kwargs, "cancel_event": cancel_event},
+        kwargs={
+            "job": run_acquisition,
+            "timeout_seconds": acq_cfg.acquisition_timeout_mins * 60.0,
+            **kwargs,
+            "cancel_event": cancel_event,
+        },
         id="acquisition",
         name="Acquisition",
         next_run_time=_next_run,

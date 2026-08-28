@@ -7,6 +7,8 @@ from datetime import UTC
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from gamarr.config import Config
 from gamarr.scheduler import run, run_once
 
@@ -29,6 +31,83 @@ class TestSchedulerForeground:
             config = _make_config(schedule_enabled=False)
             run(config)
             mock_run_once.assert_called_once()
+
+    def test_run_once_passes_configured_timeout_to_watchdog(self) -> None:
+        with patch("gamarr.scheduler._run_acquisition_guarded") as mock_guard:
+            mock_guard.return_value = []
+            config = _make_config(schedule_enabled=False)
+            config.schedule.acquisition_timeout_mins = 7
+            run_once(config)
+
+        kwargs = mock_guard.call_args.kwargs
+        assert kwargs["timeout_seconds"] == 7 * 60.0, "configured timeout must reach the watchdog"
+
+    def test_run_once_handles_watchdog_abort_cleanly(self) -> None:
+        from gamarr.utils import TimeoutExceededError
+
+        with (
+            patch("gamarr.scheduler._run_acquisition_guarded", side_effect=TimeoutExceededError("hung")),
+            patch("gamarr.qbittorrent.QBittorrentClient") as mock_qbt_cls,
+        ):
+            mock_qbt_cls.return_value.is_connected.return_value = False
+            config = _make_config(schedule_enabled=False)
+            run_once(config)
+        # No exception propagates: a watchdog abort must exit cleanly.
+
+    def test_run_daemon_passes_configured_timeout_to_acquisition_job(self) -> None:
+        from gamarr.scheduler import _run_daemon
+
+        with patch("gamarr.scheduler.BackgroundScheduler") as mock_sched_cls:
+            mock_sched = MagicMock()
+            mock_sched_cls.return_value = mock_sched
+            with patch("gamarr.scheduler.signal") as mock_signal:
+                mock_signal.signal.return_value = None
+
+                config = MagicMock()
+                config.schedule.schedule_time_mins = 60
+                config.schedule.run_on_start = True
+                config.schedule.acquisition_timeout_mins = 42
+                config.review_sites.metacritic.platform_overrides = {"pc": MagicMock()}
+                config.review_sites.metacritic.platform_overrides["pc"].min_metascore = 75
+                config.review_sites.metacritic.platform_overrides["pc"].min_metascore_reviews = 5
+                config.review_sites.metacritic.platform_overrides["pc"].min_user_score = 7.5
+                config.review_sites.metacritic.platform_overrides["pc"].min_user_reviews = 10
+                config.review_sites.metacritic.platform_overrides["pc"].max_pages = 12
+                config.review_sites.metacritic.platform_overrides["pc"].cache_details_days = 7
+                config.review_sites.metacritic.platform_overrides["pc"].cache_pages_hours = 4
+                config.download_sites.fitgirl.platform = "pc"
+                config.general.db_path = ":memory:"
+                config.torrent_client.qbittorrent.host = "localhost"
+                config.torrent_client.qbittorrent.port = 8080
+                config.torrent_client.qbittorrent.username = "admin"
+                config.torrent_client.qbittorrent.password = "adminadmin"
+                config.torrent_client.qbittorrent.category = "games-gamarr"
+                config.torrent_client.qbittorrent.add_paused = False
+                config.notification.apprise_urls = []
+                config.notification.on_download = True
+                config.notification.on_failure = False
+                config.notification.on_error = False
+                config.post_process.post_process_enabled = True
+                config.post_process.schedule_time_mins = 5
+                config.post_process.run_on_start = True
+                config.post_process.library_path = ""
+                config.post_process.copy_completed = True
+                config.post_process.remove_completed = True
+                config.post_process.max_seed_wait_hours = 168
+                config.post_process.exclude_file_min_kb = 0
+                config.post_process.exclude_file_regex_list = []
+                config.post_process.exclude_folder_regex_list = []
+
+                mock_shutdown_event = MagicMock()
+                mock_shutdown_event.wait.return_value = None
+
+                with patch("gamarr.scheduler._ShutdownEvent", return_value=mock_shutdown_event):
+                    _run_daemon(config)
+
+        acquisition_kwargs = mock_sched.add_job.call_args_list[0].kwargs["kwargs"]
+        assert acquisition_kwargs["timeout_seconds"] == 42 * 60.0, (
+            "configured acquisition_timeout_mins must reach the daemon watchdog"
+        )
 
     def test_run_calls_daemon_when_schedule_enabled(self) -> None:
         """When schedule.enabled=True, run() should call _run_daemon."""
@@ -552,3 +631,114 @@ class TestPostProcessingReschedule:
             )
         finally:
             logger.remove(sink_id)
+
+
+class TestAcquisitionWatchdog:
+    """Acquisition runs are bounded by a watchdog so a hung cycle cannot
+    wedge the scheduler forever (max_instances=1 previously skipped every
+    subsequent run while a wedged browser blocked the job thread)."""
+
+    def test_hung_acquisition_aborts_and_sets_cancel_event(self) -> None:
+        import threading
+        import time
+        from typing import Any
+
+        from gamarr.scheduler import _run_acquisition_guarded
+        from gamarr.utils import TimeoutExceededError
+
+        seen: dict[str, object] = {}
+
+        def hang(**kwargs: Any) -> None:
+            seen["cancel_event"] = kwargs["cancel_event"]
+            time.sleep(30)  # simulates a wedged browser cycle
+
+        start = time.monotonic()
+        with pytest.raises(TimeoutExceededError):
+            _run_acquisition_guarded(hang, timeout_seconds=0.3, cancel_event=threading.Event())
+        elapsed = time.monotonic() - start
+
+        assert elapsed < 5, f"watchdog did not abort promptly, took {elapsed:.1f}s"
+        cancel: Any = seen["cancel_event"]
+        assert cancel is not None and cancel.is_set() is True, (
+            "the aborted run's cancel signal must be set so the pipeline stops promptly"
+        )
+
+    def test_normal_acquisition_completes_and_returns_result(self) -> None:
+        import threading
+
+        from gamarr.scheduler import _run_acquisition_guarded
+
+        received: dict[str, object] = {}
+
+        def job(**kwargs: object) -> list[str]:
+            received.update(kwargs)
+            return ["delivered"]
+
+        result = _run_acquisition_guarded(job, timeout_seconds=5, cancel_event=threading.Event())
+        assert result == ["delivered"]
+        assert received.get("cancel_event") is not None
+
+    def test_job_exception_propagates_to_scheduler(self) -> None:
+        import threading
+
+        from gamarr.scheduler import _run_acquisition_guarded
+
+        def boom(**kwargs: object) -> None:
+            del kwargs
+            raise ValueError("acquisition exploded")
+
+        with pytest.raises(ValueError, match="acquisition exploded"):
+            _run_acquisition_guarded(boom, timeout_seconds=5, cancel_event=threading.Event())
+
+    def test_aborted_cycle_does_not_cancel_next_cycle(self) -> None:
+        import threading
+        import time
+        from typing import Any
+
+        from gamarr.scheduler import _run_acquisition_guarded
+        from gamarr.utils import TimeoutExceededError
+
+        shutdown_event = threading.Event()
+        seen_cancelled: list[bool] = []
+
+        def hang(**kwargs: Any) -> None:
+            del kwargs
+            time.sleep(30)
+
+        def normal(**kwargs: Any) -> list[str]:
+            event: Any = kwargs["cancel_event"]
+            assert event is not None
+            seen_cancelled.append(event.is_set())
+            return ["ok"]
+
+        # First cycle hangs, the watchdog sets the per-run cancel signal.
+        with pytest.raises(TimeoutExceededError):
+            _run_acquisition_guarded(hang, timeout_seconds=0.3, cancel_event=shutdown_event)
+
+        # The watchdog abort must never touch the daemon-level shutdown event,
+        # and the next cycle must start with an unset (fresh) cancel signal —
+        # otherwise the daemon would be permanently dead after one abort.
+        assert shutdown_event.is_set() is False, "watchdog abort must not set the shutdown event"
+        result = _run_acquisition_guarded(normal, timeout_seconds=5, cancel_event=shutdown_event)
+        assert result == ["ok"]
+        assert seen_cancelled == [False], "the next cycle must start with an unset cancel signal"
+
+    def test_shutdown_event_cancels_a_running_cycle(self) -> None:
+        import threading
+        from typing import Any
+
+        from gamarr.scheduler import _run_acquisition_guarded
+
+        shutdown_event = threading.Event()
+        shutdown_event.set()  # e.g. SIGTERM received
+        seen_cancelled: list[bool] = []
+
+        def job(**kwargs: Any) -> list[str]:
+            event: Any = kwargs["cancel_event"]
+            assert event is not None
+            seen_cancelled.append(event.is_set())
+            return ["ok"]
+
+        result = _run_acquisition_guarded(job, timeout_seconds=5, cancel_event=shutdown_event)
+        assert result == ["ok"]
+        assert seen_cancelled == [True], "a set shutdown event must cancel the new cycle"

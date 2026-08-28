@@ -26,6 +26,7 @@ from gamarr.sources.freegog import FreeGOGSource, _extract_magnet_from_freegog_p
 # Re-exported for use by _tokenize_title()
 from gamarr.utils import (
     _ROMAN_TO_ARABIC,
+    CancelSignal,
     is_cancelled,
     normalise_for_compare,
 )
@@ -33,7 +34,6 @@ from gamarr.utils import (
 # urllib3 warnings for FitGirl self-signed cert are suppressed in gamarr.sources.fitgirl
 
 if TYPE_CHECKING:
-    import threading
     from collections.abc import Callable
 
 
@@ -158,7 +158,7 @@ def run_acquisition(
     library_paths: list[str] | None = None,
     fitgirl_cache_pages_hours: int = 6,
     fitgirl_reject_keywords: list[str] | None = None,
-    cancel_event: threading.Event | None = None,
+    cancel_event: CancelSignal | None = None,
     download_sites: list | None = None,
     sort_order: Literal["new", "metascore"] = "new",
     age_recheck_weeks: int | None = None,
@@ -1044,7 +1044,7 @@ def _process_aged_games(
     db: Database,
     cfg: AcquisitionConfig,
     platform: str,
-    cancel_event: threading.Event | None = None,
+    cancel_event: CancelSignal | None = None,
 ) -> int:
     """Mark old verified pending games as processed.
 
@@ -1241,7 +1241,7 @@ def _process_verify_batch(
     reject_genre: list[str] | None = None,
     reject_title: list[str] | None = None,
     fitgirl_max_queue_days: int = 60,
-    cancel_event: threading.Event | None = None,
+    cancel_event: CancelSignal | None = None,
 ) -> tuple[int, bool]:
     """Process a batch of pending game lookups concurrently.
 
@@ -1343,7 +1343,7 @@ def _verify_pending_scores(
     reject_title: list[str] | None = None,
     fitgirl_max_queue_days: int = 60,
     notifier: Any = None,
-    cancel_event: threading.Event | None = None,
+    cancel_event: CancelSignal | None = None,
 ) -> int:
     """Re-verify pending games' scores against the real Metacritic detail page.
 

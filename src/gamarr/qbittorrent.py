@@ -46,6 +46,9 @@ class QBittorrentClient:
             username=username,
             password=password,
             VERIFY_WEBUI_CERTIFICATE=verify_ssl,
+            # Bound every HTTP call to the WebUI (connect 5s, read 30s) so a
+            # hung qBittorrent can never block the acquisition thread forever.
+            REQUESTS_ARGS={"timeout": (5, 30)},
         )
 
     @property

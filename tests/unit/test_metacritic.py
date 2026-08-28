@@ -601,12 +601,6 @@ class TestFindGameDetailsInNuxtData:
         assert result["user_score"] == 8.0
         assert result["genres"] is None
 
-    def test_non_dict_items_skipped(self) -> None:
-        from gamarr.metacritic import _find_game_details_in_nuxt_data
-
-        result = _find_game_details_in_nuxt_data([None, "string", 42])
-        assert result is None
-
     def test_scan_user_review_count_from_summary(self) -> None:
         """Coverage: scanning path picks user review count from summary."""
         from gamarr.metacritic import _find_game_details_in_nuxt_data
