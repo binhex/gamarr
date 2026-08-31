@@ -3,6 +3,7 @@ from __future__ import annotations
 import itertools
 import re
 import threading
+import time
 from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Protocol, cast
@@ -93,8 +94,10 @@ def run_with_timeout[T](
             outcome_ok = True
         except BaseException as exc:
             # Deliberately forward worker failures (incl. SystemExit/KeyboardInterrupt).
-            outcome_ok = False
+            # Record the exception BEFORE flagging completion so a racing
+            # observer can never see a completed outcome without its payload.
             outcome_error = exc
+            outcome_ok = False
 
     worker = threading.Thread(
         target=_run,
@@ -103,12 +106,19 @@ def run_with_timeout[T](
     )
     worker.start()
     worker.join(timeout_seconds)
-    if worker.is_alive() and outcome_ok is None and outcome_error is None:
+
+    def _no_outcome() -> bool:
+        return outcome_ok is None and outcome_error is None
+
+    if worker.is_alive() and _no_outcome():
         # The worker may have returned from func() without recording its
-        # outcome yet (a few bytecodes before the assignment). Give it a
-        # brief grace window before declaring a timeout.
-        worker.join(0.01)
-    if worker.is_alive() and outcome_ok is None and outcome_error is None:
+        # outcome yet (a few bytecodes before the assignment). Poll briefly
+        # for the outcome instead of a single fixed grace window, so GIL
+        # starvation cannot cause a spurious timeout.
+        grace_deadline = time.monotonic() + 0.05
+        while worker.is_alive() and _no_outcome() and time.monotonic() < grace_deadline:
+            worker.join(0.005)
+    if worker.is_alive() and _no_outcome():
         if on_timeout is not None:
             # Best effort: a failing callback must not mask TimeoutExceededError.
             with suppress(Exception):

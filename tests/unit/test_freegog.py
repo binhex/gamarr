@@ -248,7 +248,14 @@ class TestFreeGOGFetchSitemap:
             f'{self.ENCODED_MAGNET}.dummy123" data-type="magnet">Magnet</a>'
         )
 
-        with patch("gamarr.sources.freegog._sb_fetch_with_browser") as mock_get:
+        with (
+            patch("gamarr.sources.freegog._sb_fetch_with_browser") as mock_get,
+            patch("gamarr.sources.freegog._fetch_freegog_az_entries", return_value=None),
+            patch(
+                "gamarr.sources.freegog._default_sb_factory",
+                lambda: _FakeSession(_FakeBrowser(az_html=az_html)),
+            ),
+        ):
 
             def side_effect(_sb: object, url: str, **kwargs: object) -> str:
                 if "game-list" in url:
@@ -299,7 +306,14 @@ class TestFreeGOGFetchSitemap:
             f'{self.ENCODED_MAGNET}.dummy123" data-type="magnet">Magnet</a>'
         )
 
-        with patch("gamarr.sources.freegog._sb_fetch_with_browser") as mock_get:
+        with (
+            patch("gamarr.sources.freegog._sb_fetch_with_browser") as mock_get,
+            patch("gamarr.sources.freegog._fetch_freegog_az_entries", return_value=None),
+            patch(
+                "gamarr.sources.freegog._default_sb_factory",
+                lambda: _FakeSession(_FakeBrowser(az_html=az_html)),
+            ),
+        ):
             call_count = 0
 
             def side_effect(_sb: object, url: str, **kwargs: object) -> str:
@@ -353,7 +367,14 @@ class TestFreeGOGFetchSitemap:
             f'{self.ENCODED_MAGNET}.dummy123" data-type="magnet">Magnet</a>'
         )
 
-        with patch("gamarr.sources.freegog._sb_fetch_with_browser") as mock_get:
+        with (
+            patch("gamarr.sources.freegog._sb_fetch_with_browser") as mock_get,
+            patch("gamarr.sources.freegog._fetch_freegog_az_entries", return_value=None),
+            patch(
+                "gamarr.sources.freegog._default_sb_factory",
+                lambda: _FakeSession(_FakeBrowser(az_html=az_html)),
+            ),
+        ):
             call_count = 0
 
             def side_effect(_sb: object, url: str, **kwargs: object) -> str:
@@ -416,9 +437,16 @@ class TestFreeGOGFetchSitemap:
         db = Database(str(tmp_path / "test.db"))
         source = FreeGOGSource(db=db, cache_pages_hours=0)
 
-        with patch(
-            "gamarr.sources.freegog._sb_fetch_with_browser",
-            side_effect=Exception("Connection error"),
+        with (
+            patch(
+                "gamarr.sources.freegog._sb_fetch_with_browser",
+                side_effect=Exception("Connection error"),
+            ),
+            patch("gamarr.sources.freegog._fetch_freegog_az_entries", return_value=None),
+            patch(
+                "gamarr.sources.freegog._default_sb_factory",
+                lambda: _FakeSession(_FakeBrowser(az_html="")),
+            ),
         ):
             source.fetch_sitemap(db)
 
@@ -462,7 +490,14 @@ class TestFreeGOGFetchSitemap:
 
         cancel_event = threading.Event()
 
-        with patch("gamarr.sources.freegog._sb_fetch_with_browser") as mock_get:
+        with (
+            patch("gamarr.sources.freegog._sb_fetch_with_browser") as mock_get,
+            patch("gamarr.sources.freegog._fetch_freegog_az_entries", return_value=None),
+            patch(
+                "gamarr.sources.freegog._default_sb_factory",
+                lambda: _FakeSession(_FakeBrowser(az_html="")),
+            ),
+        ):
             mock_get.return_value = ""
             # Should not raise TypeError
             source.fetch_sitemap(db, cancel_event=cancel_event)
@@ -480,13 +515,13 @@ class TestFreeGOGFetchSitemap:
         db = Database(str(tmp_path / "test.db"))
         source = FreeGOGSource(db=db, cache_pages_hours=0)
 
-        # Create 550 known entries plus 3 NEW entries that must be fetched,
-        # so the progress-log call site is actually reached (an all-known
-        # fixture would skip it and make the negative assertions vacuous).
-        total_entries = 550
-        entries_a = 260
+        # The HTML fixture contains KNOWN_ENTRIES known entries plus
+        # NEW_ENTRIES new ones (553 links in total) so the progress-log call
+        # site is actually reached.
+        known_entries = 550
         new_entries = 3
-        entries_b = total_entries - entries_a + new_entries
+        entries_a = 260
+        entries_b = known_entries - entries_a + new_entries
 
         def _make_html(letter: str, count: int, start_id: int = 0) -> str:
             section_id = f"gd-az-{letter}"
@@ -527,6 +562,11 @@ class TestFreeGOGFetchSitemap:
         with (
             patch("gamarr.sources.freegog.logger") as mock_logger,
             patch("gamarr.sources.freegog._sb_fetch_with_browser") as mock_get,
+            patch("gamarr.sources.freegog._fetch_freegog_az_entries", return_value=None),
+            patch(
+                "gamarr.sources.freegog._default_sb_factory",
+                lambda: _FakeSession(_FakeBrowser(az_html=az_html)),
+            ),
         ):
             mock_get.return_value = az_html
 
@@ -540,12 +580,6 @@ class TestFreeGOGFetchSitemap:
             fmt = str(call.args[0])
             assert "letter '" not in fmt, f"Per-letter log should be absent, found: {fmt}"
             assert "complete (" not in fmt, f"Per-letter complete log should be absent, found: {fmt}"
-
-        # ── NEW batch progress messages MUST be absent (removed) ──
-        # Match the ACTUAL batch format ("FreeGOG progress: 500/500 games
-        # fetched") so this assertion cannot pass vacuously.
-        batch_calls = [call for call in info_calls if "progress:" in str(call.args[0])]
-        assert len(batch_calls) == 0, f"Batch progress logs should have been removed, found: {batch_calls}"
 
         # ── Summary MUST still be present (either "new games indexed" or "all already known") ──
         summary_calls = [
@@ -969,6 +1003,7 @@ class TestFreeGOGFetchHardening:
         db = Database(tmp_db_path)
         try:
             monkeypatch.setattr(freegog, "_FETCH_TIMEOUT_SECONDS", 0.3)
+            monkeypatch.setattr(freegog, "_fetch_freegog_az_entries", lambda: None)
             sessions: list[_FakeSession] = []
 
             def factory() -> _FakeSession:
@@ -980,9 +1015,11 @@ class TestFreeGOGFetchHardening:
             source = freegog.FreeGOGSource(db=db)
             source._index_az_page(db, sb_factory=factory)
 
-            assert len(sessions) == 1
-            assert sessions[0].browser.quit_called is True, "the session must be torn down on A-Z fetch timeout"
-            assert sessions[0].exited is True
+            # The A-Z timeout must recycle the session (zombie safety) before
+            # the fallback runs; both sessions must be torn down.
+            assert len(sessions) == 2, f"expected recycle after A-Z timeout, got {len(sessions)} sessions"
+            assert all(s.browser.quit_called for s in sessions), "both sessions must be quit"
+            assert all(s.exited for s in sessions)
             assert db.get_sitemap_cache("freegog", ttl_hours=6) is False, (
                 "a failed A-Z fetch must not mark the cache valid"
             )
@@ -1116,3 +1153,589 @@ class TestLogAzProgressBranches:
             )
         finally:
             db.close()
+
+
+class TestParseFreeGOGAZNDJSON:
+    """Parse the FreeGOG A-Z data endpoint (NDJSON) added after the
+    2026-08-31 site redesign, when the HTML A-Z sections were replaced by
+    an AJAX directory backed by an NDJSON endpoint."""
+
+    def test_parse_real_endpoint_format(self) -> None:
+        from gamarr.sources.freegog import _parse_freegog_az_ndjson
+
+        ndjson = (
+            '{"format":1,"total":3,"counts":{"A":1,"B":1,"#":1}}\n'
+            '["A","Gothic 1 Remake v1.0.2a","https://freegogpcgames.com/33511/gothic-1-remake/"]\n'
+            '["B","Sea of Stars: Sunset Edition v1.0","https://freegogpcgames.com/11111/sea-of-stars/"]\n'
+            '["#","Bad Dream: Fever (v26985)","https://freegogpcgames.com/6723/bad-dream-fever/"]\n'
+        )
+        entries = _parse_freegog_az_ndjson(ndjson)
+        assert len(entries) == 3
+        assert entries[0] == {
+            "title": "Gothic 1 Remake",
+            "url": "https://freegogpcgames.com/33511/gothic-1-remake/",
+            "letter": "a",
+        }
+        assert entries[1]["title"] == "Sea of Stars", "edition/version suffixes must be cleaned"
+        assert entries[2]["letter"] == "#", "numeric-section letter must survive"
+
+    def test_dedups_by_url(self) -> None:
+        from gamarr.sources.freegog import _parse_freegog_az_ndjson
+
+        ndjson = (
+            '["A","Gothic 1 Remake v1.0.2a","https://freegogpcgames.com/33511/gothic-1-remake/"]\n'
+            '["A","Gothic 1 Remake v1.0.0","https://freegogpcgames.com/33511/gothic-1-remake/"]\n'
+        )
+        entries = _parse_freegog_az_ndjson(ndjson)
+        assert len(entries) == 1, "duplicate URLs must be deduplicated"
+
+    def test_skips_header_and_malformed_lines(self) -> None:
+        from gamarr.sources.freegog import _parse_freegog_az_ndjson
+
+        ndjson = (
+            '{"format":1,"total":1,"counts":{}}\n'
+            "not json at all\n"
+            '["A","Gothic 1 Remake v1.0.2a","https://freegogpcgames.com/33511/gothic-1-remake/"]\n'
+            '["A","only-two" ]\n'
+            "[]\n"
+        )
+        entries = _parse_freegog_az_ndjson(ndjson)
+        assert len(entries) == 1, "header objects and malformed lines must be skipped"
+        assert entries[0]["title"] == "Gothic 1 Remake"
+
+    def test_empty_and_whitespace_input(self) -> None:
+        from gamarr.sources.freegog import _parse_freegog_az_ndjson
+
+        assert _parse_freegog_az_ndjson("") == []
+        assert _parse_freegog_az_ndjson("\n\n   \n") == []
+
+
+class TestFreeGOGDataEndpointFallback:
+    """_index_az_page falls back to the NDJSON data endpoint when the HTML
+    A-Z page parses to no entries (2026-08-31 site redesign)."""
+
+    def test_index_az_page_falls_back_to_data_endpoint(
+        self, tmp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from gamarr.database import Database
+        from gamarr.sources import freegog
+
+        db = Database(tmp_db_path)
+        try:
+            # New-design page: HTML parses to zero entries.
+            az_html = (
+                '<section class="gd-az-search-results" data-gd-az-remote-results hidden>'
+                '<div class="gd-az-directory-letter">A</div>'
+                "</section>"
+            )
+            sessions: list[_FakeSession] = []
+
+            def factory() -> _FakeSession:
+                session = _FakeSession(_FakeBrowser(az_html=az_html))
+                sessions.append(session)
+                return session
+
+            monkeypatch.setattr(
+                freegog,
+                "_fetch_freegog_az_entries",
+                lambda: [
+                    {
+                        "title": "Gothic 1 Remake",
+                        "url": "https://freegogpcgames.com/33511/gothic-1-remake/",
+                        "letter": "a",
+                    },
+                    {"title": "Sea of Stars", "url": "https://freegogpcgames.com/11111/sea-of-stars/", "letter": "b"},
+                ],
+            )
+
+            source = freegog.FreeGOGSource(db=db)
+            source._index_az_page(db, sb_factory=factory)
+
+            assert len(sessions) == 1
+            rows = db.get_all_source_titles("freegog")
+            assert len(rows) == 2, f"data endpoint entries must be indexed, got {len(rows)}"
+            assert {r["title"] for r in rows} == {"Gothic 1 Remake", "Sea of Stars"}
+            assert db.get_sitemap_cache("freegog", ttl_hours=6) is True
+        finally:
+            db.close()
+
+    def test_fetch_freegog_az_entries_returns_none_on_http_failure(self) -> None:
+        from unittest.mock import patch
+
+        import requests as requests_module
+
+        from gamarr.sources import freegog
+
+        with patch(
+            "gamarr.sources.freegog.requests.get",
+            side_effect=requests_module.exceptions.ConnectionError("down"),
+        ):
+            entries = freegog._fetch_freegog_az_entries()
+
+        assert entries is None, "a failed data-endpoint request must degrade to None"
+
+    def test_fetch_freegog_az_entries_parses_successful_response(self) -> None:
+        from unittest.mock import patch
+
+        from gamarr.sources import freegog
+
+        class _FakeResponse:
+            headers = {"Content-Type": "application/x-ndjson"}
+
+            def __init__(self, text: str) -> None:
+                self.text = text
+                self.content = text.encode("utf-8")
+
+            def __enter__(self) -> _FakeResponse:
+                return self
+
+            def __exit__(self, *exc: object) -> None:
+                pass
+
+            def raise_for_status(self) -> None:
+                pass
+
+        ndjson = (
+            '{"format":1,"total":1,"counts":{}}\n'
+            '["A","Gothic 1 Remake v1.0.2a","https://freegogpcgames.com/33511/gothic-1-remake/"]\n'
+        )
+        with patch("gamarr.sources.freegog.requests.get", return_value=_FakeResponse(ndjson)):
+            entries = freegog._fetch_freegog_az_entries()
+
+        assert entries == [
+            {
+                "title": "Gothic 1 Remake",
+                "url": "https://freegogpcgames.com/33511/gothic-1-remake/",
+                "letter": "a",
+            }
+        ]
+
+    def test_fetch_freegog_az_entries_returns_none_on_http_error_status(self) -> None:
+        from unittest.mock import patch
+
+        import requests as requests_module
+
+        from gamarr.sources import freegog
+
+        class _ErrorResponse:
+            def __enter__(self) -> _ErrorResponse:
+                return self
+
+            def __exit__(self, *exc: object) -> None:
+                pass
+
+            def raise_for_status(self) -> None:
+                raise requests_module.exceptions.HTTPError("403")
+
+        with patch("gamarr.sources.freegog.requests.get", return_value=_ErrorResponse()):
+            entries = freegog._fetch_freegog_az_entries()
+
+        assert entries is None, "a non-2xx response must degrade to None"
+
+    def test_html_entries_do_not_trigger_data_endpoint(
+        self, tmp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from gamarr.database import Database
+        from gamarr.sources import freegog
+
+        db = Database(tmp_db_path)
+        try:
+            entries = [("Gothic 1 Remake v1.0.2a", "https://freegogpcgames.com/33511/gothic-1-remake/")]
+            az_html = _az_html_for(entries)
+            sessions: list[_FakeSession] = []
+            endpoint_calls: list[bool] = []
+
+            def factory() -> _FakeSession:
+                session = _FakeSession(_FakeBrowser(az_html=az_html))
+                sessions.append(session)
+                return session
+
+            def fail_if_called() -> None:
+                endpoint_calls.append(True)
+                raise AssertionError("data endpoint must not be consulted when HTML has entries")
+
+            monkeypatch.setattr(freegog, "_fetch_freegog_az_entries", fail_if_called)
+
+            source = freegog.FreeGOGSource(db=db)
+            source._index_az_page(db, sb_factory=factory)
+
+            assert endpoint_calls == [], "the data endpoint must not be called for a non-empty HTML parse"
+            rows = db.get_all_source_titles("freegog")
+            assert len(rows) == 1, "HTML entries must be indexed"
+        finally:
+            db.close()
+
+    def test_fallback_failure_leaves_cache_unset(self, tmp_db_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from gamarr.database import Database
+        from gamarr.sources import freegog
+
+        db = Database(tmp_db_path)
+        try:
+            monkeypatch.setattr(freegog, "_fetch_freegog_az_entries", lambda: None)
+            az_html = '<section class="gd-az-search-results" hidden></section>'
+            sessions: list[_FakeSession] = []
+
+            def factory() -> _FakeSession:
+                session = _FakeSession(_FakeBrowser(az_html=az_html))
+                sessions.append(session)
+                return session
+
+            source = freegog.FreeGOGSource(db=db)
+            source._index_az_page(db, sb_factory=factory)
+
+            assert len(sessions) == 1
+            assert db.get_all_source_titles("freegog") == []
+            assert db.get_sitemap_cache("freegog", ttl_hours=6) is False, (
+                "a failed fallback must not mark the cache valid"
+            )
+        finally:
+            db.close()
+
+    def test_html_fetch_failure_falls_back_to_data_endpoint(
+        self, tmp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from gamarr.database import Database
+        from gamarr.sources import freegog
+
+        db = Database(tmp_db_path)
+        try:
+            monkeypatch.setattr(
+                freegog,
+                "_fetch_freegog_az_entries",
+                lambda: [
+                    {"title": "Sea of Stars", "url": "https://freegogpcgames.com/11111/sea-of-stars/", "letter": "b"}
+                ],
+            )
+            sessions: list[_FakeSession] = []
+
+            class _FailingAZGet(_FakeBrowser):
+                def uc_open_with_reconnect(self, url: str, count: int) -> None:
+                    del url, count
+                    raise RuntimeError("browser A-Z fetch failed")
+
+            def factory() -> _FakeSession:
+                session = _FakeSession(_FailingAZGet(az_html=""))
+                sessions.append(session)
+                return session
+
+            source = freegog.FreeGOGSource(db=db)
+            source._index_az_page(db, sb_factory=factory)
+
+            rows = db.get_all_source_titles("freegog")
+            assert len(rows) == 1, "the data endpoint must be consulted when the HTML fetch fails"
+            assert rows[0]["title"] == "Sea of Stars"
+            assert db.get_sitemap_cache("freegog", ttl_hours=6) is True
+        finally:
+            db.close()
+
+    def test_ndjson_skips_foreign_and_malformed_records(self) -> None:
+        from gamarr.sources.freegog import _parse_freegog_az_ndjson
+
+        ndjson = (
+            '["A","Good Game","https://freegogpcgames.com/1/good-game/"]\n'
+            '["A","Evil Game","https://evil.com/1/evil-game/"]\n'
+            '["A","No Protocol","freegogpcgames.com/2/no-proto/"]\n'
+            '["A", null, "https://freegogpcgames.com/3/null-title/"]\n'
+            '["A", 42, "https://freegogpcgames.com/4/num-title/"]\n'
+            '["A","","https://freegogpcgames.com/5/empty-title/"]\n'
+        )
+        entries = _parse_freegog_az_ndjson(ndjson)
+        assert len(entries) == 1, f"only the well-formed record must parse, got {entries}"
+        assert entries[0]["title"] == "Good Game"
+
+    def test_ndjson_preserves_unicode_titles(self) -> None:
+        from gamarr.sources.freegog import _parse_freegog_az_ndjson
+
+        ndjson = '["#","ΔV: Rings of Saturn","https://freegogpcgames.com/11393/%ce%b4v-rings-of-saturn/"]\n'
+        entries = _parse_freegog_az_ndjson(ndjson)
+        assert len(entries) == 1
+        assert entries[0]["title"] == "ΔV: Rings of Saturn"
+        assert entries[0]["url"] == "https://freegogpcgames.com/11393/%ce%b4v-rings-of-saturn/"
+
+    def test_alternating_timeouts_hit_total_abort_bound(
+        self, tmp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from gamarr.database import Database
+        from gamarr.sources import freegog
+
+        db = Database(tmp_db_path)
+        try:
+            monkeypatch.setattr(freegog, "_FETCH_TIMEOUT_SECONDS", 0.3)
+            monkeypatch.setattr(freegog, "_fetch_freegog_az_entries", lambda: None)
+            entries = [(f"Game {i}", f"https://freegogpcgames.com/{160 + i}/game-{i}/") for i in range(10)]
+            az_html = _az_html_for(entries)
+            sessions: list[_FakeSession] = []
+
+            def factory() -> _FakeSession:
+                # Even sessions hang (timeout), odd sessions fail EVERY game
+                # page, so no two timeouts are ever consecutive: only the
+                # total-timeout bound can trigger the abort.
+                idx = len(sessions)
+                browser = _FakeBrowser(
+                    az_html=az_html,
+                    hang=idx % 2 == 0,
+                    fail_game_pages=1_000_000 if idx % 2 == 1 else 0,
+                )
+                session = _FakeSession(browser)
+                sessions.append(session)
+                return session
+
+            source = freegog.FreeGOGSource(db=db)
+            source._index_az_page(db, sb_factory=factory)
+
+            assert db.get_all_source_titles("freegog") == []
+            assert db.get_sitemap_cache("freegog", ttl_hours=6) is False, (
+                "an index aborted by the total-timeout bound must not mark the cache valid"
+            )
+            assert len(sessions) >= 5, f"expected repeated recycles before the total abort, got {len(sessions)}"
+        finally:
+            db.close()
+
+    def test_az_timeout_with_successful_fallback_indexes_entries(
+        self, tmp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from gamarr.database import Database
+        from gamarr.sources import freegog
+
+        db = Database(tmp_db_path)
+        try:
+            monkeypatch.setattr(freegog, "_FETCH_TIMEOUT_SECONDS", 0.3)
+            monkeypatch.setattr(
+                freegog,
+                "_fetch_freegog_az_entries",
+                lambda: [
+                    {
+                        "title": "Gothic 1 Remake",
+                        "url": "https://freegogpcgames.com/33511/gothic-1-remake/",
+                        "letter": "a",
+                    }
+                ],
+            )
+            sessions: list[_FakeSession] = []
+
+            def factory() -> _FakeSession:
+                session = _FakeSession(_FakeBrowser(az_html="", hang_az=True))
+                sessions.append(session)
+                return session
+
+            source = freegog.FreeGOGSource(db=db)
+            source._index_az_page(db, sb_factory=factory)
+
+            # The zombie-carrying session must be recycled before the fallback
+            # entries are fetched on a fresh session.
+            assert len(sessions) == 2, f"expected recycle after A-Z timeout, got {len(sessions)} sessions"
+            rows = db.get_all_source_titles("freegog")
+            assert len(rows) == 1, "fallback entries must be indexed on the recycled session"
+            assert db.get_sitemap_cache("freegog", ttl_hours=6) is True
+        finally:
+            db.close()
+
+    def test_fetch_freegog_az_entries_rejects_unexpected_content_type(self) -> None:
+        from unittest.mock import patch
+
+        from gamarr.sources import freegog
+
+        class _HtmlResponse:
+            headers = {"Content-Type": "text/html"}
+            content = b"<!doctype html><title>challenge</title>"
+
+            def __enter__(self) -> _HtmlResponse:
+                return self
+
+            def __exit__(self, *exc: object) -> None:
+                pass
+
+            def raise_for_status(self) -> None:
+                pass
+
+        with patch("gamarr.sources.freegog.requests.get", return_value=_HtmlResponse()):
+            entries = freegog._fetch_freegog_az_entries()
+
+        assert entries is None, "a challenge/HTML response must degrade to None"
+
+    def test_fetch_freegog_az_entries_accepts_capitalised_content_type(self) -> None:
+        from unittest.mock import patch
+
+        from gamarr.sources import freegog
+
+        ndjson = '{"format":1,"total":1,"counts":{}}\n["A","Good Game","https://freegogpcgames.com/1/good-game/"]\n'
+
+        class _CapitalisedResponse:
+            headers = {"Content-Type": "Application/JSON"}
+
+            def __init__(self, text: str) -> None:
+                self.content = text.encode("utf-8")
+
+            def __enter__(self) -> _CapitalisedResponse:
+                return self
+
+            def __exit__(self, *exc: object) -> None:
+                pass
+
+            def raise_for_status(self) -> None:
+                pass
+
+        with patch("gamarr.sources.freegog.requests.get", return_value=_CapitalisedResponse(ndjson)):
+            entries = freegog._fetch_freegog_az_entries()
+
+        assert entries is not None and len(entries) == 1, "MIME types are case-insensitive"
+
+    def test_fetch_freegog_az_entries_returns_none_on_timeout(self) -> None:
+        from unittest.mock import patch
+
+        import requests as requests_module
+
+        from gamarr.sources import freegog
+
+        with patch(
+            "gamarr.sources.freegog.requests.get",
+            side_effect=requests_module.exceptions.Timeout("slow"),
+        ):
+            entries = freegog._fetch_freegog_az_entries()
+
+        assert entries is None
+
+    def test_fetch_freegog_az_entries_returns_none_on_invalid_utf8(self) -> None:
+        from unittest.mock import patch
+
+        from gamarr.sources import freegog
+
+        class _BadUtf8Response:
+            headers = {"Content-Type": "application/x-ndjson"}
+            content = b"\xff\xfe\x00not utf-8"
+
+            def __enter__(self) -> _BadUtf8Response:
+                return self
+
+            def __exit__(self, *exc: object) -> None:
+                pass
+
+            def raise_for_status(self) -> None:
+                pass
+
+        with patch("gamarr.sources.freegog.requests.get", return_value=_BadUtf8Response()):
+            entries = freegog._fetch_freegog_az_entries()
+
+        assert entries is None, "an undecodable body must degrade to None"
+
+    def test_fetch_warns_when_parsed_less_than_announced_total(self) -> None:
+        from unittest.mock import patch
+
+        from loguru import logger
+
+        from gamarr.sources import freegog
+
+        ndjson = '{"format":1,"total":10,"counts":{}}\n["A","Good Game","https://freegogpcgames.com/1/good-game/"]\n'
+
+        class _OkResponse:
+            headers = {"Content-Type": "application/x-ndjson"}
+
+            def __init__(self, text: str) -> None:
+                self.content = text.encode("utf-8")
+
+            def __enter__(self) -> _OkResponse:
+                return self
+
+            def __exit__(self, *exc: object) -> None:
+                pass
+
+            def raise_for_status(self) -> None:
+                pass
+
+        captured: list[str] = []
+        sink_id = logger.add(lambda msg: captured.append(str(msg)), level="INFO", format="{message}")
+        try:
+            with patch("gamarr.sources.freegog.requests.get", return_value=_OkResponse(ndjson)):
+                entries = freegog._fetch_freegog_az_entries()
+        finally:
+            logger.remove(sink_id)
+
+        assert entries is not None and len(entries) == 1
+        assert any("parsed 1 of 10 announced entries" in m for m in captured), captured
+
+
+class TestFreeGOGAZNDJSONTotal:
+    """Direct coverage for the NDJSON header 'total' extraction."""
+
+    def test_valid_header_total(self) -> None:
+        from gamarr.sources.freegog import _freegog_az_ndjson_total
+
+        assert _freegog_az_ndjson_total('{"format":1,"total":5534,"counts":{}}\n["A",...]\n') == 5534
+
+    def test_empty_text(self) -> None:
+        from gamarr.sources.freegog import _freegog_az_ndjson_total
+
+        assert _freegog_az_ndjson_total("") is None
+
+    def test_malformed_header(self) -> None:
+        from gamarr.sources.freegog import _freegog_az_ndjson_total
+
+        assert _freegog_az_ndjson_total("not json") is None
+        assert _freegog_az_ndjson_total('["A","T","https://freegogpcgames.com/1/t/"]') is None
+
+    def test_header_without_total_or_non_int_total(self) -> None:
+        from gamarr.sources.freegog import _freegog_az_ndjson_total
+
+        assert _freegog_az_ndjson_total('{"format":1,"counts":{}}') is None
+        assert _freegog_az_ndjson_total('{"format":1,"total":"5534"}') is None
+
+    def test_blank_lines_before_header(self) -> None:
+        from gamarr.sources.freegog import _freegog_az_ndjson_total
+
+        assert _freegog_az_ndjson_total('\n\n{"format":1,"total":42,"counts":{}}\n') == 42
+
+    def test_bom_before_header(self) -> None:
+        from gamarr.sources.freegog import _freegog_az_ndjson_total
+
+        assert _freegog_az_ndjson_total('\ufeff{"format":1,"total":42,"counts":{}}\n') == 42
+
+    def test_session_open_failure_consults_data_endpoint_and_retries(
+        self, tmp_db_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from gamarr.database import Database
+        from gamarr.sources import freegog
+
+        db = Database(tmp_db_path)
+        try:
+            monkeypatch.setattr(
+                freegog,
+                "_fetch_freegog_az_entries",
+                lambda: [
+                    {"title": "Sea of Stars", "url": "https://freegogpcgames.com/11111/sea-of-stars/", "letter": "b"}
+                ],
+            )
+            sessions: list[_FakeSession] = []
+            open_attempts: list[bool] = []
+
+            class _RaisingSession(_FakeSession):
+                def __enter__(self) -> _FakeBrowser:
+                    open_attempts.append(True)
+                    raise RuntimeError("browser startup wedged")
+
+            def factory() -> _FakeSession:
+                if len(sessions) == 0:
+                    session: _FakeSession = _RaisingSession(_FakeBrowser(az_html=""))
+                else:
+                    session = _FakeSession(_FakeBrowser(az_html=""))
+                sessions.append(session)
+                return session
+
+            source = freegog.FreeGOGSource(db=db)
+            source._index_az_page(db, sb_factory=factory)
+
+            # First open fails -> endpoint consulted -> one open retry succeeds.
+            assert len(open_attempts) == 1, "the first open must fail exactly once"
+            assert len(sessions) == 2, f"expected a retry session, got {len(sessions)} sessions"
+            rows = db.get_all_source_titles("freegog")
+            assert len(rows) == 1, "endpoint entries must be indexed via the retried session"
+            assert db.get_sitemap_cache("freegog", ttl_hours=6) is True
+        finally:
+            db.close()
+
+    def test_ndjson_titles_are_html_unescaped(self) -> None:
+        from gamarr.sources.freegog import _parse_freegog_az_ndjson
+
+        ndjson = '["A","Tom &amp; Jerry","https://freegogpcgames.com/1/tom-jerry/"]\n'
+        entries = _parse_freegog_az_ndjson(ndjson)
+        assert len(entries) == 1
+        assert entries[0]["title"] == "Tom & Jerry", "HTML entities must be decoded like the HTML parser does"

@@ -7,11 +7,15 @@ cleans titles, and extracts magnet links from game pages.
 from __future__ import annotations
 
 import base64
+import json
 import re
 from contextlib import suppress
+from dataclasses import dataclass
 from html import unescape
 from typing import TYPE_CHECKING, Final
+from urllib.parse import urlsplit
 
+import requests
 from loguru import logger
 from seleniumbase import SB
 
@@ -37,6 +41,137 @@ _MAX_CONSECUTIVE_FAILURES: Final[int] = 2
 # this bound — a driver that alternates timeout/failure would otherwise
 # recycle the session forever.
 _MAX_TOTAL_TIMEOUTS: Final[int] = 4
+
+# 2026-08-31: FreeGOG moved the A-Z list from static HTML sections to an
+# AJAX directory backed by an NDJSON data endpoint (one JSON value per
+# line: a header object then ["Letter", "Title", "URL"] arrays).
+_FREEGOG_AZ_DATA_URL: Final[str] = "https://freegogpcgames.com/game-list/?gd_az_data=1"
+_AZ_HTTP_TIMEOUT_SECONDS: Final[float] = 30.0
+_AZ_USER_AGENT: Final[str] = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+)
+
+
+@dataclass
+class _AzIndexState:
+    """Mutable counters for one A-Z index pass."""
+
+    new: int = 0
+    known: int = 0
+    missing: int = 0
+    consecutive_failures: int = 0
+    consecutive_timeouts: int = 0
+    total_timeouts: int = 0
+    total: int = 0
+
+
+def _timeout_abort_reached(consecutive_timeouts: int, total_timeouts: int) -> bool:
+    """Return True when the per-run timeout budget is exhausted."""
+    return consecutive_timeouts >= _MAX_CONSECUTIVE_FAILURES or total_timeouts >= _MAX_TOTAL_TIMEOUTS
+
+
+def _parse_freegog_az_ndjson(text: str) -> list[dict[str, str]]:
+    """Parse the FreeGOG A-Z data endpoint NDJSON into entries.
+
+    The endpoint returns ``application/x-ndjson``: the first line is a
+    header object ``{"format":1,"total":N,"counts":{...}}`` and every
+    other line is a JSON array ``["Letter", "Title", "URL"]``.
+
+    Returns entries in the same shape as :func:`_parse_freegog_az_page`:
+    ``{"title": <cleaned>, "url": ..., "letter": ...}``, deduplicated by
+    URL. Header objects, malformed lines, non-string/empty fields, and
+    URLs outside the site's own domain are skipped.
+    """
+    results: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(record, list) or len(record) < 3:
+            continue
+        letter, raw_title, raw_url = record[0], record[1], record[2]
+        if not isinstance(letter, str) or not isinstance(raw_title, str) or not isinstance(raw_url, str):
+            continue
+        url = raw_url.strip()
+        title = unescape(raw_title.strip())
+        parsed_url = urlsplit(url)
+        if not title or parsed_url.scheme != "https" or parsed_url.netloc != "freegogpcgames.com":
+            logger.debug("FreeGOG A-Z NDJSON line skipped (bad title or foreign URL): {}", url)
+            continue
+        if url in seen_urls:
+            continue
+        seen_urls.add(url)
+        results.append(
+            {
+                "title": _clean_freegog_title(title),
+                "url": url,
+                "letter": letter.casefold(),
+            }
+        )
+    return results
+
+
+def _freegog_az_ndjson_total(text: str) -> int | None:
+    """Return the ``total`` field of the NDJSON header line, if any.
+
+    Tolerates blank leading lines and a UTF-8 BOM. (The entry parser
+    simply skips a BOM-prefixed header line — the BOM only ever appears
+    at the start of the stream.)
+    """
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            header = json.loads(stripped.lstrip("\ufeff"))
+        except (TypeError, ValueError):
+            return None
+        total = header.get("total") if isinstance(header, dict) else None
+        return total if isinstance(total, int) else None
+    return None
+
+
+def _fetch_freegog_az_entries(timeout_seconds: float = _AZ_HTTP_TIMEOUT_SECONDS) -> list[dict[str, str]] | None:
+    """GET the FreeGOG A-Z NDJSON data endpoint and parse it.
+
+    Returns parsed entries, or ``None`` when the request, content type,
+    or decoding fails so callers can fall back to the HTML A-Z page.
+    """
+    try:
+        with requests.get(
+            _FREEGOG_AZ_DATA_URL,
+            timeout=timeout_seconds,
+            headers={"User-Agent": _AZ_USER_AGENT, "Accept": "application/x-ndjson"},
+        ) as response:
+            response.raise_for_status()
+            content_type = response.headers.get("Content-Type", "").lower()
+            if not any(token in content_type for token in ("json", "plain")):
+                # e.g. a Cloudflare challenge page served as text/html.
+                logger.warning(
+                    "FreeGOG A-Z data endpoint returned unexpected Content-Type '{}' ({} bytes)",
+                    content_type,
+                    len(response.content),
+                )
+                return None
+            text = response.content.decode("utf-8")
+    except (requests.RequestException, ValueError) as exc:
+        logger.warning("Failed to fetch FreeGOG A-Z data endpoint: {}", exc)
+        return None
+    entries = _parse_freegog_az_ndjson(text)
+    total = _freegog_az_ndjson_total(text)
+    # Tolerate a small shortfall: URL deduplication legitimately drops
+    # multi-edition rows that share a permalink, so only warn on material
+    # truncation.
+    if total is not None and len(entries) < total - 5:
+        logger.warning("FreeGOG data endpoint: parsed {} of {} announced entries", len(entries), total)
+    return entries
+
+
 # Budget for opening and tearing down a browser session — these are also
 # WebDriver commands that can hang on a wedged channel.
 _SESSION_IO_TIMEOUT_SECONDS: Final[float] = 30.0
@@ -294,7 +429,9 @@ class FreeGOGSource:
         for e in existing:
             e_url = e.get("url")
             if e_url is not None:
-                existing_urls[e_url] = e.get("magnet")
+                # Normalise trailing slashes so the known-skip comparison is
+                # robust to endpoint/HTML permalink format differences.
+                existing_urls[e_url.rstrip("/")] = e.get("magnet")
         return existing_urls
 
     @staticmethod
@@ -415,12 +552,16 @@ class FreeGOGSource:
         """Fetch the FreeGOG A-Z page and index new games.
 
         Cross-references against existing ``source_titles`` entries and
-        only fetches game pages for new URLs. Uses a single SeleniumBase
-        browser session for all fetches to avoid per-page startup overhead;
-        the session is recycled after ``_MAX_CONSECUTIVE_FAILURES``
-        consecutive per-page failures so a degrading browser cannot wedge
-        the loop permanently. Every page fetch also runs under a hard
-        watchdog (see :func:`_sb_fetch_with_browser`).
+        only fetches game pages for new URLs. The list is parsed from the
+        A-Z HTML page; when that yields no entries (the 2026-08-31 site
+        redesign moved the list to an NDJSON data endpoint), the data
+        endpoint is used instead. Uses a single SeleniumBase browser
+        session for the game-page fetches to avoid per-page startup
+        overhead; the session is recycled after
+        ``_MAX_CONSECUTIVE_FAILURES`` consecutive per-page failures so a
+        degrading browser cannot wedge the loop permanently. Every page
+        fetch also runs under a hard watchdog (see
+        :func:`_sb_fetch_with_browser`).
 
         Args:
             db: The database instance to store results in.
@@ -434,11 +575,10 @@ class FreeGOGSource:
         ctx: Any = None
         sb: Any = None
         try:
-            ctx, sb = _open_browser_session(sb_factory)
-            self._configure_driver(sb)
-            html = _sb_fetch_with_browser(sb, url)
-            az_entries = _parse_freegog_az_page(html)
-            ctx, sb, new_count, known_count, missing_magnet_count, cancelled = self._index_az_entries(
+            ctx, sb, az_entries = self._open_az_session(sb_factory)
+            if az_entries is None:
+                ctx, sb, az_entries = self._obtain_az_entries(ctx, sb, sb_factory, url)
+            ctx, sb, new_count, known_count, missing_magnet_count, stop_reason = self._index_az_entries(
                 db,
                 az_entries,
                 self._build_existing_urls(db),
@@ -453,7 +593,7 @@ class FreeGOGSource:
                 new_count,
                 known_count,
                 missing_magnet_count,
-                completed=not cancelled,
+                stop_reason=stop_reason,
             )
         except Exception as exc:
             logger.warning("Failed to fetch FreeGOG A-Z page: {}", exc)
@@ -462,6 +602,68 @@ class FreeGOGSource:
         finally:
             if ctx is not None and sb is not None:
                 _close_browser_session(ctx, sb)
+
+    def _open_az_session(
+        self,
+        sb_factory: Callable[[], Any],
+    ) -> tuple[Any, Any, list[dict[str, str]] | None]:
+        """Open the browser session; consult the data endpoint if it fails.
+
+        The NDJSON data endpoint is browser-independent, so a wedged
+        browser startup must not also suppress the game list. When the
+        first open fails, the endpoint is fetched and one more open
+        attempt is made for the game-page fetches.
+
+        Returns:
+            ``(ctx, sb, az_entries)`` where ``az_entries`` is ``None``
+            when the entries still need to be obtained via the HTML
+            fetch, or a list already fetched from the data endpoint.
+        """
+        try:
+            ctx, sb = _open_browser_session(sb_factory)
+            self._configure_driver(sb)
+            return ctx, sb, None
+        except Exception as exc:
+            logger.warning("FreeGOG browser session failed to open ({}); trying data endpoint", exc)
+            fetched = _fetch_freegog_az_entries()
+            if fetched is None:
+                raise
+            ctx, sb = _open_browser_session(sb_factory)  # one retry for the game pages
+            self._configure_driver(sb)
+            return ctx, sb, fetched
+
+    def _obtain_az_entries(
+        self,
+        ctx: Any,
+        sb: Any,
+        sb_factory: Callable[[], Any],
+        url: str,
+    ) -> tuple[Any, Any, list[dict[str, str]]]:
+        """Try the browser HTML A-Z fetch, then the NDJSON data endpoint.
+
+        Returns ``(ctx, sb, entries)`` where ``ctx``/``sb`` may be a
+        recycled session and ``entries`` may be empty when every source
+        failed.
+        """
+        try:
+            html = _sb_fetch_with_browser(sb, url)
+            entries = _parse_freegog_az_page(html)
+            if entries:
+                return ctx, sb, entries
+        except Exception as exc:
+            # Any A-Z fetch failure (timeout or otherwise) can leave an
+            # abandoned worker on the shared driver — recycle before the
+            # fallback entries are fetched on it.
+            kind = "timed out" if isinstance(exc, TimeoutExceededError) else "failed"
+            logger.warning(
+                "FreeGOG A-Z HTML fetch {} ({}); recycling session and trying data endpoint",
+                kind,
+                exc,
+            )
+            ctx, sb = self._recycle_browser_session(ctx, sb, sb_factory, f"A-Z fetch {kind}")
+        logger.info("FreeGOG A-Z HTML list unavailable — trying data endpoint")
+        fetched = _fetch_freegog_az_entries()
+        return ctx, sb, fetched if fetched is not None else []
 
     def _index_az_entries(
         self,
@@ -472,7 +674,7 @@ class FreeGOGSource:
         sb: Any,
         sb_factory: Callable[[], Any],
         cancel_event: CancelSignal | None,
-    ) -> tuple[Any, Any, int, int, int, bool]:
+    ) -> tuple[Any, Any, int, int, int, str | None]:
         """Index parsed A-Z entries, recycling the browser session on repeated failures.
 
         Args:
@@ -486,70 +688,95 @@ class FreeGOGSource:
 
         Returns:
             ``(ctx, sb, new_count, known_count, missing_magnet_count,
-            cancelled)`` where ``ctx``/``sb`` are the final (possibly
-            recycled) pair and ``cancelled`` is True when the loop stopped
-            early because *cancel_event* was set.
+            stop_reason)`` where ``ctx``/``sb`` are the final (possibly
+            recycled) pair and ``stop_reason`` is ``None`` when the loop
+            completed, ``"cancelled"`` when *cancel_event* stopped it, or
+            ``"aborted"`` when the fetch-timeout budget was exhausted.
         """
-        new_count = 0
-        known_count = 0
-        missing_magnet_count = 0
-        consecutive_failures = 0
-        consecutive_timeouts = 0
-        total_timeouts = 0
-        total_entries = len(az_entries)
-
+        state = _AzIndexState(total=len(az_entries))
         try:
             for entry in az_entries:
                 if cancel_event is not None and cancel_event.is_set():
                     logger.info("FreeGOG indexing cancelled — stopping early")
-                    return ctx, sb, new_count, known_count, missing_magnet_count, True
+                    return ctx, sb, state.new, state.known, state.missing, "cancelled"
 
-                outcome = self._process_az_entry(db, entry, sb, existing_urls)
-                if outcome == "known":
-                    known_count += 1
-                    continue
-
-                self._log_az_progress(new_count, missing_magnet_count, total_entries, known_count)
-                if outcome == "ok":
-                    new_count += 1
-                    consecutive_failures = 0
-                    consecutive_timeouts = 0
-                elif outcome == "timeout":
-                    # A timed-out fetch leaves a zombie worker hung on the shared
-                    # driver — recycle immediately so the next fetch gets a clean
-                    # session. If timeouts persist (consecutively or in total),
-                    # the site/driver is wedged: abort this index run entirely.
-                    missing_magnet_count += 1
-                    consecutive_timeouts += 1
-                    total_timeouts += 1
-                    if consecutive_timeouts >= _MAX_CONSECUTIVE_FAILURES or total_timeouts >= _MAX_TOTAL_TIMEOUTS:
-                        logger.warning(
-                            "FreeGOG: {} page fetch timeouts ({} consecutive) — aborting indexing for this cycle",
-                            total_timeouts,
-                            consecutive_timeouts,
-                        )
-                        return ctx, sb, new_count, known_count, missing_magnet_count, True
-                    ctx, sb = self._recycle_browser_session(ctx, sb, sb_factory, "page fetch timed out")
-                    consecutive_failures = 0
-                else:
-                    missing_magnet_count += 1
-                    consecutive_timeouts = 0
-                    consecutive_failures += 1
-                    if consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
-                        ctx, sb = self._recycle_browser_session(
-                            ctx,
-                            sb,
-                            sb_factory,
-                            f"{consecutive_failures} consecutive fetch failures",
-                        )
-                        consecutive_failures = 0
-            return ctx, sb, new_count, known_count, missing_magnet_count, False
+                ctx, sb, aborted = self._handle_az_entry(db, entry, sb, existing_urls, state, sb_factory, ctx)
+                if aborted:
+                    return ctx, sb, state.new, state.known, state.missing, "aborted"
+            return ctx, sb, state.new, state.known, state.missing, None
         except BaseException:
             # Close whichever session is current so a failure mid-recycle
             # cannot leak the live browser; the caller's finally then closes
             # the original pair again — a double-close is harmless (suppressed).
             _close_browser_session(ctx, sb)
             raise
+
+    def _handle_az_entry(
+        self,
+        db: Database,
+        entry: dict[str, str],
+        sb: Any,
+        existing_urls: dict[str, str | None],
+        state: _AzIndexState,
+        sb_factory: Callable[[], Any],
+        ctx: Any,
+    ) -> tuple[Any, Any, bool]:
+        """Apply one A-Z entry outcome to the index state.
+
+        Args:
+            db: The database instance to store results in.
+            entry: Parsed ``{"title", "url", "letter"}`` entry.
+            sb: Browser session bound to *ctx*.
+            existing_urls: URL-to-magnet map from ``source_titles``.
+            state: Mutable index counters for this run.
+            sb_factory: Factory for replacement sessions.
+            ctx: Open SB-compatible context manager.
+
+        Returns:
+            ``(ctx, sb, aborted)`` where ``ctx``/``sb`` may be a recycled
+            pair and ``aborted`` is True when the caller must stop the run
+            (timeout budget exhausted).
+        """
+        outcome = self._process_az_entry(db, entry, sb, existing_urls)
+        if outcome == "known":
+            state.known += 1
+            return ctx, sb, False
+
+        self._log_az_progress(state.new, state.missing, state.total, state.known)
+        if outcome == "ok":
+            state.new += 1
+            state.consecutive_failures = 0
+            state.consecutive_timeouts = 0
+        elif outcome == "timeout":
+            # A timed-out fetch leaves a zombie worker hung on the shared
+            # driver — recycle immediately so the next fetch gets a clean
+            # session. If timeouts persist (consecutively or in total),
+            # the site/driver is wedged: abort this index run entirely.
+            state.missing += 1
+            state.consecutive_timeouts += 1
+            state.total_timeouts += 1
+            if _timeout_abort_reached(state.consecutive_timeouts, state.total_timeouts):
+                logger.warning(
+                    "FreeGOG: {} page fetch timeouts ({} consecutive) — aborting indexing for this cycle",
+                    state.total_timeouts,
+                    state.consecutive_timeouts,
+                )
+                return ctx, sb, True
+            ctx, sb = self._recycle_browser_session(ctx, sb, sb_factory, "page fetch timed out")
+            state.consecutive_failures = 0
+        else:
+            state.missing += 1
+            state.consecutive_timeouts = 0
+            state.consecutive_failures += 1
+            if state.consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
+                ctx, sb = self._recycle_browser_session(
+                    ctx,
+                    sb,
+                    sb_factory,
+                    f"{state.consecutive_failures} consecutive fetch failures",
+                )
+                state.consecutive_failures = 0
+        return ctx, sb, False
 
     def _recycle_browser_session(
         self,
@@ -590,7 +817,8 @@ class FreeGOGSource:
         recycled), and ``"failed"`` when the page could not be fetched or
         stored for any other reason.
         """
-        if entry["url"] in existing_urls and existing_urls[entry["url"]] is not None:
+        entry_url = entry["url"].rstrip("/")
+        if entry_url in existing_urls and existing_urls[entry_url] is not None:
             return "known"
         try:
             if self._fetch_and_store_game(db, entry, sb):
@@ -607,21 +835,21 @@ class FreeGOGSource:
         known_count: int,
         missing_magnet_count: int,
         *,
-        completed: bool,
+        stop_reason: str | None,
     ) -> None:
         """Update the sitemap cache and log the A-Z index summary.
 
         The cache is only updated when entries were actually parsed AND the
         entry loop ran to completion; an empty parse (0 entries) likely
-        means the site structure changed, and an early-cancelled run must
-        not suppress the remaining pages for the full TTL window.
+        means the site structure changed, and a stopped run must not
+        suppress the remaining pages for the full TTL window.
         """
-        if completed and total_entries > 0:
+        if stop_reason is None and total_entries > 0:
             db.set_sitemap_cache("freegog")
         elif total_entries == 0:
             logger.warning("FreeGOG A-Z page returned 0 entries — site structure may have changed")
         else:
-            logger.info("FreeGOG A-Z indexing cancelled before completion — cache not updated")
+            logger.info("FreeGOG A-Z indexing {} before completion — cache not updated", stop_reason)
         FreeGOGSource._log_az_summary(new_count, total_entries, known_count, missing_magnet_count)
 
     def fetch_sitemap(

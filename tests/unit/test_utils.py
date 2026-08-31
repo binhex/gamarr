@@ -88,3 +88,19 @@ class TestRunWithTimeout:
 
         result = run_with_timeout(lambda: None, timeout_seconds=5)
         assert result is None
+
+
+class TestRunWithTimeoutGraceWindow:
+    """A function that finishes just after its budget must still succeed."""
+
+    def test_function_finishing_just_after_budget_returns_result(self) -> None:
+        import time
+
+        from gamarr.utils import run_with_timeout
+
+        def slow_but_finishes() -> str:
+            time.sleep(0.32)  # 0.02s past the budget, 0.03s margin inside the 50ms grace window
+            return "done"
+
+        result = run_with_timeout(slow_but_finishes, timeout_seconds=0.3)
+        assert result == "done", "a function completing within the grace window must not be timed out"
