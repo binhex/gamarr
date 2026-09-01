@@ -821,16 +821,16 @@ class TestScanRecentGames:
         assert len(result) == 2, "Only page1 games should be included"
         assert result[0]["slug"] == "new-1"
 
-    def test_scan_recent_games_metascore_does_not_early_stop(self) -> None:
-        """When sort_order is set to 'metascore', scan must NOT early-stop
-        when the first page's games are all before the cutoff (metascore sorts
-        by score, not date — later pages may contain recent games)."""
+    def test_scan_recent_games_criticscore_does_not_early_stop(self) -> None:
+        """When sort_order is set to 'criticscore', scan must NOT early-stop
+        when the first page's games are all before the cutoff (critic-score
+        sorts by score, not date — later pages may contain recent games)."""
         from unittest.mock import patch
 
         from gamarr.metacritic import MetacriticClient
 
         client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
-        client.sort_order = "metascore"
+        client.sort_order = "criticscore"
         # Page 1: all games before cutoff (highest-rated, often old)
         page1 = [
             {"title": "Old But Good", "slug": "old-good", "release_date": "2024-06-01"},
@@ -844,7 +844,7 @@ class TestScanRecentGames:
         with patch.object(client, "_fetch_browse_page", side_effect=[page1, page2, []]):
             result = client.scan_recent_games("pc", max_games=100, cutoff_date="2026-06-09")
         # Should NOT early-stop: both pages should be scanned
-        assert len(result) > 0, "Metascore browsing should not early-stop on old games"
+        assert len(result) > 0, "Critic-score browsing should not early-stop on old games"
         # Should contain games from both pages (2 old + 1 new)
         assert len(result) == 3, f"Expected 3 games (2 old + 1 new), got {len(result)}"
 
@@ -1145,3 +1145,51 @@ class TestScanRecentGamesLogging:
         assert "page 100 (2000 games)" in log_output, (
             f"Expected intermediate 'page 100...' progress log, got:\n{log_output}"
         )
+
+
+class TestSortOrderURLSlug:
+    """The sort_order value must reach the Metacritic browse URL slug."""
+
+    def test_userscore_slug_used_in_browse_url(self) -> None:
+        from unittest.mock import patch
+
+        from gamarr.database import Database
+        from gamarr.metacritic import MetacriticClient
+        from gamarr.metacritic_cache import MetacriticCache
+
+        db = Database(":memory:")
+        client = MetacriticClient(cache=MetacriticCache(db))
+        client.sort_order = "userscore"
+
+        class _FakeResp:
+            status_code = 200
+            content = b""
+
+        with patch("gamarr.metacritic.requests.get", return_value=_FakeResp()) as mock_get:
+            client._fetch_browse_page("pc", page_number=0, cache_pages_hours=0, year=0)
+
+        url = mock_get.call_args.args[0]
+        assert "/userscore/" in url
+        assert "/criticscore/" not in url
+
+    def test_criticscore_maps_to_metascore_slug(self) -> None:
+        from unittest.mock import patch
+
+        from gamarr.database import Database
+        from gamarr.metacritic import MetacriticClient
+        from gamarr.metacritic_cache import MetacriticCache
+
+        db = Database(":memory:")
+        client = MetacriticClient(cache=MetacriticCache(db))
+        client.sort_order = "criticscore"
+
+        class _FakeResp:
+            status_code = 200
+            content = b""
+
+        with patch("gamarr.metacritic.requests.get", return_value=_FakeResp()) as mock_get:
+            client._fetch_browse_page("pc", page_number=0, cache_pages_hours=0, year=0)
+
+        url = mock_get.call_args.args[0]
+        assert "/metascore/" in url, "criticscore must translate to the site's metascore slug"
+        assert "/criticscore/" not in url

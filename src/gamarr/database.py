@@ -127,8 +127,9 @@ class ScanState(Base):
 class BacklogProgress(Base):
     """Tracks per-year backlog scan progress for each platform.
 
-    ``year = 0`` is the sentinel for ``sort_order = "metascore"`` (no year
-    dimension — all games sorted by score).
+    ``year = 0`` is the sentinel for the non-``"new"`` sort orders
+    (``criticscore``/``userscore``): no year dimension, all games sorted
+    by score.
 
     ``year = N`` (e.g. 2026) is for ``sort_order = "new"`` (year-specific
     browse pages).
@@ -761,6 +762,15 @@ class Database:
                 row.cached_at = now
             session.commit()
 
+    def clear_browse_cache(self, platform: str | None = None) -> None:
+        """Clear the metacritic browse-page cache, optionally for one platform.
+
+        Used on sort-order changes: browse results depend on the sort
+        order, but detail-page scores do not, so the detail cache is
+        kept to avoid re-fetching every verified game.
+        """
+        self._delete_browse_cache(platform)
+
     def clear_cache(self, source: str) -> None:
         """Clear cached data for a given source.
 
@@ -788,9 +798,14 @@ class Database:
             session.query(SourceTitle).filter(SourceTitle.source == source).delete()
             session.commit()
 
-    def _delete_browse_cache(self) -> None:
+    def _delete_browse_cache(self, platform: str | None = None) -> None:
         with self._session() as session:
-            session.execute(text("DELETE FROM browse_page_cache"))
+            if platform is None:
+                session.execute(text("DELETE FROM browse_page_cache"))
+            else:
+                session.execute(
+                    text("DELETE FROM browse_page_cache WHERE platform = :platform"), {"platform": platform}
+                )
             session.commit()
 
     def _delete_detail_cache(self) -> None:

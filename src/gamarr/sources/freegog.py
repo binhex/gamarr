@@ -70,6 +70,25 @@ def _timeout_abort_reached(consecutive_timeouts: int, total_timeouts: int) -> bo
     return consecutive_timeouts >= _MAX_CONSECUTIVE_FAILURES or total_timeouts >= _MAX_TOTAL_TIMEOUTS
 
 
+def _ndjson_record_to_entry(record: list[Any]) -> dict[str, str] | None:
+    """Return a cleaned A-Z entry for a parsed NDJSON record, or ``None``.
+
+    Rejects short arrays, non-string fields, empty titles, and URLs
+    outside the site's own domain.
+    """
+    if len(record) < 3:
+        return None
+    letter, raw_title, raw_url = record[0], record[1], record[2]
+    if not isinstance(letter, str) or not isinstance(raw_title, str) or not isinstance(raw_url, str):
+        return None
+    url = raw_url.strip()
+    title = unescape(raw_title.strip())
+    parsed_url = urlsplit(url)
+    if not title or parsed_url.scheme != "https" or parsed_url.netloc != "freegogpcgames.com":
+        return None
+    return {"title": _clean_freegog_title(title), "url": url, "letter": letter.casefold()}
+
+
 def _parse_freegog_az_ndjson(text: str) -> list[dict[str, str]]:
     """Parse the FreeGOG A-Z data endpoint NDJSON into entries.
 
@@ -92,47 +111,47 @@ def _parse_freegog_az_ndjson(text: str) -> list[dict[str, str]]:
             record = json.loads(line)
         except (TypeError, ValueError):
             continue
-        if not isinstance(record, list) or len(record) < 3:
+        if not isinstance(record, list):
             continue
-        letter, raw_title, raw_url = record[0], record[1], record[2]
-        if not isinstance(letter, str) or not isinstance(raw_title, str) or not isinstance(raw_url, str):
+        entry = _ndjson_record_to_entry(record)
+        if entry is None:
+            logger.debug("FreeGOG A-Z NDJSON line skipped: {}", line[:120])
             continue
-        url = raw_url.strip()
-        title = unescape(raw_title.strip())
-        parsed_url = urlsplit(url)
-        if not title or parsed_url.scheme != "https" or parsed_url.netloc != "freegogpcgames.com":
-            logger.debug("FreeGOG A-Z NDJSON line skipped (bad title or foreign URL): {}", url)
-            continue
+        url = entry["url"]
         if url in seen_urls:
             continue
         seen_urls.add(url)
         results.append(
             {
-                "title": _clean_freegog_title(title),
+                "title": entry["title"],
                 "url": url,
-                "letter": letter.casefold(),
+                "letter": entry["letter"],
             }
         )
     return results
 
 
 def _freegog_az_ndjson_total(text: str) -> int | None:
-    """Return the ``total`` field of the NDJSON header line, if any.
+    """Return the ``total`` field of the NDJSON header object, if any.
 
-    Tolerates blank leading lines and a UTF-8 BOM. (The entry parser
-    simply skips a BOM-prefixed header line — the BOM only ever appears
-    at the start of the stream.)
+    Tolerates blank leading lines and a UTF-8 BOM, and scans past
+    non-header lines so a reordered or entry-leading stream still
+    reports its announced size (otherwise the truncation warning would
+    be silently disabled).
     """
     for line in text.splitlines():
         stripped = line.strip()
         if not stripped:
             continue
         try:
-            header = json.loads(stripped.lstrip("\ufeff"))
+            record = json.loads(stripped.lstrip("\ufeff"))
         except (TypeError, ValueError):
-            return None
-        total = header.get("total") if isinstance(header, dict) else None
-        return total if isinstance(total, int) else None
+            continue
+        if not isinstance(record, dict):
+            continue
+        total = record.get("total")
+        if isinstance(total, int):
+            return total
     return None
 
 

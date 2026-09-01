@@ -74,7 +74,7 @@ class TestConfigModels:
 
     def test_metacritic_platform_config_defaults(self) -> None:
         cfg = MetacriticPlatformConfig()
-        assert cfg.min_metascore == 75
+        assert cfg.min_criticscore == 75
         assert cfg.min_user_score == 7.5
         assert not hasattr(cfg, "days_since_release"), "Field was removed"
         assert not hasattr(cfg, "pending_days"), "Field was renamed to max_queue_days"
@@ -377,7 +377,7 @@ class TestConfigModels:
         assert cfg.general.daemon_mode == "foreground"
         fitgirl = next(e for e in cfg.download_sites if e.name == "fitgirl")
         assert fitgirl.enabled is True
-        assert cfg.review_sites.metacritic.platform_overrides["pc"].min_metascore == 75
+        assert cfg.review_sites.metacritic.platform_overrides["pc"].min_criticscore == 75
         assert cfg.torrent_client.selected == "qbittorrent"
 
     def test_max_cycle_pages_default(self) -> None:
@@ -462,7 +462,7 @@ class TestLoadConfig:
         raw: dict[str, Any] = {
             "metacritic": {
                 "platform_overrides": {
-                    "pc": {"min_metascore": 75, "max_pages": 12},
+                    "pc": {"min_criticscore": 75, "max_pages": 12},
                 },
             },
         }
@@ -470,7 +470,7 @@ class TestLoadConfig:
         assert result is True
         assert "metacritic" not in raw, "Old top-level metacritic key should be removed"
         assert "review_sites" in raw
-        assert raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["min_metascore"] == 75
+        assert raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["min_criticscore"] == 75
 
     def test_migrate_sources_to_download_sites(self) -> None:
         """Old sources key is migrated to download_sites."""
@@ -1217,18 +1217,30 @@ class TestSortOrder:
 
     def test_sort_order_defaults_to_new(self) -> None:
         """Default sort_order must be "new" (newest-first) for valid
-        Metacritic browse URLs. "newest" maps to metascore sorting,
-        returning old games that are immediately filtered by cutoff."""
+        Metacritic browse URLs. Score-based sorts (criticscore/userscore)
+        browse all-time and are filtered by cutoff."""
         from gamarr.config import MetacriticPlatformConfig
 
         cfg = MetacriticPlatformConfig()
         assert cfg.sort_order == "new"
 
-    def test_sort_order_accepts_metascore(self) -> None:
+    def test_sort_order_accepts_three_values(self) -> None:
         from gamarr.config import MetacriticPlatformConfig
 
-        cfg = MetacriticPlatformConfig(sort_order="metascore")
-        assert cfg.sort_order == "metascore"
+        assert MetacriticPlatformConfig(sort_order="new").sort_order == "new"
+        assert MetacriticPlatformConfig(sort_order="criticscore").sort_order == "criticscore"
+        assert MetacriticPlatformConfig(sort_order="userscore").sort_order == "userscore"
+
+    def test_sort_order_rejects_metascore_and_unknown(self) -> None:
+        import pydantic
+        import pytest
+
+        from gamarr.config import MetacriticPlatformConfig
+
+        with pytest.raises(pydantic.ValidationError):
+            MetacriticPlatformConfig(sort_order="metascore")  # type: ignore[arg-type]
+        with pytest.raises(pydantic.ValidationError):
+            MetacriticPlatformConfig(sort_order="bogus")  # type: ignore[arg-type]
 
 
 def test_drop_migrated_deprecated_keys_no_deprecated() -> None:
@@ -1300,7 +1312,7 @@ def test_migration_removes_search_mode() -> None:
         "review_sites": {
             "metacritic": {
                 "platform_overrides": {
-                    "pc": {"search_mode": "backlog", "min_metascore": 75},
+                    "pc": {"search_mode": "backlog", "min_criticscore": 75},
                 }
             }
         },
@@ -1325,7 +1337,7 @@ def test_migration_removes_search_mode() -> None:
         "    platform_overrides:\n"
         "      pc:\n"
         "        search_mode: backlog\n"
-        "        min_metascore: 75\n"
+        "        min_criticscore: 75\n"
     )
     with tempfile.NamedTemporaryFile(mode="w", suffix=".yml", delete=False) as f:
         f.write(config_text)
@@ -1354,3 +1366,189 @@ class TestScheduleAcquisitionTimeout:
 
         with pytest.raises(pydantic.ValidationError):
             ScheduleConfig(acquisition_timeout_mins=0)
+
+
+class TestCriticThresholdRename:
+    """Renamed critic-threshold fields on MetacriticPlatformConfig."""
+
+    def test_defaults(self) -> None:
+        from gamarr.config import MetacriticPlatformConfig
+
+        cfg = MetacriticPlatformConfig()
+        assert cfg.min_criticscore == 75
+        assert cfg.min_criticscore_reviews == 10
+
+    def test_old_names_are_ignored_by_model(self) -> None:
+        # pydantic ignores unknown fields; the migration rewrites the YAML
+        # before validation, so a legacy key never influences the model.
+        from gamarr.config import MetacriticPlatformConfig
+
+        cfg = MetacriticPlatformConfig(min_metascore=99)  # type: ignore[call-arg]
+        assert cfg.min_criticscore == 75, "the legacy key must have no effect on the model"
+        assert "min_metascore" not in cfg.model_dump()
+
+
+class TestSortOrderCriticMigration:
+    """One-time in-place migration of legacy metascore naming."""
+
+    def _write_config(self, tmp_path: Path, content: str) -> Path:
+        path = tmp_path / "gamarr.yml"
+        path.write_text(content)
+        return path
+
+    def test_migrates_legacy_names_and_rewrites_file(self, tmp_path: Path) -> None:
+        from gamarr.config import load_config
+
+        path = self._write_config(
+            tmp_path,
+            "review_sites:\n"
+            "  metacritic:\n"
+            "    platform_overrides:\n"
+            "      pc:\n"
+            "        min_metascore: 80\n"
+            "        min_metascore_reviews: 15\n"
+            "        sort_order: metascore\n",
+        )
+        cfg = load_config(path)
+        mc = cfg.review_sites.metacritic.platform_overrides["pc"]
+        assert mc.sort_order == "criticscore"
+        assert mc.min_criticscore == 80
+        assert mc.min_criticscore_reviews == 15
+
+        rewritten = path.read_text()
+        assert "min_criticscore" in rewritten
+        assert "min_metascore" not in rewritten
+        assert "sort_order: criticscore" in rewritten
+
+    def test_second_load_does_not_rewrite(self, tmp_path: Path) -> None:
+        from gamarr.config import load_config
+
+        path = self._write_config(
+            tmp_path,
+            "review_sites:\n  metacritic:\n    platform_overrides:\n      pc:\n        sort_order: metascore\n",
+        )
+        load_config(path)
+        first = path.read_text()
+        load_config(path)
+        assert path.read_text() == first
+
+    def test_keeps_existing_new_value_on_collision(self, tmp_path: Path) -> None:
+        from gamarr.config import load_config
+
+        path = self._write_config(
+            tmp_path,
+            "review_sites:\n  metacritic:\n    platform_overrides:\n      pc:\n"
+            "        min_metascore: 70\n        min_criticscore: 90\n",
+        )
+        cfg = load_config(path)
+        assert cfg.review_sites.metacritic.platform_overrides["pc"].min_criticscore == 90
+
+    def test_userscore_value_passes_through_untouched(self, tmp_path: Path) -> None:
+        from gamarr.config import load_config
+
+        path = self._write_config(
+            tmp_path,
+            "review_sites:\n  metacritic:\n    platform_overrides:\n      pc:\n        sort_order: userscore\n",
+        )
+        cfg = load_config(path)
+        assert cfg.review_sites.metacritic.platform_overrides["pc"].sort_order == "userscore"
+
+    def test_legacy_top_level_metacritic_layout_migrates(self, tmp_path: Path) -> None:
+        """A legacy top-level metacritic: block must still migrate the rename."""
+        from gamarr.config import load_config
+
+        path = tmp_path / "gamarr.yml"
+        path.write_text(
+            "metacritic:\n  platform_overrides:\n    pc:\n      sort_order: metascore\n      min_metascore: 80\n"
+        )
+        cfg = load_config(path)
+        mc = cfg.review_sites.metacritic.platform_overrides["pc"]
+        assert mc.sort_order == "criticscore"
+        assert mc.min_criticscore == 80
+
+    def test_read_only_config_does_not_abort_startup(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A read-only gamarr.yml must not abort startup; the migrated
+        in-memory config is used and the rewrite retries next load."""
+        from pathlib import Path as PathCls
+
+        from loguru import logger
+
+        from gamarr.config import load_config
+
+        path = tmp_path / "gamarr.yml"
+        path.write_text(
+            "review_sites:\n  metacritic:\n    platform_overrides:\n      pc:\n        sort_order: metascore\n"
+        )
+        original = path.read_text()
+
+        real_open = PathCls.open
+
+        def guarded_open(self: PathCls, *args: object, **kwargs: object) -> Any:
+            mode = kwargs.get("mode") if kwargs.get("mode") is not None else (args[0] if args else "r")
+            if mode == "w":
+                raise PermissionError("read-only filesystem")
+            from typing import cast
+
+            return cast("Any", real_open)(self, *args, **kwargs)
+
+        monkeypatch.setattr(PathCls, "open", guarded_open)
+
+        captured: list[str] = []
+        sink_id = logger.add(lambda msg: captured.append(str(msg)), level="INFO", format="{message}")
+        try:
+            cfg = load_config(path)
+        finally:
+            logger.remove(sink_id)
+
+        mc = cfg.review_sites.metacritic.platform_overrides["pc"]
+        assert mc.sort_order == "criticscore", "migrated in-memory config must load despite read-only file"
+        assert path.read_text() == original, "a failed rewrite must leave the file untouched"
+        assert any("Could not rewrite config file" in m for m in captured), captured
+
+    def test_multiple_platform_overrides_migrate_independently(self, tmp_path: Path) -> None:
+        from gamarr.config import load_config
+
+        path = tmp_path / "gamarr.yml"
+        path.write_text(
+            "review_sites:\n  metacritic:\n    platform_overrides:\n"
+            "      pc:\n        sort_order: metascore\n        min_metascore: 80\n"
+            "      ps5:\n        sort_order: userscore\n        min_metascore_reviews: 15\n"
+        )
+        cfg = load_config(path)
+        pc = cfg.review_sites.metacritic.platform_overrides["pc"]
+        ps5 = cfg.review_sites.metacritic.platform_overrides["ps5"]
+        assert pc.sort_order == "criticscore"
+        assert pc.min_criticscore == 80
+        assert ps5.sort_order == "userscore", "userscore must pass through untouched"
+        assert ps5.min_criticscore_reviews == 15
+
+    def test_rewrite_retries_on_next_startup(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """After a read-only failure, the next writable load persists the migration."""
+        from pathlib import Path as PathCls
+        from typing import cast
+
+        from gamarr.config import load_config
+
+        path = tmp_path / "gamarr.yml"
+        path.write_text(
+            "review_sites:\n  metacritic:\n    platform_overrides:\n      pc:\n        sort_order: metascore\n"
+        )
+
+        real_open = PathCls.open
+
+        def read_only_open(self: PathCls, *args: object, **kwargs: object) -> Any:
+            mode = kwargs.get("mode") if kwargs.get("mode") is not None else (args[0] if args else "r")
+            if mode == "w":
+                raise PermissionError("read-only filesystem")
+            return cast("Any", real_open)(self, *args, **kwargs)
+
+        monkeypatch.setattr(PathCls, "open", read_only_open)
+        load_config(path)  # write fails; in-memory config still works
+        assert "metascore" in path.read_text(), "the failed write must leave the legacy value in place"
+
+        monkeypatch.undo()  # filesystem becomes writable again
+        cfg = load_config(path)
+        assert cfg.review_sites.metacritic.platform_overrides["pc"].sort_order == "criticscore"
+        rewritten = path.read_text()
+        assert "min_metascore" not in rewritten
+        assert "sort_order: criticscore" in rewritten, "the second load must persist the migration"

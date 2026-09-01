@@ -424,13 +424,13 @@ class TestAcquisitionConfig:
 
     def test_defaults(self) -> None:
         cfg = AcquisitionConfig(
-            min_metascore=75,
-            min_metascore_reviews=5,
+            min_criticscore=75,
+            min_criticscore_reviews=5,
             min_user_score=7.5,
             min_user_reviews=10,
             max_pages=12,  # ~84 days, roughly equivalent to 90 days
         )
-        assert cfg.min_metascore == 75
+        assert cfg.min_criticscore == 75
 
 
 class TestMaxCycleWeeks:
@@ -441,8 +441,8 @@ class TestMaxCycleWeeks:
         from gamarr.pipeline import AcquisitionConfig
 
         cfg = AcquisitionConfig(
-            min_metascore=75,
-            min_metascore_reviews=5,
+            min_criticscore=75,
+            min_criticscore_reviews=5,
             min_user_score=7.5,
             min_user_reviews=10,
             max_pages=52,
@@ -747,10 +747,10 @@ class TestRunAcquisition:
                 db_path=db_path,
                 qbt_host="localhost",
                 qbt_port=8080,
-                min_metascore=75,
+                min_criticscore=75,
                 min_user_score=7.5,
                 min_user_reviews=10,
-                min_metascore_reviews=5,
+                min_criticscore_reviews=5,
             )
 
             # Sitemap must NOT be fetched because no pending game has
@@ -833,7 +833,7 @@ class TestRunAcquisition:
                 platform="pc",
                 qbt_host="localhost",
                 qbt_port=8080,
-                min_metascore=75,
+                min_criticscore=75,
                 download_sites=[fitgirl_entry, freegog_entry],
             )
 
@@ -859,8 +859,8 @@ class TestGamePassesThresholds:
             "user_rating": 2007.0,  # inflated browse metric
         }
         thresholds = {
-            "min_metascore": 75,
-            "min_metascore_reviews": 5,
+            "min_criticscore": 75,
+            "min_criticscore_reviews": 5,
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
@@ -880,8 +880,8 @@ class TestGamePassesThresholds:
             "release_date": "2026-06-01",
         }
         thresholds = {
-            "min_metascore": 75,
-            "min_metascore_reviews": 5,
+            "min_criticscore": 75,
+            "min_criticscore_reviews": 5,
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
@@ -898,8 +898,8 @@ class TestGamePassesThresholds:
             "user_rating": 8.0,
         }
         thresholds = {
-            "min_metascore": 75,
-            "min_metascore_reviews": 5,
+            "min_criticscore": 75,
+            "min_criticscore_reviews": 5,
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
@@ -916,8 +916,8 @@ class TestGamePassesThresholds:
             "user_rating": None,
         }
         thresholds = {
-            "min_metascore": 75,
-            "min_metascore_reviews": 5,
+            "min_criticscore": 75,
+            "min_criticscore_reviews": 5,
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
@@ -995,8 +995,8 @@ class TestMetacriticBrowse:
             },
         ]
         thresholds = {
-            "min_metascore": 75,
-            "min_metascore_reviews": 5,
+            "min_criticscore": 75,
+            "min_criticscore_reviews": 5,
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
@@ -1073,8 +1073,8 @@ class TestMetacriticBrowse:
         )
 
         thresholds = {
-            "min_metascore": 75,
-            "min_metascore_reviews": 5,
+            "min_criticscore": 75,
+            "min_criticscore_reviews": 5,
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
@@ -1499,8 +1499,8 @@ class TestMetacriticBrowse:
         mock_mc.lookup_game.return_value = mock_result
 
         thresholds = {
-            "min_metascore": 75,
-            "min_metascore_reviews": 10,
+            "min_criticscore": 75,
+            "min_criticscore_reviews": 10,
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
@@ -1550,8 +1550,8 @@ class TestMetacriticBrowse:
         mock_mc.lookup_game.return_value = mock_result
 
         thresholds = {
-            "min_metascore": 75,
-            "min_metascore_reviews": 10,
+            "min_criticscore": 75,
+            "min_criticscore_reviews": 10,
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
@@ -1595,8 +1595,8 @@ class TestMetacriticBrowse:
             mock_mc,
             "pc",
             {
-                "min_metascore": 75,
-                "min_metascore_reviews": 5,
+                "min_criticscore": 75,
+                "min_criticscore_reviews": 5,
                 "min_user_score": 7.5,
                 "min_user_reviews": 10,
             },
@@ -1649,8 +1649,8 @@ class TestMetacriticBrowse:
             mock_mc,
             "pc",
             {
-                "min_metascore": 75,
-                "min_metascore_reviews": 5,
+                "min_criticscore": 75,
+                "min_criticscore_reviews": 5,
                 "min_user_score": 7.5,
                 "min_user_reviews": 10,
             },
@@ -1666,7 +1666,7 @@ class TestMetacriticBrowse:
         db.close()
 
     def test_verify_pending_removes_game_when_metascore_absent(self, tmp_path: Path) -> None:
-        """A game with metascore=None and min_metascore > 0 should be rejected."""
+        """A game with metascore=None and min_criticscore > 0 should be rejected."""
         import datetime
         from unittest.mock import MagicMock
 
@@ -1703,8 +1703,8 @@ class TestMetacriticBrowse:
             mock_mc,
             "pc",
             {
-                "min_metascore": 75,
-                "min_metascore_reviews": 5,
+                "min_criticscore": 75,
+                "min_criticscore_reviews": 5,
                 "min_user_score": 7.5,
                 "min_user_reviews": 10,
             },
@@ -1753,7 +1753,7 @@ class TestMetacriticBrowse:
             db,
             mock_mc,
             "pc",
-            {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10},
+            {"min_criticscore": 75, "min_criticscore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10},
             max_verify=5,
         )
         assert mock_mc.lookup_game.call_count == 5, f"Expected 5 lookups, got {mock_mc.lookup_game.call_count}"
@@ -1808,8 +1808,8 @@ class TestMetacriticBrowse:
         magnet_fetcher = MagicMock(return_value="magnet:?xt=urn:btih:test")
 
         thresholds = {
-            "min_metascore": 75,
-            "min_metascore_reviews": 5,
+            "min_criticscore": 75,
+            "min_criticscore_reviews": 5,
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
@@ -1887,8 +1887,8 @@ class TestMetacriticBrowse:
         magnet_fetcher = MagicMock(return_value="magnet:?xt=urn:btih:test")
 
         thresholds = {
-            "min_metascore": 75,
-            "min_metascore_reviews": 5,
+            "min_criticscore": 75,
+            "min_criticscore_reviews": 5,
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
@@ -1965,8 +1965,8 @@ class TestMetacriticBrowse:
             },
         ]
         thresholds = {
-            "min_metascore": 75,
-            "min_metascore_reviews": 5,
+            "min_criticscore": 75,
+            "min_criticscore_reviews": 5,
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
@@ -3212,8 +3212,8 @@ class TestMetacriticBrowse:
             },
         ]
         thresholds = {
-            "min_metascore": 75,
-            "min_metascore_reviews": 5,
+            "min_criticscore": 75,
+            "min_criticscore_reviews": 5,
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
@@ -3245,8 +3245,8 @@ class TestMetacriticBrowse:
             },
         ]
         thresholds = {
-            "min_metascore": 0,
-            "min_metascore_reviews": 0,
+            "min_criticscore": 0,
+            "min_criticscore_reviews": 0,
             "min_user_score": 0.0,
             "min_user_reviews": 0,
         }
@@ -3289,8 +3289,8 @@ class TestMetacriticBrowse:
             },
         ]
         thresholds = {
-            "min_metascore": 0,
-            "min_metascore_reviews": 0,
+            "min_criticscore": 0,
+            "min_criticscore_reviews": 0,
             "min_user_score": 0.0,
             "min_user_reviews": 0,
         }
@@ -3653,8 +3653,8 @@ class TestVerifyPendingScoresEdgeCases:
         magnet_fetcher = MagicMock(return_value="magnet:?xt=urn:btih:test")
 
         thresholds = {
-            "min_metascore": 75,
-            "min_metascore_reviews": 5,
+            "min_criticscore": 75,
+            "min_criticscore_reviews": 5,
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
@@ -3713,8 +3713,8 @@ class TestVerifyPendingScoresEdgeCases:
         )
 
         thresholds = {
-            "min_metascore": 75,
-            "min_metascore_reviews": 5,
+            "min_criticscore": 75,
+            "min_criticscore_reviews": 5,
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
@@ -3778,8 +3778,8 @@ class TestVerifyPendingScoresEdgeCases:
         mock_mc.lookup_game.side_effect = slow_lookup
 
         thresholds = {
-            "min_metascore": 75,
-            "min_metascore_reviews": 5,
+            "min_criticscore": 75,
+            "min_criticscore_reviews": 5,
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
@@ -3843,8 +3843,8 @@ class TestVerifyPendingScoresEdgeCases:
         )
 
         thresholds = {
-            "min_metascore": 75,
-            "min_metascore_reviews": 5,
+            "min_criticscore": 75,
+            "min_criticscore_reviews": 5,
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
@@ -3925,7 +3925,7 @@ class TestVerifyPendingScoresEdgeCases:
             slug="elden-ring",
         )
 
-        thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
+        thresholds = {"min_criticscore": 75, "min_criticscore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
 
         assert db.is_pending("elden-ring") is True
         removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, reject_genre=["rpg"])
@@ -3969,7 +3969,7 @@ class TestVerifyPendingScoresEdgeCases:
             slug="forza-horizon-6",
         )
 
-        thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
+        thresholds = {"min_criticscore": 75, "min_criticscore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
 
         removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, reject_genre=["action"])
         assert removed == 0, "Game genre 'Racing' not in reject_genre ['action'] — should NOT be removed"
@@ -4012,7 +4012,7 @@ class TestVerifyPendingScoresEdgeCases:
             slug="elden-ring",
         )
 
-        thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
+        thresholds = {"min_criticscore": 75, "min_criticscore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
 
         removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, reject_genre=[])
         assert removed == 0, "Empty reject_genre — game should NOT be removed"
@@ -4055,7 +4055,7 @@ class TestVerifyPendingScoresEdgeCases:
             slug="cyberpunk-2077",
         )
 
-        thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
+        thresholds = {"min_criticscore": 75, "min_criticscore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
 
         removed = _verify_pending_scores(
             db,
@@ -4104,7 +4104,7 @@ class TestVerifyPendingScoresEdgeCases:
             slug="hades-2",
         )
 
-        thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
+        thresholds = {"min_criticscore": 75, "min_criticscore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
 
         removed = _verify_pending_scores(
             db,
@@ -4141,7 +4141,7 @@ class TestVerifyPendingScoresEdgeCases:
         mock_mc = MagicMock()
         mock_mc.lookup_game.return_value = None  # lookup failed
 
-        thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
+        thresholds = {"min_criticscore": 75, "min_criticscore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
 
         removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, reject_genre=["action"])
         assert removed == 0, "Lookup returned None — genre check skipped, game stays for re-check"
@@ -4184,7 +4184,7 @@ class TestVerifyPendingScoresEdgeCases:
             slug="no-genre-game",
         )
 
-        thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
+        thresholds = {"min_criticscore": 75, "min_criticscore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
 
         removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, reject_genre=["action"])
         assert removed == 0, "genres=None — genre check skipped, game should not be removed"
@@ -4227,7 +4227,7 @@ class TestVerifyPendingScoresEdgeCases:
             slug="default-test",
         )
 
-        thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
+        thresholds = {"min_criticscore": 75, "min_criticscore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
 
         # reject_genre not passed (defaults to None)
         removed = _verify_pending_scores(db, mock_mc, "pc", thresholds)
@@ -4271,7 +4271,7 @@ class TestVerifyPendingScoresEdgeCases:
             slug="action-rpg-game",
         )
 
-        thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
+        thresholds = {"min_criticscore": 75, "min_criticscore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
 
         removed = _verify_pending_scores(db, mock_mc, "pc", thresholds, reject_genre=["RPG"])
         assert removed == 1, "'RPG' should match 'Action RPG' via substring"
@@ -4314,7 +4314,7 @@ class TestVerifyPendingScoresEdgeCases:
             slug="action-rpg-game2",
         )
 
-        thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
+        thresholds = {"min_criticscore": 75, "min_criticscore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 5}
 
         removed = _verify_pending_scores(
             db,
@@ -4447,8 +4447,8 @@ class TestFitgirlRecheckExpiry:
         mock_mc.lookup_game.return_value = mock_result
 
         thresholds = {
-            "min_metascore": 75,
-            "min_metascore_reviews": 5,
+            "min_criticscore": 75,
+            "min_criticscore_reviews": 5,
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
@@ -4503,8 +4503,8 @@ class TestFitgirlRecheckExpiry:
         mock_mc.lookup_game.return_value = mock_result
 
         thresholds = {
-            "min_metascore": 75,
-            "min_metascore_reviews": 5,
+            "min_criticscore": 75,
+            "min_criticscore_reviews": 5,
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
@@ -4557,8 +4557,8 @@ class TestFitgirlRecheckExpiry:
         mock_mc.lookup_game.return_value = mock_result
 
         thresholds = {
-            "min_metascore": 75,
-            "min_metascore_reviews": 5,
+            "min_criticscore": 75,
+            "min_criticscore_reviews": 5,
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
@@ -4593,8 +4593,8 @@ class TestRejectTitle:
             },
         ]
         thresholds = {
-            "min_metascore": 75,
-            "min_metascore_reviews": 5,
+            "min_criticscore": 75,
+            "min_criticscore_reviews": 5,
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
@@ -4643,8 +4643,8 @@ class TestRejectTitle:
         )
 
         thresholds = {
-            "min_metascore": 75,
-            "min_metascore_reviews": 5,
+            "min_criticscore": 75,
+            "min_criticscore_reviews": 5,
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
@@ -4672,8 +4672,8 @@ class TestRejectTitle:
             },
         ]
         thresholds = {
-            "min_metascore": 75,
-            "min_metascore_reviews": 5,
+            "min_criticscore": 75,
+            "min_criticscore_reviews": 5,
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
@@ -4705,8 +4705,8 @@ class TestRejectTitle:
             },
         ]
         thresholds = {
-            "min_metascore": 75,
-            "min_metascore_reviews": 5,
+            "min_criticscore": 75,
+            "min_criticscore_reviews": 5,
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
@@ -4737,8 +4737,8 @@ class TestRejectTitle:
             },
         ]
         thresholds = {
-            "min_metascore": 75,
-            "min_metascore_reviews": 5,
+            "min_criticscore": 75,
+            "min_criticscore_reviews": 5,
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
@@ -4769,8 +4769,8 @@ class TestRejectTitle:
             },
         ]
         thresholds = {
-            "min_metascore": 75,
-            "min_metascore_reviews": 5,
+            "min_criticscore": 75,
+            "min_criticscore_reviews": 5,
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
@@ -4902,8 +4902,8 @@ class TestScrapeHealth:
         mock_notifier = MagicMock(spec=Notifier)
 
         thresholds = {
-            "min_metascore": 75,
-            "min_metascore_reviews": 5,
+            "min_criticscore": 75,
+            "min_criticscore_reviews": 5,
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
@@ -4950,7 +4950,7 @@ class TestScrapeHealth:
                 db,
                 mock_mc,
                 "pc",
-                {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10},
+                {"min_criticscore": 75, "min_criticscore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10},
                 notifier=mock_notifier,
             )
 
@@ -4988,7 +4988,7 @@ class TestScrapeHealth:
                 db,
                 mock_mc,
                 "pc",
-                {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10},
+                {"min_criticscore": 75, "min_criticscore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10},
                 notifier=mock_notifier,
             )
 
@@ -5026,7 +5026,7 @@ class TestScrapeHealth:
                 db,
                 mock_mc,
                 "pc",
-                {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10},
+                {"min_criticscore": 75, "min_criticscore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10},
                 notifier=mock_notifier,
             )
 
@@ -5061,8 +5061,8 @@ class TestCancellation:
             mock_mc,
             "pc",
             {
-                "min_metascore": 75,
-                "min_metascore_reviews": 5,
+                "min_criticscore": 75,
+                "min_criticscore_reviews": 5,
                 "min_user_score": 7.5,
                 "min_user_reviews": 10,
             },
@@ -5107,8 +5107,8 @@ class TestCancellation:
             mock_mc,
             "pc",
             {
-                "min_metascore": 75,
-                "min_metascore_reviews": 5,
+                "min_criticscore": 75,
+                "min_criticscore_reviews": 5,
                 "min_user_score": 7.5,
                 "min_user_reviews": 10,
             },
@@ -5180,8 +5180,8 @@ class TestCancellation:
                 mock_mc,
                 "pc",
                 {
-                    "min_metascore": 75,
-                    "min_metascore_reviews": 5,
+                    "min_criticscore": 75,
+                    "min_criticscore_reviews": 5,
                     "min_user_score": 7.5,
                     "min_user_reviews": 10,
                 },
@@ -5323,8 +5323,8 @@ class TestBrowseReviewCountPrefilter:
             },
         ]
         thresholds = {
-            "min_metascore": 75,
-            "min_metascore_reviews": 5,
+            "min_criticscore": 75,
+            "min_criticscore_reviews": 5,
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
@@ -5360,8 +5360,8 @@ class TestBrowseReviewCountPrefilter:
             },
         ]
         thresholds = {
-            "min_metascore": 75,
-            "min_metascore_reviews": 5,
+            "min_criticscore": 75,
+            "min_criticscore_reviews": 5,
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
@@ -5544,8 +5544,8 @@ class TestProcessAgedGames:
         )
 
         cfg = AcquisitionConfig(
-            min_metascore=75,
-            min_metascore_reviews=5,
+            min_criticscore=75,
+            min_criticscore_reviews=5,
             min_user_score=7.5,
             min_user_reviews=10,
             age_recheck_weeks=52,
@@ -5589,8 +5589,8 @@ class TestProcessAgedGames:
             session.commit()
 
         cfg = AcquisitionConfig(
-            min_metascore=75,
-            min_metascore_reviews=5,
+            min_criticscore=75,
+            min_criticscore_reviews=5,
             min_user_score=7.5,
             min_user_reviews=10,
             age_recheck_weeks=52,
@@ -5629,8 +5629,8 @@ class TestProcessAgedGames:
             session.commit()
 
         cfg = AcquisitionConfig(
-            min_metascore=75,
-            min_metascore_reviews=5,
+            min_criticscore=75,
+            min_criticscore_reviews=5,
             min_user_score=7.5,
             min_user_reviews=10,
             age_recheck_weeks=52,
@@ -5647,8 +5647,8 @@ class TestProcessAgedGames:
 
         db = Database(str(tmp_path / "test.db"))
         cfg = AcquisitionConfig(
-            min_metascore=75,
-            min_metascore_reviews=5,
+            min_criticscore=75,
+            min_criticscore_reviews=5,
             min_user_score=7.5,
             min_user_reviews=10,
             age_recheck_weeks=None,
@@ -5681,7 +5681,12 @@ class TestProcessAgedGames:
             expires_at=expires,
         )
         game = db.get_pending()[0]
-        thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10}
+        thresholds = {
+            "min_criticscore": 75,
+            "min_criticscore_reviews": 5,
+            "min_user_score": 7.5,
+            "min_user_reviews": 10,
+        }
 
         # result=None simulates a game with no Metacritic page
         removed = _process_verify_result(db, game, result=None, thresholds=thresholds)
@@ -5716,15 +5721,15 @@ class TestRealScoresPassThresholds:
             user_review_count=None,
         )
         thresholds = {
-            "min_metascore": 75,
-            "min_metascore_reviews": 10,
+            "min_criticscore": 75,
+            "min_criticscore_reviews": 10,
             "min_user_score": 8.0,
             "min_user_reviews": 10,
         }
         assert _real_scores_pass_thresholds(result, thresholds) is False
 
     def test_rejects_none_metascore_reviews_when_threshold_set(self) -> None:
-        """When metascore_review_count is None and min_metascore_reviews > 0,
+        """When metascore_review_count is None and min_criticscore_reviews > 0,
         the check should fail.
         """
         import types
@@ -5738,8 +5743,8 @@ class TestRealScoresPassThresholds:
             user_review_count=20,
         )
         thresholds = {
-            "min_metascore": 75,
-            "min_metascore_reviews": 10,
+            "min_criticscore": 75,
+            "min_criticscore_reviews": 10,
             "min_user_score": 8.0,
             "min_user_reviews": 10,
         }
@@ -5758,8 +5763,8 @@ class TestRealScoresPassThresholds:
             user_review_count=15,
         )
         thresholds = {
-            "min_metascore": 75,
-            "min_metascore_reviews": 10,
+            "min_criticscore": 75,
+            "min_criticscore_reviews": 10,
             "min_user_score": 8.0,
             "min_user_reviews": 10,
         }
@@ -5778,18 +5783,18 @@ class TestRealScoresPassThresholds:
             user_review_count=None,
         )
         thresholds = {
-            "min_metascore": 75,
-            "min_metascore_reviews": 10,
+            "min_criticscore": 75,
+            "min_criticscore_reviews": 10,
             "min_user_score": 8.0,
             "min_user_reviews": 0,
         }
         assert _real_scores_pass_thresholds(result, thresholds) is True
 
     def test_rejects_tbd_metascore_when_threshold_set(self) -> None:
-        """When metascore is None (TBD) and min_metascore > 0, fail.
+        """When metascore is None (TBD) and min_criticscore > 0, fail.
 
         A game with no metascore (like WEBFISHING which shows "TBD")
-        should be rejected when min_metascore > 0, even if user scores
+        should be rejected when min_criticscore > 0, even if user scores
         would pass.
         """
         import types
@@ -5803,8 +5808,8 @@ class TestRealScoresPassThresholds:
             user_review_count=29,
         )
         thresholds = {
-            "min_metascore": 75,
-            "min_metascore_reviews": 10,
+            "min_criticscore": 75,
+            "min_criticscore_reviews": 10,
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
@@ -5829,8 +5834,8 @@ class TestRealScoresPassThresholds:
             user_review_count=15,
         )
         thresholds = {
-            "min_metascore": 75,
-            "min_metascore_reviews": 10,
+            "min_criticscore": 75,
+            "min_criticscore_reviews": 10,
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
@@ -5849,8 +5854,8 @@ class TestRealScoresPassThresholds:
             user_review_count=None,
         )
         thresholds = {
-            "min_metascore": 0,
-            "min_metascore_reviews": 0,
+            "min_criticscore": 0,
+            "min_criticscore_reviews": 0,
             "min_user_score": 0,
             "min_user_reviews": 0,
         }
@@ -5874,8 +5879,8 @@ class TestRealScoresPassThresholds:
             user_review_count=0,
         )
         thresholds = {
-            "min_metascore": 75,
-            "min_metascore_reviews": 10,
+            "min_criticscore": 75,
+            "min_criticscore_reviews": 10,
             "min_user_score": 8.0,
             "min_user_reviews": 10,
         }
@@ -5906,7 +5911,7 @@ class TestAnyThresholdedScoreAbsent:
         assert (
             _any_thresholded_score_absent(
                 result,
-                {"min_metascore": 75, "min_user_score": 7.5},
+                {"min_criticscore": 75, "min_user_score": 7.5},
             )
             is True
         )
@@ -5918,7 +5923,7 @@ class TestAnyThresholdedScoreAbsent:
         assert (
             _any_thresholded_score_absent(
                 result,
-                {"min_metascore": 75, "min_user_score": 7.5},
+                {"min_criticscore": 75, "min_user_score": 7.5},
             )
             is True
         )
@@ -5930,7 +5935,7 @@ class TestAnyThresholdedScoreAbsent:
         assert (
             _any_thresholded_score_absent(
                 result,
-                {"min_metascore": 75, "min_user_score": 7.5},
+                {"min_criticscore": 75, "min_user_score": 7.5},
             )
             is False
         )
@@ -5942,7 +5947,7 @@ class TestAnyThresholdedScoreAbsent:
         assert (
             _any_thresholded_score_absent(
                 result,
-                {"min_metascore": 0, "min_user_score": 0},
+                {"min_criticscore": 0, "min_user_score": 0},
             )
             is False
         )
@@ -6106,8 +6111,8 @@ class TestAgedGamesMatchOrder:
                 db_path=db_path,
                 qbt_host="localhost",
                 qbt_port=8080,
-                min_metascore=75,
-                min_metascore_reviews=5,
+                min_criticscore=75,
+                min_criticscore_reviews=5,
                 min_user_score=7.5,
                 min_user_reviews=10,
                 max_pages=52,
@@ -6377,8 +6382,8 @@ class TestBacklogLatestMode:
         run_acquisition(
             platform="pc",
             db_path=str(tmp_path / "test.db"),
-            min_metascore=75,
-            min_metascore_reviews=10,
+            min_criticscore=75,
+            min_criticscore_reviews=10,
             min_user_score=7.5,
             min_user_reviews=10,
             enabled=True,
@@ -6411,8 +6416,8 @@ class TestBacklogLatestMode:
         run_acquisition(
             platform="pc",
             db_path=str(tmp_path / "test.db"),
-            min_metascore=75,
-            min_metascore_reviews=10,
+            min_criticscore=75,
+            min_criticscore_reviews=10,
             min_user_score=7.5,
             min_user_reviews=10,
             enabled=True,
@@ -6422,6 +6427,38 @@ class TestBacklogLatestMode:
         # Budget exceeded -> reset_progress called, then scanning continues
         mock_db_instance.reset_progress.assert_called()
         mock_mc_instance.scan_recent_games.assert_called()
+
+    def test_metascore_to_criticscore_rename_triggers_progress_reset(self, mocker: Any, tmp_path: Path) -> None:
+        """A legacy 'metascore' progress state must reset when config now says criticscore."""
+        from gamarr.pipeline import run_acquisition
+
+        mock_db = mocker.patch("gamarr.pipeline.Database")
+        mock_db_instance = mock_db.return_value
+        mock_db_instance.sum_scanned_pages.return_value = 0
+        mock_db_instance.has_verified_pending.return_value = False
+        mock_db_instance.get_pending.return_value = []
+        mock_db_instance.get_last_scanned_page.return_value = 0
+        mock_db_instance.get_last_sort_order.return_value = "metascore"  # legacy state
+
+        mock_qbt = mocker.patch("gamarr.pipeline.QBittorrentClient")
+        mock_qbt_instance = mock_qbt.return_value
+        mock_qbt_instance.is_connected.return_value = True
+
+        mock_mc = mocker.patch("gamarr.pipeline.MetacriticClient")
+        mock_mc_instance = mock_mc.return_value
+        mock_mc_instance.scan_recent_games.return_value = []
+
+        run_acquisition(
+            platform="pc",
+            db_path=str(tmp_path / "test.db"),
+            enabled=True,
+            sort_order="criticscore",
+            max_pages=20,
+            max_cycle_pages=4,
+        )
+
+        mock_db_instance.clear_browse_cache.assert_called_once()
+        mock_db_instance.reset_progress.assert_called_once()
 
     def test_unified_loop_starts_from_progress_page(self, mocker: Any, tmp_path: Path) -> None:
         """Unified loop starts from the last scanned page + 1."""
@@ -6445,8 +6482,8 @@ class TestBacklogLatestMode:
         run_acquisition(
             platform="pc",
             db_path=str(tmp_path / "test.db"),
-            min_metascore=75,
-            min_metascore_reviews=10,
+            min_criticscore=75,
+            min_criticscore_reviews=10,
             min_user_score=7.5,
             min_user_reviews=10,
             enabled=True,
@@ -6480,24 +6517,66 @@ class TestBacklogLatestMode:
         run_acquisition(
             platform="pc",
             db_path=":memory:",
-            min_metascore=75,
-            min_metascore_reviews=10,
+            min_criticscore=75,
+            min_criticscore_reviews=10,
             min_user_score=7.5,
             min_user_reviews=10,
             enabled=True,
             max_pages=500,
             max_cycle_pages=4,
-            sort_order="metascore",
+            sort_order="criticscore",
         )
 
         # The unified loop respects the configured sort_order — no override
         kwargs = mock_mc_instance.scan_recent_games.call_args[1]
-        assert mock_mc_instance.sort_order == "metascore", (
+        assert mock_mc_instance.sort_order == "criticscore", (
             f"Unified loop must set sort_order from config. Got sort_order={mock_mc_instance.sort_order}."
         )
-        # sort_order="metascore" means no year dimension — year=None
+        # sort_order="criticscore" means no year dimension — year=None
         assert kwargs.get("year") is None, (
-            f"Metascore sort should pass year=None (no year filter). Got year={kwargs.get('year')}."
+            f"Critic sort should pass year=None (no year filter). Got year={kwargs.get('year')}."
+        )
+
+    def test_sort_order_userscore_not_overridden(self, mocker: Any) -> None:
+        """Unified loop respects sort_order='userscore' like criticscore."""
+
+        from gamarr.pipeline import run_acquisition
+
+        mock_db = mocker.patch("gamarr.pipeline.Database")
+        mock_db_instance = mock_db.return_value
+        mock_db_instance.get_pending.return_value = []
+        mock_db_instance.has_verified_pending.return_value = False
+        mock_db_instance.get_last_scanned_page.return_value = 0
+        mock_db_instance.sum_scanned_pages.return_value = 0
+        mock_db_instance.get_last_sort_order.return_value = "userscore"
+
+        mock_qbt = mocker.patch("gamarr.pipeline.QBittorrentClient")
+        mock_qbt_instance = mock_qbt.return_value
+        mock_qbt_instance.is_connected.return_value = True
+
+        mock_mc = mocker.patch("gamarr.pipeline.MetacriticClient")
+        mock_mc_instance = mock_mc.return_value
+        mock_mc_instance.scan_recent_games.return_value = []
+
+        run_acquisition(
+            platform="pc",
+            db_path=":memory:",
+            min_criticscore=75,
+            min_criticscore_reviews=10,
+            min_user_score=7.5,
+            min_user_reviews=10,
+            enabled=True,
+            max_pages=500,
+            max_cycle_pages=4,
+            sort_order="userscore",
+        )
+
+        assert mock_mc_instance.sort_order == "userscore", (
+            f"Unified loop must set sort_order from config. Got sort_order={mock_mc_instance.sort_order}."
+        )
+        kwargs = mock_mc_instance.scan_recent_games.call_args[1]
+        assert kwargs.get("year") is None, (
+            f"Userscore sort should pass year=None (no year filter). Got year={kwargs.get('year')}."
         )
 
     def test_backlog_shared_budget_respects_max_pages(self, mocker: Any, tmp_path: Path) -> None:
@@ -6539,8 +6618,8 @@ class TestBacklogLatestMode:
         run_acquisition(
             platform="pc",
             db_path=str(tmp_path / "test.db"),
-            min_metascore=75,
-            min_metascore_reviews=10,
+            min_criticscore=75,
+            min_criticscore_reviews=10,
             min_user_score=7.5,
             min_user_reviews=10,
             enabled=True,
@@ -6570,7 +6649,7 @@ def test_process_browse_games_latest_mode(tmp_path: Path) -> None:
             "release_date": None,
         }
     ]
-    thresholds = {"min_metascore": 75, "min_metascore_reviews": 10, "min_user_score": 7.5, "min_user_reviews": 10}
+    thresholds = {"min_criticscore": 75, "min_criticscore_reviews": 10, "min_user_score": 7.5, "min_user_reviews": 10}
     count = _process_browse_games(
         browse_games,
         "pc",
@@ -6603,7 +6682,7 @@ def test_process_browse_games_backlog_mode(tmp_path: Path) -> None:
             "release_date": None,
         }
     ]
-    thresholds = {"min_metascore": 75, "min_metascore_reviews": 10, "min_user_score": 7.5, "min_user_reviews": 10}
+    thresholds = {"min_criticscore": 75, "min_criticscore_reviews": 10, "min_user_score": 7.5, "min_user_reviews": 10}
     count = _process_browse_games(
         browse_games,
         "pc",
@@ -6636,7 +6715,7 @@ def test_process_browse_games_reject_title(tmp_path: Path) -> None:
             "release_date": None,
         }
     ]
-    thresholds = {"min_metascore": 75, "min_metascore_reviews": 10, "min_user_score": 7.5, "min_user_reviews": 10}
+    thresholds = {"min_criticscore": 75, "min_criticscore_reviews": 10, "min_user_score": 7.5, "min_user_reviews": 10}
     count = _process_browse_games(
         browse_games,
         "pc",
@@ -6660,7 +6739,7 @@ def test_process_verify_result_genre_reject_none_genres(tmp_path: Path) -> None:
     db = Database(tmp_path / "test.db")
     db.record_pending(slug="no-genre", game_title="No Genre", platform="pc")
     game = db.get_pending()[0]
-    thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10}
+    thresholds = {"min_criticscore": 75, "min_criticscore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10}
 
     # Simulate a ScoreResult with matching genre
     mock_result = MagicMock()
@@ -6892,7 +6971,7 @@ def test_jit_verify_and_update_metacritic_unavailable(tmp_path: Path) -> None:
     result = _jit_verify_and_update(
         db,
         mock_mc,
-        {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10},
+        {"min_criticscore": 75, "min_criticscore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10},
         game_title="JIT Down",
         game_slug="jit-down",
         game_platform="pc",
@@ -6933,7 +7012,7 @@ def test_jit_verify_and_update_passes(tmp_path: Path) -> None:
     result = _jit_verify_and_update(
         db,
         mock_mc,
-        {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10},
+        {"min_criticscore": 75, "min_criticscore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10},
         game_title="JIT Pass",
         game_slug="jit-pass",
         game_platform="pc",
@@ -6971,7 +7050,7 @@ def test_jit_verify_and_update_failing_scores(tmp_path: Path) -> None:
     mock_mc = MagicMock()
     mock_mc.lookup_game.return_value = mock_result
 
-    thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10}
+    thresholds = {"min_criticscore": 75, "min_criticscore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10}
     result = _jit_verify_and_update(
         db,
         mock_mc,
@@ -6997,7 +7076,7 @@ def test_jit_verify_and_update_no_mc_returns_empty_tuple(tmp_path: Path) -> None
     result = _jit_verify_and_update(
         db,
         mc=None,
-        thresholds={"min_metascore": 75},
+        thresholds={"min_criticscore": 75},
         game_title="Skip",
         game_slug="skip",
         game_platform="pc",
@@ -7035,7 +7114,7 @@ def test_jit_verify_and_update_failing_scores_latest_mode(tmp_path: Path) -> Non
     mock_mc = MagicMock()
     mock_mc.lookup_game.return_value = mock_result
 
-    thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10}
+    thresholds = {"min_criticscore": 75, "min_criticscore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10}
     result = _jit_verify_and_update(
         db,
         mock_mc,
@@ -7068,7 +7147,7 @@ def test_jit_verify_and_update_passes_latest_mode(tmp_path: Path) -> None:
     mock_mc = MagicMock()
     mock_mc.lookup_game.return_value = mock_result
 
-    thresholds = {"min_metascore": 75, "min_metascore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10}
+    thresholds = {"min_criticscore": 75, "min_criticscore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10}
     result = _jit_verify_and_update(
         db,
         mock_mc,
@@ -7247,7 +7326,7 @@ def test_process_browse_games_indefinite_max_queue_days(tmp_path: Path) -> None:
             "release_date": None,
         }
     ]
-    thresholds = {"min_metascore": 75, "min_metascore_reviews": 10, "min_user_score": 7.5, "min_user_reviews": 10}
+    thresholds = {"min_criticscore": 75, "min_criticscore_reviews": 10, "min_user_score": 7.5, "min_user_reviews": 10}
     count = _process_browse_games(
         browse_games,
         "pc",
@@ -7296,7 +7375,7 @@ def test_process_browse_games_handles_duplicate_slugs(tmp_path: Path) -> None:
             "release_date": None,
         },
     ]
-    thresholds = {"min_metascore": 75, "min_metascore_reviews": 10, "min_user_score": 7.5, "min_user_reviews": 10}
+    thresholds = {"min_criticscore": 75, "min_criticscore_reviews": 10, "min_user_score": 7.5, "min_user_reviews": 10}
     count = _process_browse_games(
         browse_games,
         "pc",

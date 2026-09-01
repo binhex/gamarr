@@ -93,14 +93,82 @@ class TestRunWithTimeout:
 class TestRunWithTimeoutGraceWindow:
     """A function that finishes just after its budget must still succeed."""
 
-    def test_function_finishing_just_after_budget_returns_result(self) -> None:
+    def test_function_finishing_just_after_budget_returns_result(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import time
 
+        import gamarr.utils as utils_module
         from gamarr.utils import run_with_timeout
 
+        # Widen the grace window so this test is deterministic under CI load:
+        # the point is the grace path itself, which has precise unit tests.
+        monkeypatch.setattr(utils_module, "_GRACE_WINDOW_SECONDS", 2.0)
+
         def slow_but_finishes() -> str:
-            time.sleep(0.32)  # 0.02s past the budget, 0.03s margin inside the 50ms grace window
+            time.sleep(0.31)  # past the 0.3s budget, well inside the widened grace window
             return "done"
 
         result = run_with_timeout(slow_but_finishes, timeout_seconds=0.3)
         assert result == "done", "a function completing within the grace window must not be timed out"
+
+    def test_function_finishing_past_grace_window_is_timed_out(self) -> None:
+        import time
+
+        import pytest
+
+        from gamarr.utils import TimeoutExceededError, run_with_timeout
+
+        def too_slow() -> str:
+            time.sleep(5)  # far beyond budget + grace: deterministic timeout
+            return "late"  # pragma: no cover - unreachable, satisfies the return type
+
+        with pytest.raises(TimeoutExceededError):
+            run_with_timeout(too_slow, timeout_seconds=0.3)
+
+
+class TestGraceWaitForOutcome:
+    """Direct coverage for the extracted watchdog grace-wait helper."""
+
+    def test_returns_false_when_worker_finished(self) -> None:
+        import threading
+
+        from gamarr.utils import _grace_wait_for_outcome
+
+        worker = threading.Thread(target=lambda: None, daemon=True)
+        worker.start()
+        worker.join()
+        result = _grace_wait_for_outcome(worker, outcome_pending=lambda: True)
+        assert result is False, "a finished worker must never be treated as timed out"
+
+    def test_returns_true_when_outcome_still_pending(self) -> None:
+        import threading
+        import time
+
+        from gamarr.utils import _grace_wait_for_outcome
+
+        def hang() -> None:
+            time.sleep(5)
+
+        worker = threading.Thread(target=hang, daemon=True)
+        worker.start()
+        start = time.monotonic()
+        result = _grace_wait_for_outcome(worker, outcome_pending=lambda: True)
+        elapsed = time.monotonic() - start
+        assert result is True, "a pending outcome past the grace window must report a timeout"
+        assert elapsed < 1, f"grace wait should be bounded, took {elapsed:.2f}s"
+
+    def test_returns_false_when_outcome_recorded_during_window(self) -> None:
+        import threading
+        import time
+
+        from gamarr.utils import _grace_wait_for_outcome
+
+        done: list[bool] = []
+
+        def finish_quickly() -> None:
+            time.sleep(0.03)  # inside the 50ms grace window
+            done.append(True)
+
+        worker = threading.Thread(target=finish_quickly, daemon=True)
+        worker.start()
+        result = _grace_wait_for_outcome(worker, outcome_pending=lambda: not done)
+        assert result is False, "an outcome recorded during the grace window must not time out"

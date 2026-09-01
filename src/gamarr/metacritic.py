@@ -12,7 +12,7 @@ import json
 import re
 import threading
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 import requests
 from bs4 import BeautifulSoup
@@ -29,6 +29,11 @@ _USER_AGENT = (
 
 _CONNECT_TIMEOUT = 30.0
 _READ_TIMEOUT = 90.0
+
+# gamarr sort_order values -> Metacritic browse URL slugs. The site's
+# critic-score sort is branded "metascore"; "criticscore" is gamarr's
+# user-facing name for it and must be translated before URL construction.
+_SORT_SLUG_OVERRIDES: Final[dict[str, str]] = {"criticscore": "metascore"}
 
 _BROWSE_GAME_KEY_PATTERN = re.compile(r'"(browse-game-[^"]*)":\s*(\d+)')
 
@@ -726,7 +731,8 @@ class MetacriticClient:
             return cached
         year_str = str(year) if year is not None else "all-time"
         url = (
-            f"https://www.metacritic.com/browse/game/{platform}/all/{year_str}/{self.sort_order}/"
+            f"https://www.metacritic.com/browse/game/{platform}/all/{year_str}/"
+            f"{_SORT_SLUG_OVERRIDES.get(self.sort_order, self.sort_order)}/"
             f"?releaseYearMin=1958&releaseYearMax=2035"
             f"&platform={platform}&page={page_number}"
         )

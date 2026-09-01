@@ -14,11 +14,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 README_PATH = PROJECT_ROOT / "README.md"
 
 
-def _find_config_block(lines: list[str], heading: str, end_marker: str = "## ") -> list[str] | None:
+def _find_config_block(lines: list[str], heading: str) -> list[str] | None:
     """Find a config table block under *heading* in the README lines.
 
-    Returns the lines between *heading* and the next section or *end_marker*,
-    or None if *heading* is not found.
+    Returns the table rows following *heading*, or None if *heading* is
+    not found. The block ends at the first non-table line.
     """
     start = None
     for i, line in enumerate(lines):
@@ -142,6 +142,37 @@ class TestReadmeMetacriticPlatformConfig:
         assert readme_val == "500", (
             f"README says max_pages default is '{readme_val}', expected '500' (code default is 500)"
         )
+
+
+class TestReadmeCriticRenameRows:
+    """README config table must reflect the criticscore rename."""
+
+    def test_critic_threshold_rows_use_new_names(self) -> None:
+        from gamarr.config import MetacriticPlatformConfig
+
+        with open(README_PATH, encoding="utf-8") as f:
+            lines = f.readlines()
+        block = _find_config_block(lines, "review_sites.metacritic.platform_overrides.<platform>")
+        assert block is not None, "platform_overrides table not found in README"
+        defaults = _parse_readme_defaults(block)
+
+        cfg = MetacriticPlatformConfig()
+        assert defaults.get("min_criticscore") == str(cfg.min_criticscore), defaults
+        assert defaults.get("min_criticscore_reviews") == str(cfg.min_criticscore_reviews), defaults
+        assert "min_metascore" not in defaults, "legacy key must not appear in the README table"
+
+    def test_sort_order_row_documents_three_values(self) -> None:
+        with open(README_PATH, encoding="utf-8") as f:
+            lines = f.readlines()
+        block = _find_config_block(lines, "review_sites.metacritic.platform_overrides.<platform>")
+        assert block is not None, "platform_overrides table not found in README"
+        defaults = _parse_readme_defaults(block)
+
+        assert defaults.get("sort_order") == '"new"', defaults
+        row = next((ln for ln in block if "sort_order" in ln), "")
+        assert '"criticscore"' in row, "sort_order row must document criticscore"
+        assert '"userscore"' in row, "sort_order row must document userscore"
+        assert '"metascore"' not in row, "sort_order row must not mention the legacy metascore value"
 
 
 class TestReadmeFeatureDescriptions:

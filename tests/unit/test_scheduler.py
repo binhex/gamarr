@@ -68,8 +68,8 @@ class TestSchedulerForeground:
                 config.schedule.run_on_start = True
                 config.schedule.acquisition_timeout_mins = 42
                 config.review_sites.metacritic.platform_overrides = {"pc": MagicMock()}
-                config.review_sites.metacritic.platform_overrides["pc"].min_metascore = 75
-                config.review_sites.metacritic.platform_overrides["pc"].min_metascore_reviews = 5
+                config.review_sites.metacritic.platform_overrides["pc"].min_criticscore = 75
+                config.review_sites.metacritic.platform_overrides["pc"].min_criticscore_reviews = 5
                 config.review_sites.metacritic.platform_overrides["pc"].min_user_score = 7.5
                 config.review_sites.metacritic.platform_overrides["pc"].min_user_reviews = 10
                 config.review_sites.metacritic.platform_overrides["pc"].max_pages = 12
@@ -305,8 +305,8 @@ class TestDaemonMode:
                 config.schedule.schedule_time_mins = 60
                 config.schedule.run_on_start = True
                 config.review_sites.metacritic.platform_overrides = {"pc": MagicMock()}
-                config.review_sites.metacritic.platform_overrides["pc"].min_metascore = 75
-                config.review_sites.metacritic.platform_overrides["pc"].min_metascore_reviews = 5
+                config.review_sites.metacritic.platform_overrides["pc"].min_criticscore = 75
+                config.review_sites.metacritic.platform_overrides["pc"].min_criticscore_reviews = 5
                 config.review_sites.metacritic.platform_overrides["pc"].min_user_score = 7.5
                 config.review_sites.metacritic.platform_overrides["pc"].min_user_reviews = 10
                 config.review_sites.metacritic.platform_overrides["pc"].max_pages = 12
@@ -360,8 +360,8 @@ class TestDaemonMode:
             config.schedule.schedule_time_mins = 60
             config.schedule.run_on_start = False
             config.review_sites.metacritic.platform_overrides = {"pc": MagicMock()}
-            config.review_sites.metacritic.platform_overrides["pc"].min_metascore = 75
-            config.review_sites.metacritic.platform_overrides["pc"].min_metascore_reviews = 5
+            config.review_sites.metacritic.platform_overrides["pc"].min_criticscore = 75
+            config.review_sites.metacritic.platform_overrides["pc"].min_criticscore_reviews = 5
             config.review_sites.metacritic.platform_overrides["pc"].min_user_score = 7.5
             config.review_sites.metacritic.platform_overrides["pc"].min_user_reviews = 10
             config.review_sites.metacritic.platform_overrides["pc"].max_pages = 12

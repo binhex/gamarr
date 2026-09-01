@@ -104,8 +104,8 @@ class DownloadSitesConfig(RootModel[list[SourceConfigEntry]]):
 class MetacriticPlatformConfig(BaseModel):
     """Metacritic scoring thresholds for a single platform."""
 
-    min_metascore: int = 75
-    min_metascore_reviews: int = 10
+    min_criticscore: int = 75
+    min_criticscore_reviews: int = 10
     min_user_score: float = 7.5
     min_user_reviews: int = 10
     cache_details_days: int = 7
@@ -114,7 +114,7 @@ class MetacriticPlatformConfig(BaseModel):
     enabled: bool = True
     max_pages: int = Field(default=500, ge=1)
     max_cycle_pages: int | None = Field(default=0, ge=0)
-    sort_order: Literal["new", "metascore"] = "new"
+    sort_order: Literal["new", "criticscore", "userscore"] = "new"
     reject_genre: list[str] = Field(default_factory=list)
     reject_title: list[str] = Field(default_factory=list)  # case-insensitive substrings
 
@@ -823,6 +823,30 @@ def _migrate_remove_search_mode(raw: dict[str, Any]) -> bool:
     return changed
 
 
+def _migrate_sort_order_critic_names(raw: dict[str, Any]) -> bool:
+    """Rename critic-score keys/values to critic-style names.
+
+    Renames ``min_metascore`` -> ``min_criticscore``,
+    ``min_metascore_reviews`` -> ``min_criticscore_reviews``, and the
+    ``sort_order`` value ``"metascore"`` -> ``"criticscore"`` for every
+    platform override. Returns True if any migration was applied; the
+    caller (load_config) then rewrites gamarr.yml in place, so the
+    rename is naturally one-time.
+    """
+    changed = False
+    overrides = raw.get("review_sites", {}).get("metacritic", {}).get("platform_overrides", {})
+    for platform_key, mc_pc in overrides.items():
+        if not isinstance(mc_pc, dict):
+            continue
+        changed |= _rename_config_key(mc_pc, "min_metascore", "min_criticscore", platform_key)
+        changed |= _rename_config_key(mc_pc, "min_metascore_reviews", "min_criticscore_reviews", platform_key)
+        if mc_pc.get("sort_order") == "metascore":
+            mc_pc["sort_order"] = "criticscore"
+            logger.info("Config: migrated sort_order 'metascore'->'criticscore' for platform '{}'", platform_key)
+            changed = True
+    return changed
+
+
 def _migrate_config(raw: dict[str, Any]) -> bool:
     """Migrate renamed config keys in-place for all platforms.
 
@@ -858,6 +882,7 @@ def _migrate_config(raw: dict[str, Any]) -> bool:
             _migrate_add_post_process_path_case,
             _migrate_add_freegog_to_download_sites,
             _migrate_remove_search_mode,
+            _migrate_sort_order_critic_names,
         ]
         for fn in _migrations:
             if fn(raw):
@@ -983,6 +1008,10 @@ def load_config(config_path: str | Path) -> Config:
 
     # Migrate renamed fields (e.g. exclude_keywords → reject_keywords)
     migrated = _migrate_config(raw)
+    # Belt-and-braces: the critic-name rename is Literal-sensitive (a
+    # legacy "metascore" value would hard-fail validation), so re-apply it
+    # here even if an earlier migration step swallowed an exception.
+    migrated = _migrate_sort_order_critic_names(raw) or migrated
 
     merged = _deep_merge(_default_config_dict(), raw)
 
@@ -993,13 +1022,22 @@ def load_config(config_path: str | Path) -> Config:
     if raw and (migrated or _needs_config_update(raw)):
         old_version = raw.get("general", {}).get("config_version", _CONFIG_VERSION)
         merged["general"]["config_version"] = _next_version(old_version)
-        with path.open("w", encoding="utf-8") as fh:
-            yaml.dump(merged, fh, default_flow_style=False, sort_keys=False)
-        logger.info(
-            "Config updated to version {} — added {} new fields",
-            merged["general"]["config_version"],
-            len(_config_keys(merged) - _config_keys(raw)),
-        )
+        try:
+            with path.open("w", encoding="utf-8") as fh:
+                yaml.dump(merged, fh, default_flow_style=False, sort_keys=False)
+        except OSError as exc:
+            # A read-only config (mount/permissions) must not abort startup —
+            # continue with the migrated in-memory config; the rewrite is
+            # retried on the next load.
+            logger.warning(
+                "Could not rewrite config file '{}': {} — continuing with migrated in-memory config", path, exc
+            )
+        else:
+            logger.info(
+                "Config updated to version {} — added {} new fields",
+                merged["general"]["config_version"],
+                len(_config_keys(merged) - _config_keys(raw)),
+            )
 
     # Convert any datetime.date objects back to ISO strings
     # (PyYAML parses ``2025-01-01`` as a date, but the model expects str)

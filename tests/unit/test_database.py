@@ -1229,14 +1229,14 @@ class TestBacklogProgress:
         assert db.get_last_scanned_page("pc", 2025) == 0
         db.close()
 
-    def test_reset_progress_metascore_sentinel(self, tmp_path: Path) -> None:
+    def test_reset_progress_criticscore_sentinel(self, tmp_path: Path) -> None:
         """Reset deletes all rows for the platform regardless of sort_order."""
         from gamarr.database import Database
 
         db = Database(str(tmp_path / "test.db"))
         db.set_last_scanned_page("pc", 0, 25)
         db.set_last_scanned_page("pc", 2026, 10)
-        db.reset_progress("pc", "metascore")
+        db.reset_progress("pc", "criticscore")
         assert db.get_last_scanned_page("pc", 0) == 0
         assert db.get_last_scanned_page("pc", 2026) == 0  # all rows deleted
         db.close()
@@ -1737,3 +1737,27 @@ class TestSetPostProcessState:
         """Calling with an unknown tag does not raise."""
         db.set_post_process_state("nonexistent-tag", "copied")
         # Should not raise
+
+
+class TestClearBrowseCache:
+    """clear_browse_cache clears browse rows but keeps the detail cache."""
+
+    def test_clears_browse_keeps_detail(self, tmp_path: Path) -> None:
+        from gamarr.database import Database
+        from gamarr.metacritic_cache import MetacriticCache
+
+        db = Database(str(tmp_path / "test.db"))
+        cache = MetacriticCache(db)
+        cache.set_browse_page("pc", 0, [{"title": "A", "slug": "a"}], year=0)
+        cache.set_game_detail(
+            "a",
+            metascore=85.0,
+            metascore_reviews=5,
+            user_score=8.0,
+            user_reviews=5,
+        )
+        db.clear_browse_cache()
+        assert db.get_browse_page_cache("pc", 0, ttl_hours=1, year=0) is None, "browse cache must be cleared"
+        detail = cache.get_game_detail("a")
+        assert detail is not None and detail["metascore"] == 85.0, "detail cache must be preserved"
+        db.close()

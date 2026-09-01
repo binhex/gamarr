@@ -1689,6 +1689,12 @@ class TestFreeGOGAZNDJSONTotal:
 
         assert _freegog_az_ndjson_total('\ufeff{"format":1,"total":42,"counts":{}}\n') == 42
 
+    def test_header_after_entry_line(self) -> None:
+        from gamarr.sources.freegog import _freegog_az_ndjson_total
+
+        ndjson = '["A","T","https://freegogpcgames.com/1/t/"]\n{"format":1,"total":42,"counts":{}}\n'
+        assert _freegog_az_ndjson_total(ndjson) == 42
+
     def test_session_open_failure_consults_data_endpoint_and_retries(
         self, tmp_db_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1739,3 +1745,43 @@ class TestFreeGOGAZNDJSONTotal:
         entries = _parse_freegog_az_ndjson(ndjson)
         assert len(entries) == 1
         assert entries[0]["title"] == "Tom & Jerry", "HTML entities must be decoded like the HTML parser does"
+
+
+class TestNDJSONRecordToEntry:
+    """Direct coverage for the extracted NDJSON record validator."""
+
+    def test_valid_record(self) -> None:
+        from gamarr.sources.freegog import _ndjson_record_to_entry
+
+        entry = _ndjson_record_to_entry(
+            ["A", "Gothic 1 Remake v1.0.2a", "https://freegogpcgames.com/33511/gothic-1-remake/"]
+        )
+        assert entry == {
+            "title": "Gothic 1 Remake",
+            "url": "https://freegogpcgames.com/33511/gothic-1-remake/",
+            "letter": "a",
+        }
+
+    def test_short_array(self) -> None:
+        from gamarr.sources.freegog import _ndjson_record_to_entry
+
+        assert _ndjson_record_to_entry(["A", "Title"]) is None
+
+    def test_non_string_fields(self) -> None:
+        from gamarr.sources.freegog import _ndjson_record_to_entry
+
+        assert _ndjson_record_to_entry([1, "Title", "https://freegogpcgames.com/1/t/"]) is None
+        assert _ndjson_record_to_entry(["A", None, "https://freegogpcgames.com/1/t/"]) is None
+        assert _ndjson_record_to_entry(["A", "Title", 42]) is None
+
+    def test_foreign_or_insecure_urls(self) -> None:
+        from gamarr.sources.freegog import _ndjson_record_to_entry
+
+        assert _ndjson_record_to_entry(["A", "Title", "https://evil.com/1/t/"]) is None
+        assert _ndjson_record_to_entry(["A", "Title", "http://freegogpcgames.com/1/t/"]) is None
+        assert _ndjson_record_to_entry(["A", "Title", "https://freegogpcgames.com.evil.com/1/t/"]) is None
+
+    def test_empty_title(self) -> None:
+        from gamarr.sources.freegog import _ndjson_record_to_entry
+
+        assert _ndjson_record_to_entry(["A", "  ", "https://freegogpcgames.com/1/t/"]) is None

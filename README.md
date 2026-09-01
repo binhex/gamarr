@@ -167,13 +167,13 @@ download_sites:
 
 | Key | Description | Default |
 | --- | ----------- | ------- |
-| `min_metascore` | Minimum Metacritic critic score (0–100). | `75` |
-| `min_metascore_reviews` | Minimum number of critic reviews required. | `10` |
+| `min_criticscore` | Minimum Metacritic critic score (0–100). | `75` |
+| `min_criticscore_reviews` | Minimum number of critic reviews required. | `10` |
 | `min_user_score` | Minimum Metacritic user score (0–10). | `7.5` |
 | `min_user_reviews` | Minimum number of user reviews required. | `10` |
 | `max_pages` | Total browse page depth budget. The scanner progressively advances through pages across cycles. When the budget is exhausted, scanning resets to page 1. `0` = unlimited. | `500` |
 | `max_cycle_pages` | Maximum pages per cycle (pacing). `0` = unlimited. | `0` |
-| `sort_order` | Browse sort order: `"new"` (release date) or `"metascore"` (by critic score). | `"new"` |
+| `sort_order` | Browse sort order: `"new"` (release date), `"criticscore"` (by critic score), or `"userscore"` (by user score). | `"new"` |
 | `max_queue_days` | Days a game stays in the pending queue before expiring. `0` = indefinite pending (no expiry). | `30` |
 | `enabled` | Enable or disable the Metacritic browse step. Disabling skips game discovery entirely. | `true` |
 | `cache_details_days` | Days to cache Metacritic detail-page results. | `7` |

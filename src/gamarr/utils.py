@@ -58,6 +58,32 @@ class TimeoutExceededError(RuntimeError):
 
 
 _WATCHDOG_THREAD_IDS = itertools.count(1)
+# Grace window: a worker that finished just after its budget still gets
+# this long to record its outcome before a timeout is declared.
+_GRACE_WINDOW_SECONDS: Final[float] = 0.05
+
+
+def _grace_wait_for_outcome(
+    worker: threading.Thread,
+    *,
+    outcome_pending: Callable[[], bool],
+) -> bool:
+    """Poll briefly for the worker's outcome record.
+
+    *outcome_pending* must be a zero-arg callable returning True while
+    the worker has recorded neither a value nor an error (it is re-read
+    every poll so updates from the worker thread are visible). Returns
+    True when the outcome is still pending after the grace window (i.e.
+    a genuine timeout).
+    """
+    if not worker.is_alive():
+        return False
+    if not outcome_pending():
+        return False
+    deadline = time.monotonic() + _GRACE_WINDOW_SECONDS
+    while time.monotonic() < deadline and outcome_pending():
+        worker.join(0.005)
+    return outcome_pending()
 
 
 def run_with_timeout[T](
@@ -107,18 +133,10 @@ def run_with_timeout[T](
     worker.start()
     worker.join(timeout_seconds)
 
-    def _no_outcome() -> bool:
+    def _outcome_pending() -> bool:
         return outcome_ok is None and outcome_error is None
 
-    if worker.is_alive() and _no_outcome():
-        # The worker may have returned from func() without recording its
-        # outcome yet (a few bytecodes before the assignment). Poll briefly
-        # for the outcome instead of a single fixed grace window, so GIL
-        # starvation cannot cause a spurious timeout.
-        grace_deadline = time.monotonic() + 0.05
-        while worker.is_alive() and _no_outcome() and time.monotonic() < grace_deadline:
-            worker.join(0.005)
-    if worker.is_alive() and _no_outcome():
+    if _grace_wait_for_outcome(worker, outcome_pending=_outcome_pending):
         if on_timeout is not None:
             # Best effort: a failing callback must not mask TimeoutExceededError.
             with suppress(Exception):

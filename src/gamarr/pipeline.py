@@ -109,8 +109,8 @@ def _is_older_than(release_date: str | None, days: int) -> bool:
 class AcquisitionConfig:
     """Thresholds and settings for the acquisition run."""
 
-    min_metascore: int
-    min_metascore_reviews: int
+    min_criticscore: int
+    min_criticscore_reviews: int
     min_user_score: float
     min_user_reviews: int
     cache_details_days: int = 7
@@ -123,7 +123,7 @@ class AcquisitionConfig:
     reject_title: list[str] | None = None
     fitgirl_max_queue_days: int = 60
     notify_on_scrape_failure: bool = True
-    sort_order: Literal["new", "metascore"] = "new"
+    sort_order: Literal["new", "criticscore", "userscore"] = "new"
     age_recheck_weeks: int | None = None
 
 
@@ -137,8 +137,8 @@ def run_acquisition(
     qbt_password: str = "adminadmin",
     qbt_category: str = "games-gamarr",
     qbt_add_paused: bool = False,
-    min_metascore: int = 75,
-    min_metascore_reviews: int = 10,
+    min_criticscore: int = 75,
+    min_criticscore_reviews: int = 10,
     min_user_score: float = 7.5,
     min_user_reviews: int = 10,
     cache_details_days: int = 7,
@@ -160,7 +160,7 @@ def run_acquisition(
     fitgirl_reject_keywords: list[str] | None = None,
     cancel_event: CancelSignal | None = None,
     download_sites: list | None = None,
-    sort_order: Literal["new", "metascore"] = "new",
+    sort_order: Literal["new", "criticscore", "userscore"] = "new",
     age_recheck_weeks: int | None = None,
 ) -> list[dict[str, Any]]:
     """Execute one scan cycle.
@@ -171,8 +171,8 @@ def run_acquisition(
     configured source's sitemap and delivers to qBittorrent.
     """
     cfg = AcquisitionConfig(
-        min_metascore=min_metascore,
-        min_metascore_reviews=min_metascore_reviews,
+        min_criticscore=min_criticscore,
+        min_criticscore_reviews=min_criticscore_reviews,
         min_user_score=min_user_score,
         min_user_reviews=min_user_reviews,
         cache_details_days=cache_details_days,
@@ -262,7 +262,7 @@ def run_acquisition(
                     previous_sort_order,
                     cfg.sort_order,
                 )
-                db.clear_cache("metacritic")
+                db.clear_browse_cache(platform)
                 db.reset_progress(platform, cfg.sort_order)
 
             mc.sort_order = cfg.sort_order
@@ -273,7 +273,7 @@ def run_acquisition(
                 cutoff_year = scan_year_anchor - years_back
                 current_year = scan_year_anchor
             else:
-                # sort_order == "metascore": no year dimension, use year=0 sentinel
+                # sort_order != "new" (criticscore/userscore): no year dimension, use year=0 sentinel
                 cutoff_year = 0
                 current_year = 0
 
@@ -337,8 +337,8 @@ def run_acquisition(
             # ── Shared: process browse results into pending queue ──
             if browse_games:
                 thresholds = {
-                    "min_metascore": cfg.min_metascore,
-                    "min_metascore_reviews": cfg.min_metascore_reviews,
+                    "min_criticscore": cfg.min_criticscore,
+                    "min_criticscore_reviews": cfg.min_criticscore_reviews,
                     "min_user_score": cfg.min_user_score,
                     "min_user_reviews": cfg.min_user_reviews,
                 }
@@ -404,8 +404,8 @@ def run_acquisition(
                 total_pending,
             )
             thresholds = {
-                "min_metascore": cfg.min_metascore,
-                "min_metascore_reviews": cfg.min_metascore_reviews,
+                "min_criticscore": cfg.min_criticscore,
+                "min_criticscore_reviews": cfg.min_criticscore_reviews,
                 "min_user_score": cfg.min_user_score,
                 "min_user_reviews": cfg.min_user_reviews,
             }
@@ -455,8 +455,8 @@ def run_acquisition(
         phase = 1  # Phase counter for logging
         if not is_cancelled(cancel_event) and db.has_verified_pending(platform=platform):
             match_thresholds = {
-                "min_metascore": cfg.min_metascore,
-                "min_metascore_reviews": cfg.min_metascore_reviews,
+                "min_criticscore": cfg.min_criticscore,
+                "min_criticscore_reviews": cfg.min_criticscore_reviews,
                 "min_user_score": cfg.min_user_score,
                 "min_user_reviews": cfg.min_user_reviews,
             }
@@ -581,7 +581,7 @@ def _reject_by_browse_review_counts(
 
     Args:
         game: A browse-page game dict from ``_parse_browse_page``.
-        min_critic_reviews: Minimum critic reviews threshold (``min_metascore_reviews``).
+        min_critic_reviews: Minimum critic reviews threshold (``min_criticscore_reviews``).
         min_user_reviews: Minimum user reviews threshold (``min_user_reviews``).
 
     Returns:
@@ -636,7 +636,7 @@ def _game_passes_thresholds(game: dict[str, Any], thresholds: dict[str, Any]) ->
         return False
     return all(
         [
-            metascore >= thresholds["min_metascore"],
+            metascore >= thresholds["min_criticscore"],
             user_score >= thresholds["min_user_score"],
         ]
     )
@@ -709,7 +709,7 @@ def _process_browse_games(
         browse_games: List from ``_parse_browse_page``.
         platform: Target platform name.
         db: Database instance.
-        thresholds: Dict with ``min_metascore`` keys.
+        thresholds: Dict with ``min_criticscore`` keys.
         max_queue_days: How many days to keep the game pending before expiry.
         reject_title: Titles matching any of these are skipped.
 
@@ -728,7 +728,7 @@ def _process_browse_games(
 
         reject_reason = _reject_by_browse_review_counts(
             game,
-            min_critic_reviews=thresholds.get("min_metascore_reviews", 0),
+            min_critic_reviews=thresholds.get("min_criticscore_reviews", 0),
             min_user_reviews=thresholds.get("min_user_reviews", 0),
         )
         if reject_reason is not None:
@@ -842,7 +842,7 @@ def _any_thresholded_score_absent(result: Any, thresholds: dict[str, Any]) -> bo
     but exists" and should stay pending for re-verification — only strict
     None triggers rejection.
     """
-    return (thresholds.get("min_metascore", 0) > 0 and result.metascore is None) or (
+    return (thresholds.get("min_criticscore", 0) > 0 and result.metascore is None) or (
         thresholds.get("min_user_score", 0) > 0 and result.user_score is None
     )
 
@@ -866,7 +866,7 @@ def _real_scores_pass_thresholds(
     threshold is > 0, the check **fails** — ``None`` means "no reviews",
     not "skip the check".  This prevents games with unreviewed pages
     (e.g. newly released games showing "TBD") from bypassing
-    ``min_user_reviews`` and ``min_metascore_reviews``.
+    ``min_user_reviews`` and ``min_criticscore_reviews``.
 
     Returns True when the existing checks all pass.
     """
@@ -876,7 +876,7 @@ def _real_scores_pass_thresholds(
     # Reject when a score value is None (TBD — not reviewed) but a
     # non-zero threshold is configured.  This prevents TBD games
     # (metascore=None, like WEBFISHING) from silently bypassing
-    # min_metascore.
+    # min_criticscore.
     if _any_thresholded_score_absent(result, thresholds):
         return False
 
@@ -890,15 +890,15 @@ def _real_scores_pass_thresholds(
     if _fails_review_count_check(
         score_value=result.metascore,
         review_count=result.metascore_review_count,
-        threshold=thresholds.get("min_metascore_reviews", 0),
+        threshold=thresholds.get("min_criticscore_reviews", 0),
     ):
         return False
 
     checks: list[bool] = [
         c
         for c in [
-            _check_score_threshold(result.metascore, thresholds["min_metascore"]),
-            _check_score_threshold(result.metascore_review_count, thresholds["min_metascore_reviews"]),
+            _check_score_threshold(result.metascore, thresholds["min_criticscore"]),
+            _check_score_threshold(result.metascore_review_count, thresholds["min_criticscore_reviews"]),
             _check_score_threshold(result.user_score, thresholds["min_user_score"]),
             _check_score_threshold(result.user_review_count, thresholds["min_user_reviews"]),
         ]
