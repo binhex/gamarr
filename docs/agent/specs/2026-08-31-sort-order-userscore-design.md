@@ -54,10 +54,12 @@ Status: Approved
   - `min_metascore` → `min_criticscore`,
   - `min_metascore_reviews` → `min_criticscore_reviews`.
 - If any legacy key was present, rewrite `gamarr.yml` in place with the
-  new names and bump the internal config-version marker so the rewrite
-  happens exactly once. Log an INFO line naming the migrated keys (same
-  tone as the existing migration logs). After rewriting, reload the
-  migrated dict so the rest of startup sees only new spellings.
+  new names. The rewrite is naturally one-time: after it, the legacy
+  keys no longer exist, so later loads find nothing to migrate (the
+  project's migrations are key-presence-driven, not version-marker
+  driven). Log an INFO line naming the migrated keys (same tone as the
+  existing migration logs). After rewriting, reload the migrated dict so
+  the rest of startup sees only new spellings.
 
 ### 2. Pipeline and metacritic (`src/gamarr/pipeline.py`, `src/gamarr/metacritic.py`)
 
