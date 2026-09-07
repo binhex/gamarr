@@ -7,7 +7,9 @@ after seeding goals are met.
 
 from __future__ import annotations
 
+import contextlib
 import datetime
+import ntpath
 import os
 import re
 from datetime import UTC
@@ -26,14 +28,21 @@ if TYPE_CHECKING:
 __all__ = ["run_post_processing"]
 
 _RE_PATH_UNSAFE = re.compile(r'[/\\<>:"|?*\x00]|\.\.')
+_RE_TEMPLATE_PLACEHOLDER = re.compile(r"\{(site|platform|genre|title)\}")
+_RE_WINDOWS_RESERVED = re.compile(r"^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$", re.IGNORECASE)
+_MAX_PATH_COMPONENT_BYTES = 255
 
 
 def _safe_path_component(value: str) -> str:
-    """Strip characters that are unsafe in a filesystem path component."""
-    stripped = _RE_PATH_UNSAFE.sub("", value).strip()
+    """Return a filesystem-safe path component for all supported platforms."""
+    stripped = _RE_PATH_UNSAFE.sub("", value).strip().rstrip(" .")
     if not stripped or not stripped.strip("."):
         return "Unknown"
-    return stripped
+    if _RE_WINDOWS_RESERVED.fullmatch(stripped):
+        stripped = f"_{stripped}"
+    if len(stripped.encode("utf-8")) > _MAX_PATH_COMPONENT_BYTES:
+        stripped = stripped.encode("utf-8")[:_MAX_PATH_COMPONENT_BYTES].decode("utf-8", errors="ignore").rstrip(" .")
+    return stripped or "Unknown"
 
 
 def _format_path_value(value: str, key: str, path_case: str) -> str:
@@ -77,17 +86,19 @@ def _build_destination_path(
         "genre": first_genre,
         "title": game_title,
     }
-    result = template
-    for key, value in replacements.items():
-        formatted = _format_path_value(value, key, path_case)
-        result = result.replace("{" + key + "}", _safe_path_component(formatted))
-    return result
+    formatted_replacements = {
+        key: _safe_path_component(_format_path_value(value, key, path_case)) for key, value in replacements.items()
+    }
+    return _RE_TEMPLATE_PLACEHOLDER.sub(lambda match: formatted_replacements[match.group(1)], template)
 
 
 def _compile_exclusion_regexes(patterns: list[str], label: str) -> list[re.Pattern[str]]:
     """Compile *patterns* into case-insensitive regexes."""
     result: list[re.Pattern[str]] = []
     for r in patterns:
+        if not r.strip():
+            logger.warning("Empty {} regex; skipping.", label)
+            continue
         try:
             result.append(re.compile(r, re.IGNORECASE))
         except re.error:
@@ -112,11 +123,13 @@ def _file_excluded(
 
 
 def _copied_age_hours(copied_at: str | None) -> float:
-    """Return hours since *copied_at* (ISO-8601 timestamp), or 0 if unknown."""
+    """Return hours since *copied_at*, treating naive timestamps as UTC."""
     if not copied_at:
         return 0.0
     try:
         copied_dt = datetime.datetime.fromisoformat(copied_at)
+        if copied_dt.tzinfo is None:
+            copied_dt = copied_dt.replace(tzinfo=UTC)
         return (datetime.datetime.now(tz=UTC) - copied_dt).total_seconds() / 3600.0
     except (ValueError, TypeError):
         return 0.0
@@ -140,12 +153,16 @@ def _process_one(
     row: HistoryRow | None = db.find_by_tag(tag)
     if _is_no_op_row(row, tag):
         return None
-    assert row is not None  # narrowed by _is_no_op_row
+    if row is None:
+        return None
 
     if row.post_process_state is None and config.post_process.copy_completed:
-        if _run_copy_phase(torrent, config, row, db):
-            return "copied"
-        return None
+        if config.post_process.library_path:
+            if _run_copy_phase(torrent, config, row, db):
+                return "copied"
+            logger.warning("Copy failed for '{}'; retaining torrent for retry.", row.game_title)
+            return None
+        logger.info("Empty library_path; skipping copy for '{}'.", row.game_title)
 
     if _is_delete_eligible(row, config) and _run_delete_phase(torrent, config, qbt, row, db):
         return "deleted"
@@ -153,12 +170,14 @@ def _process_one(
 
 
 def _is_delete_eligible(row: HistoryRow, config: Config) -> bool:
-    """Return True if the torrent is in the copied state and deletion is enabled."""
+    """Return True when deletion is enabled and copying completed or was skipped."""
     if not config.post_process.remove_completed:
         return False
-    # Allow direct delete when copy_completed is False (skip copy entirely).
-    return row.post_process_state == "copied" or (
-        row.post_process_state is None and not config.post_process.copy_completed
+    if row.post_process_state == "copied":
+        return True
+    # Allow direct delete when copying is disabled or library_path is empty.
+    return row.post_process_state is None and (
+        not config.post_process.copy_completed or not config.post_process.library_path
     )
 
 
@@ -199,16 +218,6 @@ def _run_copy_phase(
         logger.info("Empty library_path; skipping copy for '{}'.", row.game_title)
         return False
 
-    if os.path.isdir(dst_dir):
-        if _dir_contains_files(dst_dir):
-            logger.info("Destination '{}' already exists with files; marking as copied.", dst_dir)
-            db.set_post_process_state(tag, "copied", copied_at=row.post_process_copied_at)
-            return True
-        # Directory exists but is empty — a failed partial copy. Remove it so
-        # the copy phase can retry on the next cycle.
-        logger.warning("Destination '{}' exists but is empty; removing to allow retry.", dst_dir)
-        _remove_directory_contents(dst_dir)
-
     src_files = _build_copy_list(torrent, pp)
     if not src_files:
         logger.debug("No files to copy for '{}'.", row.game_title)
@@ -218,24 +227,62 @@ def _run_copy_phase(
         logger.error("Cannot create destination directory '{}'; skipping.", dst_dir)
         return False
 
-    all_ok = _copy_all_files(src_files, dst_dir)
+    created_paths: list[str] = []
+    created_dirs: list[str] = []
+    all_ok = _copy_all_files(src_files, dst_dir, torrent["torrent_save_path"], created_paths, created_dirs)
     if all_ok:
         copied_at = datetime.datetime.now(tz=UTC).isoformat()
         db.set_post_process_state(tag, "copied", copied_at=copied_at)
         logger.info("Copied '{}' to '{}'.", row.game_title, dst_dir)
         return True
     else:
-        # Clean up partially-populated destination so the next cycle can retry.
-        logger.warning("Copy failed for '{}'; cleaning up partial destination.", row.game_title)
-        _remove_directory_contents(dst_dir)
+        # Remove only files created by this attempt; preserve pre-existing data.
+        logger.warning("Copy failed for '{}'; retaining existing destination files.", row.game_title)
+        _remove_created_files(created_paths, created_dirs)
         return False
 
 
-def _copy_all_files(src_files: list[str], dst_dir: str) -> bool:
-    """Copy all files to dst_dir. Returns True if all succeeded, False on first failure."""
+def _copy_all_files(
+    src_files: list[str],
+    dst_dir: str,
+    save_path: str,
+    created_paths: list[str] | None = None,
+    created_dirs: list[str] | None = None,
+) -> bool:
+    """Copy files into *dst_dir*, preserving structure and tracking new paths.
+
+    Each source file's path relative to *save_path* is mirrored under
+    *dst_dir* so nested folders (e.g. ``DLC/``) are kept instead of
+    flattened into the destination root. Newly created destination paths
+    and parent directories are tracked when supplied for safe failure
+    cleanup.
+
+    Returns True if all succeeded, False on first failure.
+    """
     for src_path in src_files:
-        fname = os.path.basename(src_path)
-        dst_path = os.path.join(dst_dir, fname)
+        try:
+            rel_path = os.path.relpath(src_path, save_path)
+        except ValueError:
+            logger.error("Cannot calculate relative path for '{}'; aborting.", src_path)
+            return False
+        safe_rel_path = _safe_relative_path(rel_path)
+        if safe_rel_path is None:
+            logger.error("Unsafe torrent file path '{}'; aborting.", rel_path)
+            return False
+        if not _is_path_within(src_path, save_path):
+            logger.error("Source path '{}' escapes save path; aborting.", src_path)
+            return False
+        dst_path = os.path.join(dst_dir, safe_rel_path)
+        if not _is_path_within(dst_path, dst_dir):
+            logger.error("Destination path '{}' escapes destination; aborting.", dst_path)
+            return False
+        if os.path.islink(dst_path):
+            logger.error("Destination path '{}' is a symlink; aborting.", dst_path)
+            return False
+        if created_dirs is not None:
+            _record_missing_parent_dirs(dst_path, dst_dir, created_dirs)
+        if created_paths is not None and not os.path.lexists(dst_path):
+            created_paths.append(dst_path)
         if not copy_with_verify(src_path, dst_path):
             logger.error("Copy/verify failed for '{}'; aborting.", src_path)
             return False
@@ -258,11 +305,10 @@ def _run_delete_phase(
     tag = torrent["torrent_tag"]
 
     should_delete = torrent_state in ("pausedUP", "stoppedUP")
-    # Only apply the seed-wait timeout when we have a copy timestamp.
-    # When copy was skipped (post_process_copied_at is None), the torrent
-    # is deleted when it naturally reaches paused/stopped state.
-    if not should_delete and row.post_process_copied_at is not None:
-        age = _copied_age_hours(row.post_process_copied_at)
+    # Use the copy timestamp when available; skipped-copy rows fall back to
+    # their acquisition timestamp so max_seed_wait_hours remains effective.
+    if not should_delete:
+        age = _copied_age_hours(row.post_process_copied_at or row.processed_at)
         if pp.max_seed_wait_hours > 0 and age >= pp.max_seed_wait_hours:
             logger.info(
                 "Seed wait timeout ({} >= {}h) for '{}'; deleting.",
@@ -287,43 +333,27 @@ def _run_delete_phase(
         return False
 
 
-def _dir_contains_files(directory: str) -> bool:
-    """Return True if *directory* contains at least one file.
-
-    Walks the directory tree with early exit — stops as soon as any
-    file is found.  No depth limit, so nested directory structures
-    created by users or external tools are correctly detected.
-    """
-    try:
-        return any(files for _root, _dirs, files in os.walk(directory))
-    except OSError:
-        return False
+def _record_missing_parent_dirs(path: str, root: str, created_dirs: list[str]) -> None:
+    """Record missing parent directories under *root* before a copy creates them."""
+    parent = os.path.dirname(path)
+    while parent and _is_path_within(parent, root) and not os.path.lexists(parent):
+        created_dirs.append(parent)
+        next_parent = os.path.dirname(parent)
+        if next_parent == parent:
+            break
+        parent = next_parent
 
 
-def _remove_directory_contents(path: str) -> None:
-    """Remove *path* and all its contents if it exists.
-
-    Walks *path* bottom-up, deleting files and directories.
-    If *path* does not exist or is not a directory, this is a no-op.
-    """
-    import contextlib
-
-    if not os.path.isdir(path):
-        return
-    try:
-        # Walk bottom-up so we remove empty children before their parents.
-        for root, dirs, files in os.walk(path, topdown=False):
-            for name in files:
-                fp = os.path.join(root, name)
-                with contextlib.suppress(OSError):
-                    os.unlink(fp)
-            for name in dirs:
-                dp = os.path.join(root, name)
-                with contextlib.suppress(OSError):
-                    os.rmdir(dp)
-        os.rmdir(path)
-    except OSError:
-        logger.debug("Could not fully remove '{}'.", path)
+def _remove_created_files(file_paths: list[str], directory_paths: list[str]) -> None:
+    """Remove only files and empty directories created by a copy attempt."""
+    for path in file_paths:
+        with contextlib.suppress(OSError):
+            if os.path.lexists(path):
+                os.unlink(path)
+    for path in directory_paths:
+        with contextlib.suppress(OSError):
+            if os.path.isdir(path) and not os.path.islink(path):
+                os.rmdir(path)
 
 
 def _build_copy_list(torrent: dict, pp: Any) -> list[str]:
@@ -347,6 +377,33 @@ def _build_copy_list(torrent: dict, pp: Any) -> list[str]:
     return result
 
 
+def _is_path_within(path: str, root: str) -> bool:
+    """Return whether *path* remains within *root* after symlink resolution."""
+    try:
+        normalized_path = os.path.normcase(os.path.realpath(path))
+        normalized_root = os.path.normcase(os.path.realpath(root))
+        return os.path.commonpath((normalized_path, normalized_root)) == normalized_root
+    except ValueError:
+        return False
+
+
+def _safe_relative_path(rel_path: str) -> str | None:
+    """Normalize a torrent-relative path, rejecting absolute and traversal paths."""
+    if not rel_path or "\x00" in rel_path:
+        return None
+    if os.path.isabs(rel_path) or ntpath.isabs(rel_path):
+        return None
+    drive, _ = ntpath.splitdrive(rel_path)
+    if drive:
+        return None
+    if any(part == ".." for part in rel_path.replace("\\", "/").split("/")):
+        return None
+    normalized = os.path.normpath(rel_path.replace("\\", os.sep))
+    if normalized in ("", ".") or normalized == os.pardir or normalized.startswith(os.pardir + os.sep):
+        return None
+    return normalized
+
+
 def _process_file_entry(
     file_entry: dict,
     save_path: str,
@@ -354,18 +411,25 @@ def _process_file_entry(
     file_regexes: list[re.Pattern[str]],
     folder_regexes: list[re.Pattern[str]],
 ) -> str | None:
-    """Process a single file entry. Returns absolute path or None if excluded."""
+    """Process a single safe file entry and return its absolute path."""
     rel_path = file_entry.get("file_name") or ""
-    if not rel_path:
+    if not isinstance(rel_path, str):
         return None
-    abs_path = os.path.join(save_path, rel_path)
+    safe_rel_path = _safe_relative_path(rel_path)
+    if safe_rel_path is None:
+        logger.warning("Skipping unsafe torrent file path '{}'.", rel_path)
+        return None
+    abs_path = os.path.join(save_path, safe_rel_path)
+    if not _is_path_within(abs_path, save_path):
+        logger.warning("Skipping torrent file outside save path '{}'.", rel_path)
+        return None
     try:
         file_size = int(file_entry.get("file_size") or 0)
     except (ValueError, TypeError):
         file_size = 0
     file_size_kb = file_size >> 10
-    folder_part = os.path.dirname(rel_path)
-    if _file_excluded(rel_path, folder_part, file_size_kb, file_regexes, folder_regexes, min_kb):
+    folder_part = os.path.dirname(safe_rel_path)
+    if _file_excluded(safe_rel_path, folder_part, file_size_kb, file_regexes, folder_regexes, min_kb):
         return None
     return abs_path
 

@@ -183,7 +183,7 @@ class TestConfigModels:
         assert mc_pc["cache_pages_hours"] == 6, "New key should have default 6"
 
     def test_migrate_config_adds_freegog_to_download_sites(self) -> None:
-        """_migrate_config should prepend freegog to download_sites when missing."""
+        """_migrate_config should append freegog to download_sites when missing."""
         from gamarr.config import _migrate_config
 
         # Simulate existing config with only fitgirl in download_sites
@@ -229,6 +229,17 @@ class TestConfigModels:
         assert fg_entry["cache_pages_hours"] == 6, "cache_pages_hours should be populated"
         assert fg_entry["reject_keywords"] == [], "reject_keywords should be populated"
         assert fg_entry["max_queue_days"] == 60, "max_queue_days should be populated"
+
+    def test_malformed_freegog_entry_does_not_abort_later_migrations(self) -> None:
+        from gamarr.config import _migrate_config
+
+        raw: dict[str, Any] = {
+            "download_sites": [{"freegog": "invalid"}],
+            "review_sites": {"metacritic": {"platform_overrides": {"pc": {"search_mode": "backlog"}}}},
+        }
+
+        assert _migrate_config(raw) is True
+        assert "search_mode" not in raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
 
     def test_migrate_config_does_not_duplicate_freegog(self) -> None:
         """_migrate_config should not add freegog if it already exists with full defaults."""
@@ -332,13 +343,17 @@ class TestConfigModels:
 
     def test_migrate_config_handles_exception_gracefully(self) -> None:
         """_migrate_config should catch exceptions and log a warning."""
+        from copy import deepcopy
+
         from gamarr.config import _migrate_config
 
         # metacritic value is a list instead of dict → .get() fails → AttributeError
         raw = {
             "metacritic": ["not-a-dict"],
         }
+        original = deepcopy(raw)
         _migrate_config(raw)  # Should not raise, logs warning
+        assert raw == original
 
     def test_qbittorrent_config_defaults(self) -> None:
         cfg = QbittorrentConfig()
@@ -436,6 +451,58 @@ class TestLoadConfig:
         cfg = load_config(str(config_file))
         assert cfg.general.daemon_mode == "background"
 
+    def test_load_config_existing_dotless_file(self, tmp_path: Path) -> None:
+        config_file = tmp_path / "gamarr"
+        config_file.write_text("general:\n  daemon_mode: foreground\n")
+
+        cfg = load_config(config_file)
+
+        assert cfg.general.daemon_mode == "foreground"
+        assert config_file.is_file()
+
+    def test_load_config_existing_dotted_directory(self, tmp_path: Path) -> None:
+        config_dir = tmp_path / "config.d"
+        config_dir.mkdir()
+
+        cfg = load_config(config_dir)
+
+        assert isinstance(cfg, Config)
+        assert (config_dir / "gamarr.yml").is_file()
+
+    def test_load_config_rejects_file_parent(self, tmp_path: Path) -> None:
+        parent_file = tmp_path / "not-a-directory"
+        parent_file.write_text("blocker")
+
+        with pytest.raises(ValueError, match="is not a file"):
+            load_config(parent_file / "child.yml")
+
+    def test_create_default_config_handles_file_parent(self, tmp_path: Path) -> None:
+        parent_file = tmp_path / "not-a-directory"
+        parent_file.write_text("blocker")
+        config_file = parent_file / "child.yml"
+
+        create_default_config(config_file)
+
+        assert not config_file.exists()
+
+    @pytest.mark.parametrize("config_text", ["general: yes\n", "review_sites: yes\n", "download_sites: 42\n"])
+    def test_load_config_rejects_malformed_top_level_sections(self, tmp_path: Path, config_text: str) -> None:
+        config_file = tmp_path / "gamarr.yml"
+        config_file.write_text(config_text)
+
+        with pytest.raises(ValidationError):
+            load_config(config_file)
+
+    def test_failed_migration_does_not_rewrite_original_config(self, tmp_path: Path) -> None:
+        config_file = tmp_path / "gamarr.yml"
+        config_file.write_text("metacritic:\n  platform_overrides: {}\nreview_sites:\n  metacritic: invalid\n")
+        original = config_file.read_text()
+
+        with pytest.raises(ValidationError):
+            load_config(config_file)
+
+        assert config_file.read_text() == original
+
     def test_migrate_config_returns_true_on_change(self) -> None:
         """_migrate_config should return True when it makes changes."""
 
@@ -472,6 +539,19 @@ class TestLoadConfig:
         assert "review_sites" in raw
         assert raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["min_criticscore"] == 75
 
+    def test_migrate_metacritic_preserves_new_section_values(self) -> None:
+        from gamarr.config import _migrate_config
+
+        raw: dict[str, Any] = {
+            "metacritic": {"platform_overrides": {"pc": {"max_pages": 10}}},
+            "review_sites": {
+                "metacritic": {"platform_overrides": {"pc": {"max_pages": 20}}},
+            },
+        }
+
+        assert _migrate_config(raw) is True
+        assert raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["max_pages"] == 20
+
     def test_migrate_sources_to_download_sites(self) -> None:
         """Old sources key is migrated to download_sites."""
 
@@ -498,8 +578,8 @@ class TestLoadConfig:
         from gamarr.config import _migrate_config
 
         raw: dict[str, Any] = {
-            "sources": {"fitgirl": {"new_key": "old_val"}},
-            "download_sites": {"fitgirl": {"existing_key": "existing_val"}},
+            "sources": {"fitgirl": {"new_key": "old_val", "shared": "old_val"}},
+            "download_sites": {"fitgirl": {"existing_key": "existing_val", "shared": "new_val"}},
             "metacritic": {"platform_overrides": {"pc": {}}},
         }
         result = _migrate_config(raw)
@@ -510,6 +590,7 @@ class TestLoadConfig:
         fg = fg_entry["fitgirl"]
         assert fg["existing_key"] == "existing_val"
         assert fg["new_key"] == "old_val"
+        assert fg["shared"] == "new_val"
 
     def test_migrate_config_returns_false_on_no_change(self) -> None:
         """_migrate_config should return True when migrating to keyed-list format."""
@@ -532,6 +613,42 @@ class TestLoadConfig:
             # Should NOT have "name" key directly (it's nested under the source key)
             assert "name" not in entry
 
+    def test_migrate_legacy_fitgirl_keys_in_keyed_list(self) -> None:
+        from gamarr.config import _migrate_config
+
+        raw: dict[str, Any] = {
+            "download_sites": [
+                {
+                    "fitgirl": {
+                        "exclude_keywords": ["DLC"],
+                        "cache_ttl_hours": 12,
+                        "pending_days": 30,
+                    }
+                }
+            ]
+        }
+
+        assert _migrate_config(raw) is True
+        fitgirl = raw["download_sites"][0]["fitgirl"]
+        assert fitgirl["reject_keywords"] == ["DLC"]
+        assert fitgirl["cache_pages_hours"] == 12
+        assert fitgirl["max_queue_days"] == 30
+        assert "exclude_keywords" not in fitgirl
+        assert "cache_ttl_hours" not in fitgirl
+        assert "pending_days" not in fitgirl
+
+    def test_migrate_recheck_days_in_keyed_list(self) -> None:
+        from gamarr.config import _migrate_config
+
+        raw: dict[str, Any] = {
+            "download_sites": [{"fitgirl": {"recheck_days": 45}}],
+        }
+
+        assert _migrate_config(raw) is True
+        fitgirl = raw["download_sites"][0]["fitgirl"]
+        assert fitgirl["max_queue_days"] == 45
+        assert "recheck_days" not in fitgirl
+
     def test_migrate_days_since_release_removes_field(self) -> None:
         """Old days_since_release in metacritic.platform_overrides is removed."""
 
@@ -550,6 +667,22 @@ class TestLoadConfig:
         assert "days_since_release" not in pc
         assert "cutoff_weeks" not in pc, "cutoff_weeks was renamed to max_pages"
         assert pc["max_pages"] == 12
+
+    def test_cutoff_weeks_does_not_overwrite_existing_max_pages(self) -> None:
+        from gamarr.config import _migrate_cutoff_weeks_to_max_pages
+
+        raw: dict[str, Any] = {
+            "review_sites": {
+                "metacritic": {
+                    "platform_overrides": {"pc": {"cutoff_weeks": 12, "max_pages": 99}},
+                },
+            },
+        }
+
+        assert _migrate_cutoff_weeks_to_max_pages(raw) is True
+        pc = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
+        assert pc["max_pages"] == 99
+        assert "cutoff_weeks" not in pc
 
     def test_migrate_days_since_release_converts_to_max_pages(self) -> None:
         """days_since_release without max_pages should be converted."""
@@ -682,6 +815,46 @@ class TestLoadConfig:
         assert cfg.general.daemon_mode == "foreground"
         fitgirl = next(e for e in cfg.download_sites if e.name == "fitgirl")
         assert fitgirl.enabled is True
+
+    def test_empty_config_file_is_populated_with_defaults(self, tmp_path: Path) -> None:
+        config_file = tmp_path / "gamarr.yml"
+        config_file.write_text("")
+
+        load_config(config_file)
+
+        rewritten = yaml.safe_load(config_file.read_text())
+        assert rewritten["general"]["config_version"]
+        assert "post_process" in rewritten
+
+    def test_atomic_rewrite_preserves_original_on_replace_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import os
+
+        config_file = tmp_path / "gamarr.yml"
+        config_file.write_text("general:\n  daemon_mode: foreground\n")
+        original = config_file.read_text()
+
+        def fail_replace(_source: str | Path, _destination: str | Path) -> None:
+            raise OSError("replace failed")
+
+        monkeypatch.setattr(os, "replace", fail_replace)
+
+        cfg = load_config(config_file)
+
+        assert cfg.general.daemon_mode == "foreground"
+        assert config_file.read_text() == original
+
+    def test_atomic_rewrite_preserves_file_mode(self, tmp_path: Path) -> None:
+        import stat
+
+        config_file = tmp_path / "gamarr.yml"
+        config_file.write_text("general:\n  daemon_mode: foreground\n")
+        config_file.chmod(0o640)
+
+        load_config(config_file)
+
+        assert stat.S_IMODE(config_file.stat().st_mode) == 0o640
 
     def test_missing_optional_key_uses_default(self, tmp_path: Path) -> None:
         config_dir = tmp_path / "configs"

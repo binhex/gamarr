@@ -59,6 +59,19 @@ class TestCopyWithVerify:
         assert copy_with_verify(str(src), str(dst)) is True
         assert dst.read_bytes() == b"new correct data goes here"
 
+    def test_mismatch_copy_failure_preserves_existing_destination(self, tmp_path: Path) -> None:
+        src = tmp_path / "src.bin"
+        dst = tmp_path / "dst" / "src.bin"
+        dst.parent.mkdir()
+        src.write_bytes(b"new data")
+        dst.write_bytes(b"old data")
+        from gamarr import file_utils
+
+        with patch.object(file_utils, "_do_copy", side_effect=OSError("disk full")):
+            assert copy_with_verify(str(src), str(dst)) is False
+
+        assert dst.read_bytes() == b"old data"
+
     def test_returns_false_when_src_missing(self, tmp_path: Path) -> None:
         src = tmp_path / "nonexistent.bin"
         dst = tmp_path / "dst" / "nonexistent.bin"

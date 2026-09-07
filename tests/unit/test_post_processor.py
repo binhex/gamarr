@@ -36,6 +36,14 @@ class TestSafePathComponent:
     def test_dots_only_returns_unknown(self) -> None:
         assert _safe_path_component("...") == "Unknown"
 
+    def test_sanitizes_windows_reserved_and_long_components(self) -> None:
+        assert _safe_path_component("CON") == "_CON"
+        assert _safe_path_component("NUL.txt") == "_NUL.txt"
+        assert _safe_path_component("Game. ") == "Game"
+        result = _safe_path_component("é" * 200)
+        assert len(result.encode("utf-8")) <= 255
+        assert not result.endswith((".", " "))
+
 
 class TestBuildDestinationPath:
     """Tests for template-based path building."""
@@ -80,6 +88,17 @@ class TestBuildDestinationPath:
         )
         assert result == ""
 
+    def test_placeholder_tokens_in_values_are_not_replaced_recursively(self) -> None:
+        result = _build_destination_path(
+            template="/lib/{site}",
+            source="fitgirl-{title}",
+            platform="pc",
+            genres="Action",
+            game_title="Test",
+        )
+
+        assert result == "/lib/fitgirl-{title}"
+
 
 class TestFileExclusion:
     """Tests for file exclusion logic."""
@@ -101,6 +120,12 @@ class TestFileExclusion:
         exclude_folder_regexes = _compile_exclusion_regexes(["subs", "extras"], "folder")
         assert _file_excluded("movie.mkv", "Subs", 999999, exclude_file_regexes, exclude_folder_regexes, 0) is True
         assert _file_excluded("movie.mkv", "Bonus", 999999, exclude_file_regexes, exclude_folder_regexes, 0) is False
+
+    def test_empty_regex_patterns_are_ignored(self) -> None:
+        regexes = _compile_exclusion_regexes(["", "  ", "sample"], "file")
+
+        assert len(regexes) == 1
+        assert regexes[0].search("sample.bin") is not None
 
 
 class TestRunPostProcessing:
@@ -218,7 +243,7 @@ class TestRunPostProcessing:
         assert args[1] == "copied"
         assert kwargs.get("copied_at") is not None
 
-    def test_skip_when_dest_exists(self) -> None:
+    def test_existing_destination_reconciles_expected_files(self) -> None:
         from gamarr.config import Config
         from gamarr.database import HistoryRow
 
@@ -253,14 +278,94 @@ class TestRunPostProcessing:
 
         with (
             patch("gamarr.post_processor.os.path.isdir", return_value=True),
-            patch("gamarr.post_processor._dir_contains_files", return_value=True),
+            patch("gamarr.post_processor.make_directory", return_value=True),
+            patch("gamarr.post_processor.copy_with_verify", return_value=True) as mock_copy,
         ):
             run_post_processing(config, qbt, db)
 
+        mock_copy.assert_called_once_with("/dl/Elden Ring/game.iso", "/lib/Elden Ring/game.iso")
         db.set_post_process_state.assert_called_once()
-        args = db.set_post_process_state.call_args[0]
+        args, kwargs = db.set_post_process_state.call_args
         assert args[0] == "gamarr-test"
         assert args[1] == "copied"
+        assert kwargs["copied_at"] is not None
+
+    def test_empty_library_path_allows_deletion_when_copy_enabled(self) -> None:
+        from gamarr.config import Config
+        from gamarr.database import HistoryRow
+
+        config = Config()
+        config.post_process.post_process_enabled = True
+        config.post_process.copy_completed = True
+        config.post_process.remove_completed = True
+        config.post_process.library_path = ""
+
+        qbt = MagicMock()
+        qbt.is_connected.return_value = True
+        qbt.list_completed.return_value = (
+            [
+                {
+                    "torrent_tag": "gamarr-test",
+                    "torrent_hash": "abc",
+                    "torrent_name": "Test Game",
+                    "torrent_save_path": "/dl/Test Game",
+                    "torrent_state": "pausedUP",
+                    "torrent_file_list": [],
+                }
+            ],
+            1,
+        )
+
+        row = MagicMock(spec=HistoryRow)
+        row.post_process_state = None
+        row.post_process_copied_at = None
+        row.game_title = "Test Game"
+        db = MagicMock()
+        db.find_by_tag.return_value = row
+
+        run_post_processing(config, qbt, db)
+
+        qbt.delete_torrent.assert_called_once_with("abc", delete_data=True)
+        db.set_post_process_state.assert_called_once_with("gamarr-test", "deleted")
+
+    def test_copy_failure_retains_completed_torrent_for_retry(self) -> None:
+        from gamarr.config import Config
+        from gamarr.database import HistoryRow
+
+        config = Config()
+        config.post_process.post_process_enabled = True
+        config.post_process.copy_completed = True
+        config.post_process.remove_completed = True
+        config.post_process.library_path = "/lib/{title}"
+
+        qbt = MagicMock()
+        qbt.is_connected.return_value = True
+        qbt.list_completed.return_value = (
+            [
+                {
+                    "torrent_tag": "gamarr-test",
+                    "torrent_hash": "abc",
+                    "torrent_name": "Test Game",
+                    "torrent_save_path": "/dl/Test Game",
+                    "torrent_state": "pausedUP",
+                    "torrent_file_list": [],
+                }
+            ],
+            1,
+        )
+
+        row = MagicMock(spec=HistoryRow)
+        row.post_process_state = None
+        row.post_process_copied_at = None
+        row.game_title = "Test Game"
+        db = MagicMock()
+        db.find_by_tag.return_value = row
+
+        with patch("gamarr.post_processor._run_copy_phase", return_value=False):
+            run_post_processing(config, qbt, db)
+
+        qbt.delete_torrent.assert_not_called()
+        db.set_post_process_state.assert_not_called()
 
     def test_delete_phase_paused_state(self) -> None:
         from gamarr.config import Config
@@ -322,12 +427,13 @@ class TestRunPostProcessing:
 
         db = MagicMock()
         fake_row = MagicMock(spec=HistoryRow)
+        from datetime import timedelta
+
         fake_row.post_process_state = "copied"
-        fake_row.post_process_copied_at = "2099-01-01T00:00:00"  # far future — won't time out
+        fake_row.post_process_copied_at = (datetime.now(tz=UTC) - timedelta(hours=1)).isoformat()
         db.find_by_tag.return_value = fake_row
 
-        with patch("gamarr.post_processor._copied_age_hours", return_value=1):
-            run_post_processing(config, qbt, db)
+        run_post_processing(config, qbt, db)
 
         qbt.delete_torrent.assert_not_called()  # still seeding, not old enough
         assert fake_row.post_process_state == "copied"  # unchanged
@@ -386,10 +492,42 @@ class TestCopiedAgeHours:
         age = _copied_age_hours(past)
         assert 2.9 < age < 3.1
 
+    def test_naive_timestamp_is_interpreted_as_utc(self) -> None:
+        from datetime import timedelta
+
+        from gamarr.post_processor import _copied_age_hours
+
+        past = (datetime.now(tz=UTC) - timedelta(hours=3)).replace(tzinfo=None).isoformat()
+        age = _copied_age_hours(past)
+        assert 2.9 < age < 3.1
+
     def test_invalid_timestamp_returns_zero(self) -> None:
         from gamarr.post_processor import _copied_age_hours
 
         assert _copied_age_hours("not-a-timestamp") == 0.0
+
+
+class TestSafeRelativePath:
+    """Tests for torrent path containment validation."""
+
+    def test_preserves_safe_nested_path(self) -> None:
+        from gamarr.post_processor import _safe_relative_path
+
+        assert _safe_relative_path("DLC/bonus.exe") == "DLC/bonus.exe"
+        assert _safe_relative_path("...") == "..."
+
+    def test_rejects_absolute_drive_and_traversal_paths(self) -> None:
+        from gamarr.post_processor import _safe_relative_path
+
+        for path in (
+            "/absolute.exe",
+            r"C:\absolute.exe",
+            "C:",
+            "../outside.exe",
+            "foo/bar/../../../baz",
+            "bad\x00.exe",
+        ):
+            assert _safe_relative_path(path) is None
 
 
 class TestEdgeCases:
@@ -455,11 +593,65 @@ class TestEdgeCases:
         result = _build_copy_list(torrent, FakePP())
         assert result == ["/dl/game.iso"]
 
+    def test_build_copy_list_rejects_unsafe_paths(self) -> None:
+        from gamarr.post_processor import _build_copy_list
+
+        class FakePP:
+            exclude_file_min_kb: int = 0
+            exclude_file_regex_list: list[str] = []
+            exclude_folder_regex_list: list[str] = []
+
+        torrent = {
+            "torrent_save_path": "/dl",
+            "torrent_file_list": [
+                {"file_name": "../outside.exe", "file_size": 100},
+                {"file_name": "/absolute.exe", "file_size": 100},
+                {"file_name": r"C:\\absolute.exe", "file_size": 100},
+                {"file_name": "DLC/good.exe", "file_size": 100},
+            ],
+        }
+        result = _build_copy_list(torrent, FakePP())
+        assert result == ["/dl/DLC/good.exe"]
+
+    def test_build_copy_list_rejects_symlink_outside_save_path(self, tmp_path: Path) -> None:
+        from gamarr.post_processor import _build_copy_list
+
+        class FakePP:
+            exclude_file_min_kb: int = 0
+            exclude_file_regex_list: list[str] = []
+            exclude_folder_regex_list: list[str] = []
+
+        save_path = tmp_path / "download"
+        save_path.mkdir()
+        outside = tmp_path / "outside.txt"
+        outside.write_text("sensitive")
+        (save_path / "linked.txt").symlink_to(outside)
+
+        torrent = {
+            "torrent_save_path": str(save_path),
+            "torrent_file_list": [{"file_name": "linked.txt", "file_size": 100}],
+        }
+
+        assert _build_copy_list(torrent, FakePP()) == []
+
     def test_compile_exclusion_regexes_invalid_skipped(self) -> None:
         from gamarr.post_processor import _compile_exclusion_regexes
 
         result = _compile_exclusion_regexes(["valid", "[invalid"], "test")
         assert len(result) == 1  # Only valid regex compiled
+
+    def test_copy_all_files_rejects_source_outside_save_path(self, tmp_path: Path) -> None:
+        from gamarr.post_processor import _copy_all_files
+
+        outside = tmp_path / "outside.exe"
+        outside.write_text("outside")
+        destination = tmp_path / "library"
+        save_path = tmp_path / "download"
+
+        result = _copy_all_files([str(outside)], str(destination), str(save_path))
+
+        assert result is False
+        assert not destination.exists()
 
     def test_delete_phase_age_timeout_triggers(self) -> None:
         from datetime import timedelta
@@ -481,6 +673,29 @@ class TestEdgeCases:
         _run_delete_phase(torrent, config, qbt, fake_row, db_mock)
         qbt.delete_torrent.assert_called_once_with("abc", delete_data=True)
         db_mock.set_post_process_state.assert_called_once_with("abc", "deleted")
+
+    def test_delete_phase_timeout_uses_processed_at_when_copy_skipped(self) -> None:
+        from datetime import timedelta
+
+        from gamarr.config import Config
+        from gamarr.database import HistoryRow
+        from gamarr.post_processor import _run_delete_phase
+
+        config = Config()
+        config.post_process.max_seed_wait_hours = 1
+        qbt = MagicMock()
+        row = MagicMock(spec=HistoryRow)
+        row.post_process_state = None
+        row.post_process_copied_at = None
+        row.processed_at = (datetime.now(tz=UTC) - timedelta(hours=2)).isoformat()
+        row.game_title = "Test Game"
+        db = MagicMock()
+        torrent = {"torrent_tag": "abc", "torrent_hash": "abc", "torrent_state": "uploading"}
+
+        _run_delete_phase(torrent, config, qbt, row, db)
+
+        qbt.delete_torrent.assert_called_once_with("abc", delete_data=True)
+        db.set_post_process_state.assert_called_once_with("abc", "deleted")
 
     def test_run_post_processing_handles_torrent_exception(self) -> None:
         from gamarr.config import Config
@@ -568,6 +783,41 @@ class TestEdgeCases:
             _run_copy_phase(torrent, config, fake_row, db_mock)
         # copy_with_verify failed — should NOT set post_process_state
 
+    def test_copy_failure_preserves_preexisting_destination_files(self, tmp_path: Path) -> None:
+        from gamarr.config import Config
+        from gamarr.database import HistoryRow
+        from gamarr.post_processor import _run_copy_phase
+
+        source = tmp_path / "download"
+        source.mkdir()
+        (source / "game.iso").write_text("game")
+        destination = tmp_path / "library" / "Test Game"
+        destination.mkdir(parents=True)
+        keep = destination / "user-file.txt"
+        keep.write_text("keep")
+
+        config = Config()
+        config.post_process.library_path = str(tmp_path / "library" / "{title}")
+        row = MagicMock(spec=HistoryRow)
+        row.source = "fitgirl"
+        row.platform = "pc"
+        row.genres = "Action"
+        row.game_title = "Test Game"
+        row.post_process_state = None
+        db = MagicMock()
+        torrent = {
+            "torrent_tag": "gamarr-test",
+            "torrent_save_path": str(source),
+            "torrent_file_list": [{"file_name": "game.iso", "file_size": 999999}],
+        }
+
+        with patch("gamarr.post_processor.copy_with_verify", return_value=False):
+            result = _run_copy_phase(torrent, config, row, db)
+
+        assert result is False
+        assert keep.read_text() == "keep"
+        db.set_post_process_state.assert_not_called()
+
 
 class TestDownloadingCount:
     """Post-processing summary must acknowledge in-progress downloads."""
@@ -608,6 +858,7 @@ class TestDownloadingCount:
                 2,
             )
             db = MagicMock()
+            db.find_by_tag.return_value = None
 
             run_post_processing(config, qbt, db)
 
@@ -621,36 +872,6 @@ class TestDownloadingCount:
             )
         finally:
             loguru_logger.remove(sink_id)
-
-
-class TestRemoveDirectoryContents:
-    """Tests for the _remove_directory_contents cleanup helper."""
-
-    def test_removes_empty_directory(self, tmp_path: Path) -> None:
-        """An empty directory is removed."""
-        from gamarr.post_processor import _remove_directory_contents
-
-        empty_dir = tmp_path / "empty"
-        empty_dir.mkdir()
-        _remove_directory_contents(str(empty_dir))
-        assert not empty_dir.exists()
-
-    def test_noop_nonexistent_path(self) -> None:
-        """Non-existent path is silently skipped."""
-        from gamarr.post_processor import _remove_directory_contents
-
-        _remove_directory_contents("/nonexistent/path/xyz123")
-        # Should not raise
-
-    def test_removes_empty_dir_with_empty_child(self, tmp_path: Path) -> None:
-        """A dir with an empty child dir is fully removed."""
-        from gamarr.post_processor import _remove_directory_contents
-
-        parent = tmp_path / "parent"
-        child = parent / "child"
-        child.mkdir(parents=True)
-        _remove_directory_contents(str(parent))
-        assert not parent.exists()
 
 
 class TestPathCaseFormatting:
@@ -745,92 +966,8 @@ class TestPathCaseFormatting:
         assert result == ""
 
 
-class TestDirContainsFiles:
-    """Tests for the _dir_contains_files helper."""
-
-    def test_empty_directory(self, tmp_path: Path) -> None:
-        """Empty directory returns False."""
-        from gamarr.post_processor import _dir_contains_files
-
-        empty = tmp_path / "empty"
-        empty.mkdir()
-        assert _dir_contains_files(str(empty)) is False
-
-    def test_file_at_depth_1(self, tmp_path: Path) -> None:
-        """Directory with a direct file returns True."""
-        from gamarr.post_processor import _dir_contains_files
-
-        d = tmp_path / "has_file"
-        d.mkdir()
-        (d / "game.iso").touch()
-        assert _dir_contains_files(str(d)) is True
-
-    def test_file_at_depth_3(self, tmp_path: Path) -> None:
-        """Files at depth 3+ are detected via os.walk."""
-        from gamarr.post_processor import _dir_contains_files
-
-        d = tmp_path / "deep"
-        nested = d / "bin" / "win64"
-        nested.mkdir(parents=True)
-        (nested / "game.exe").touch()
-        assert _dir_contains_files(str(d)) is True
-
-    def test_only_empty_subdirs(self, tmp_path: Path) -> None:
-        """Directory with only empty subdirectories returns False."""
-        from gamarr.post_processor import _dir_contains_files
-
-        d = tmp_path / "empty_tree"
-        (d / "sub" / "deep").mkdir(parents=True)
-        assert _dir_contains_files(str(d)) is False
-
-    def test_nonexistent_path(self) -> None:
-        """Non-existent path returns False (OSError caught)."""
-        from gamarr.post_processor import _dir_contains_files
-
-        assert _dir_contains_files("/nonexistent/path/xyz") is False
-
-
-class TestRunCopyPhaseEmptyDirRetry:
-    """Tests for the empty-dir removal and retry path in _run_copy_phase."""
-
-    def test_empty_dir_removed_and_retried(self) -> None:
-        """When destination exists but is empty, it is removed and copy proceeds."""
-        from unittest.mock import MagicMock, patch
-
-        from gamarr.config import Config
-        from gamarr.database import HistoryRow
-        from gamarr.post_processor import _run_copy_phase
-
-        config = Config()
-        config.post_process.library_path = "/lib/{title}"
-
-        row = MagicMock(spec=HistoryRow)
-        row.source = "fitgirl"
-        row.platform = "pc"
-        row.genres = "Action"
-        row.game_title = "Test Game"
-        row.post_process_state = None
-
-        db = MagicMock()
-        torrent = {
-            "torrent_tag": "gamarr-test",
-            "torrent_hash": "abc",
-            "torrent_save_path": "/dl/Test Game",
-            "torrent_file_list": [{"file_name": "game.iso", "file_size": 999999}],
-        }
-
-        with (
-            patch("gamarr.post_processor.os.path.isdir", return_value=True),
-            patch("gamarr.post_processor._dir_contains_files", return_value=False),
-            patch("gamarr.post_processor._remove_directory_contents") as mock_remove,
-            patch("gamarr.post_processor.make_directory", return_value=True),
-            patch("gamarr.post_processor.copy_with_verify", return_value=True),
-        ):
-            result = _run_copy_phase(torrent, config, row, db)
-
-        mock_remove.assert_called_once()
-        assert result is True
-        db.set_post_process_state.assert_called_once()
+class TestRunCopyPhase:
+    """Tests for copy-phase retry and failure paths."""
 
     def test_empty_src_files_returns_false(self) -> None:
         """When no files match (all excluded), return False without copying."""
@@ -935,3 +1072,116 @@ class TestRunDeletePhaseFailure:
 
         assert result is False
         db.set_post_process_state.assert_not_called()
+
+
+class TestCopyPhasePreservesStructure:
+    """Copy must preserve the downloaded directory structure."""
+
+    def test_nested_files_keep_relative_paths(self, tmp_path: Path) -> None:
+        """Files in subdirectories must be copied into matching subdirectories."""
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.config import Config
+        from gamarr.database import HistoryRow
+        from gamarr.post_processor import _run_copy_phase
+
+        src = tmp_path / "download"
+        (src / "DLC").mkdir(parents=True)
+        (src / "bin" / "win64").mkdir(parents=True)
+        (src / "game.exe").write_text("root")
+        (src / "DLC" / "bonus.exe").write_text("dlc")
+        (src / "bin" / "win64" / "game.exe").write_text("nested")
+
+        config = Config()
+        config.post_process.library_path = str(tmp_path / "library" / "{title}")
+        config.post_process.exclude_file_min_kb = 0
+        config.post_process.exclude_file_regex_list = []
+        config.post_process.exclude_folder_regex_list = []
+
+        row = MagicMock(spec=HistoryRow)
+        row.source = "fitgirl"
+        row.platform = "pc"
+        row.genres = "Action"
+        row.game_title = "Test Game"
+        row.post_process_state = None
+        row.post_process_copied_at = None
+
+        db = MagicMock()
+        torrent = {
+            "torrent_tag": "gamarr-test",
+            "torrent_save_path": str(src),
+            "torrent_file_list": [
+                {"file_name": "game.exe", "file_size": 100},
+                {"file_name": "DLC/bonus.exe", "file_size": 100},
+                {"file_name": "bin/win64/game.exe", "file_size": 100},
+            ],
+        }
+
+        with patch("gamarr.post_processor.os.path.isdir", return_value=False):
+            result = _run_copy_phase(torrent, config, row, db)
+
+        assert result is True
+        lib = tmp_path / "library" / "Test Game"
+        assert (lib / "game.exe").read_text() == "root"
+        assert (lib / "DLC" / "bonus.exe").read_text() == "dlc"
+        assert (lib / "bin" / "win64" / "game.exe").read_text() == "nested"
+
+
+class TestPostProcessingDatabaseLifecycle:
+    """Tests for post-processing with real history persistence."""
+
+    def test_copy_then_delete_round_trip_updates_history(self, tmp_path: Path) -> None:
+        from gamarr.config import Config
+        from gamarr.database import Database
+        from gamarr.post_processor import run_post_processing
+
+        source = tmp_path / "download"
+        source.mkdir()
+        game_file = source / "game.bin"
+        game_file.write_bytes(b"game data")
+
+        db = Database(tmp_path / "db")
+        try:
+            db.record_processed(
+                source="fitgirl",
+                source_title="Test Game",
+                game_title="Test Game",
+                platform="pc",
+                result="Passed",
+                torrent_tag="gamarr-test",
+                genres="Action",
+            )
+
+            config = Config()
+            config.post_process.library_path = str(tmp_path / "library" / "{title}")
+
+            qbt = MagicMock()
+            qbt.is_connected.return_value = True
+            torrent = {
+                "torrent_tag": "gamarr-test",
+                "torrent_hash": "abc",
+                "torrent_save_path": str(source),
+                "torrent_state": "uploading",
+                "torrent_file_list": [{"file_name": "game.bin", "file_size": game_file.stat().st_size}],
+            }
+            qbt.list_completed.return_value = ([torrent], 1)
+
+            run_post_processing(config, qbt, db)
+
+            destination = tmp_path / "library" / "Test Game" / "game.bin"
+            assert destination.read_bytes() == b"game data"
+            copied_row = db.find_by_tag("gamarr-test")
+            assert copied_row is not None
+            assert copied_row.post_process_state == "copied"
+            assert copied_row.post_process_copied_at is not None
+
+            qbt.delete_torrent.return_value = True
+            torrent["torrent_state"] = "pausedUP"
+            run_post_processing(config, qbt, db)
+
+            deleted_row = db.find_by_tag("gamarr-test")
+            assert deleted_row is not None
+            assert deleted_row.post_process_state == "deleted"
+            qbt.delete_torrent.assert_called_once_with("abc", delete_data=True)
+        finally:
+            db.close()

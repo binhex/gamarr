@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
+import copy
+import os
+import stat
+import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -367,16 +372,43 @@ def _migrate_download_sites(raw: dict[str, Any]) -> bool:
         raw["download_sites"] = raw.pop("sources")
         logger.info("Config: migrated 'sources' to 'download_sites'")
         return True
-    # Both exist — deep-merge sources into download_sites and drop sources
-    old_sources = raw.pop("sources")
+    # Both exist — deep-merge sources into download_sites and drop sources.
+    old_sources = raw["sources"]
     if isinstance(old_sources, dict) and isinstance(raw["download_sites"], dict):
-        raw["download_sites"] = _deep_merge(raw["download_sites"], old_sources)
+        raw["download_sites"] = _deep_merge(old_sources, raw["download_sites"])
+        del raw["sources"]
         logger.info("Config: merged 'sources' into 'download_sites'")
     elif isinstance(old_sources, dict):
+        del raw["sources"]
         logger.warning("Config: both 'sources' (dict) and 'download_sites' (list) exist — keeping download_sites")
     else:
+        del raw["sources"]
         logger.warning("Config: dropped non-dict 'sources' value during migration")
     return True
+
+
+def _source_config_dicts(raw: dict[str, Any], parent_key: str, source_name: str) -> list[dict[str, Any]]:
+    """Return named source dictionaries from legacy and keyed-list layouts."""
+    parent = raw.get(parent_key)
+    if isinstance(parent, dict):
+        candidate = parent.get(source_name)
+        return [candidate] if isinstance(candidate, dict) else []
+    if not isinstance(parent, list):
+        return []
+
+    result: list[dict[str, Any]] = []
+    wanted = source_name.casefold()
+    for entry in parent:
+        if not isinstance(entry, dict):
+            continue
+        direct_name = entry.get("name")
+        if isinstance(direct_name, str) and direct_name.casefold() == wanted:
+            result.append(entry)
+            continue
+        for key, value in entry.items():
+            if isinstance(key, str) and key.casefold() == wanted and isinstance(value, dict):
+                result.append(value)
+    return result
 
 
 def _migrate_fitgirl_exclude_keywords(raw: dict[str, Any]) -> bool:
@@ -386,18 +418,15 @@ def _migrate_fitgirl_exclude_keywords(raw: dict[str, Any]) -> bool:
     Returns True if a migration was applied.
     """
     for parent_key in ("download_sites", "sources"):
-        parent = raw.get(parent_key)
-        if not isinstance(parent, dict):
-            continue
-        fg = parent.get("fitgirl", {})
-        if not isinstance(fg, dict) or "exclude_keywords" not in fg:
-            continue
-        if "reject_keywords" not in fg:
-            fg["reject_keywords"] = fg.pop("exclude_keywords")
-            logger.info("Config: migrated '{}.fitgirl.exclude_keywords' to 'reject_keywords'", parent_key)
+        for fg in _source_config_dicts(raw, parent_key, "fitgirl"):
+            if "exclude_keywords" not in fg:
+                continue
+            if "reject_keywords" not in fg:
+                fg["reject_keywords"] = fg.pop("exclude_keywords")
+                logger.info("Config: migrated '{}.fitgirl.exclude_keywords' to 'reject_keywords'", parent_key)
+                return True
+            del fg["exclude_keywords"]
             return True
-        del fg["exclude_keywords"]
-        return True
     return False
 
 
@@ -470,12 +499,9 @@ def _migrate_pending_days_to_max_queue_days(raw: dict[str, Any]) -> bool:
         if _rename_pending_days(mc_pc, f"review_sites.metacritic.platform_overrides.{platform_key}"):
             changed = True
     for parent_key in ("download_sites", "sources"):
-        parent = raw.get(parent_key)
-        if not isinstance(parent, dict):
-            continue
-        fg = parent.get("fitgirl", {})
-        if _rename_pending_days(fg, f"{parent_key}.fitgirl"):
-            changed = True
+        for fg in _source_config_dicts(raw, parent_key, "fitgirl"):
+            if _rename_pending_days(fg, f"{parent_key}.fitgirl"):
+                changed = True
     return changed
 
 
@@ -486,11 +512,9 @@ def _migrate_fitgirl_cache_ttl_hours(raw: dict[str, Any]) -> bool:
     """
     changed = False
     for parent_key in ("download_sites", "sources"):
-        parent = raw.get(parent_key)
-        if not isinstance(parent, dict):
-            continue
-        fg = parent.get("fitgirl", {})
-        if isinstance(fg, dict) and "cache_ttl_hours" in fg:
+        for fg in _source_config_dicts(raw, parent_key, "fitgirl"):
+            if "cache_ttl_hours" not in fg:
+                continue
             if "cache_pages_hours" not in fg:
                 fg["cache_pages_hours"] = fg.pop("cache_ttl_hours")
                 logger.info(
@@ -515,13 +539,21 @@ def _migrate_cutoff_weeks_to_max_pages(raw: dict[str, Any]) -> bool:
     changed = False
     overrides = raw.get("review_sites", {}).get("metacritic", {}).get("platform_overrides", {})
     for platform_key, mc_pc in overrides.items():
-        if isinstance(mc_pc, dict) and "cutoff_weeks" in mc_pc:
-            mc_pc["max_pages"] = mc_pc.pop("cutoff_weeks")
+        if not isinstance(mc_pc, dict) or "cutoff_weeks" not in mc_pc:
+            continue
+        cutoff_weeks = mc_pc.pop("cutoff_weeks")
+        if "max_pages" not in mc_pc:
+            mc_pc["max_pages"] = cutoff_weeks
             logger.info(
                 "Config: renamed 'cutoff_weeks' to 'max_pages' for platform '{}'",
                 platform_key,
             )
-            changed = True
+        else:
+            logger.info(
+                "Config: removed obsolete 'cutoff_weeks' for platform '{}' because max_pages already exists",
+                platform_key,
+            )
+        changed = True
     return changed
 
 
@@ -567,11 +599,9 @@ def _migrate_recheck_days_to_max_queue_days(raw: dict[str, Any]) -> bool:
         if _rename_recheck_days_in_dict(mc_pc, f"review_sites.metacritic.platform_overrides.{platform_key}"):
             changed = True
     for parent_key in ("download_sites", "sources"):
-        parent = raw.get(parent_key)
-        if not isinstance(parent, dict):
-            continue
-        if _rename_recheck_days_in_dict(parent.get("fitgirl"), f"{parent_key}.fitgirl"):
-            changed = True
+        for fg in _source_config_dicts(raw, parent_key, "fitgirl"):
+            if _rename_recheck_days_in_dict(fg, f"{parent_key}.fitgirl"):
+                changed = True
     return changed
 
 
@@ -589,7 +619,10 @@ def _migrate_metacritic_to_review_sites(raw: dict[str, Any]) -> bool:
         raw["review_sites"]["metacritic"] = raw.pop("metacritic")
         logger.info("Config: migrated 'metacritic' to 'review_sites.metacritic'")
         return True
-    raw["review_sites"]["metacritic"] = _deep_merge(raw["review_sites"]["metacritic"], raw.pop("metacritic"))
+    legacy_metacritic = raw["metacritic"]
+    current_metacritic = raw["review_sites"]["metacritic"]
+    raw["review_sites"]["metacritic"] = _deep_merge(legacy_metacritic, current_metacritic)
+    del raw["metacritic"]
     return True
 
 
@@ -795,6 +828,8 @@ def _upgrade_freegog_entry(fg: dict[str, Any], defaults: dict[str, Any]) -> bool
 
     Returns True if any keys were added.
     """
+    if not isinstance(fg, dict):
+        return False
     missing = [k for k in defaults if k not in fg]
     if not missing:
         return False
@@ -834,7 +869,15 @@ def _migrate_sort_order_critic_names(raw: dict[str, Any]) -> bool:
     rename is naturally one-time.
     """
     changed = False
-    overrides = raw.get("review_sites", {}).get("metacritic", {}).get("platform_overrides", {})
+    review_sites = raw.get("review_sites")
+    if not isinstance(review_sites, dict):
+        return False
+    metacritic = review_sites.get("metacritic")
+    if not isinstance(metacritic, dict):
+        return False
+    overrides = metacritic.get("platform_overrides")
+    if not isinstance(overrides, dict):
+        return False
     for platform_key, mc_pc in overrides.items():
         if not isinstance(mc_pc, dict):
             continue
@@ -852,6 +895,7 @@ def _migrate_config(raw: dict[str, Any]) -> bool:
 
     Returns True if any migration was applied.
     """
+    original = copy.deepcopy(raw)
     try:
         changed = False
         # Run migration functions in order.  sources → download_sites
@@ -889,6 +933,8 @@ def _migrate_config(raw: dict[str, Any]) -> bool:
                 changed = True
         return changed
     except Exception as exc:
+        raw.clear()
+        raw.update(original)
         logger.warning("Config migration failed: {}", exc)
         return False
 
@@ -963,16 +1009,142 @@ def _default_config_dict() -> dict[str, Any]:
     return d
 
 
+def _config_file_path(config_path: str | Path) -> Path:
+    """Resolve a config file path from either a file or directory input."""
+    path = Path(config_path)
+    if path.exists():
+        return path / _CONFIG_FILENAME if path.is_dir() else path
+    if not path.suffix:
+        return path / _CONFIG_FILENAME
+    return path
+
+
 def create_default_config(config_path: str | Path) -> None:
     """Write a default YAML config file if one does not already exist."""
-    path = Path(config_path)
-    if not path.suffix:
-        path = path / _CONFIG_FILENAME
-    path.parent.mkdir(parents=True, exist_ok=True)
+    path = _config_file_path(config_path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.warning("Could not create config directory '{}': {}", path.parent, exc)
+        return
     if path.exists():
         return
-    with path.open("w", encoding="utf-8") as fh:
-        yaml.dump(_default_config_dict(), fh, default_flow_style=False, sort_keys=False)
+    try:
+        with path.open("w", encoding="utf-8") as fh:
+            yaml.dump(_default_config_dict(), fh, default_flow_style=False, sort_keys=False)
+    except OSError as exc:
+        logger.warning("Could not write default config '{}': {}", path, exc)
+
+
+def _resolve_config_path(config_path: str | Path) -> Path:
+    """Resolve *config_path*, create a default, and require a regular file."""
+    path = _config_file_path(config_path)
+    if not path.exists():
+        create_default_config(path)
+    if not path.is_file():
+        raise ValueError(f"Config path '{path}' is not a file.")
+    return path
+
+
+def _load_raw_config(path: Path) -> dict[str, Any]:
+    """Load YAML from *path* and require a mapping at its root."""
+    with path.open("r", encoding="utf-8") as fh:
+        loaded = yaml.safe_load(fh)
+
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict):
+        raise ValueError(f"Config file '{path}' must be a YAML mapping (got {type(loaded).__name__}).")
+    return loaded
+
+
+def _config_shape_is_rewritable(raw: dict[str, Any]) -> bool:
+    """Return whether raw config sections have safe shapes for persistence."""
+    mapping_sections = (
+        "general",
+        "schedule",
+        "review_sites",
+        "torrent_client",
+        "notification",
+        "database",
+        "library",
+        "post_process",
+    )
+    if any(key in raw and raw[key] is not None and not isinstance(raw[key], dict) for key in mapping_sections):
+        return False
+    download_sites = raw.get("download_sites")
+    if download_sites is not None and not isinstance(download_sites, (dict, list)):
+        return False
+
+    review_sites = raw.get("review_sites")
+    if not isinstance(review_sites, dict):
+        return True
+    metacritic = review_sites.get("metacritic")
+    if metacritic is not None and not isinstance(metacritic, dict):
+        return False
+    if not isinstance(metacritic, dict):
+        return True
+    overrides = metacritic.get("platform_overrides")
+    return overrides is None or isinstance(overrides, dict)
+
+
+def _write_config_atomically(path: Path, config: dict[str, Any]) -> None:
+    """Write *config* atomically while preserving an existing file mode."""
+    temp_path: Path | None = None
+    try:
+        original_mode: int | None
+        try:
+            original_mode = stat.S_IMODE(path.stat().st_mode)
+        except OSError:
+            original_mode = None
+        file_descriptor, temp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+        temp_path = Path(temp_name)
+        os.close(file_descriptor)
+        with temp_path.open("w", encoding="utf-8") as fh:
+            yaml.dump(config, fh, default_flow_style=False, sort_keys=False)
+            fh.flush()
+        if original_mode is not None:
+            os.chmod(temp_path, original_mode)
+        os.replace(temp_path, path)
+    finally:
+        if temp_path is not None:
+            with contextlib.suppress(OSError):
+                temp_path.unlink(missing_ok=True)
+
+
+def _rewrite_config_if_needed(
+    path: Path,
+    raw: dict[str, Any],
+    merged: dict[str, Any],
+    migrated: bool,
+) -> None:
+    """Persist *merged* when migration or missing default keys require an update."""
+    if not migrated and not _needs_config_update(raw):
+        return
+    if not _config_shape_is_rewritable(raw):
+        return
+
+    merged_general = merged.get("general")
+    if not isinstance(merged_general, dict):
+        return
+    raw_general = raw.get("general")
+    old_version = (
+        raw_general.get("config_version", _CONFIG_VERSION) if isinstance(raw_general, dict) else _CONFIG_VERSION
+    )
+    merged_general["config_version"] = _next_version(old_version)
+    try:
+        _write_config_atomically(path, merged)
+    except OSError as exc:
+        # A read-only config (mount/permissions) must not abort startup —
+        # continue with the migrated in-memory config; the rewrite is
+        # retried on the next load.
+        logger.warning("Could not rewrite config file '{}': {} — continuing with migrated in-memory config", path, exc)
+    else:
+        logger.info(
+            "Config updated to version {} — added {} new fields",
+            merged_general["config_version"],
+            len(_config_keys(merged) - _config_keys(raw)),
+        )
 
 
 def load_config(config_path: str | Path) -> Config:
@@ -989,22 +1161,8 @@ def load_config(config_path: str | Path) -> Config:
         Fully populated configuration with defaults applied for any
         missing keys.
     """
-    path = Path(config_path)
-    if not path.suffix:
-        path = path / _CONFIG_FILENAME
-
-    if not path.exists():
-        create_default_config(path)
-
-    with path.open("r", encoding="utf-8") as fh:
-        loaded = yaml.safe_load(fh)
-
-    if loaded is None:
-        raw: dict[str, Any] = {}
-    elif not isinstance(loaded, dict):
-        raise ValueError(f"Config file '{path}' must be a YAML mapping (got {type(loaded).__name__}).")
-    else:
-        raw = loaded
+    path = _resolve_config_path(config_path)
+    raw = _load_raw_config(path)
 
     # Migrate renamed fields (e.g. exclude_keywords → reject_keywords)
     migrated = _migrate_config(raw)
@@ -1019,25 +1177,7 @@ def load_config(config_path: str | Path) -> Config:
     # current model defines, write the merged config back to the file
     # and bump the config version.  This keeps existing configs up-to-date
     # automatically when fields are renamed or added.
-    if raw and (migrated or _needs_config_update(raw)):
-        old_version = raw.get("general", {}).get("config_version", _CONFIG_VERSION)
-        merged["general"]["config_version"] = _next_version(old_version)
-        try:
-            with path.open("w", encoding="utf-8") as fh:
-                yaml.dump(merged, fh, default_flow_style=False, sort_keys=False)
-        except OSError as exc:
-            # A read-only config (mount/permissions) must not abort startup —
-            # continue with the migrated in-memory config; the rewrite is
-            # retried on the next load.
-            logger.warning(
-                "Could not rewrite config file '{}': {} — continuing with migrated in-memory config", path, exc
-            )
-        else:
-            logger.info(
-                "Config updated to version {} — added {} new fields",
-                merged["general"]["config_version"],
-                len(_config_keys(merged) - _config_keys(raw)),
-            )
+    _rewrite_config_if_needed(path, raw, merged, migrated)
 
     # Convert any datetime.date objects back to ISO strings
     # (PyYAML parses ``2025-01-01`` as a date, but the model expects str)

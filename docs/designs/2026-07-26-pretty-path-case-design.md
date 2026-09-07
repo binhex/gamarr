@@ -15,7 +15,8 @@ names like `FitGirl`/`FreeGOG` and `PC`.
 
 Platform, genre, and title values from Metacritic are already
 properly capitalized (`PC`, `Action,RPG`, `Elden Ring`). Only the
-source name needs explicit mapping.
+source name needs explicit mapping. The `{genre}` placeholder uses
+only the first comma-separated genre.
 
 ## Design
 
@@ -48,7 +49,7 @@ _PRETTY_SOURCE = {"fitgirl": "FitGirl", "freegog": "FreeGOG"}
 Formatting is applied per-key inside `_build_destination_path()`:
 
 | `path_case` | site | platform | genre | title |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `"pretty"` | Lookup table (`_PRETTY_SOURCE`); pass-through if unknown | Pass-through | Pass-through | Pass-through |
 | `"lowercase"` | `.lower()` | `.lower()` | `.lower()` | `.lower()` |
 
@@ -57,15 +58,15 @@ formatting.
 
 ### Example
 
-```
+```text
 Template: /library/{site}/{platform}/{genre}/{title}
 
 path_case: "pretty"
-  fitgirl + PC + Action,RPG + Elden Ring  →  /library/FitGirl/PC/Action/RPG/Elden Ring
+  fitgirl + PC + Action,RPG + Elden Ring  →  /library/FitGirl/PC/Action/Elden Ring
   freegog  + PC + Strategy  + Zelda       →  /library/FreeGOG/PC/Strategy/Zelda
 
 path_case: "lowercase"
-  fitgirl + PC + Action,RPG + Elden Ring  →  /library/fitgirl/pc/action/rpg/elden ring
+  fitgirl + PC + Action,RPG + Elden Ring  →  /library/fitgirl/pc/action/elden ring
   freegog  + PC + Strategy  + Zelda       →  /library/freegog/pc/strategy/zelda
 ```
 
@@ -108,7 +109,7 @@ serialization.
 ### Files changed
 
 | File | Change |
-|------|--------|
+| --- | --- |
 | `src/gamarr/config.py` | Add `path_case` field to `PostProcessConfig`. Add `_migrate_add_post_process_path_case()` migration function. |
 | `src/gamarr/post_processor.py` | Add `_PRETTY_SOURCE` table. `_build_destination_path()` accepts `path_case` and applies formatting per-key. Caller in `_run_copy_phase()` passes `pp.path_case`. |
 | `tests/unit/test_post_processor.py` | Add tests: `_PRETTY_SOURCE` lookups, `_build_destination_path()` with both values, lowercasing, edge cases |
