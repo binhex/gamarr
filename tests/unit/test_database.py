@@ -1761,3 +1761,203 @@ class TestClearBrowseCache:
         detail = cache.get_game_detail("a")
         assert detail is not None and detail["metascore"] == 85.0, "detail cache must be preserved"
         db.close()
+
+
+class TestPendingOrdering:
+    """The pending queue is ordered by the active ``sort_order``.
+
+    Regression: ``get_pending`` previously had no ``ORDER BY``, so the
+    processing order was whatever SQLite happened to return.  Switching
+    ``sort_order`` from ``criticscore`` to ``new`` therefore delivered
+    games whose release dates were in no sequence at all.
+    """
+
+    _EXPIRES = "2099-01-01T00:00:00+00:00"
+
+    @classmethod
+    def _seed(
+        cls,
+        db: Database,
+        *,
+        slug: str,
+        title: str,
+        release_date: str | None,
+        metascore: float | None,
+        user_score: float | None,
+    ) -> None:
+        db.record_pending(
+            slug=slug,
+            game_title=title,
+            platform="pc",
+            metascore=metascore,
+            user_score=user_score,
+            release_date=release_date,
+            expires_at=cls._EXPIRES,
+        )
+
+    def _seed_reported_games(self, db: Database) -> None:
+        """Seed the three games from the reported bug, plus an undated game."""
+        self._seed(
+            db,
+            slug="brigandine-the-legend-of-runersia",
+            title="Brigandine: The Legend of Runersia",
+            release_date="2022-05-10",
+            metascore=76.0,
+            user_score=8.3,
+        )
+        self._seed(
+            db,
+            slug="hack-gu-last-recode",
+            title=".hack//G.U. Last Recode",
+            release_date="2017-11-03",
+            metascore=76.0,
+            user_score=8.0,
+        )
+        self._seed(
+            db,
+            slug="crash-bandicoot-n-sane-trilogy",
+            title="Crash Bandicoot N. Sane Trilogy",
+            release_date="2018-06-29",
+            metascore=80.0,
+            user_score=8.3,
+        )
+        self._seed(
+            db,
+            slug="undated-game",
+            title="Undated Game",
+            release_date=None,
+            metascore=99.0,
+            user_score=9.9,
+        )
+
+    def test_new_order_processes_newest_release_first(self, tmp_path: Path) -> None:
+        """sort_order='new' must yield newest release_date first, undated last."""
+        db = Database(str(tmp_path / "test.db"))
+        self._seed_reported_games(db)
+
+        titles = [g.game_title for g in db.get_pending(platform="pc", sort_order="new")]
+
+        assert titles == [
+            "Brigandine: The Legend of Runersia",
+            "Crash Bandicoot N. Sane Trilogy",
+            ".hack//G.U. Last Recode",
+            "Undated Game",
+        ], f"Expected newest-first release order, got: {titles}"
+        db.close()
+
+    def test_criticscore_order_processes_highest_metascore_first(self, tmp_path: Path) -> None:
+        """sort_order='criticscore' must yield highest metascore first."""
+        db = Database(str(tmp_path / "test.db"))
+        self._seed_reported_games(db)
+
+        titles = [g.game_title for g in db.get_pending(platform="pc", sort_order="criticscore")]
+
+        assert titles == [
+            "Undated Game",
+            "Crash Bandicoot N. Sane Trilogy",
+            "Brigandine: The Legend of Runersia",
+            ".hack//G.U. Last Recode",
+        ], f"Expected highest-metascore-first order, got: {titles}"
+        db.close()
+
+    def test_userscore_order_processes_highest_user_score_first(self, tmp_path: Path) -> None:
+        """sort_order='userscore' must yield highest user score first."""
+        db = Database(str(tmp_path / "test.db"))
+        self._seed_reported_games(db)
+
+        titles = [g.game_title for g in db.get_pending(platform="pc", sort_order="userscore")]
+
+        assert titles == [
+            "Undated Game",
+            "Brigandine: The Legend of Runersia",
+            "Crash Bandicoot N. Sane Trilogy",
+            ".hack//G.U. Last Recode",
+        ], f"Expected highest-user-score-first order, got: {titles}"
+        db.close()
+
+    def test_score_orders_rank_verified_scores_ahead_of_browse_metrics(self, tmp_path: Path) -> None:
+        """Unverified browse metrics must not outrank verified real scores."""
+        db = Database(str(tmp_path / "test.db"))
+        self._seed(
+            db,
+            slug="unverified-placeholder",
+            title="Unverified Placeholder",
+            release_date="2025-01-01",
+            metascore=1998.0,
+            user_score=1998.0,
+        )
+        self._seed(
+            db,
+            slug="verified-real-score",
+            title="Verified Real Score",
+            release_date="2024-01-01",
+            metascore=85.0,
+            user_score=8.0,
+        )
+        db.update_pending_scores(slug="verified-real-score", metascore=85.0, user_score=8.0)
+
+        criticscore_rows = db.get_pending(platform="pc", sort_order="criticscore")
+        userscore_rows = db.get_pending(platform="pc", sort_order="userscore")
+
+        assert criticscore_rows[0].slug == "verified-real-score"
+        assert userscore_rows[0].slug == "verified-real-score"
+        db.close()
+
+    def test_new_order_handles_existing_non_padded_dates(self, tmp_path: Path) -> None:
+        """Existing non-padded ISO dates must still sort chronologically."""
+        db = Database(str(tmp_path / "test.db"))
+        self._seed(
+            db,
+            slug="june-game",
+            title="June Game",
+            release_date="2025-6-1",
+            metascore=80.0,
+            user_score=8.0,
+        )
+        self._seed(
+            db,
+            slug="december-game",
+            title="December Game",
+            release_date="2025-12-31",
+            metascore=80.0,
+            user_score=8.0,
+        )
+
+        rows = db.get_pending(platform="pc", sort_order="new")
+
+        assert [row.slug for row in rows] == ["december-game", "june-game"]
+        db.close()
+
+    def test_unknown_order_logs_warning(self, tmp_path: Path) -> None:
+        """A non-empty unknown sort order must not fail silently."""
+        from unittest.mock import patch
+
+        db = Database(str(tmp_path / "test.db"))
+        with patch("gamarr.database.logger") as mock_logger:
+            db.get_pending(platform="pc", sort_order="newest")  # type: ignore[arg-type]
+
+        mock_logger.warning.assert_called_once_with(
+            "Unknown sort_order '{}' — using unordered pending queue",
+            "newest",
+        )
+        db.close()
+
+    def test_order_is_deterministic_for_ties(self, tmp_path: Path) -> None:
+        """Equal sort keys must resolve deterministically via slug."""
+        db = Database(str(tmp_path / "test.db"))
+        for slug in ("b-tie", "a-tie", "c-tie"):
+            self._seed(
+                db,
+                slug=slug,
+                title=slug,
+                release_date="2024-01-01",
+                metascore=80.0,
+                user_score=8.0,
+            )
+
+        first = [g.slug for g in db.get_pending(platform="pc", sort_order="new")]
+        second = [g.slug for g in db.get_pending(platform="pc", sort_order="new")]
+
+        assert first == ["a-tie", "b-tie", "c-tie"], f"Ties must order by slug, got: {first}"
+        assert first == second, "Repeated reads must return an identical order"
+        db.close()

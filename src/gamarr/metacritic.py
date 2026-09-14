@@ -430,10 +430,11 @@ def _resolve_release_date(nuxt_data: list[Any], game: dict[str, Any]) -> str | N
     raw = _nuxt_val(nuxt_data, game.get("releaseDate"))
     if not isinstance(raw, str):
         return None
-    # Validate the date format before returning
+    # Validate and normalize before storing so lexicographic sorting remains
+    # chronological even when the source omits leading zeroes.
     try:
-        datetime.datetime.strptime(raw, "%Y-%m-%d")
-        return raw
+        parsed = datetime.datetime.strptime(raw, "%Y-%m-%d")
+        return parsed.strftime("%Y-%m-%d")
     except (ValueError, TypeError):
         return None
 

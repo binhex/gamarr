@@ -1772,6 +1772,60 @@ class TestMetacriticBrowse:
                 assert g.metascore == 1288.0, f"{g.slug} should be unverified (browse score), got {g.metascore}"
         db.close()
 
+    def test_verify_pending_uses_active_sort_order(self, tmp_path: Path) -> None:
+        """Verification must consume the pending queue in the active sort order."""
+        import datetime
+        import types
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _verify_pending_scores
+
+        db = Database(str(tmp_path / "test.db"))
+        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
+        db.record_pending(
+            slug="old-game",
+            game_title="Old Game",
+            platform="pc",
+            release_date="2018-01-01",
+            expires_at=expires,
+        )
+        db.record_pending(
+            slug="new-game",
+            game_title="New Game",
+            platform="pc",
+            release_date="2026-01-01",
+            expires_at=expires,
+        )
+        mock_mc = MagicMock()
+        mock_mc.lookup_game.return_value = types.SimpleNamespace(
+            metascore=85.0,
+            metascore_review_count=20,
+            user_score=8.0,
+            user_review_count=100,
+            genres=["Action"],
+            must_play=False,
+            release_date="2026-01-01",
+        )
+
+        _verify_pending_scores(
+            db,
+            mock_mc,
+            "pc",
+            {"min_criticscore": 75, "min_criticscore_reviews": 5, "min_user_score": 7.5, "min_user_reviews": 10},
+            max_verify=1,
+            sort_order="new",
+        )
+
+        mock_mc.lookup_game.assert_called_once_with(
+            "New Game",
+            platform="pc",
+            slug="new-game",
+            cache_details_days=7,
+            direct_only=True,
+        )
+        db.close()
+
     def test_match_pending_skips_unverified_game_with_browse_scores(self, tmp_path: Path) -> None:
         """A matched pending game with unverified browse scores must NOT be delivered.
 
@@ -5468,6 +5522,26 @@ class TestLogVerifyProgress:
 class TestProcessAgedGames:
     """Tests for _process_aged_games sweep function."""
 
+    def test_process_aged_games_uses_active_sort_order(self) -> None:
+        """Aged processing must request the pending queue in active sort order."""
+        from unittest.mock import MagicMock
+
+        from gamarr.pipeline import AcquisitionConfig, _process_aged_games
+
+        db = MagicMock()
+        db.get_pending.return_value = []
+        cfg = AcquisitionConfig(
+            min_criticscore=75,
+            min_criticscore_reviews=10,
+            min_user_score=7.5,
+            min_user_reviews=10,
+            age_recheck_weeks=4,
+            sort_order="userscore",
+        )
+
+        assert _process_aged_games(db, cfg, platform="pc") == 0
+        db.get_pending.assert_called_once_with(platform="pc", sort_order="userscore")
+
     def test_should_age_game_returns_false_when_not_checked(self) -> None:
         """_should_age_game returns False when last_checked_at is None."""
         from unittest.mock import MagicMock
@@ -6267,14 +6341,16 @@ class TestBacklogAdvancing:
 
     def test_backlog_advances_start_page_across_cycles(self, tmp_path: Path) -> None:
         """Start_page should come from persisted last_scanned_page, not 1."""
+        import datetime
         from unittest.mock import MagicMock, patch
 
         from gamarr.database import Database
         from gamarr.pipeline import run_acquisition
 
         db_path = str(tmp_path / "test.db")
+        scan_year = datetime.datetime.now(tz=datetime.UTC).year
         db = Database(db_path)
-        db.set_last_scanned_page("pc", 2026, 4)
+        db.set_last_scanned_page("pc", scan_year, 4)
         db.close()
 
         with (
@@ -6303,8 +6379,13 @@ class TestBacklogAdvancing:
                 sort_order="new",
             )
 
-            _, kwargs = mock_mc.scan_recent_games.call_args
-            assert kwargs["start_page"] == 5, f"Expected start_page=5, got {kwargs['start_page']}"
+            # sort_order='new' now walks the newest year first, so the
+            # current-year call is the first one.  Select it explicitly —
+            # ``call_args`` only ever exposes the most recent call.
+            calls_by_year = {c.kwargs["year"]: c.kwargs for c in mock_mc.scan_recent_games.call_args_list}
+            assert scan_year in calls_by_year, f"Expected a scan call for {scan_year}, got: {sorted(calls_by_year)}"
+            start_page = calls_by_year[scan_year]["start_page"]
+            assert start_page == 5, f"Expected start_page=5 for {scan_year}, got {start_page}"
 
     def test_backlog_progress_logged_in_phase_5(self, tmp_path: Path) -> None:
         """Backlog progress line should appear at the end of a cycle."""
@@ -7471,3 +7552,173 @@ class TestScoreCheckSummary:
         combined = " ".join(str(c) for c in info_calls)
         # Should mention how many passed vs failed, not just "verified"
         assert "passed" in combined.lower(), f"Expected 'passed' count in summary, got: {info_calls}"
+
+
+class TestPendingProcessingOrder:
+    """Processing and discovery follow the configured ``sort_order``.
+
+    Regression: the browse phase honoured ``sort_order`` but the pending
+    queue (verification, matching, delivery) did not, so switching from
+    ``criticscore`` to ``new`` delivered carryover games in an arbitrary
+    database order.  Discovery also walked year buckets oldest-first.
+    """
+
+    _EXPIRES = "2099-01-01T00:00:00+00:00"
+
+    @staticmethod
+    def _seed(db: Any, *, slug: str, title: str, release_date: str, metascore: float, user_score: float) -> None:
+        from gamarr.database import Database as _Database
+
+        assert isinstance(db, _Database)
+        db.record_pending(
+            slug=slug,
+            game_title=title,
+            platform="pc",
+            metascore=metascore,
+            user_score=user_score,
+            release_date=release_date,
+            expires_at=TestPendingProcessingOrder._EXPIRES,
+        )
+        db.update_pending_scores(slug=slug, metascore=metascore, user_score=user_score)
+
+    @staticmethod
+    def _seed_source_titles(db: Any, titles: list[str]) -> None:
+        db.rebuild_source_titles(
+            "fitgirl",
+            [{"title": t, "url": f"https://fitgirl-repacks.site/{t.casefold().replace(' ', '-')}/"} for t in titles],
+        )
+
+    def test_match_delivers_newest_release_first_for_new_sort_order(self, tmp_path: Path) -> None:
+        """sort_order='new' delivers the most recently released game first."""
+        from unittest.mock import MagicMock
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _match_pending_games
+
+        db = Database(str(tmp_path / "test.db"))
+        self._seed(
+            db,
+            slug="brigandine-the-legend-of-runersia",
+            title="Brigandine: The Legend of Runersia",
+            release_date="2022-05-10",
+            metascore=76.0,
+            user_score=8.3,
+        )
+        self._seed(
+            db,
+            slug="hack-gu-last-recode",
+            title=".hack//G.U. Last Recode",
+            release_date="2017-11-03",
+            metascore=76.0,
+            user_score=8.0,
+        )
+        self._seed(
+            db,
+            slug="crash-bandicoot-n-sane-trilogy",
+            title="Crash Bandicoot N. Sane Trilogy",
+            release_date="2018-06-29",
+            metascore=80.0,
+            user_score=8.3,
+        )
+        self._seed_source_titles(
+            db,
+            [
+                "Brigandine: The Legend of Runersia",
+                ".hack//G.U. Last Recode",
+                "Crash Bandicoot N. Sane Trilogy",
+            ],
+        )
+
+        mock_qbt = MagicMock()
+        mock_qbt.add_torrent.return_value = "gamarr-tag"
+        magnet_fetcher = MagicMock(return_value="magnet:?xt=urn:btih:test")
+
+        matched = _match_pending_games(
+            db,
+            qbt=mock_qbt,
+            magnet_fetcher=magnet_fetcher,
+            sort_order="new",
+        )
+
+        assert [m["slug"] for m in matched] == [
+            "brigandine-the-legend-of-runersia",
+            "crash-bandicoot-n-sane-trilogy",
+            "hack-gu-last-recode",
+        ], f"Expected newest-release-first delivery, got: {[m['slug'] for m in matched]}"
+        db.close()
+
+    def test_run_acquisition_threads_sort_order_to_processing(self, mocker: Any, tmp_path: Path) -> None:
+        """run_acquisition must pass the configured order to verify and match."""
+        from gamarr.pipeline import run_acquisition
+
+        mock_db = mocker.patch("gamarr.pipeline.Database")
+        db = mock_db.return_value
+        db.get_last_sort_order.return_value = "userscore"
+        db.get_last_scanned_page.return_value = 0
+        db.sum_scanned_pages.return_value = 0
+        db.get_pending.return_value = [MagicMock()]
+        db.has_verified_pending.return_value = True
+
+        mock_qbt = mocker.patch("gamarr.pipeline.QBittorrentClient")
+        mock_qbt.return_value.is_connected.return_value = True
+        mock_mc = mocker.patch("gamarr.pipeline.MetacriticClient")
+        mock_mc.return_value.scan_recent_games.return_value = []
+        mock_mc.return_value._recent_games_last_page = 0
+        mocker.patch("gamarr.pipeline.FitGirlSource")
+        verify = mocker.patch("gamarr.pipeline._verify_pending_scores", return_value=0)
+        match = mocker.patch("gamarr.pipeline._match_pending_games", return_value=[])
+
+        run_acquisition(
+            platform="pc",
+            db_path=str(tmp_path / "test.db"),
+            enabled=True,
+            sort_order="userscore",
+            max_pages=10,
+            max_cycle_pages=1,
+        )
+
+        assert verify.call_args.kwargs["sort_order"] == "userscore"
+        assert match.call_args.kwargs["sort_order"] == "userscore"
+
+    def test_new_sort_order_scans_newest_year_first(self, mocker: Any, tmp_path: Path) -> None:
+        """Discovery must walk year buckets from the current year backwards."""
+        import datetime
+
+        from gamarr.pipeline import run_acquisition
+
+        mock_db = mocker.patch("gamarr.pipeline.Database")
+        mock_db_instance = mock_db.return_value
+        mock_db_instance.sum_scanned_pages.return_value = 0
+        mock_db_instance.has_verified_pending.return_value = False
+        mock_db_instance.get_pending.return_value = []
+        mock_db_instance.get_last_scanned_page.return_value = 0
+
+        mock_qbt = mocker.patch("gamarr.pipeline.QBittorrentClient")
+        mock_qbt.return_value.is_connected.return_value = True
+
+        mock_mc = mocker.patch("gamarr.pipeline.MetacriticClient")
+        mock_mc_instance = mock_mc.return_value
+
+        def _mock_scan(*args: Any, **kwargs: Any) -> list:
+            # Report one page scanned so each year consumes exactly one page.
+            mock_mc_instance._recent_games_last_page = kwargs["start_page"]
+            return []
+
+        mock_mc_instance.scan_recent_games = MagicMock(side_effect=_mock_scan)
+
+        # max_pages=200 -> years_back = ceil(200/52) = 4 -> five year buckets.
+        run_acquisition(
+            platform="pc",
+            db_path=str(tmp_path / "test.db"),
+            enabled=True,
+            sort_order="new",
+            max_pages=200,
+            max_cycle_pages=1,
+        )
+
+        anchor = datetime.datetime.now(tz=datetime.UTC).year
+        years = [c.kwargs["year"] for c in mock_mc_instance.scan_recent_games.call_args_list]
+
+        assert years == [anchor - offset for offset in range(5)], (
+            f"Expected newest-year-first traversal starting at {anchor}, got: {years}"
+        )

@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
+import pytest
+
 from gamarr.file_utils import copy_with_verify, make_directory
 
 if TYPE_CHECKING:
@@ -94,6 +96,21 @@ class TestCopyWithVerify:
 
         with patch.object(file_utils, "_do_copy", side_effect=PermissionError("denied")):
             assert copy_with_verify(str(src), str(dst)) is False
+
+    def test_interrupted_copy_removes_partial_temp_file(self, tmp_path: Path) -> None:
+        """An interrupted copy must not leave a hidden temporary file behind."""
+        src = tmp_path / "src.bin"
+        dst = tmp_path / "dst" / "dst.bin"
+        src.write_bytes(b"test data")
+        from gamarr import file_utils
+
+        with (
+            patch.object(file_utils, "_do_copy", side_effect=KeyboardInterrupt),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            copy_with_verify(str(src), str(dst))
+
+        assert list(dst.parent.glob(f".{dst.name}.*.tmp")) == []
 
     def test_copy_verification_source_disappeared(self, tmp_path: Path) -> None:
         src = tmp_path / "src.bin"

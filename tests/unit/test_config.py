@@ -1015,6 +1015,26 @@ def test_deep_merge_override_key_not_in_base() -> None:
 # --- rss_url → feed_url, name excluded, keyed-list support ---
 
 
+def test_legacy_source_lookup_is_case_insensitive() -> None:
+    """Legacy source mapping keys must match canonical names case-insensitively."""
+    from gamarr.config import _source_config_dicts
+
+    fitgirl = {"enabled": True}
+    raw: dict[str, Any] = {"sources": {"FitGirl": fitgirl}}
+
+    assert _source_config_dicts(raw, "sources", "fitgirl") == [fitgirl]
+
+
+def test_legacy_source_lookup_prefers_valid_exact_key() -> None:
+    """A case variant with an invalid value must not shadow the exact key."""
+    from gamarr.config import _source_config_dicts
+
+    fitgirl = {"enabled": True}
+    raw: dict[str, Any] = {"sources": {"FitGirl": None, "fitgirl": fitgirl}}
+
+    assert _source_config_dicts(raw, "sources", "fitgirl") == [fitgirl]
+
+
 def test_parse_keyed_list() -> None:
     """DownloadSitesConfig parses [{'fitgirl': {'enabled': True}}] correctly."""
     from gamarr.config import DownloadSitesConfig

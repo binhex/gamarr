@@ -91,57 +91,89 @@ def _do_copy(src: Path, dst: Path) -> None:
     logger.info("Copied '{}' -> '{}'.", src, dst)
 
 
-def _perform_copy(src: Path, dst: Path) -> bool:
-    """Copy *src* to a temporary sibling, verify it, then replace *dst*."""
+def _remove_temp_copy(temp_path: Path | None) -> None:
+    """Remove a temporary copy when one exists, ignoring cleanup errors."""
+    if temp_path is not None:
+        with contextlib.suppress(OSError):
+            temp_path.unlink()
+
+
+def _copy_to_temporary(src: Path, dst: Path) -> Path | None:
+    """Copy *src* to a temporary sibling; return its path or ``None`` on failure."""
     temp_path: Path | None = None
     try:
-        try:
-            file_descriptor, temp_name = tempfile.mkstemp(
-                dir=dst.parent,
-                prefix=f".{dst.name}.",
-                suffix=".tmp",
-            )
-            temp_path = Path(temp_name)
-            os.close(file_descriptor)
-            _do_copy(src, temp_path)
-        except FileNotFoundError as exc:
-            logger.warning("Source '{}' not found during copy: {}.", src, exc)
-            return False
-        except PermissionError as exc:
-            logger.warning("Permission denied copying '{}' -> '{}': {}.", src, dst, exc)
-            return False
-        except OSError as exc:
-            logger.warning("OS error copying '{}' -> '{}': {}.", src, dst, exc)
-            return False
+        file_descriptor, temp_name = tempfile.mkstemp(
+            dir=dst.parent,
+            prefix=f".{dst.name}.",
+            suffix=".tmp",
+        )
+        temp_path = Path(temp_name)
+        os.close(file_descriptor)
+        _do_copy(src, temp_path)
+        return temp_path
+    except FileNotFoundError as exc:
+        logger.warning("Source '{}' not found during copy: {}.", src, exc)
+    except PermissionError as exc:
+        logger.warning("Permission denied copying '{}' -> '{}': {}.", src, dst, exc)
+    except OSError as exc:
+        logger.warning("OS error copying '{}' -> '{}': {}.", src, dst, exc)
+    except BaseException:
+        _remove_temp_copy(temp_path)
+        raise
+    _remove_temp_copy(temp_path)
+    return None
 
-        if temp_path is None:
-            logger.error("Temporary copy not created for '{}'.", dst)
-            return False
+
+def _hash_source_for_verification(src: Path) -> str | None:
+    """Return the source hash, or ``None`` after logging an ``OSError``."""
+    try:
+        return _sha256(src)
+    except OSError:
+        logger.error("Source file disappeared during post-copy verification: '{}'", src)
+        return None
+
+
+def _hash_temporary_for_verification(temp_path: Path) -> str | None:
+    """Return the temporary-copy hash, or ``None`` after logging a verification failure."""
+    try:
+        return _sha256(temp_path)
+    except OSError as exc:
+        logger.warning("Could not verify temporary destination '{}': {}.", temp_path, exc)
+        return None
+
+
+def _replace_with_verified_copy(temp_path: Path, dst: Path) -> bool:
+    """Replace *dst* with the verified temporary copy."""
+    try:
+        os.replace(temp_path, dst)
+        return True
+    except OSError as exc:
+        logger.warning("Could not replace destination '{}' with verified copy: {}.", dst, exc)
+        return False
+
+
+def _perform_copy(src: Path, dst: Path) -> bool:
+    """Copy *src* to a temporary sibling, verify it, then replace *dst*."""
+    temp_path = _copy_to_temporary(src, dst)
+    if temp_path is None:
+        return False
+    try:
         logger.info("Verifying copy integrity for '{}'.", dst)
-        try:
-            src_hash = _sha256(src)
-        except OSError:
-            logger.error("Source file disappeared during post-copy verification: '{}'", src)
+        src_hash = _hash_source_for_verification(src)
+        if src_hash is None:
             return False
-        try:
-            dst_hash = _sha256(temp_path)
-        except OSError as exc:
-            logger.warning("Could not verify temporary destination '{}': {}.", temp_path, exc)
+        dst_hash = _hash_temporary_for_verification(temp_path)
+        if dst_hash is None:
             return False
         if src_hash != dst_hash:
             logger.warning("Post-copy checksum mismatch for '{}': src={}, dst={}.", dst, src_hash[:12], dst_hash[:12])
             return False
-        try:
-            os.replace(temp_path, dst)
-        except OSError as exc:
-            logger.warning("Could not replace destination '{}' with verified copy: {}.", dst, exc)
+        if not _replace_with_verified_copy(temp_path, dst):
             return False
         logger.info("Verified '{}' (sha256={}).", dst, dst_hash[:12])
         return True
     finally:
-        if temp_path is not None:
-            with contextlib.suppress(OSError):
-                temp_path.unlink()
+        _remove_temp_copy(temp_path)
 
 
 def copy_with_verify(src: str | Path, dst: str | Path) -> bool:

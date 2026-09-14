@@ -6,7 +6,7 @@ import contextlib
 import datetime
 import json
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from loguru import logger
 from sqlalchemy import Boolean, Float, Integer, String, Text, create_engine, func, text
@@ -62,6 +62,34 @@ class PendingGame(Base):
     expires_at: Mapped[str] = mapped_column(String, nullable=False)
     last_checked_at: Mapped[str | None] = mapped_column(String, nullable=True)
     score_checks_passed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
+
+# Processing order for the pending queue, keyed by the configured
+# ``sort_order``.  Score modes are fully ordered in SQL.  The ``new`` mode
+# uses slug as a deterministic base before Python applies robust chronological
+# ordering that tolerates legacy non-padded dates.
+_PENDING_ORDER_BY: dict[str, tuple[Any, ...]] = {
+    "new": (PendingGame.slug.asc(),),
+    "criticscore": (
+        PendingGame.score_checks_passed.is_(True).desc(),
+        func.coalesce(PendingGame.metascore, -1.0).desc(),
+        PendingGame.slug.asc(),
+    ),
+    "userscore": (
+        PendingGame.score_checks_passed.is_(True).desc(),
+        func.coalesce(PendingGame.user_score, -1.0).desc(),
+        PendingGame.slug.asc(),
+    ),
+}
+
+
+def _pending_release_sort_key(row: PendingGame) -> tuple[int, int, str]:
+    """Return a chronological key that tolerates legacy non-padded dates."""
+    try:
+        released = datetime.datetime.strptime(row.release_date or "", "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return (1, 0, row.slug)
+    return (0, -released.toordinal(), row.slug)
 
 
 class SourceTitle(Base):
@@ -414,14 +442,41 @@ class Database:
             session.add(row)
             session.commit()
 
-    def get_pending(self, *, platform: str | None = None) -> list[PendingGame]:
+    def get_pending(
+        self,
+        *,
+        platform: str | None = None,
+        sort_order: Literal["new", "criticscore", "userscore"] | None = None,
+    ) -> list[PendingGame]:
+        """Return non-expired pending games, optionally ordered by *sort_order*.
+
+        When *sort_order* names a known browse order, the queue is returned in
+        that order so processing (score verification, source matching,
+        delivery) follows the same ordering as discovery:
+
+        - ``"new"``: newest ``release_date`` first, undated games last.
+        - ``"criticscore"``: verified games first, then highest ``metascore``.
+        - ``"userscore"``: verified games first, then highest ``user_score``.
+
+        Equal sort keys fall back to ascending ``slug`` so the order is
+        deterministic across cycles.  Omitting *sort_order* preserves the
+        previous unordered behaviour.
+        """
         now = datetime.datetime.now(tz=datetime.UTC).isoformat()
+        normalized_order = (sort_order or "").casefold()
+        order_by = _PENDING_ORDER_BY.get(normalized_order)
+        if sort_order and order_by is None:
+            logger.warning("Unknown sort_order '{}' — using unordered pending queue", sort_order)
         with self._session() as session:
             query = session.query(PendingGame).filter(PendingGame.expires_at > now)
             if platform is not None:
                 query = query.filter(PendingGame.platform == platform)
-            rows = query.all()
-            return list(rows)
+            if order_by is not None:
+                query = query.order_by(*order_by)
+            rows = list(query.all())
+            if normalized_order == "new":
+                rows.sort(key=_pending_release_sort_key)
+            return rows
 
     def get_last_cutoff(self, platform: str) -> str | None:
         """Return the last stored cutoff date for *platform*, or None."""

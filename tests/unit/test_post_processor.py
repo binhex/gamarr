@@ -367,6 +367,57 @@ class TestRunPostProcessing:
         qbt.delete_torrent.assert_not_called()
         db.set_post_process_state.assert_not_called()
 
+    def test_relative_path_error_retains_completed_torrent_for_retry(self) -> None:
+        """A relative-path calculation failure must leave the torrent pending."""
+        from gamarr.config import Config
+        from gamarr.database import HistoryRow
+
+        config = Config()
+        config.post_process.post_process_enabled = True
+        config.post_process.copy_completed = True
+        config.post_process.library_path = "/lib/{title}"
+
+        qbt = MagicMock()
+        qbt.is_connected.return_value = True
+        qbt.list_completed.return_value = (
+            [
+                {
+                    "torrent_tag": "gamarr-test",
+                    "torrent_hash": "abc",
+                    "torrent_name": "Test Game",
+                    "torrent_save_path": "/dl/Test Game",
+                    "torrent_state": "uploading",
+                    "torrent_file_list": [{"file_name": "game.iso", "file_size": 999999}],
+                }
+            ],
+            1,
+        )
+
+        row = MagicMock(spec=HistoryRow)
+        row.source = "fitgirl"
+        row.platform = "pc"
+        row.genres = "Action"
+        row.game_title = "Test Game"
+        row.post_process_state = None
+        db = MagicMock()
+        db.find_by_tag.return_value = row
+
+        with (
+            patch("gamarr.post_processor.make_directory", return_value=True),
+            patch("gamarr.post_processor.relpath", side_effect=ValueError("different drives")),
+            patch("gamarr.post_processor.copy_with_verify") as mock_copy,
+            patch("gamarr.post_processor.logger") as mock_logger,
+        ):
+            run_post_processing(config, qbt, db)
+
+        mock_logger.error.assert_called_once_with(
+            "Cannot calculate relative path for '{}'; aborting.",
+            "/dl/Test Game/game.iso",
+        )
+        mock_copy.assert_not_called()
+        qbt.delete_torrent.assert_not_called()
+        db.set_post_process_state.assert_not_called()
+
     def test_delete_phase_paused_state(self) -> None:
         from gamarr.config import Config
         from gamarr.database import HistoryRow

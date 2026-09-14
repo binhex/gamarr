@@ -387,28 +387,42 @@ def _migrate_download_sites(raw: dict[str, Any]) -> bool:
     return True
 
 
+def _legacy_source_config(parent: dict[str, Any], source_name: str) -> list[dict[str, Any]]:
+    """Return zero or one named source configs from the legacy mapping layout."""
+    exact = parent.get(source_name)
+    if isinstance(exact, dict):
+        return [exact]
+    wanted = source_name.casefold()
+    for key, candidate in parent.items():
+        if isinstance(key, str) and key.casefold() == wanted and isinstance(candidate, dict):
+            return [candidate]
+    return []
+
+
+def _source_configs_from_entry(entry: Any, wanted: str) -> list[dict[str, Any]]:
+    """Return matching source dictionaries from one list entry."""
+    if not isinstance(entry, dict):
+        return []
+    direct_name = entry.get("name")
+    if isinstance(direct_name, str) and direct_name.casefold() == wanted:
+        return [entry]
+    return [
+        value
+        for key, value in entry.items()
+        if isinstance(key, str) and key.casefold() == wanted and isinstance(value, dict)
+    ]
+
+
 def _source_config_dicts(raw: dict[str, Any], parent_key: str, source_name: str) -> list[dict[str, Any]]:
     """Return named source dictionaries from legacy and keyed-list layouts."""
     parent = raw.get(parent_key)
     if isinstance(parent, dict):
-        candidate = parent.get(source_name)
-        return [candidate] if isinstance(candidate, dict) else []
+        return _legacy_source_config(parent, source_name)
     if not isinstance(parent, list):
         return []
 
-    result: list[dict[str, Any]] = []
     wanted = source_name.casefold()
-    for entry in parent:
-        if not isinstance(entry, dict):
-            continue
-        direct_name = entry.get("name")
-        if isinstance(direct_name, str) and direct_name.casefold() == wanted:
-            result.append(entry)
-            continue
-        for key, value in entry.items():
-            if isinstance(key, str) and key.casefold() == wanted and isinstance(value, dict):
-                result.append(value)
-    return result
+    return [config for entry in parent for config in _source_configs_from_entry(entry, wanted)]
 
 
 def _migrate_fitgirl_exclude_keywords(raw: dict[str, Any]) -> bool:
@@ -1058,34 +1072,50 @@ def _load_raw_config(path: Path) -> dict[str, Any]:
     return loaded
 
 
+_CONFIG_MAPPING_SECTIONS = (
+    "general",
+    "schedule",
+    "review_sites",
+    "torrent_client",
+    "notification",
+    "database",
+    "library",
+    "post_process",
+)
+
+
+def _mapping_sections_are_rewritable(raw: dict[str, Any]) -> bool:
+    """Return whether optional top-level mapping sections have safe shapes."""
+    for key in _CONFIG_MAPPING_SECTIONS:
+        if key not in raw:
+            continue
+        value = raw[key]
+        if value is not None and not isinstance(value, dict):
+            return False
+    return True
+
+
+def _review_sites_shape_is_rewritable(review_sites: Any) -> bool:
+    """Return whether nested Metacritic sections have safe mapping shapes."""
+    if not isinstance(review_sites, dict):
+        return True
+    metacritic = review_sites.get("metacritic")
+    if metacritic is None:
+        return True
+    if not isinstance(metacritic, dict):
+        return False
+    overrides = metacritic.get("platform_overrides")
+    return overrides is None or isinstance(overrides, dict)
+
+
 def _config_shape_is_rewritable(raw: dict[str, Any]) -> bool:
     """Return whether raw config sections have safe shapes for persistence."""
-    mapping_sections = (
-        "general",
-        "schedule",
-        "review_sites",
-        "torrent_client",
-        "notification",
-        "database",
-        "library",
-        "post_process",
-    )
-    if any(key in raw and raw[key] is not None and not isinstance(raw[key], dict) for key in mapping_sections):
+    if not _mapping_sections_are_rewritable(raw):
         return False
     download_sites = raw.get("download_sites")
     if download_sites is not None and not isinstance(download_sites, (dict, list)):
         return False
-
-    review_sites = raw.get("review_sites")
-    if not isinstance(review_sites, dict):
-        return True
-    metacritic = review_sites.get("metacritic")
-    if metacritic is not None and not isinstance(metacritic, dict):
-        return False
-    if not isinstance(metacritic, dict):
-        return True
-    overrides = metacritic.get("platform_overrides")
-    return overrides is None or isinstance(overrides, dict)
+    return _review_sites_shape_is_rewritable(raw.get("review_sites"))
 
 
 def _write_config_atomically(path: Path, config: dict[str, Any]) -> None:

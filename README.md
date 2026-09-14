@@ -173,7 +173,7 @@ download_sites:
 | `min_user_reviews` | Minimum number of user reviews required. | `10` |
 | `max_pages` | Total browse page depth budget. The scanner progressively advances through pages across cycles. When the budget is exhausted, scanning resets to page 1. `0` = unlimited. | `500` |
 | `max_cycle_pages` | Maximum pages per cycle (pacing). `0` = unlimited. | `0` |
-| `sort_order` | Browse sort order: `"new"` (release date), `"criticscore"` (by critic score), or `"userscore"` (by user score). | `"new"` |
+| `sort_order` | Discovery and pending processing order: `"new"` (newest release date first), `"criticscore"` (verified games by highest critic score), or `"userscore"` (verified games by highest user score). Unverified games follow verified games in score modes. Changing this value reprioritizes the entire pending queue, including games from previous cycles. | `"new"` |
 | `max_queue_days` | Days a game stays in the pending queue before expiring. `0` = indefinite pending (no expiry). | `30` |
 | `enabled` | Enable or disable the Metacritic browse step. Disabling skips game discovery entirely. | `true` |
 | `cache_details_days` | Days to cache Metacritic detail-page results. | `7` |
@@ -245,7 +245,8 @@ Mirrors [movarr](https://github.com/binhex/movarr)'s post-processing pattern.
 Casing of all variables is controlled by `path_case` above.
 | `{title}` | Metacritic game title | `Elden Ring` |
 
-Example: `"/data/library/{site}/{platform}/{genre}/{title}"` produces `"/data/library/FitGirl/pc/Action/Elden Ring"` (with default `path_case: "pretty"`).
+Example: `"/data/library/{site}/{platform}/{genre}/{title}"` produces
+`"/data/library/FitGirl/pc/Action/Elden Ring"` (with default `path_case: "pretty"`).
 
 ## How It Works
 
@@ -255,7 +256,7 @@ Example: `"/data/library/{site}/{platform}/{genre}/{title}"` produces `"/data/li
 flowchart TD
     A([Start cycle]) --> B{Platform\nenabled?}
     B -- No --> END([End])
-    B -- Yes --> C[Browse Metacritic\nnewest-first]
+    B -- Yes --> C[Browse Metacritic\nconfigured sort_order]
     C --> D[Parse browse-page\nscores & titles]
     D --> E[For each game]
     E --> F{Exclude\nkeyword\nin title?}
@@ -290,12 +291,14 @@ flowchart TD
 
 ### Detailed phases
 
-1. **Metacritic browse** — Scans Metacritic browse pages (newest-first) for
-   games matching the target platform. **Important:** browse pages show
-   *internal browse-only metrics*, not the real 0–100 critic scores or
-   0–10 user scores. These rough scores are used only to build a candidate
-   pool — the real filtering happens in step 4. Games are collected within the
-   `max_pages` browse window.
+1. **Metacritic browse** — Scans Metacritic browse pages using the configured
+   `sort_order`; `new` traverses the newest year first. Pending verification,
+   source matching, and delivery use the same ordering, including games carried
+   over from previous cycles. **Important:** browse pages show *internal
+   browse-only metrics*, not the real 0–100 critic scores or 0–10 user scores.
+   These rough scores are used only to build a candidate pool — the real
+   filtering happens in step 4. Games are collected within the `max_pages`
+   browse window.
 2. **Browse-page filtering** — Games whose titles match `reject_title` are
    skipped. Games outside the `max_pages` window
    are skipped. `max_cycle_pages` controls the per-cycle page limit

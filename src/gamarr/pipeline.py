@@ -165,8 +165,8 @@ def run_acquisition(
 ) -> list[dict[str, Any]]:
     """Execute one scan cycle.
 
-    Discovers games by browsing Metacritic (newest-first), verifies
-    each game's real Metacritic detail-page scores against the
+    Discovers games by browsing Metacritic in the configured ``sort_order``,
+    verifies each game's real Metacritic detail-page scores against the
     configured thresholds, then matches survivors against each
     configured source's sitemap and delivers to qBittorrent.
     """
@@ -292,8 +292,10 @@ def run_acquisition(
 
             remaining_pages = max_pages_cfg - total_scanned if max_pages_cfg > 0 else 0
 
-            # Year loop
-            for scan_year in range(cutoff_year, current_year + 1):
+            # Year loop — newest year first so discovery order matches the
+            # `new` sort order and a mid-cycle budget cutoff never starves
+            # the most recent releases.
+            for scan_year in range(current_year, cutoff_year - 1, -1):
                 if is_cancelled(cancel_event):
                     break
                 if max_pages_cfg > 0 and remaining_pages <= 0:
@@ -350,11 +352,6 @@ def run_acquisition(
                     max_queue_days=cfg.max_queue_days,
                     reject_title=cfg.reject_title,
                 )
-                pending_queue_len = len(db.get_pending(platform=platform))
-                logger.info(
-                    "Pending queue: {} total (including previous cycles)",
-                    pending_queue_len,
-                )
                 if new_pending:
                     logger.info(
                         "{} of {} collected games passed title/age filters — added to pending queue",
@@ -387,7 +384,12 @@ def run_acquisition(
         # \u2014 the \"score\" fields are internal browse-only metrics.
         # Games whose detail-page scores fail the configured thresholds
         # are removed from pending.
-        pending_games = db.get_pending(platform=platform)
+        pending_games = db.get_pending(platform=platform, sort_order=cfg.sort_order)
+        if browse_games:
+            logger.info(
+                "Pending queue: {} total (including previous cycles)",
+                len(pending_games),
+            )
         if pending_games:
             total_pending = len(pending_games)
             carryover = total_pending - (new_pending if browse_games else 0)
@@ -421,6 +423,7 @@ def run_acquisition(
                 fitgirl_max_queue_days=cfg.fitgirl_max_queue_days,
                 notifier=notifier,
                 cancel_event=cancel_event,
+                sort_order=cfg.sort_order,
             )
             if removed:
                 logger.info(
@@ -492,6 +495,7 @@ def run_acquisition(
                     reject_keywords=source_entry.reject_keywords or None,
                     source_name=source_entry.name,
                     platform=platform,
+                    sort_order=cfg.sort_order,
                 )
                 if source_matched:
                     matched.extend(source_matched)
@@ -1064,7 +1068,7 @@ def _process_aged_games(
     if not cfg.age_recheck_weeks:
         return 0
 
-    pending = db.get_pending(platform=platform)
+    pending = db.get_pending(platform=platform, sort_order=cfg.sort_order)
     processed = 0
     for game in pending:
         if is_cancelled(cancel_event):
@@ -1344,6 +1348,7 @@ def _verify_pending_scores(
     fitgirl_max_queue_days: int = 60,
     notifier: Any = None,
     cancel_event: CancelSignal | None = None,
+    sort_order: Literal["new", "criticscore", "userscore"] | None = None,
 ) -> int:
     """Re-verify pending games' scores against the real Metacritic detail page.
 
@@ -1366,6 +1371,9 @@ def _verify_pending_scores(
         mc: MetacriticClient instance.
         platform: Platform identifier (e.g. ``"pc"``).
         thresholds: Dict with score threshold keys.
+        sort_order: Active browse sort order used to order the pending queue
+            (see :meth:`Database.get_pending`).  ``None`` keeps the default
+            database order.
         cache_details_days: TTL for the detail-page cache.
         max_verify: Maximum number of games to verify per cycle.
             Set to 0 to skip verification entirely.
@@ -1385,7 +1393,7 @@ def _verify_pending_scores(
         return 0
 
     removed = 0
-    pending = db.get_pending(platform=platform)
+    pending = db.get_pending(platform=platform, sort_order=sort_order)
     total_pending = len(pending)
 
     # Collect the batch of games to check this cycle
@@ -1575,6 +1583,7 @@ def _match_pending_games(
     reject_keywords: list[str] | None = None,
     source_name: str = "fitgirl",
     platform: str | None = None,
+    sort_order: Literal["new", "criticscore", "userscore"] | None = None,
 ) -> list[dict[str, Any]]:
     """Match pending games against a torrent source index.
 
@@ -1598,6 +1607,9 @@ def _match_pending_games(
         source_name: Name of the source to match against ("fitgirl").
         platform: Optional platform filter. When provided, only pending games
             matching this platform are processed.
+        sort_order: Active browse sort order used to order the pending queue
+            (see :meth:`Database.get_pending`).  ``None`` keeps the default
+            database order.
 
     Returns a list of result dicts.
     """
@@ -1608,7 +1620,7 @@ def _match_pending_games(
 
     # Match non-expired pending games whose scores have been checked
     # against the real Metacritic detail page.
-    pending = db.get_pending(platform=platform)
+    pending = db.get_pending(platform=platform, sort_order=sort_order)
     for game in pending:
         # ── Score-check gate ──
         # Games whose scores haven't been verified against the real

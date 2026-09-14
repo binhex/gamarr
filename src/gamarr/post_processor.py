@@ -13,6 +13,7 @@ import ntpath
 import os
 import re
 from datetime import UTC
+from os.path import relpath
 from typing import TYPE_CHECKING, Any
 
 from loguru import logger
@@ -21,6 +22,8 @@ from gamarr.file_utils import copy_with_verify, make_directory
 from gamarr.models import SOURCE_DISPLAY
 
 if TYPE_CHECKING:
+    from typing import TypeGuard
+
     from gamarr.config import Config
     from gamarr.database import Database, HistoryRow
     from gamarr.qbittorrent import QBittorrentClient
@@ -151,9 +154,7 @@ def _process_one(
     tag = torrent["torrent_tag"]
 
     row: HistoryRow | None = db.find_by_tag(tag)
-    if _is_no_op_row(row, tag):
-        return None
-    if row is None:
+    if not _is_processable_row(row, tag):
         return None
 
     if row.post_process_state is None and config.post_process.copy_completed:
@@ -181,15 +182,15 @@ def _is_delete_eligible(row: HistoryRow, config: Config) -> bool:
     )
 
 
-def _is_no_op_row(row: HistoryRow | None, tag: str) -> bool:
-    """Return True if the row should be skipped (no history or already deleted)."""
+def _is_processable_row(row: HistoryRow | None, tag: str) -> TypeGuard[HistoryRow]:
+    """Return whether *row* is active and can be post-processed."""
     if row is None:
         logger.debug("No history record for tag '{}'; skipping.", tag)
-        return True
+        return False
     if row.post_process_state == "deleted":
         logger.info("Torrent '{}' already deleted; skipping.", tag)
-        return True
-    return False
+        return False
+    return True
 
 
 def _run_copy_phase(
@@ -242,6 +243,43 @@ def _run_copy_phase(
         return False
 
 
+def _copy_destination_path(src_path: str, dst_dir: str, save_path: str) -> str | None:
+    """Return a contained destination path for *src_path*, or ``None``."""
+    try:
+        rel_path = relpath(src_path, save_path)
+    except ValueError:
+        logger.error("Cannot calculate relative path for '{}'; aborting.", src_path)
+        return None
+    safe_rel_path = _safe_relative_path(rel_path)
+    if safe_rel_path is None:
+        logger.error("Unsafe torrent file path '{}'; aborting.", rel_path)
+        return None
+    if not _is_path_within(src_path, save_path):
+        logger.error("Source path '{}' escapes save path; aborting.", src_path)
+        return None
+    dst_path = os.path.join(dst_dir, safe_rel_path)
+    if not _is_path_within(dst_path, dst_dir):
+        logger.error("Destination path '{}' escapes destination; aborting.", dst_path)
+        return None
+    if os.path.islink(dst_path):
+        logger.error("Destination path '{}' is a symlink; aborting.", dst_path)
+        return None
+    return dst_path
+
+
+def _track_created_copy_paths(
+    dst_path: str,
+    dst_dir: str,
+    created_paths: list[str] | None,
+    created_dirs: list[str] | None,
+) -> None:
+    """Track destination files and directories created by a copy attempt."""
+    if created_dirs is not None:
+        _record_missing_parent_dirs(dst_path, dst_dir, created_dirs)
+    if created_paths is not None and not os.path.lexists(dst_path):
+        created_paths.append(dst_path)
+
+
 def _copy_all_files(
     src_files: list[str],
     dst_dir: str,
@@ -260,29 +298,10 @@ def _copy_all_files(
     Returns True if all succeeded, False on first failure.
     """
     for src_path in src_files:
-        try:
-            rel_path = os.path.relpath(src_path, save_path)
-        except ValueError:
-            logger.error("Cannot calculate relative path for '{}'; aborting.", src_path)
+        dst_path = _copy_destination_path(src_path, dst_dir, save_path)
+        if dst_path is None:
             return False
-        safe_rel_path = _safe_relative_path(rel_path)
-        if safe_rel_path is None:
-            logger.error("Unsafe torrent file path '{}'; aborting.", rel_path)
-            return False
-        if not _is_path_within(src_path, save_path):
-            logger.error("Source path '{}' escapes save path; aborting.", src_path)
-            return False
-        dst_path = os.path.join(dst_dir, safe_rel_path)
-        if not _is_path_within(dst_path, dst_dir):
-            logger.error("Destination path '{}' escapes destination; aborting.", dst_path)
-            return False
-        if os.path.islink(dst_path):
-            logger.error("Destination path '{}' is a symlink; aborting.", dst_path)
-            return False
-        if created_dirs is not None:
-            _record_missing_parent_dirs(dst_path, dst_dir, created_dirs)
-        if created_paths is not None and not os.path.lexists(dst_path):
-            created_paths.append(dst_path)
+        _track_created_copy_paths(dst_path, dst_dir, created_paths, created_dirs)
         if not copy_with_verify(src_path, dst_path):
             logger.error("Copy/verify failed for '{}'; aborting.", src_path)
             return False
@@ -387,21 +406,42 @@ def _is_path_within(path: str, root: str) -> bool:
         return False
 
 
+def _has_absolute_path_syntax(path: str) -> bool:
+    """Return whether *path* uses absolute POSIX or Windows syntax."""
+    if os.path.isabs(path):
+        return True
+    if ntpath.isabs(path):
+        return True
+    drive, _ = ntpath.splitdrive(path)
+    return bool(drive)
+
+
+def _has_parent_path_component(path: str) -> bool:
+    """Return whether *path* contains an explicit parent traversal."""
+    return any(part == ".." for part in path.replace("\\", "/").split("/"))
+
+
+def _normalized_path_is_unsafe(path: str) -> bool:
+    """Return whether a normalized relative path is empty or escaping."""
+    if path in ("", "."):
+        return True
+    if path == os.pardir:
+        return True
+    return path.startswith(os.pardir + os.sep)
+
+
 def _safe_relative_path(rel_path: str) -> str | None:
     """Normalize a torrent-relative path, rejecting absolute and traversal paths."""
-    if not rel_path or "\x00" in rel_path:
+    if not rel_path:
         return None
-    if os.path.isabs(rel_path) or ntpath.isabs(rel_path):
+    if "\x00" in rel_path:
         return None
-    drive, _ = ntpath.splitdrive(rel_path)
-    if drive:
+    if _has_absolute_path_syntax(rel_path):
         return None
-    if any(part == ".." for part in rel_path.replace("\\", "/").split("/")):
+    if _has_parent_path_component(rel_path):
         return None
     normalized = os.path.normpath(rel_path.replace("\\", os.sep))
-    if normalized in ("", ".") or normalized == os.pardir or normalized.startswith(os.pardir + os.sep):
-        return None
-    return normalized
+    return None if _normalized_path_is_unsafe(normalized) else normalized
 
 
 def _process_file_entry(

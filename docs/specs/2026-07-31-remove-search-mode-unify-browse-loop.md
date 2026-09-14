@@ -67,7 +67,9 @@ if max_pages_cfg > 0 and total_scanned >= max_pages_cfg:
 remaining = max_pages_cfg - total_scanned if max_pages_cfg > 0 else 0
 
 # Year loop
-for scan_year in range(cutoff_year, current_year + 1):
+# Superseded 2026-09-14: `new` now traverses current_year down to cutoff_year
+# so recent releases receive priority.
+for scan_year in range(current_year, cutoff_year - 1, -1):
     if cancelled or remaining <= 0: break
 
     start_page = get_last_scanned_page(platform, scan_year) + 1

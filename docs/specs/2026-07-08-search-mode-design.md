@@ -123,7 +123,7 @@ Current behavior preserved with one change to backlog exhaustion:
 
 1. Detect sort_order change → clear cache + reset backlog progress if changed.
 2. Calculate cutoff year from `max_pages`.
-3. Year-loop: `range(cutoff_year, current_year + 1)`.
+3. Year-loop: `range(current_year, cutoff_year - 1, -1)` (superseded 2026-09-14 so recent releases receive priority).
 4. For each year: resume from `db.get_last_scanned_page() + 1`, scan up to
    `max_cycle_pages` pages.
 5. Track progress: `set_last_scanned_page`, `sum_scanned_pages`,
