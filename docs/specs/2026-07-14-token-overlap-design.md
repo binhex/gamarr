@@ -1,5 +1,15 @@
 # Token Overlap Candidate Filter for DLC Matching — Design Spec
 
+> **Superseded 2026-09-15:** the acceptance rule changed. A token-overlap
+> candidate is now accepted only when the repack article body names the pending
+> game (`_article_names_game` in `src/gamarr/pipeline.py`), candidates are ranked
+> by overlap strength instead of URL, and the page-title DLC fast path applies to
+> substring candidates only. The shared-token helper this spec describes
+> (`_titles_share_enough_tokens`) is now `_shared_token_count` driven by
+> `_DEEP_SEARCH_MIN_SHARED_TOKENS`, so the
+> "Neverwinter Nights 2 → Mask of The Betrayer" expectation in the table below
+> is now a rejection unless the article names the expansion.
+
 ## Problem
 
 The candidate filter in `_deep_search_article_body` requires the sitemap title

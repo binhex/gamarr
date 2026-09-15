@@ -1242,6 +1242,27 @@ class TestBrowseCacheScoping:
 class TestScanRecentGamesLogging:
     """Progress logging during scan_recent_games."""
 
+    def test_scan_recent_games_logs_the_year_when_given(self) -> None:
+        """A year-scoped scan names the year in its summary line."""
+        import io
+        from unittest.mock import patch
+
+        from loguru import logger
+
+        client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
+        pages = [[{"title": "Game", "slug": "game", "score": 85, "user_rating": 8.0}], []]
+
+        log_stream = io.StringIO()
+        handler_id = logger.add(log_stream, format="{message}", level="INFO")
+        try:
+            with patch.object(client, "_fetch_browse_page", side_effect=pages):
+                client.scan_recent_games("pc", max_games=0, year=2025)
+        finally:
+            logger.remove(handler_id)
+
+        log_output = log_stream.getvalue()
+        assert "Scan result for 2025: 1 pages browsed, 1 games collected" in log_output, log_output
+
     def test_scan_recent_games_logs_batch_progress(self) -> None:
         """scan_recent_games should log intermediate progress at regular
         intervals so users can see the scan is making progress."""

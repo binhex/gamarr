@@ -28,6 +28,15 @@ if TYPE_CHECKING:
 _ACQUISITION_RUN_TIMEOUT_SECONDS: Final[float] = 25 * 60.0
 
 
+class AcquisitionWatchdogTimeoutError(TimeoutExceededError):
+    """Raised when one acquisition cycle exceeds its watchdog budget.
+
+    A distinct subclass lets the scheduled-job wrapper swallow this function's
+    own abort without hiding a :class:`TimeoutExceededError` raised deeper inside
+    the pipeline (for example by an inner page-fetch watchdog that escaped).
+    """
+
+
 class _CancelSignal:
     """Read-only composite of the daemon shutdown event and a per-run watchdog event.
 
@@ -61,12 +70,13 @@ def _run_acquisition_guarded(
 
     A hung cycle (e.g. a wedged browser) is aborted after *timeout_seconds*
     instead of occupying the job's single instance slot forever. The abort
-    raises TimeoutExceededError, which surfaces to APScheduler as a job
-    error so the next scheduled run proceeds, and sets a FRESH per-run
-    cancel event so the aborted pipeline stops at its next checkpoint.
-    Later cycles are unaffected: the daemon-level shutdown event
-    (``kwargs["cancel_event"]``, if any) is combined with the per-run
-    event into a composite signal and is never mutated by this wrapper.
+    raises TimeoutExceededError to this function's caller — the daemon's
+    scheduled wrapper :func:`_run_acquisition_job` converts it into an empty
+    cycle result and foreground :func:`run_once` catches it — so the next run
+    proceeds, and sets a FRESH per-run cancel event so the aborted pipeline
+    stops at its next checkpoint. Later cycles are unaffected: the daemon-level
+    shutdown event (``kwargs["cancel_event"]``, if any) is combined with the
+    per-run event into a composite signal and is never mutated by this wrapper.
 
     Note: on abort the wrapped pipeline thread keeps running detached
     until its own per-fetch watchdog/recycling bounds it (residual risk —
@@ -82,7 +92,7 @@ def _run_acquisition_guarded(
         Whatever the job returns.
 
     Raises:
-        TimeoutExceededError: If the job exceeds *timeout_seconds*.
+        AcquisitionWatchdogTimeoutError: If the job exceeds *timeout_seconds*.
     """
     shutdown_event = kwargs.get("cancel_event")
     run_event = threading.Event()
@@ -94,14 +104,57 @@ def _run_acquisition_guarded(
     else:
         kwargs["cancel_event"] = run_event
 
+    aborted = False
+
     def _on_timeout() -> None:
+        nonlocal aborted
+        aborted = True
         run_event.set()
         logger.critical(
-            "Acquisition run exceeded {}s watchdog — aborting cycle so the next scheduled run can proceed",
+            "Acquisition run exceeded {}s watchdog \u2014 aborting cycle so the next scheduled run can proceed",
             timeout_seconds,
         )
 
-    return run_with_timeout(lambda: job(**kwargs), timeout_seconds, on_timeout=_on_timeout)
+    try:
+        return run_with_timeout(lambda: job(**kwargs), timeout_seconds, on_timeout=_on_timeout)
+    except TimeoutExceededError as exc:
+        if not aborted:
+            # Raised by the job itself (an escaping page-fetch watchdog, say),
+            # not by this function's watchdog: it must keep propagating.
+            raise
+        # This function's own abort is translated into a distinct type so callers
+        # can swallow it without also swallowing an inner TimeoutExceededError.
+        raise AcquisitionWatchdogTimeoutError(str(exc)) from exc
+
+
+def _run_acquisition_job(
+    job: Callable[..., Any],
+    *,
+    timeout_seconds: float = _ACQUISITION_RUN_TIMEOUT_SECONDS,
+    **kwargs: Any,
+) -> list[dict[str, Any]]:
+    """Run one scheduled acquisition cycle, treating a watchdog abort as an outcome.
+
+    APScheduler logs any exception escaping a job as "Job ... raised an
+    exception" together with a full traceback.  A watchdog abort is already
+    reported by the ``on_timeout`` callback (CRITICAL) and is handled by the
+    next scheduled run, so it must not surface as a job error: this wrapper
+    swallows it and reports an empty cycle result instead.
+
+    Args:
+        job: The callable to run (usually :func:`~gamarr.pipeline.run_acquisition`).
+        timeout_seconds: Hard budget for one full acquisition cycle.
+        kwargs: Forwarded to :func:`_run_acquisition_guarded`.
+
+    Returns:
+        The job's results, or an empty list when the watchdog aborted the cycle.
+    """
+    try:
+        results: list[dict[str, Any]] = _run_acquisition_guarded(job, timeout_seconds=timeout_seconds, **kwargs)
+    except AcquisitionWatchdogTimeoutError as exc:
+        logger.info("Acquisition cycle aborted by the watchdog ({}) \u2014 continuing on schedule", exc)
+        return []
+    return results
 
 
 def _write_pid(pid_path: str) -> None:
@@ -313,8 +366,13 @@ def run_once(config: Config) -> None:
             timeout_seconds=config.schedule.acquisition_timeout_mins * 60.0,
             **kwargs,
         )
-    except TimeoutExceededError as exc:
+    except AcquisitionWatchdogTimeoutError as exc:
         logger.critical("Acquisition cycle aborted by the watchdog: {}", exc)
+        results = []
+    except TimeoutExceededError as exc:
+        # An escaping inner watchdog (e.g. a page fetch) is not this cycle's abort:
+        # report it with its traceback so the cause is visible.
+        logger.opt(exception=exc).critical("Acquisition cycle aborted by an inner timeout: {}", exc)
         results = []
     passed = sum(1 for r in results if r["result"] == "Passed")
     failed = sum(1 for r in results if r["result"] == "Failed")
@@ -353,8 +411,10 @@ def _run_daemon(config: Config) -> None:
         _next_run = datetime.now(UTC) + timedelta(minutes=acq_cfg.schedule_time_mins)
 
     cancel_event = threading.Event()
+    # The wrapper is registered (not _run_acquisition_guarded) so a watchdog
+    # abort is not logged by APScheduler as a job exception with a traceback.
     scheduler.add_job(
-        _run_acquisition_guarded,
+        _run_acquisition_job,
         trigger=IntervalTrigger(minutes=acq_cfg.schedule_time_mins),
         kwargs={
             "job": run_acquisition,

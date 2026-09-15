@@ -736,25 +736,10 @@ class MetacriticClient:
         # A non-positive year is the all-time listing, so it shares the all-time
         # cache key rather than creating a parallel key per sentinel value.
         year_key: int = year if isinstance(year, int) and year > 0 else 0
-        year_scoped = year_key > 0
         cached = self._cache.get_browse_page(platform, page_number, ttl_hours=cache_pages_hours, year=year_key)
         if cached is not None and self._cache_scope_matches(cached, year_key):
             return cached
-        # The path's year segment is ignored by Metacritic — the release-year
-        # query parameters are what actually scope the listing, so a single
-        # release year is requested as a fixed range.
-        if year_scoped:
-            year_str = str(year_key)
-            year_min = year_max = str(year_key)
-        else:
-            year_str = "all-time"
-            year_min, year_max = "1958", "2035"
-        url = (
-            f"https://www.metacritic.com/browse/game/{platform}/all/{year_str}/"
-            f"{_SORT_SLUG_OVERRIDES.get(self.sort_order, self.sort_order)}/"
-            f"?releaseYearMin={year_min}&releaseYearMax={year_max}"
-            f"&platform={platform}&page={page_number}"
-        )
+        url = self._browse_url(platform, page_number, year_key)
         try:
             resp = requests.get(
                 url,
@@ -773,6 +758,25 @@ class MetacriticClient:
         except requests.RequestException as exc:
             logger.warning("Failed to fetch browse page '{}': {}", url, exc)
             return None
+
+    def _browse_url(self, platform: str, page_number: int, year_key: int) -> str:
+        """Build the browse URL for *page_number* (*year_key* 0 = all-time).
+
+        The path's year segment is ignored by Metacritic — the release-year
+        query parameters are what actually scope the listing, so a single
+        release year is requested as a fixed range.
+        """
+        if year_key > 0:
+            year_str = year_min = year_max = str(year_key)
+        else:
+            year_str = "all-time"
+            year_min, year_max = "1958", "2035"
+        return (
+            f"https://www.metacritic.com/browse/game/{platform}/all/{year_str}/"
+            f"{_SORT_SLUG_OVERRIDES.get(self.sort_order, self.sort_order)}/"
+            f"?releaseYearMin={year_min}&releaseYearMax={year_max}"
+            f"&platform={platform}&page={page_number}"
+        )
 
     @staticmethod
     def _cache_scope_matches(cached: list[dict], year_key: int) -> bool:
@@ -902,21 +906,17 @@ class MetacriticClient:
         # Report the pages fetched by this call, not the absolute page number,
         # so a resumed scan does not appear to have browsed every page so far.
         pages_fetched = max(last_page_number - start_page + 1, 0)
-        if year is not None:
-            logger.info(
-                "Scan result for {}: {} pages browsed, {} games collected",
-                year,
-                pages_fetched,
-                len(all_games),
-            )
-        else:
-            logger.info(
-                "Scan result: {} pages browsed, {} games collected",
-                pages_fetched,
-                len(all_games),
-            )
+        _log_scan_result(year, pages_fetched, len(all_games))
         self._recent_games_last_page = last_page_number
         return all_games
+
+
+def _log_scan_result(year: int | None, pages_fetched: int, game_count: int) -> None:
+    """Log the outcome of one browse scan, naming the year when there is one."""
+    if year is not None:
+        logger.info("Scan result for {}: {} pages browsed, {} games collected", year, pages_fetched, game_count)
+    else:
+        logger.info("Scan result: {} pages browsed, {} games collected", pages_fetched, game_count)
 
 
 def _should_stop_scan(

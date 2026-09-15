@@ -1,5 +1,14 @@
 # Token Overlap Candidate Filter — Implementation Plan
 
+**Superseded 2026-09-15:** selection by token overlap still applies, but
+acceptance no longer stops at a shared word count. For a token-overlap
+candidate the repack article body must name the pending game
+(`_article_names_game` in `src/gamarr/pipeline.py`), candidates are ranked by
+overlap strength instead of URL, and the page-title DLC fast path applies to
+substring candidates only. The "Dungeons & Dragons Neverwinter Nights 2"
+example below is a candidate again, but is rejected unless its article names
+the expansion.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use sub-agents (recommended) to implement
 > this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

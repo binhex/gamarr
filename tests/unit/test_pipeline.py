@@ -297,8 +297,258 @@ class TestDeepSearchDlcMatching:
         db.close()
         assert result == []
 
-    def test_page_title_all_expansions(self, tmp_path: Path) -> None:
-        """When page <title> contains '+ All Expansions', deep search matches."""
+    def test_token_overlap_with_only_generic_words_and_dlcs_boilerplate_is_rejected(self, tmp_path: Path) -> None:
+        """Generic overlap + 'All DLCs' boilerplate is not evidence (real CoH2 mismatch)."""
+        from unittest.mock import patch
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _deep_search_article_body
+        from gamarr.utils import normalise_for_compare
+
+        db = Database(str(tmp_path / "test.db"))
+        db.rebuild_source_titles(
+            "fitgirl",
+            [
+                {
+                    "title": "Company Of Heroes 2 Master Collection",
+                    "url": "https://fitgirl-repacks.site/company-of-heroes-2-master-collection/",
+                    "magnet": None,
+                },
+            ],
+        )
+        with patch(
+            "gamarr.pipeline._fetch_fitgirl_page_content",
+            return_value=(
+                "Company of Heroes 2: Master Collection - v4.0.0.21748 + All DLCs - FitGirl Repacks",
+                "Repack features: All DLCs included. Requires 30 GB.",
+            ),
+        ):
+            result = _deep_search_article_body(
+                db,
+                "fitgirl",
+                normalise_for_compare("Metal Gear Solid: Master Collection Vol. 2"),
+                pending_title="Metal Gear Solid: Master Collection Vol. 2",
+            )
+        db.close()
+        assert result == [], "shared generic words plus 'All DLCs' boilerplate must not match"
+
+    def test_candidate_that_names_the_game_wins_over_url_order(self, tmp_path: Path) -> None:
+        """The game-naming candidate wins even when three decoys sort first by URL.
+
+        Only three candidate pages are ever fetched, so this only finds the right
+        repack because candidates are ranked by title overlap rather than by URL.
+        """
+        from unittest.mock import patch
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _deep_search_article_body
+        from gamarr.utils import normalise_for_compare
+
+        mgs_url = "https://fitgirl-repacks.site/metal-gear-solid-master-collection-vol-1-vol-2-bonus-content/"
+        decoys = [
+            (
+                "Company Of Heroes 2 Master Collection",
+                "https://fitgirl-repacks.site/company-of-heroes-2-master-collection/",
+            ),
+            ("Dragons Dogma 2 Master Collection", "https://fitgirl-repacks.site/dragons-dogma-2-master-collection/"),
+            ("Elex 2 Master Collection", "https://fitgirl-repacks.site/elex-2-master-collection/"),
+        ]
+        db = Database(str(tmp_path / "test.db"))
+        db.rebuild_source_titles(
+            "fitgirl",
+            [{"title": title, "url": url, "magnet": None} for title, url in decoys]
+            + [
+                {
+                    "title": "Metal Gear Solid Master Collection Vol 1 Vol 2 Bonus Content",
+                    "url": mgs_url,
+                    "magnet": None,
+                },
+            ],
+        )
+
+        def fake_content(url: str) -> tuple[str, str]:
+            if url == mgs_url:
+                return (
+                    "METAL GEAR SOLID: MASTER COLLECTION Vol.1 & Vol.2 BONUS CONTENT - v1.5.1",
+                    "This repack includes Metal Gear Solid: Master Collection Vol. 1 and Vol. 2 bonus content.",
+                )
+            return (
+                "Master Collection 2 - v1.0.0 + All DLCs - FitGirl Repacks",
+                "Repack features: All DLCs included. Requires 30 GB.",
+            )
+
+        with patch("gamarr.pipeline._fetch_fitgirl_page_content", side_effect=fake_content):
+            result = _deep_search_article_body(
+                db,
+                "fitgirl",
+                normalise_for_compare("Metal Gear Solid: Master Collection Vol. 2"),
+                pending_title="Metal Gear Solid: Master Collection Vol. 2",
+            )
+        db.close()
+        assert len(result) == 1, f"expected the game-naming candidate, got {result}"
+        assert result[0]["url"] == mgs_url, f"expected the game-naming candidate, got {result[0]['url']}"
+
+    def test_substring_that_runs_into_a_number_is_rejected(self, tmp_path: Path) -> None:
+        """A numeral continuing into another digit is a different game (Battlefield 2 vs 2042)."""
+        from unittest.mock import patch
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _deep_search_article_body
+        from gamarr.utils import normalise_for_compare
+
+        db = Database(str(tmp_path / "test.db"))
+        db.rebuild_source_titles(
+            "fitgirl",
+            [{"title": "Battlefield 2", "url": "https://fitgirl-repacks.site/battlefield-2/", "magnet": None}],
+        )
+        with patch(
+            "gamarr.pipeline._fetch_fitgirl_page_content",
+            return_value=("Battlefield 2 - v1.0 + All DLCs - FitGirl Repacks", "Repack features: All DLCs included."),
+        ):
+            result = _deep_search_article_body(
+                db,
+                "fitgirl",
+                normalise_for_compare("Battlefield 2042"),
+                pending_title="Battlefield 2042",
+            )
+        db.close()
+        assert result == [], "Battlefield 2 must not satisfy Battlefield 2042"
+
+    def test_expansion_match_without_article_evidence_is_rejected(self, tmp_path: Path) -> None:
+        """A page-title DLC keyword alone must not match a token-overlap candidate."""
+        from unittest.mock import patch
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _deep_search_article_body
+        from gamarr.utils import normalise_for_compare
+
+        db = Database(str(tmp_path / "test.db"))
+        db.rebuild_source_titles(
+            "fitgirl",
+            [
+                {
+                    "title": "Dungeons And Dragons Neverwinter Nights 2 Enhanced Edition",
+                    "url": "https://fitgirl-repacks.site/dungeons-and-dragons-neverwinter-nights-2-enhanced-edition/",
+                    "magnet": None,
+                },
+            ],
+        )
+        with patch(
+            "gamarr.pipeline._fetch_fitgirl_page_content",
+            return_value=(
+                "Dungeons & Dragons Neverwinter Nights 2: Enhanced Edition – v1.110 + All Expansions [FitGirl Repack]",
+                "This repack includes all expansions. Requires 60 GB.",
+            ),
+        ):
+            result = _deep_search_article_body(
+                db,
+                "fitgirl",
+                normalise_for_compare("Neverwinter Nights 2: Mask of The Betrayer"),
+                pending_title="Neverwinter Nights 2: Mask of The Betrayer",
+            )
+        db.close()
+        assert result == [], "the article must name the expansion before matching"
+
+    def test_token_overlap_candidate_named_in_article_matches(self, tmp_path: Path) -> None:
+        """A token-overlap candidate whose article names the pending game matches."""
+        from unittest.mock import patch
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _deep_search_article_body
+        from gamarr.utils import normalise_for_compare
+
+        db = Database(str(tmp_path / "test.db"))
+        db.rebuild_source_titles(
+            "fitgirl",
+            [
+                {
+                    "title": "Metal Gear Solid Master Collection Vol 1 Vol 2 Bonus Content",
+                    "url": "https://fitgirl-repacks.site/mgs-collection-vol-1-2/",
+                    "magnet": None,
+                },
+            ],
+        )
+        with patch(
+            "gamarr.pipeline._fetch_fitgirl_page_content",
+            return_value=(
+                "METAL GEAR SOLID: MASTER COLLECTION Vol.1 & Vol.2 - FitGirl Repacks",
+                "Includes Metal Gear Solid: Master Collection Vol. 2 bonus content.",
+            ),
+        ):
+            result = _deep_search_article_body(
+                db,
+                "fitgirl",
+                normalise_for_compare("Metal Gear Solid: Master Collection Vol. 2"),
+                pending_title="Metal Gear Solid: Master Collection Vol. 2",
+            )
+        db.close()
+        assert len(result) == 1
+
+    def test_token_overlap_candidate_without_article_text_is_rejected(self, tmp_path: Path) -> None:
+        """No article body means no evidence, so a token-overlap candidate is rejected."""
+        from unittest.mock import patch
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _deep_search_article_body
+        from gamarr.utils import normalise_for_compare
+
+        db = Database(str(tmp_path / "test.db"))
+        db.rebuild_source_titles(
+            "fitgirl",
+            [
+                {
+                    "title": "Metal Gear Solid Master Collection Vol 1 Vol 2 Bonus Content",
+                    "url": "https://fitgirl-repacks.site/mgs-collection-vol-1-2/",
+                    "magnet": None,
+                },
+            ],
+        )
+        with patch(
+            "gamarr.pipeline._fetch_fitgirl_page_content",
+            return_value=("METAL GEAR SOLID: MASTER COLLECTION - FitGirl Repacks", None),
+        ):
+            result = _deep_search_article_body(
+                db,
+                "fitgirl",
+                normalise_for_compare("Metal Gear Solid: Master Collection Vol. 2"),
+                pending_title="Metal Gear Solid: Master Collection Vol. 2",
+            )
+        db.close()
+        assert result == []
+
+    def test_substring_candidate_without_dlc_evidence_is_rejected(self, tmp_path: Path) -> None:
+        """A substring candidate with no page/body DLC evidence does not match."""
+        from unittest.mock import patch
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _deep_search_article_body
+        from gamarr.utils import normalise_for_compare
+
+        db = Database(str(tmp_path / "test.db"))
+        db.rebuild_source_titles(
+            "fitgirl",
+            [{"title": "Dark Souls Iii", "url": "https://fitgirl-repacks.site/dark-souls-3/", "magnet": None}],
+        )
+        with patch(
+            "gamarr.pipeline._fetch_fitgirl_page_content",
+            return_value=("Dark Souls III [FitGirl Repack]", None),
+        ):
+            result = _deep_search_article_body(
+                db,
+                "fitgirl",
+                normalise_for_compare("Dark Souls III: The Ringed City"),
+                pending_title="Dark Souls III: The Ringed City",
+            )
+        db.close()
+        assert result == []
+
+    def test_page_title_all_expansions_substring_candidate(self, tmp_path: Path) -> None:
+        """When page <title> contains '+ All Expansions', a substring candidate matches.
+
+        The page-title DLC fast path applies to substring candidates only; the
+        token-overlap counterpart of this scenario is asserted to be rejected in
+        test_expansion_match_without_article_evidence_is_rejected.
+        """
         from unittest.mock import patch
 
         from gamarr.database import Database
@@ -327,96 +577,77 @@ class TestDeepSearchDlcMatching:
             result = _deep_search_article_body(
                 db,
                 "fitgirl",
-                normalise_for_compare("Neverwinter Nights 2: Mask of The Betrayer"),
-                pending_title="Neverwinter Nights 2: Mask of The Betrayer",
+                normalise_for_compare(
+                    "Dungeons And Dragons Neverwinter Nights 2: Enhanced Edition - Mask of The Betrayer"
+                ),
+                pending_title="Dungeons And Dragons Neverwinter Nights 2: Enhanced Edition - Mask of The Betrayer",
             )
         db.close()
         assert len(result) == 1
 
 
-class TestTitlesShareEnoughTokens:
-    """Tests for _titles_share_enough_tokens helper."""
+class TestSharedTokenCount:
+    """Tests for the candidate gate: shared word tokens between two titles."""
 
-    def test_match_three_tokens(self) -> None:
-        """Two titles sharing 3 word tokens returns True."""
-        from gamarr.pipeline import _titles_share_enough_tokens
+    @staticmethod
+    def _count(title_a: str, title_b: str) -> int:
+        from gamarr.pipeline import _shared_token_count, _tokenize_title
 
-        assert (
-            _titles_share_enough_tokens(
-                "Dungeons & Dragons Neverwinter Nights 2 Enhanced Edition",
-                "Neverwinter Nights 2: Mask of The Betrayer",
-            )
-            is True
+        return _shared_token_count(_tokenize_title(title_a), _tokenize_title(title_b))
+
+    def test_three_shared_tokens_meet_the_candidate_threshold(self) -> None:
+        """Two titles sharing 3 word tokens qualify as candidates."""
+        from gamarr.pipeline import _DEEP_SEARCH_MIN_SHARED_TOKENS
+
+        shared = self._count(
+            "Dungeons & Dragons Neverwinter Nights 2 Enhanced Edition",
+            "Neverwinter Nights 2: Mask of The Betrayer",
         )
+        assert shared == 3
+        assert shared >= _DEEP_SEARCH_MIN_SHARED_TOKENS
 
-    def test_match_four_tokens(self) -> None:
-        from gamarr.pipeline import _titles_share_enough_tokens
+    def test_roman_numeral_tokens_are_counted(self) -> None:
+        from gamarr.pipeline import _DEEP_SEARCH_MIN_SHARED_TOKENS
 
-        assert (
-            _titles_share_enough_tokens(
-                "Total War WARHAMMER II",
-                "Total War: WARHAMMER II - Curse of the Vampire Coast",
-            )
-            is True
+        shared = self._count("Dark Souls III", "Dark Souls 3: The Ringed City")
+        assert shared == 3, "Roman numeral conversion should make III and 3 the same token"
+        assert shared >= _DEEP_SEARCH_MIN_SHARED_TOKENS
+
+    def test_generic_words_are_counted_like_any_other(self) -> None:
+        """Generic overlap IS counted; the evidence rule is what rejects it."""
+        from gamarr.pipeline import _DEEP_SEARCH_MIN_SHARED_TOKENS
+
+        shared = self._count("Company Of Heroes 2 Master Collection", "Metal Gear Solid: Master Collection Vol. 2")
+        assert shared == 3
+        assert shared >= _DEEP_SEARCH_MIN_SHARED_TOKENS
+
+    def test_two_shared_tokens_fall_below_the_threshold(self) -> None:
+        from gamarr.pipeline import _DEEP_SEARCH_MIN_SHARED_TOKENS
+
+        shared = self._count("Star Wars Battlefront II", "Star Wars Jedi: Fallen Order")
+        assert shared == 2
+        assert shared < _DEEP_SEARCH_MIN_SHARED_TOKENS
+
+    def test_one_shared_token_falls_below_the_threshold(self) -> None:
+        from gamarr.pipeline import _DEEP_SEARCH_MIN_SHARED_TOKENS
+
+        shared = self._count("Diablo 3", "Diablo 4: Vessel of Hatred")
+        assert shared == 1
+        assert shared < _DEEP_SEARCH_MIN_SHARED_TOKENS
+
+    def test_stop_words_do_not_count(self) -> None:
+        """Unrelated games sharing only stop words and a numeral do not qualify."""
+        from gamarr.pipeline import _DEEP_SEARCH_MIN_SHARED_TOKENS
+
+        shared = self._count(
+            "Atelier Sophie 2 The Alchemist Of The Mysterious Dream",
+            "Neverwinter Nights 2: Mask of The Betrayer",
         )
+        assert shared == 1
+        assert shared < _DEEP_SEARCH_MIN_SHARED_TOKENS
 
-    def test_no_match_two_tokens(self) -> None:
-        from gamarr.pipeline import _titles_share_enough_tokens
-
-        assert (
-            _titles_share_enough_tokens(
-                "Star Wars Battlefront II",
-                "Star Wars Jedi: Fallen Order",
-            )
-            is False
-        )
-
-    def test_no_match_one_token(self) -> None:
-        from gamarr.pipeline import _titles_share_enough_tokens
-
-        assert (
-            _titles_share_enough_tokens(
-                "Diablo 3",
-                "Diablo 4: Vessel of Hatred",
-            )
-            is False
-        )
-
-    def test_no_match_false_positive_stop_words(self) -> None:
-        """Unrelated games sharing only stop words should NOT match."""
-        from gamarr.pipeline import _titles_share_enough_tokens
-
-        # "Neverwinter Nights 2" should NOT match "Atelier Sophie 2"
-        # They share only "2", "of", "the" — meaningless generic tokens
-        assert (
-            _titles_share_enough_tokens(
-                "Atelier Sophie 2 The Alchemist Of The Mysterious Dream",
-                "Neverwinter Nights 2: Mask of The Betrayer",
-            )
-            is False
-        )
-
-    def test_roman_numeral_token_matching(self) -> None:
-        from gamarr.pipeline import _titles_share_enough_tokens
-
-        assert (
-            _titles_share_enough_tokens(
-                "Dark Souls III",
-                "Dark Souls 3: The Ringed City",
-            )
-            is True
-        )
-
-    def test_no_match_completely_different(self) -> None:
-        from gamarr.pipeline import _titles_share_enough_tokens
-
-        assert (
-            _titles_share_enough_tokens(
-                "Minecraft",
-                "The Witcher 3: Wild Hunt",
-            )
-            is False
-        )
+    def test_completely_different_titles_share_nothing(self) -> None:
+        assert self._count("Minecraft", "The Witcher 3: Wild Hunt") == 0
 
 
 class TestAcquisitionConfig:

@@ -59,6 +59,9 @@ class _AzIndexState:
     new: int = 0
     known: int = 0
     missing: int = 0
+    # Entries already indexed before this run started, so the progress headline
+    # reports true remaining work instead of a run-local prefix count.
+    known_before: int = 0
     consecutive_failures: int = 0
     consecutive_timeouts: int = 0
     total_timeouts: int = 0
@@ -517,7 +520,12 @@ class FreeGOGSource:
         total_entries: int,
         known_count: int,
     ) -> None:
-        """Log periodic progress during FreeGOG A-Z page indexing."""
+        """Log periodic progress during FreeGOG A-Z page indexing.
+
+        *known_count* is the number of entries already indexed before this run
+        started (not the run-local tally), so the reported remaining work is the
+        true number of pages still to fetch.
+        """
         remaining = total_entries - known_count
         if new_count == 0 and missing_magnet_count == 0:
             logger.info(
@@ -696,6 +704,11 @@ class FreeGOGSource:
     ) -> tuple[Any, Any, int, int, int, str | None]:
         """Index parsed A-Z entries, recycling the browser session on repeated failures.
 
+        Entries already present in *existing_urls* with a magnet are skipped, so
+        progress is reported as true remaining work (the pre-existing known count
+        drives the progress headline) and an interrupted run resumes on the next
+        cycle instead of starting over.
+
         Args:
             db: The database instance to store results in.
             az_entries: Parsed ``{"title", "url", "letter"}`` entries.
@@ -712,7 +725,10 @@ class FreeGOGSource:
             completed, ``"cancelled"`` when *cancel_event* stopped it, or
             ``"aborted"`` when the fetch-timeout budget was exhausted.
         """
-        state = _AzIndexState(total=len(az_entries))
+        state = _AzIndexState(
+            total=len(az_entries),
+            known_before=sum(1 for entry in az_entries if existing_urls.get(entry["url"].rstrip("/")) is not None),
+        )
         try:
             for entry in az_entries:
                 if cancel_event is not None and cancel_event.is_set():
@@ -761,7 +777,7 @@ class FreeGOGSource:
             state.known += 1
             return ctx, sb, False
 
-        self._log_az_progress(state.new, state.missing, state.total, state.known)
+        self._log_az_progress(state.new, state.missing, state.total, state.known_before)
         if outcome == "ok":
             state.new += 1
             state.consecutive_failures = 0

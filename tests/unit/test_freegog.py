@@ -1027,6 +1027,71 @@ class TestFreeGOGFetchHardening:
             db.close()
 
 
+class TestAzIndexProgressReporting:
+    """The A-Z progress headline must report true remaining work, not a run prefix."""
+
+    def test_reports_true_remaining_not_run_prefix(self, tmp_path: Path) -> None:
+        """Known rows already in the DB must be counted in the 'fetching N pages' line."""
+        from unittest.mock import patch
+
+        from loguru import logger
+
+        from gamarr.database import Database
+        from gamarr.sources.freegog import FreeGOGSource
+
+        db = Database(str(tmp_path / "test.db"))
+        source = FreeGOGSource(db=db, cache_pages_hours=0)
+
+        # The unknown entries come first, so a run-prefix counter reports "0 known".
+        entries = [
+            {"title": f"New {i}", "url": f"https://freegogpcgames.com/new-{i}/", "letter": "N"} for i in range(2)
+        ]
+        entries += [
+            {"title": f"Known {i}", "url": f"https://freegogpcgames.com/known-{i}/", "letter": "K"} for i in range(6)
+        ]
+        existing_urls: dict[str, str | None] = {e["url"].rstrip("/"): "magnet:?xt=urn:btih:x" for e in entries[2:]}
+
+        captured: list[str] = []
+        sink_id = logger.add(lambda msg: captured.append(str(msg)), level="INFO", format="{message}")
+        try:
+            # Patch only the page fetch, so the real "known" skip rule runs.
+            with patch.object(source, "_fetch_and_store_game", return_value=True) as mock_fetch:
+                source._index_az_entries(db, entries, existing_urls, None, None, lambda: None, None)
+        finally:
+            logger.remove(sink_id)
+        db.close()
+
+        assert any("FreeGOG: fetching 2 game pages (6 known, 2 need magnets)" in m for m in captured), captured
+        # The six known entries must be skipped by the real classification rule.
+        assert mock_fetch.call_count == 2, f"expected only the 2 unknown pages fetched, got {mock_fetch.call_count}"
+
+
+class TestAzIndexEntryFailure:
+    """An unexpected failure mid-index must close the browser and propagate."""
+
+    def test_handle_entry_failure_closes_session(self, tmp_path: Path) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.database import Database
+        from gamarr.sources.freegog import FreeGOGSource
+
+        db = Database(str(tmp_path / "test.db"))
+        source = FreeGOGSource(db=db, cache_pages_hours=0)
+        entries = [{"title": "New", "url": "https://freegogpcgames.com/new/", "letter": "N"}]
+        ctx = MagicMock()
+        sb = MagicMock()
+
+        with (
+            patch.object(source, "_handle_az_entry", side_effect=RuntimeError("boom")),
+            pytest.raises(RuntimeError),
+        ):
+            source._index_az_entries(db, entries, {}, ctx, sb, lambda: MagicMock(), None)
+
+        sb.quit.assert_called_once()
+        ctx.__exit__.assert_called_once()
+        db.close()
+
+
 class TestLogAzProgressBranches:
     """Direct branch coverage for _log_az_progress (both message formats)."""
 

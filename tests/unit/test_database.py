@@ -449,6 +449,25 @@ class TestSourceTitle:
         assert "Elden Ring" in results[0]["title"]
         db.close()
 
+    def test_match_rejects_numeral_running_into_another_digit(self, tmp_path: Path) -> None:
+        """Battlefield 2 must not match the Battlefield 2042 sitemap entry."""
+        from gamarr.utils import normalise_for_compare
+
+        db = Database(str(tmp_path / "test.db"))
+        db.rebuild_source_titles(
+            "fitgirl",
+            [
+                {
+                    "source": "fitgirl",
+                    "title": "Battlefield 2042",
+                    "url": "https://fitgirl-repacks.site/battlefield-2042/",
+                },
+            ],
+        )
+        results = db.match_source_title("fitgirl", normalise_for_compare("Battlefield 2"))
+        db.close()
+        assert results == [], "a numeral continuing into another digit names a different game"
+
     def test_match_with_version_suffix(self, tmp_path: Path) -> None:
         """FitGirl titles with version/bonus suffixes should still match the base game title.
 
@@ -1333,6 +1352,43 @@ class TestPostProcessColumns:
         db = Database(db_path)
         row = db.find_by_tag("gamarr-nope")
         assert row is None
+        db.close()
+
+    def test_find_by_tag_prefers_the_unprocessed_row(self, tmp_path: Path) -> None:
+        """Two games sharing one torrent tag: the unprocessed row is returned.
+
+        Adoption makes a second pending game reuse an already-present torrent, so
+        both games record the same tag. Post-processing must act on the game that
+        has not been copied yet.
+        """
+        db_path = str(tmp_path / "test.db")
+        db = Database(db_path)
+        db.record_processed(
+            source="fitgirl",
+            source_title="First Game",
+            game_title="First Game",
+            platform="pc",
+            result="Passed",
+            torrent_tag="gamarr-shared",
+        )
+        db.set_post_process_state("gamarr-shared", "copied", copied_at="2026-01-01T00:00:00+00:00")
+        db.record_processed(
+            source="fitgirl",
+            source_title="Second Game",
+            game_title="Second Game",
+            platform="pc",
+            result="Passed",
+            torrent_tag="gamarr-shared",
+        )
+
+        row = db.find_by_tag("gamarr-shared")
+        assert row is not None
+        assert row.game_title == "Second Game", "the row still awaiting post-processing must win"
+
+        db.set_post_process_state("gamarr-shared", "copied", copied_at="2026-01-02T00:00:00+00:00")
+        oldest = db.find_by_tag("gamarr-shared")
+        assert oldest is not None
+        assert oldest.game_title == "First Game", "once both are processed the oldest row wins"
         db.close()
 
 

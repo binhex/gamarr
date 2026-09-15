@@ -29,6 +29,7 @@ from gamarr.utils import (
     CancelSignal,
     is_cancelled,
     normalise_for_compare,
+    numeral_runs_into_a_digit,
 )
 
 # urllib3 warnings for FitGirl self-signed cert are suppressed in gamarr.sources.fitgirl
@@ -1990,15 +1991,70 @@ def _tokenize_title(title: str) -> set[str]:
     return tokens - _STOP_WORDS
 
 
-def _titles_share_enough_tokens(
-    title_a: str,
-    title_b: str,
-    min_tokens: int = 3,
+# Minimum shared word tokens before a title pair is worth an article fetch.
+_DEEP_SEARCH_MIN_SHARED_TOKENS = 3
+
+
+def _shared_token_count(tokens_a: set[str], tokens_b: set[str]) -> int:
+    """Return how many word tokens the two tokenised titles share.
+
+    Callers pass sets from :func:`_tokenize_title`, so a title is tokenised once
+    (the Roman-numeral substitutions are not free) and the same count drives both
+    the candidate gate (:data:`_DEEP_SEARCH_MIN_SHARED_TOKENS`) and the relevance
+    ranking.
+    """
+    return len(tokens_a & tokens_b)
+
+
+def _substring_candidate_confirms_dlc(
+    page_title: str | None,
+    article_text: str | None,
+    normalized: str,
 ) -> bool:
-    """Return True if *title_a* and *title_b* share at least *min_tokens* word tokens."""
-    tokens_a = _tokenize_title(title_a)
-    tokens_b = _tokenize_title(title_b)
-    return len(tokens_a & tokens_b) >= min_tokens
+    """Return True when a substring candidate's page confirms the pending DLC.
+
+    The sitemap title is part of the pending title here, so the two name the
+    same game; DLC/expansion keywords on the page or in its body then confirm
+    that the DLC is included.
+    """
+    if _page_title_has_dlc_keywords(page_title):
+        return True
+    if not article_text:
+        return False
+    if normalized in normalise_for_compare(article_text):
+        return True
+    return _article_contains_all_dlcs(article_text)
+
+
+def _article_names_game(article_text: str | None, normalized: str, pending_title: str) -> bool:
+    """Return True when the article body actually names the pending game.
+
+    Used for token-overlap candidates, where a shared generic word ("2",
+    "master", "collection") and repack boilerplate ("All DLCs") are not
+    evidence that the repack is the pending game.
+    """
+    if not article_text:
+        return False
+    if normalized in normalise_for_compare(article_text):
+        return True
+    if not pending_title:
+        return False
+    pending_tokens = _tokenize_title(pending_title)
+    return bool(pending_tokens) and pending_tokens <= _tokenize_title(article_text)
+
+
+def _substring_candidate(entry_norm: str, normalized: str) -> bool:
+    """Return True when *entry_norm* names the pending title without a numeral run-in.
+
+    The entry may appear anywhere in *normalized* (a sitemap title with extra
+    franchise words still qualifies); the only rejected containment is a match
+    whose numeral runs straight into another digit, e.g. "battlefield2" inside
+    "battlefield2042", which names a different game.
+    """
+    index = normalized.find(entry_norm)
+    if index < 0:
+        return False
+    return not numeral_runs_into_a_digit(normalized, entry_norm, index)
 
 
 def _check_candidate_for_dlc_match(
@@ -2006,35 +2062,37 @@ def _check_candidate_for_dlc_match(
     normalized: str,
     *,
     substring_match: bool = True,
+    pending_title: str = "",
 ) -> bool:
     """Check whether *candidate* matches *normalized* via DLC-aware analysis.
 
     Returns True if the candidate's repack page covers *normalized*.
 
     When *substring_match* is True (candidate found via substring containment),
-    the page-title DLC-keyword check is a reliable fast path — the sitemap
-    title is a substring of the pending title, so they are the same game.
+    the page-title DLC-keyword check is a reliable fast path: the sitemap title
+    is part of the pending title, so the pending title most likely extends the
+    same game and the extra wording is a DLC/edition name.
 
-    When *substring_match* is False (candidate found via token overlap),
-    the article body MUST be checked to prevent false positives from
-    unrelated games that share token overlap with the pending title.
+    When *substring_match* is False (candidate found via token overlap), the two
+    titles only share words, which may be entirely generic, and "All DLCs" is
+    boilerplate on most repack pages.  The article body must therefore actually
+    name the pending game.
+
+    Args:
+        candidate: Sitemap entry with ``title``/``url``/``magnet`` keys.
+        normalized: The normalised pending game title.
+        substring_match: True when the candidate title is contained in the
+            pending title (see :func:`_deep_search_article_body`).
+        pending_title: The original pending game title, used for the
+            token-coverage check on token-overlap candidates.
+
+    Returns:
+        True when the candidate's page confirms it covers the pending game.
     """
     page_title, article_text = _fetch_fitgirl_page_content(str(candidate["url"]))
-    # Page-title DLC keywords are a reliable signal only for substring matches.
-    # For token-overlap candidates, always require article body confirmation
-    # to prevent false positives across different games in the same franchise.
-    if substring_match and _page_title_has_dlc_keywords(page_title):
-        return True
-    if article_text:
-        article_norm = normalise_for_compare(article_text)
-        # Named DLC match
-        if normalized in article_norm:
-            return True
-        # All-DLCs match — including the page-title keyword pattern
-        # for token-overlap candidates (the article body MUST confirm)
-        if _article_contains_all_dlcs(article_text):
-            return True
-    return False
+    if substring_match:
+        return _substring_candidate_confirms_dlc(page_title, article_text, normalized)
+    return _article_names_game(article_text, normalized, pending_title)
 
 
 def _deep_search_article_body(
@@ -2050,11 +2108,12 @@ def _deep_search_article_body(
     vs ``"Dark Souls Iii"`` from URL slug).  The DLC/expansion name is
     referenced in the article body's repack features section.
 
-    Candidates are selected when the source title is a normalised
-    substring of the pending title, OR when they share at least 3 word
-    tokens (after Roman numeral conversion).  This prevents needless
-    HTTP requests for games with no connection to any FitGirl repack.
-    At most 3 article pages are fetched to limit HTTP overhead.
+    Candidates are selected when the source title is a normalised substring of
+    the pending title, or when the two share at least
+    :data:`_DEEP_SEARCH_MIN_SHARED_TOKENS` word tokens (after Roman numeral
+    conversion).  This prevents needless HTTP requests for games with no
+    connection to any FitGirl repack.  At most 3 article pages are fetched to
+    limit HTTP overhead.
 
     Args:
         db: Database instance for source title lookup.
@@ -2066,25 +2125,35 @@ def _deep_search_article_body(
     Returns:
         A list with one match dict if found in article body, or an empty list.
     """
-    candidates: list[tuple[dict[str, str | None], bool]] = []
+    candidates: list[tuple[dict[str, str | None], bool, int]] = []
+    pending_tokens = _tokenize_title(pending_title)
     for entry in db.get_all_source_titles(source_name):
         entry_title = str(entry.get("title", ""))
         entry_norm = normalise_for_compare(entry_title)
         if not entry_norm or normalized == entry_norm:
             continue
-        if entry_norm in normalized:
-            candidates.append((entry, True))  # substring match
-        elif _titles_share_enough_tokens(entry_title, pending_title):
-            candidates.append((entry, False))  # token-overlap match
+        # Tokenise once: this runs for every row of the source index, and the
+        # Roman-numeral substitutions in _tokenize_title are not free.
+        overlap = _shared_token_count(_tokenize_title(entry_title), pending_tokens)
+        if _substring_candidate(entry_norm, normalized):
+            candidates.append((entry, True, overlap))  # substring match
+        elif overlap >= _DEEP_SEARCH_MIN_SHARED_TOKENS:
+            candidates.append((entry, False, overlap))  # token-overlap match
 
-    # Sort candidates: substring matches first (more reliable), then
-    # token-overlap matches.  Without sorting, high-confidence substring
-    # matches can get pushed out of the top-3 by URL-alphabetical ordering.
-    candidates.sort(key=lambda x: (not x[1], x[0].get("url", "")))
+    # Sort candidates: substring matches first (more reliable), then by the
+    # strength of the title overlap, then by URL for determinism.  URL order
+    # alone used to decide which candidate earned the scarce article fetches,
+    # which let an unrelated repack win over the right one.
+    candidates.sort(key=lambda x: (not x[1], -x[2], x[0].get("url", "")))
 
     # At most 3 HTTP requests to limit overhead
-    for candidate, substring_match in candidates[:3]:
-        if _check_candidate_for_dlc_match(candidate, normalized, substring_match=substring_match):
+    for candidate, substring_match, _overlap in candidates[:3]:
+        if _check_candidate_for_dlc_match(
+            candidate,
+            normalized,
+            substring_match=substring_match,
+            pending_title=pending_title,
+        ):
             return [candidate]
 
     return []

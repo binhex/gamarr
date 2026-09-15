@@ -746,7 +746,9 @@ class Database:
 
         Returns a score where higher values indicate a better match:
         - ``2``: exact match (best possible)
-        - ``1``: *query* is a substring of *db_title* and both are >= 5 chars.
+        - ``1``: *query* is a substring of *db_title*, both are >= 5 chars, and
+          the match does not continue a numeral into another digit (so
+          ``"battlefield2"`` does not match ``"battlefield2042"``).
           This direction handles FitGirl titles that have version/bonus info
           appended (e.g. ``"MOUSE: P.I. For Hire – v1.0.1.8044 + 2 Bonus
           DLCs"``). The reverse direction (db_title inside a longer query)
@@ -759,7 +761,10 @@ class Database:
             return 2
         if len(db_title) < 5 or len(query) < 5:
             return 0
-        if query in db_title:
+        from gamarr.utils import numeral_runs_into_a_digit
+
+        index = db_title.find(query)
+        if index >= 0 and not numeral_runs_into_a_digit(db_title, query, index):
             return 1
         return 0
 
@@ -1044,13 +1049,27 @@ class Database:
             session.add(row)
             session.commit()
 
+    @staticmethod
+    def _prefer_unprocessed(rows: list[HistoryRow]) -> HistoryRow | None:
+        """Return the history row a tag lookup should act on.
+
+        Two games can share one torrent tag when a second pending game adopts an
+        already-present torrent.  Preferring the row that has not been
+        post-processed yet lets that game still be copied, instead of being
+        recorded as passed and then silently skipped.
+        """
+        if not rows:
+            return None
+        return next((row for row in rows if not row.post_process_state), rows[0])
+
     def find_by_tag(self, tag: str) -> HistoryRow | None:
         """Look up a history row by its torrent tag.
 
         Returns None if no matching row is found.
         """
         with self._session() as session:
-            return session.query(HistoryRow).filter(HistoryRow.torrent_tag == tag).first()
+            rows = session.query(HistoryRow).filter(HistoryRow.torrent_tag == tag).order_by(HistoryRow.id).all()
+        return self._prefer_unprocessed(rows)
 
     def set_post_process_state(self, tag: str, state: str, copied_at: str | None = None) -> None:
         """Persist a post-processing state transition for a tagged torrent.
@@ -1062,7 +1081,8 @@ class Database:
                 when *state* is "copied" and *copied_at* is provided.
         """
         with self._session() as session:
-            row = session.query(HistoryRow).filter(HistoryRow.torrent_tag == tag).first()
+            rows = session.query(HistoryRow).filter(HistoryRow.torrent_tag == tag).order_by(HistoryRow.id).all()
+            row = self._prefer_unprocessed(rows)
             if row is None:
                 return
             row.post_process_state = state

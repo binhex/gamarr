@@ -325,12 +325,24 @@ flowchart TD
    evaluation or re-verification (genres never change).
 6. **Source indexing** — Only when there are verified games in the
    queue. Each enabled source's index is fetched (FreeGOG A-Z list,
-   FitGirl sitemap) and new titles are stored for matching.
+   FitGirl sitemap) and new titles are stored for matching. The FreeGOG
+   A-Z index stores each game as it is fetched, so a cycle aborted by the
+   acquisition watchdog resumes where it left off next cycle instead of
+   starting over — the progress line reports the true number of pages left.
 7. **Source matching** — Verified games are matched against the source
-   index by title. The best-matching title gets its magnet link
+   index by title, best match first. A DLC/expansion title can match its
+   base game's repack when the repack page confirms the included content;
+   otherwise a fuzzy candidate that merely shares title words (e.g. "2",
+   "master", "collection") is accepted only when the repack page actually
+   names the game, so an unrelated repack is no longer picked on URL order
+   alone. The matched title gets its magnet link
    fetched (pre-stored for FreeGOG, on-demand for FitGirl).
 8. **Delivery** — Matched games are added to qBittorrent with a `gamarr-*`
-   tag. The result is recorded in the history database.
+   tag. A torrent qBittorrent already holds that gamarr added, or that sits in
+   gamarr's category (that is the opt-in, even for a torrent you added), is
+   adopted and treated as delivered rather than retried
+   every cycle; a torrent outside gamarr's category is reported as delivered but
+   left completely untouched. The result is recorded in the history database.
 9. **Notifications** — Optional Apprise notifications on download, failure,
    or error.
 

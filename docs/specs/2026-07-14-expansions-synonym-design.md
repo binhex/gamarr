@@ -1,5 +1,14 @@
 # "All Expansions" DLC Synonym Support — Design Spec
 
+> **Superseded 2026-09-15:** the deep-search acceptance rule changed. A
+> token-overlap candidate is now accepted only when the repack article body
+> names the pending game (`_article_names_game` in `src/gamarr/pipeline.py`),
+> and the page-title DLC fast path applies to substring candidates only. The
+> "Neverwinter Nights 2: Mask of The Betrayer" example below is therefore
+> rejected unless the article names the expansion. The
+> `_PAGE_TITLE_DLC_PATTERNS` / `_ALL_DLCS_PATTERNS` synonym work this spec
+> describes is unchanged.
+
 ## Problem
 
 FitGirl repacks use "expansions" and "DLCs" interchangeably to indicate that a

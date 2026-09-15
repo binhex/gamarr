@@ -6,6 +6,7 @@ and extracts magnet links.
 
 from __future__ import annotations
 
+import html
 import re
 import xml.etree.ElementTree as ET
 from typing import TYPE_CHECKING, Any
@@ -222,6 +223,11 @@ def _clean_title(raw_title: str) -> str:
 def _extract_magnet_from_html(html_content: str) -> str | None:
     """Extract the first magnet link found in *html_content*.
 
+    FitGirl renders magnet links inside HTML attributes, so separators arrive
+    HTML-escaped (``&#038;`` / ``&amp;``).  The entity is decoded here: an
+    escaped separator makes the magnet unparseable and qBittorrent rejects the
+    add.
+
     Args:
         html_content: Raw HTML page content.
 
@@ -230,7 +236,7 @@ def _extract_magnet_from_html(html_content: str) -> str | None:
     """
     match = _MAGNET_PATTERN.search(html_content)
     if match:
-        return match.group(1).strip()
+        return html.unescape(match.group(1).strip())
     return None
 
 

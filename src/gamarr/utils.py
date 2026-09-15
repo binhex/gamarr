@@ -154,6 +154,28 @@ def get_project_root() -> Path:
     return Path(__file__).parent.parent.parent
 
 
+def numeral_runs_into_a_digit(haystack: str, needle: str, index: int) -> bool:
+    """Return True when a match of *needle* at *index* continues into another digit.
+
+    Normalised titles have their separators stripped, so containment alone treats
+    ``"battlefield2"`` as a match inside ``"battlefield2042"``.  A numeral that
+    runs straight into another digit names a different game, not the same title
+    with extra words.
+
+    Args:
+        haystack: The string that was searched.
+        needle: The matched substring.
+        index: Index of the match inside *haystack*.
+
+    Returns:
+        True when the match's trailing digit is followed by another digit.
+    """
+    end = index + len(needle)
+    if not needle or end >= len(haystack):
+        return False
+    return needle[-1].isdigit() and haystack[end].isdigit()
+
+
 def normalise_for_compare(text: str) -> str:
     """Normalise a title string for case-insensitive fuzzy comparison.
 

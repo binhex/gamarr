@@ -43,10 +43,13 @@ class TestSchedulerForeground:
         assert kwargs["timeout_seconds"] == 7 * 60.0, "configured timeout must reach the watchdog"
 
     def test_run_once_handles_watchdog_abort_cleanly(self) -> None:
-        from gamarr.utils import TimeoutExceededError
+        from gamarr.scheduler import AcquisitionWatchdogTimeoutError
 
         with (
-            patch("gamarr.scheduler._run_acquisition_guarded", side_effect=TimeoutExceededError("hung")),
+            patch(
+                "gamarr.scheduler._run_acquisition_guarded",
+                side_effect=AcquisitionWatchdogTimeoutError("hung"),
+            ),
             patch("gamarr.qbittorrent.QBittorrentClient") as mock_qbt_cls,
         ):
             mock_qbt_cls.return_value.is_connected.return_value = False
@@ -54,8 +57,50 @@ class TestSchedulerForeground:
             run_once(config)
         # No exception propagates: a watchdog abort must exit cleanly.
 
+    def test_run_once_handles_inner_timeout_cleanly(self) -> None:
+        """An escaping inner timeout is reported, not mislabelled as a watchdog abort."""
+        from gamarr.utils import TimeoutExceededError
+
+        with (
+            patch("gamarr.scheduler._run_acquisition_guarded", side_effect=TimeoutExceededError("inner")),
+            patch("gamarr.qbittorrent.QBittorrentClient") as mock_qbt_cls,
+        ):
+            mock_qbt_cls.return_value.is_connected.return_value = False
+            config = _make_config(schedule_enabled=False)
+            run_once(config)
+        # No exception propagates: both timeout kinds abort the cycle cleanly.
+
+    def test_scheduled_acquisition_swallows_watchdog_abort(self) -> None:
+        """A watchdog abort is a cycle outcome, not an APScheduler job exception."""
+        import time
+
+        from gamarr.scheduler import _run_acquisition_job
+
+        def hung_job(**_kwargs: object) -> list[dict[str, str]]:
+            time.sleep(2)
+            return [{"result": "Passed"}]
+
+        assert _run_acquisition_job(job=hung_job, timeout_seconds=0.05) == [], (
+            "an aborted cycle must return no results instead of raising"
+        )
+
+    def test_scheduled_acquisition_does_not_swallow_inner_timeouts(self) -> None:
+        """A TimeoutExceededError raised by the pipeline must still surface.
+
+        The job is invoked through the real guarded function so the watchdog
+        translation is exercised, not bypassed.
+        """
+        from gamarr.scheduler import _run_acquisition_job
+        from gamarr.utils import TimeoutExceededError
+
+        def inner_timeout(**_kwargs: object) -> list[dict[str, str]]:
+            raise TimeoutExceededError("inner page-fetch watchdog escaped")
+
+        with pytest.raises(TimeoutExceededError):
+            _run_acquisition_job(job=inner_timeout, timeout_seconds=5.0)
+
     def test_run_daemon_passes_configured_timeout_to_acquisition_job(self) -> None:
-        from gamarr.scheduler import _run_daemon
+        from gamarr.scheduler import _run_acquisition_job, _run_daemon
 
         with patch("gamarr.scheduler.BackgroundScheduler") as mock_sched_cls:
             mock_sched = MagicMock()
@@ -107,6 +152,10 @@ class TestSchedulerForeground:
         acquisition_kwargs = mock_sched.add_job.call_args_list[0].kwargs["kwargs"]
         assert acquisition_kwargs["timeout_seconds"] == 42 * 60.0, (
             "configured acquisition_timeout_mins must reach the daemon watchdog"
+        )
+        registered_job = mock_sched.add_job.call_args_list[0].args[0]
+        assert registered_job is _run_acquisition_job, (
+            "the daemon must register the watchdog-swallowing wrapper, not the raw guarded function"
         )
 
     def test_run_calls_daemon_when_schedule_enabled(self) -> None:

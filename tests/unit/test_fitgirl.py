@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import pytest
+
 from gamarr.sources.fitgirl import FitGirlSource, _clean_title
 
 if TYPE_CHECKING:
@@ -109,6 +111,22 @@ class TestExtractMagnetFromHtml:
         html = '<a href="magnet:?xt=urn:btih:abc123&dn=game">magnet</a>'
         result = _extract_magnet_from_html(html)
         assert result == "magnet:?xt=urn:btih:abc123&dn=game"
+
+    @pytest.mark.parametrize(
+        ("html", "expected"),
+        [
+            (
+                '<a href="magnet:?xt=urn:btih:E55063CC&#038;dn=Game&#038;tr=udp%3A%2F%2Fx.net%3A6969">m</a>',
+                "magnet:?xt=urn:btih:E55063CC&dn=Game&tr=udp%3A%2F%2Fx.net%3A6969",
+            ),
+            ('<a href="magnet:?xt=urn:btih:abc&amp;dn=Game">m</a>', "magnet:?xt=urn:btih:abc&dn=Game"),
+        ],
+    )
+    def test_extract_magnet_unescapes_html_entities(self, html: str, expected: str) -> None:
+        """Both HTML ampersand encodings seen on FitGirl pages must be decoded."""
+        from gamarr.sources.fitgirl import _extract_magnet_from_html
+
+        assert _extract_magnet_from_html(html) == expected
 
     def test_extract_magnet_not_found(self) -> None:
         from gamarr.sources.fitgirl import _extract_magnet_from_html
