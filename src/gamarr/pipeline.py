@@ -291,24 +291,33 @@ def run_acquisition(
                 total_scanned = 0
 
             remaining_pages = max_pages_cfg - total_scanned if max_pages_cfg > 0 else 0
+            # Page allowance shared by the whole cycle (0 = unlimited).  It is
+            # spent on one year at a time, so a cycle drains the newest year
+            # instead of taking max_cycle_pages from every year in the range.
+            cycle_allowance = cfg.max_cycle_pages if cfg.max_cycle_pages and cfg.max_cycle_pages > 0 else 0
+            pages_this_cycle = 0
+            fetch_failed = False
+            drained_probes = 0
 
-            # Year loop — newest year first so discovery order matches the
-            # `new` sort order and a mid-cycle budget cutoff never starves
-            # the most recent releases.
+            # Year loop — newest year first, one year at a time: a year is
+            # drained until it has no pages left before the next year down is
+            # touched, and the cycle stops once its page allowance is spent.
             for scan_year in range(current_year, cutoff_year - 1, -1):
                 if is_cancelled(cancel_event):
                     break
                 if max_pages_cfg > 0 and remaining_pages <= 0:
                     break
+                if cycle_allowance > 0 and pages_this_cycle >= cycle_allowance:
+                    break
                 start_page = db.get_last_scanned_page(platform, scan_year) + 1
                 try:
-                    if max_pages_cfg > 0:
-                        if cfg.max_cycle_pages and cfg.max_cycle_pages > 0:
-                            per_call_max = min(cfg.max_cycle_pages, remaining_pages)
-                        else:
-                            per_call_max = remaining_pages
-                    else:
-                        per_call_max = cfg.max_cycle_pages if cfg.max_cycle_pages else 0
+                    # Allowance for this call: the smaller of the remaining
+                    # budget and what is left of the cycle allowance (0 = no
+                    # limit on either).
+                    allowance_left = cycle_allowance - pages_this_cycle if cycle_allowance > 0 else 0
+                    per_call_max = remaining_pages if max_pages_cfg > 0 else 0
+                    if cycle_allowance > 0 and (per_call_max == 0 or allowance_left < per_call_max):
+                        per_call_max = allowance_left
 
                     year_games = mc.scan_recent_games(
                         platform,
@@ -322,17 +331,42 @@ def run_acquisition(
                     )
                     browse_games.extend(year_games)
                     last_page = mc._recent_games_last_page if isinstance(mc._recent_games_last_page, int) else 0
+                    pages_scanned = last_page - start_page + 1 if last_page >= start_page else 0
 
-                    # When last_page < start_page the scan found nothing
-                    # (all pages exhausted for this year).  Advance past it
-                    # so the next cycle continues, not retries forever.
-                    db.set_last_scanned_page(platform, scan_year, max(last_page, start_page))
+                    # Only real pages advance the year's progress row.  An
+                    # exhausted year keeps its last real page so the next cycle
+                    # probes the same page instead of creeping forward and
+                    # spending the budget on empty fetches.
+                    if pages_scanned > 0:
+                        db.set_last_scanned_page(platform, scan_year, last_page)
 
-                    if max_pages_cfg > 0 and last_page >= start_page:
-                        pages_scanned = last_page - start_page + 1
+                    # Only a probe the client confirmed as an empty listing counts
+                    # as drained; an outright fetch failure must never be read as
+                    # the end of a year's listings, and a zero-page probe that is
+                    # neither (scan stopped early) must not block the drained
+                    # reset either.
+                    if pages_scanned == 0:
+                        if getattr(mc, "_recent_games_exhausted", None) is True:
+                            drained_probes += 1
+                        elif getattr(mc, "_recent_games_failed", None) is True:
+                            fetch_failed = True
+
+                    pages_this_cycle += pages_scanned
+                    if max_pages_cfg > 0:
                         remaining_pages -= pages_scanned
                 except Exception:
+                    fetch_failed = True
                     logger.exception("Scan failed for year {} — will retry next cycle", scan_year)
+
+            # A full pass that found no pages anywhere means the range is fully
+            # drained: restart from the newest year so new releases are picked up.
+            if pages_this_cycle == 0 and drained_probes > 0 and not fetch_failed and not is_cancelled(cancel_event):
+                logger.info(
+                    "Backlog drained — no pages left in {}..{}, restarting from the newest year",
+                    cutoff_year,
+                    current_year,
+                )
+                db.reset_progress(platform, cfg.sort_order)
 
             db.set_last_sort_order(platform, cfg.sort_order)
 
@@ -361,8 +395,17 @@ def run_acquisition(
 
             # ── Shared: scrape-health check ──
             if not is_cancelled(cancel_event) and not browse_games and cfg.notify_on_scrape_failure:
-                # Check if we have any cached browse data (if so, stale data is fine)
-                cached_exists = (
+                # A year the client confirmed as drained is expected to yield no
+                # games, so an empty browse result is not evidence of a scrape
+                # failure — unless this sweep also had a real fetch failure, which
+                # must always be reported.  Otherwise, if we have cached browse
+                # data, stale data is fine too.  Known limitation: a range that
+                # stays empty after a drained reset probes from page 1 again, and
+                # the client cannot confirm a drain from page 1, so a genuinely
+                # empty range can notify once per cycle until a fetch credits a
+                # page.  Closing that needs durable drained state (schema change).
+                drained = not fetch_failed and getattr(mc, "_recent_games_exhausted", None) is True
+                cached_exists = drained or (
                     mc._cache.get_browse_page(platform, 1, ttl_hours=cfg.cache_pages_hours, year=0) is not None
                     or mc._cache.get_browse_page(
                         platform,

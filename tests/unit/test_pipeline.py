@@ -6438,6 +6438,404 @@ class TestBacklogAdvancing:
             assert "Progress:" in log_output, f"Expected 'Progress:' in log output, got: {log_output[:500]}"
 
 
+class TestYearDrainOrder:
+    """The per-cycle page allowance is spent on one year at a time, newest first."""
+
+    @staticmethod
+    def _run_cycle(
+        tmp_path: Path,
+        *,
+        max_pages: int,
+        max_cycle_pages: int,
+        available_pages: dict[int, int],
+        db_path: str | None = None,
+        fetch_fails: bool = False,
+        stalled_years: set[int] | None = None,
+    ) -> tuple[int, list[dict[str, Any]]]:
+        """Run one acquisition cycle against a fake Metacritic client.
+
+        ``available_pages`` maps a year to the highest page number that still
+        returns games; a year absent from the map is exhausted at page 1.
+        Returns the current year and the recorded scan calls.
+        """
+        import datetime
+
+        current_year = datetime.datetime.now(tz=datetime.UTC).year
+        calls: list[dict[str, Any]] = []
+        mock_mc = MagicMock()
+
+        def fake_scan(*_args: Any, **kwargs: Any) -> list:
+            start_page = kwargs.get("start_page", 1)
+            limit = kwargs.get("max_pages", 0)
+            scan_year = kwargs.get("year")
+            last_available = available_pages.get(scan_year, 0) if isinstance(scan_year, int) else 0
+            stalled = bool(stalled_years) and scan_year in (stalled_years or set())
+            if stalled:
+                last_page = start_page - 1
+            elif limit and start_page + limit - 1 <= last_available:
+                last_page = start_page + limit - 1
+            elif start_page <= last_available:
+                last_page = last_available
+            else:
+                last_page = start_page - 1
+            calls.append(
+                {
+                    "year": scan_year,
+                    "start_page": start_page,
+                    "max_pages": limit,
+                    "pages": max(last_page - start_page + 1, 0),
+                    # The real client always fetches one page past the pages it
+                    # credits: that probe is what proves the year is drained.
+                    "requests": max(last_page - start_page + 1, 0) + 1,
+                }
+            )
+            mock_mc._recent_games_last_page = last_page
+            # A fetch failure is not a drained year: no empty page was parsed.
+            # A stalled probe is neither drained nor failed.
+            mock_mc._recent_games_exhausted = last_page < start_page and not fetch_fails and not stalled
+            mock_mc._recent_games_failed = fetch_fails
+            return []
+
+        mock_mc._recent_games_last_page = 0
+        mock_mc._recent_games_exhausted = False
+        mock_mc._recent_games_failed = False
+        mock_mc.scan_recent_games.side_effect = fake_scan
+
+        with (
+            patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
+            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+            patch("gamarr.pipeline._check_scrape_health", return_value="metacritic_broken"),
+        ):
+            mock_source_cls.return_value = MagicMock()
+            mock_mc_cls.return_value = mock_mc
+            mock_qbt = MagicMock()
+            mock_qbt.is_connected.return_value = True
+            mock_qbt_cls.return_value = mock_qbt
+
+            run_acquisition(
+                platform="pc",
+                db_path=db_path or str(tmp_path / "test.db"),
+                qbt_host="localhost",
+                qbt_port=8080,
+                max_pages=max_pages,
+                max_cycle_pages=max_cycle_pages,
+                sort_order="new",
+            )
+        return current_year, calls
+
+    def test_cycle_allowance_spent_on_newest_year_only(self, tmp_path: Path) -> None:
+        """max_cycle_pages is a per-cycle total, not a per-year allowance."""
+        import datetime
+
+        current_year = datetime.datetime.now(tz=datetime.UTC).year
+        _current, calls = self._run_cycle(
+            tmp_path,
+            max_pages=1000,
+            max_cycle_pages=4,
+            available_pages={current_year: 500},
+        )
+
+        years = [call["year"] for call in calls]
+        assert years == [current_year], f"Only the newest year should be drained first, got {years}"
+        assert sum(call["pages"] for call in calls) == 4, (
+            f"A cycle must credit at most max_cycle_pages pages, got {[c['pages'] for c in calls]}"
+        )
+
+    def test_exhausted_newest_year_descends_within_same_cycle(self, tmp_path: Path) -> None:
+        """A drained year moves the scan on to the next newest year, descending."""
+        import datetime
+
+        current_year = datetime.datetime.now(tz=datetime.UTC).year
+        _current, calls = self._run_cycle(
+            tmp_path,
+            max_pages=1000,
+            max_cycle_pages=4,
+            available_pages={current_year - 1: 500},
+        )
+
+        years = [call["year"] for call in calls]
+        assert years == [current_year, current_year - 1], f"Expected descending drain, got {years}"
+        # The exhausted newest year only costs an empty probe; the real pages
+        # fetched must still fit inside the cycle allowance.
+        assert [call["pages"] for call in calls] == [0, 4], f"Unexpected page counts: {calls}"
+        assert sum(call["pages"] for call in calls) == 4, f"Cycle allowance was exceeded: {calls}"
+
+    def test_partially_drained_year_shares_remaining_allowance_with_next_year(self, tmp_path: Path) -> None:
+        """Pages left in a drained year are spent on the next year down."""
+        import datetime
+
+        current_year = datetime.datetime.now(tz=datetime.UTC).year
+        _current, calls = self._run_cycle(
+            tmp_path,
+            max_pages=1000,
+            max_cycle_pages=4,
+            available_pages={current_year: 2, current_year - 1: 500},
+        )
+
+        assert [(call["year"], call["max_pages"]) for call in calls] == [
+            (current_year, 4),
+            (current_year - 1, 2),
+        ], f"Expected the leftover allowance to be used on the next year, got {calls}"
+
+    def test_exhausted_year_progress_does_not_creep(self, tmp_path: Path) -> None:
+        """A year with no pages left must not advance its stored progress row."""
+        import datetime
+
+        from gamarr.database import Database
+
+        current_year = datetime.datetime.now(tz=datetime.UTC).year
+        db_path = str(tmp_path / "progress.db")
+        db = Database(db_path)
+        db.set_last_scanned_page("pc", current_year, 12)
+        db.close()
+
+        _current, calls = self._run_cycle(
+            tmp_path,
+            max_pages=1000,
+            max_cycle_pages=4,
+            available_pages={current_year: 12, current_year - 1: 500},
+            db_path=db_path,
+        )
+        assert calls[0]["year"] == current_year
+        assert calls[0]["start_page"] == 13
+        assert calls[0]["max_pages"] == 4
+
+        db = Database(db_path)
+        assert db.get_last_scanned_page("pc", current_year) == 12, (
+            "An exhausted year must keep its last real page so the budget is not spent on empty probes"
+        )
+        db.close()
+
+    def test_unconfirmed_zero_page_probe_does_not_block_drain_reset(self, tmp_path: Path) -> None:
+        """A probe that is neither drained nor failed must not suppress the reset."""
+        import datetime
+
+        from gamarr.database import Database
+
+        current_year = datetime.datetime.now(tz=datetime.UTC).year
+        db_path = str(tmp_path / "stalled.db")
+        db = Database(db_path)
+        db.set_last_scanned_page("pc", current_year, 12)
+        db.set_last_scanned_page("pc", current_year - 2, 7)
+        db.close()
+
+        _current, calls = self._run_cycle(
+            tmp_path,
+            max_pages=1000,
+            max_cycle_pages=4,
+            available_pages={current_year: 12},
+            stalled_years={current_year - 1},
+            db_path=db_path,
+        )
+        probed = {call["year"] for call in calls}
+        assert probed >= {current_year, current_year - 1}, f"Expected both years probed, got {probed}"
+
+        db = Database(db_path)
+        assert db.get_last_scanned_page("pc", current_year) == 0, (
+            "An unconfirmed zero-page probe must not block the drained reset"
+        )
+        assert db.get_last_scanned_page("pc", current_year - 2) == 0, (
+            "The drained reset must clear every year's progress row"
+        )
+        db.close()
+
+    def test_fetch_failure_is_still_reported_as_a_scrape_failure(self, tmp_path: Path) -> None:
+        """A failed browse fetch must not be silenced by another year being drained."""
+        from unittest.mock import patch
+
+        from gamarr.database import Database
+        from gamarr.metacritic_cache import MetacriticCache
+
+        db_path = str(tmp_path / "mixed_health.db")
+
+        class _FakeClient:
+            """Real cache; the newest year fails to fetch, the next year is drained."""
+
+            def __init__(self) -> None:
+                self.sort_order = "new"
+                self.cache_hits = 0
+                self._cache = MetacriticCache(Database(db_path))
+                self._recent_games_last_page = 0
+                self._recent_games_exhausted = False
+                self._recent_games_failed = False
+                self._calls = 0
+
+            def scan_recent_games(self, *_args: Any, **kwargs: Any) -> list:
+                self._calls += 1
+                start_page = kwargs.get("start_page", 1)
+                # Flags are per call, exactly like the real client.
+                self._recent_games_exhausted = False
+                self._recent_games_failed = False
+                if self._calls == 1:
+                    # Only the newest year fails to fetch; every older year drains.
+                    self._recent_games_last_page = 0
+                    self._recent_games_exhausted = False
+                    self._recent_games_failed = True
+                    return []
+                self._recent_games_last_page = start_page - 1
+                self._recent_games_exhausted = True
+                self._recent_games_failed = False
+                return []
+
+            def lookup_game(self, *_args: Any, **_kwargs: Any) -> None:
+                return None
+
+            def close(self) -> None:
+                self._cache.close()
+
+        with (
+            patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
+            patch("gamarr.pipeline.MetacriticClient", return_value=_FakeClient()),
+            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+            patch("gamarr.pipeline._check_scrape_health", return_value="metacritic_broken") as mock_health,
+            patch("gamarr.pipeline._diagnose_and_notify_scrape") as mock_notify,
+        ):
+            mock_source_cls.return_value = MagicMock()
+            mock_qbt = MagicMock()
+            mock_qbt.is_connected.return_value = True
+            mock_qbt_cls.return_value = mock_qbt
+
+            run_acquisition(
+                platform="pc",
+                db_path=db_path,
+                qbt_host="localhost",
+                qbt_port=8080,
+                max_pages=200,
+                max_cycle_pages=4,
+                sort_order="new",
+                notify_on_scrape_failure=True,
+            )
+
+        assert mock_health.called, "A real fetch failure must still trigger the scrape check"
+        assert mock_notify.called, "A fetch failure must not be silenced by a drained year"
+
+    def test_drained_range_does_not_report_a_scrape_failure(self, tmp_path: Path) -> None:
+        """A confirmed-drained sweep (probes resumed past page 1) stays quiet."""
+        import datetime
+        from unittest.mock import patch
+
+        from gamarr.database import Database
+        from gamarr.metacritic_cache import MetacriticCache
+
+        current_year = datetime.datetime.now(tz=datetime.UTC).year
+        db_path = str(tmp_path / "drained_notify.db")
+        # Every year in the window was scanned before, so the drain probes resume
+        # past page 1: the only state the real client reports as drained.
+        seed = Database(db_path)
+        for offset in range(5):
+            seed.set_last_scanned_page("pc", current_year - offset, 5)
+        seed.close()
+
+        class _FakeClient:
+            """Real cache, drained scans - the state that used to look like a scrape failure."""
+
+            def __init__(self) -> None:
+                self.sort_order = "new"
+                self.cache_hits = 0
+                self._cache = MetacriticCache(Database(db_path))
+                self._recent_games_last_page = 0
+                self._recent_games_exhausted = False
+                self._recent_games_failed = False
+
+            def scan_recent_games(self, *_args: Any, **kwargs: Any) -> list:
+                start_page = kwargs.get("start_page", 1)
+                # Mirror the real client: flags are per call, and a drain is only
+                # confirmed for a probe past page 1.
+                self._recent_games_last_page = start_page - 1
+                self._recent_games_exhausted = start_page > 1
+                self._recent_games_failed = False
+                return []
+
+            def lookup_game(self, *_args: Any, **_kwargs: Any) -> None:
+                return None
+
+            def close(self) -> None:
+                self._cache.close()
+
+        with (
+            patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
+            patch("gamarr.pipeline.MetacriticClient", return_value=_FakeClient()),
+            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+            patch("gamarr.pipeline._check_scrape_health", return_value="metacritic_broken"),
+            patch("gamarr.pipeline._diagnose_and_notify_scrape") as mock_notify,
+        ):
+            mock_source_cls.return_value = MagicMock()
+            mock_qbt = MagicMock()
+            mock_qbt.is_connected.return_value = True
+            mock_qbt_cls.return_value = mock_qbt
+
+            run_acquisition(
+                platform="pc",
+                db_path=db_path,
+                qbt_host="localhost",
+                qbt_port=8080,
+                max_pages=200,
+                max_cycle_pages=4,
+                sort_order="new",
+                notify_on_scrape_failure=True,
+            )
+
+        assert not mock_notify.called, "A drained sweep is expected to collect no games - that is not a scrape failure"
+
+    def test_fully_drained_range_restarts_from_newest_year(self, tmp_path: Path) -> None:
+        """A sweep that finds no pages anywhere must reset so new releases are seen."""
+        import datetime
+
+        from gamarr.database import Database
+
+        current_year = datetime.datetime.now(tz=datetime.UTC).year
+        db_path = str(tmp_path / "drained.db")
+        db = Database(db_path)
+        db.set_last_scanned_page("pc", current_year, 12)
+        db.set_last_scanned_page("pc", current_year - 1, 30)
+        db.close()
+
+        _current, calls = self._run_cycle(
+            tmp_path,
+            max_pages=1000,
+            max_cycle_pages=4,
+            available_pages={},
+            db_path=db_path,
+        )
+        assert calls, "The sweep must still probe the year range"
+
+        db = Database(db_path)
+        assert db.get_last_scanned_page("pc", current_year) == 0, (
+            "A fully drained range must reset so new releases get picked up"
+        )
+        assert db.get_last_scanned_page("pc", current_year - 1) == 0
+        db.close()
+
+    def test_failed_browse_fetch_does_not_reset_progress(self, tmp_path: Path) -> None:
+        """A sweep that only failed to fetch must not be read as a drained range."""
+        import datetime
+
+        from gamarr.database import Database
+
+        current_year = datetime.datetime.now(tz=datetime.UTC).year
+        db_path = str(tmp_path / "offline.db")
+        db = Database(db_path)
+        db.set_last_scanned_page("pc", current_year, 12)
+        db.close()
+
+        _current, calls = self._run_cycle(
+            tmp_path,
+            max_pages=1000,
+            max_cycle_pages=4,
+            available_pages={},
+            db_path=db_path,
+            fetch_fails=True,
+        )
+        assert calls, "The sweep must still attempt the year range"
+
+        db = Database(db_path)
+        assert db.get_last_scanned_page("pc", current_year) == 12, (
+            "A failed fetch is not a drained year — progress must be preserved"
+        )
+        db.close()
+
+
 class TestBacklogLatestMode:
     """Tests for unified browse loop budget and auto-reset behaviour."""
 
@@ -7681,7 +8079,7 @@ class TestPendingProcessingOrder:
         assert match.call_args.kwargs["sort_order"] == "userscore"
 
     def test_new_sort_order_scans_newest_year_first(self, mocker: Any, tmp_path: Path) -> None:
-        """Discovery must walk year buckets from the current year backwards."""
+        """The cycle allowance is spent on the newest year before any older year."""
         import datetime
 
         from gamarr.pipeline import run_acquisition
@@ -7700,13 +8098,55 @@ class TestPendingProcessingOrder:
         mock_mc_instance = mock_mc.return_value
 
         def _mock_scan(*args: Any, **kwargs: Any) -> list:
-            # Report one page scanned so each year consumes exactly one page.
+            # Report one page scanned so the newest year consumes the allowance.
             mock_mc_instance._recent_games_last_page = kwargs["start_page"]
+            mock_mc_instance._recent_games_exhausted = False
             return []
 
         mock_mc_instance.scan_recent_games = MagicMock(side_effect=_mock_scan)
 
         # max_pages=200 -> years_back = ceil(200/52) = 4 -> five year buckets.
+        run_acquisition(
+            platform="pc",
+            db_path=str(tmp_path / "test.db"),
+            enabled=True,
+            sort_order="new",
+            max_pages=200,
+            max_cycle_pages=1,
+        )
+
+        anchor = datetime.datetime.now(tz=datetime.UTC).year
+        years = [c.kwargs["year"] for c in mock_mc_instance.scan_recent_games.call_args_list]
+
+        assert years == [anchor], f"Expected the newest year to be drained first, got: {years}"
+
+    def test_new_sort_order_descends_through_drained_years(self, mocker: Any, tmp_path: Path) -> None:
+        """Drained year buckets are walked from the current year backwards."""
+        import datetime
+
+        from gamarr.pipeline import run_acquisition
+
+        mock_db = mocker.patch("gamarr.pipeline.Database")
+        mock_db_instance = mock_db.return_value
+        mock_db_instance.sum_scanned_pages.return_value = 0
+        mock_db_instance.has_verified_pending.return_value = False
+        mock_db_instance.get_pending.return_value = []
+        mock_db_instance.get_last_scanned_page.return_value = 0
+
+        mock_qbt = mocker.patch("gamarr.pipeline.QBittorrentClient")
+        mock_qbt.return_value.is_connected.return_value = True
+
+        mock_mc = mocker.patch("gamarr.pipeline.MetacriticClient")
+        mock_mc_instance = mock_mc.return_value
+
+        def _mock_scan(*args: Any, **kwargs: Any) -> list:
+            # Every year is already drained: an empty page was parsed.
+            mock_mc_instance._recent_games_last_page = kwargs["start_page"] - 1
+            mock_mc_instance._recent_games_exhausted = True
+            return []
+
+        mock_mc_instance.scan_recent_games = MagicMock(side_effect=_mock_scan)
+
         run_acquisition(
             platform="pc",
             db_path=str(tmp_path / "test.db"),

@@ -1088,7 +1088,7 @@ class TestFetchBrowsePageUrl:
 
         expected_url = (
             "https://www.metacritic.com/browse/game/ps5/all/2026/new/"
-            "?releaseYearMin=1958&releaseYearMax=2035"
+            "?releaseYearMin=2026&releaseYearMax=2026"
             "&platform=ps5&page=1"
         )
         actual_url = mock_get.call_args[0][0]
@@ -1119,6 +1119,124 @@ class TestFetchBrowsePageUrl:
         )
         actual_url = mock_get.call_args[0][0]
         assert actual_url == expected_url, f"URL mismatch\nExpected: {expected_url}\nGot:      {actual_url}"
+
+
+class TestBrowseCacheScoping:
+    """Browse cache keys and year-scoped cache validation."""
+
+    @staticmethod
+    def _client() -> MetacriticClient:
+        return MetacriticClient(cache=MetacriticCache(Database(":memory:")))
+
+    @staticmethod
+    def _page(year: str) -> list[dict]:
+        return [{"title": f"Game {year}", "slug": f"game-{year}", "release_date": f"{year}-05-01"}]
+
+    @staticmethod
+    def _resp() -> object:
+        from unittest.mock import MagicMock
+
+        return MagicMock(status_code=200, content=b"<html><body>stub</body></html>")
+
+    def test_empty_parse_result_is_not_cached(self) -> None:
+        """An empty listing must not be cached: it may be a transient empty page."""
+        from unittest.mock import patch
+
+        client = self._client()
+        with (
+            patch("gamarr.metacritic.requests.get", return_value=self._resp()),
+            patch("gamarr.metacritic._parse_browse_page", return_value=[]),
+        ):
+            client._fetch_browse_page("pc", 1, 6, year=2026)
+
+        assert client._cache.get_browse_page("pc", 1, ttl_hours=6, year=2026) is None
+
+    def test_poisoned_year_cache_entry_is_refetched(self) -> None:
+        """A cached page holding another year's games must not satisfy a year request."""
+        from unittest.mock import patch
+
+        client = self._client()
+        client._cache.set_browse_page("pc", 1, self._page("2015"), year=2026)
+        with (
+            patch("gamarr.metacritic.requests.get", return_value=self._resp()) as mock_get,
+            patch("gamarr.metacritic._parse_browse_page", return_value=self._page("2026")),
+        ):
+            games = client._fetch_browse_page("pc", 1, 6, year=2026)
+
+        assert mock_get.called, "A cache entry scoped to the wrong release year must be refetched"
+        assert games == self._page("2026")
+
+    def test_mixed_year_cache_entry_is_refetched(self) -> None:
+        """A cached page mixing another year's games is not a valid year listing."""
+        from unittest.mock import patch
+
+        client = self._client()
+        mixed = [
+            {"title": "Current", "slug": "current", "release_date": "2026-05-01"},
+            {"title": "Old", "slug": "old", "release_date": "2015-01-01"},
+        ]
+        client._cache.set_browse_page("pc", 1, mixed, year=2026)
+        with (
+            patch("gamarr.metacritic.requests.get", return_value=self._resp()) as mock_get,
+            patch("gamarr.metacritic._parse_browse_page", return_value=self._page("2026")),
+        ):
+            games = client._fetch_browse_page("pc", 1, 6, year=2026)
+
+        assert mock_get.called, "A page containing another year's games must be refetched"
+        assert games == self._page("2026")
+
+    def test_legacy_empty_cached_year_entry_is_refetched(self) -> None:
+        """Empty year rows were written by the old code and must never be served."""
+        from unittest.mock import patch
+
+        client = self._client()
+        client._cache.set_browse_page("pc", 1, [], year=2026)
+        with (
+            patch("gamarr.metacritic.requests.get", return_value=self._resp()) as mock_get,
+            patch("gamarr.metacritic._parse_browse_page", return_value=self._page("2026")),
+        ):
+            games = client._fetch_browse_page("pc", 1, 6, year=2026)
+
+        assert mock_get.called, "A legacy empty row must not be served as a year listing"
+        assert games == self._page("2026")
+
+    def test_matching_year_cache_entry_is_reused(self) -> None:
+        """A cached page whose games belong to the requested year is reused."""
+        from unittest.mock import patch
+
+        client = self._client()
+        client._cache.set_browse_page("pc", 1, self._page("2026"), year=2026)
+        with patch("gamarr.metacritic.requests.get") as mock_get:
+            games = client._fetch_browse_page("pc", 1, 6, year=2026)
+
+        assert not mock_get.called
+        assert games == self._page("2026")
+
+    def test_undated_cache_entry_is_reused(self) -> None:
+        """Games without a release date cannot disprove the cached year scope."""
+        from unittest.mock import patch
+
+        client = self._client()
+        page = [{"title": "Undated", "slug": "undated", "release_date": None}]
+        client._cache.set_browse_page("pc", 1, page, year=2026)
+        with patch("gamarr.metacritic.requests.get") as mock_get:
+            games = client._fetch_browse_page("pc", 1, 6, year=2026)
+
+        assert not mock_get.called
+        assert games == page
+
+    def test_non_positive_year_shares_the_all_time_cache_key(self) -> None:
+        """year <= 0 is all-time, so it must not create a parallel cache key."""
+        from unittest.mock import patch
+
+        client = self._client()
+        all_time = [{"title": "All Time", "slug": "all-time", "release_date": None}]
+        client._cache.set_browse_page("pc", 1, all_time, year=0)
+        with patch("gamarr.metacritic.requests.get") as mock_get:
+            games = client._fetch_browse_page("pc", 1, 6, year=-5)
+
+        assert not mock_get.called, "A non-positive year must reuse the all-time cache entry"
+        assert games == all_time
 
 
 class TestScanRecentGamesLogging:
@@ -1162,6 +1280,115 @@ class TestScanRecentGamesLogging:
         # Should have an intermediate 'page 100' progress log (every 100 pages)
         assert "page 100 (2000 games)" in log_output, (
             f"Expected intermediate 'page 100...' progress log, got:\n{log_output}"
+        )
+
+    def test_batch_progress_reports_page_relative_to_start(self) -> None:
+        """The heartbeat counts pages browsed by this call, not absolute pages."""
+        import io
+        from unittest.mock import patch
+
+        from loguru import logger
+
+        client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
+        pages = [
+            [{"title": f"Game {p}-{g}", "slug": f"game-{p}-{g}", "score": 85, "user_rating": 8.0} for g in range(20)]
+            for p in range(101, 201)
+        ]
+        pages.append([])  # empty page = no more games
+
+        log_stream = io.StringIO()
+        handler_id = logger.add(log_stream, format="{message}", level="INFO")
+        try:
+            with patch.object(client, "_fetch_browse_page", side_effect=pages):
+                client.scan_recent_games("pc", max_games=0, start_page=101, show_progress=True)
+        finally:
+            logger.remove(handler_id)
+
+        log_output = log_stream.getvalue()
+        assert "page 100 (2000 games)" in log_output, (
+            f"Expected a start-relative heartbeat (page 100), got:\n{log_output}"
+        )
+
+    def test_scan_recent_games_reports_pages_fetched_not_absolute_page(self) -> None:
+        """A resumed scan reports the pages it fetched, not the absolute page number."""
+        import io
+        from unittest.mock import patch
+
+        from loguru import logger
+
+        from gamarr.database import Database
+        from gamarr.metacritic import MetacriticClient
+        from gamarr.metacritic_cache import MetacriticCache
+
+        client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
+        pages = [[{"title": f"Game {p}", "slug": f"game-{p}", "score": 85, "user_rating": 8.0}] for p in range(13, 17)]
+        pages.append([])  # empty page = no more games
+
+        log_stream = io.StringIO()
+        handler_id = logger.add(log_stream, format="{message}", level="INFO")
+        try:
+            with patch.object(client, "_fetch_browse_page", side_effect=pages):
+                client.scan_recent_games("pc", max_games=0, start_page=13)
+        finally:
+            logger.remove(handler_id)
+
+        log_output = log_stream.getvalue()
+        assert "4 pages browsed, 4 games collected" in log_output, f"Expected 4 fetched pages in:\n{log_output}"
+        # The absolute resume point must still be exposed for progress tracking.
+        assert client._recent_games_last_page == 16
+
+
+class TestScanOutcomeFlags:
+    """Scan outcome flags that distinguish a drained year from a failed fetch."""
+
+    def test_failed_fetch_marks_failure_never_drained(self) -> None:
+        """A failed fetch sets the failure flag and leaves the drained flag clear."""
+        from unittest.mock import patch
+
+        client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
+        with patch.object(client, "_fetch_browse_page", return_value=None):
+            games = client.scan_recent_games("pc", max_games=0)
+
+        assert games == []
+        assert client._recent_games_failed is True
+        assert client._recent_games_exhausted is False
+        assert client._recent_games_last_page == 0
+
+    def test_empty_page_behind_real_pages_confirms_a_drained_year(self) -> None:
+        """An empty page after real pages proves the year has no more pages."""
+        from unittest.mock import patch
+
+        client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
+        with patch.object(client, "_fetch_browse_page", return_value=[]):
+            client.scan_recent_games("pc", max_games=0, start_page=5)
+
+        assert client._recent_games_exhausted is True
+        assert client._recent_games_failed is False
+
+    def test_empty_first_page_is_not_treated_as_drained(self) -> None:
+        """An empty first page has no evidence behind it, so it is not a drain."""
+        from unittest.mock import patch
+
+        client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
+        with patch.object(client, "_fetch_browse_page", return_value=[]):
+            client.scan_recent_games("pc", max_games=0, start_page=1)
+
+        assert client._recent_games_exhausted is False
+        assert client._recent_games_failed is False
+
+    def test_scan_fetches_exactly_one_probe_page_past_the_limit(self) -> None:
+        """The scan credits max_pages and fetches one more page as the drain probe."""
+        from unittest.mock import patch
+
+        client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
+        pages = [[{"title": f"Game {p}", "slug": f"game-{p}", "score": 85, "user_rating": 8.0}] for p in range(1, 11)]
+
+        with patch.object(client, "_fetch_browse_page", side_effect=pages) as mock_fetch:
+            games = client.scan_recent_games("pc", max_games=0, max_pages=3)
+
+        assert len(games) == 3, f"Expected exactly max_pages credited games, got {len(games)}"
+        assert mock_fetch.call_count == 4, (
+            f"Expected max_pages + 1 fetches (three credited plus one probe), got {mock_fetch.call_count}"
         )
 
 

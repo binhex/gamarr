@@ -566,6 +566,12 @@ class MetacriticClient:
         self.cache_hits = 0
         self.sort_order = "new"
         self._recent_games_last_page: int | None = None
+        # True only when the last scan ended because a page fetched cleanly and
+        # listed no games at a probe past page 1 (the caller resumed from prior
+        # progress), never when a fetch failed.
+        self._recent_games_exhausted: bool = False
+        # True only when the last scan ended because a browse fetch failed.
+        self._recent_games_failed: bool = False
 
     def close(self) -> None:
         """Release cache resources (no-op; DB lifecycle owned by the pipeline)."""
@@ -727,14 +733,26 @@ class MetacriticClient:
         year: int | None = None,
     ) -> list[dict] | None:
         """Return game listings for a browse page from cache or HTTP."""
-        cached = self._cache.get_browse_page(platform, page_number, ttl_hours=cache_pages_hours, year=year or 0)
-        if cached is not None:
+        # A non-positive year is the all-time listing, so it shares the all-time
+        # cache key rather than creating a parallel key per sentinel value.
+        year_key: int = year if isinstance(year, int) and year > 0 else 0
+        year_scoped = year_key > 0
+        cached = self._cache.get_browse_page(platform, page_number, ttl_hours=cache_pages_hours, year=year_key)
+        if cached is not None and self._cache_scope_matches(cached, year_key):
             return cached
-        year_str = str(year) if year is not None else "all-time"
+        # The path's year segment is ignored by Metacritic — the release-year
+        # query parameters are what actually scope the listing, so a single
+        # release year is requested as a fixed range.
+        if year_scoped:
+            year_str = str(year_key)
+            year_min = year_max = str(year_key)
+        else:
+            year_str = "all-time"
+            year_min, year_max = "1958", "2035"
         url = (
             f"https://www.metacritic.com/browse/game/{platform}/all/{year_str}/"
             f"{_SORT_SLUG_OVERRIDES.get(self.sort_order, self.sort_order)}/"
-            f"?releaseYearMin=1958&releaseYearMax=2035"
+            f"?releaseYearMin={year_min}&releaseYearMax={year_max}"
             f"&platform={platform}&page={page_number}"
         )
         try:
@@ -747,12 +765,39 @@ class MetacriticClient:
             if resp.status_code != 200:
                 return None
             parsed = _parse_browse_page(resp.content)
-            if parsed is not None:
-                self._cache.set_browse_page(platform, page_number, parsed, year=year or 0)
+            if parsed:
+                # Empty listings are never cached: a transient empty page must
+                # not be replayed for the whole cache TTL.
+                self._cache.set_browse_page(platform, page_number, parsed, year=year_key)
             return parsed
         except requests.RequestException as exc:
             logger.warning("Failed to fetch browse page '{}': {}", url, exc)
             return None
+
+    @staticmethod
+    def _cache_scope_matches(cached: list[dict], year_key: int) -> bool:
+        """Return True when a cached page plausibly belongs to *year_key*.
+
+        Cached pages written before year-scoped requests were honoured hold
+        all-time listings under year keys, and legacy code also cached empty
+        parses; both are rejected so they cannot masquerade as a specific
+        year's listing.  Pages with no release dates cannot disprove the scope
+        and are accepted.
+        """
+        if year_key <= 0:
+            return True
+        if not cached:
+            logger.debug("Ignoring cached browse page for year {} — empty legacy row", year_key)
+            return False
+        years = {str(game.get("release_date"))[:4] for game in cached if game.get("release_date")}
+        if years and not years <= {str(year_key)}:
+            logger.debug(
+                "Ignoring cached browse page for year {} — cached games are from {}",
+                year_key,
+                sorted(years),
+            )
+            return False
+        return True
 
     def _match_game_on_page(self, games: list[dict], normalized_title: str) -> str | None:
         """Search browse page for matching title, returning slug or None."""
@@ -805,10 +850,23 @@ class MetacriticClient:
         cutoff_date = _validate_cutoff_date(cutoff_date)
 
         effective_max = max_games if max_games > 0 else 999999
-        page_number = max(1, start_page)
+        start_page = max(1, start_page)
+        page_number = start_page
+        self._recent_games_exhausted = False
+        self._recent_games_failed = False
         while len(all_games) < effective_max and page_number <= 2000:
             games = self._fetch_browse_page(platform, page_number, cache_pages_hours, year=year)
+            if games is None:
+                # Fetch or parse failure — this year is not drained, so the
+                # caller must keep its progress row untouched.
+                self._recent_games_failed = True
+                break
             if not games:
+                # The page was fetched and parsed but listed no games.  Only a
+                # probe past page 1 (the caller resumed from prior progress) is
+                # treated as drained; an empty first page carries no such
+                # evidence, so a transient empty listing cannot wipe progress.
+                self._recent_games_exhausted = start_page > 1
                 break
 
             # Check for cancellation after the page fetch
@@ -836,25 +894,28 @@ class MetacriticClient:
             all_games.extend(games)
 
             # Log progress every 100 pages
-            _log_batch_progress(page_number, len(all_games), show_progress)
+            _log_batch_progress(page_number - start_page + 1, len(all_games), show_progress)
 
             page_number += 1
 
-        n_pages = max(page_number - 1, 0)
+        last_page_number = max(page_number - 1, 0)
+        # Report the pages fetched by this call, not the absolute page number,
+        # so a resumed scan does not appear to have browsed every page so far.
+        pages_fetched = max(last_page_number - start_page + 1, 0)
         if year is not None:
             logger.info(
                 "Scan result for {}: {} pages browsed, {} games collected",
                 year,
-                n_pages,
+                pages_fetched,
                 len(all_games),
             )
         else:
             logger.info(
                 "Scan result: {} pages browsed, {} games collected",
-                n_pages,
+                pages_fetched,
                 len(all_games),
             )
-        self._recent_games_last_page = n_pages
+        self._recent_games_last_page = last_page_number
         return all_games
 
 
