@@ -13,6 +13,7 @@ from gamarr.post_processor import (
     _safe_path_component,
     run_post_processing,
 )
+from gamarr.qbittorrent import TorrentCounts
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -160,7 +161,7 @@ class TestRunPostProcessing:
         config.post_process.library_path = "/lib/{title}"
         qbt = MagicMock()
         qbt.is_connected.return_value = True
-        qbt.list_completed.return_value = ([], 0)
+        qbt.list_completed.return_value = ([], TorrentCounts(downloading=0, awaiting_metadata=0))
         db = MagicMock()
         run_post_processing(config, qbt, db)
         db.find_by_tag.assert_not_called()
@@ -184,7 +185,7 @@ class TestRunPostProcessing:
                     "torrent_file_list": [{"file_name": "game.iso", "file_size": 999999}],
                 }
             ],
-            1,
+            TorrentCounts(downloading=0, awaiting_metadata=0),
         )
         db = MagicMock()
         db.find_by_tag.return_value = None
@@ -217,7 +218,7 @@ class TestRunPostProcessing:
                     "torrent_file_list": [{"file_name": "game.iso", "file_size": 999999}],
                 }
             ],
-            1,
+            TorrentCounts(downloading=0, awaiting_metadata=0),
         )
 
         db = MagicMock()
@@ -264,7 +265,7 @@ class TestRunPostProcessing:
                     "torrent_file_list": [{"file_name": "game.iso", "file_size": 999999}],
                 }
             ],
-            1,
+            TorrentCounts(downloading=0, awaiting_metadata=0),
         )
 
         db = MagicMock()
@@ -313,7 +314,7 @@ class TestRunPostProcessing:
                     "torrent_file_list": [],
                 }
             ],
-            1,
+            TorrentCounts(downloading=0, awaiting_metadata=0),
         )
 
         row = MagicMock(spec=HistoryRow)
@@ -351,7 +352,7 @@ class TestRunPostProcessing:
                     "torrent_file_list": [],
                 }
             ],
-            1,
+            TorrentCounts(downloading=0, awaiting_metadata=0),
         )
 
         row = MagicMock(spec=HistoryRow)
@@ -361,7 +362,7 @@ class TestRunPostProcessing:
         db = MagicMock()
         db.find_by_tag.return_value = row
 
-        with patch("gamarr.post_processor._run_copy_phase", return_value=False):
+        with patch("gamarr.post_processor._run_copy_phase", return_value="failed"):
             run_post_processing(config, qbt, db)
 
         qbt.delete_torrent.assert_not_called()
@@ -390,7 +391,7 @@ class TestRunPostProcessing:
                     "torrent_file_list": [{"file_name": "game.iso", "file_size": 999999}],
                 }
             ],
-            1,
+            TorrentCounts(downloading=0, awaiting_metadata=0),
         )
 
         row = MagicMock(spec=HistoryRow)
@@ -439,7 +440,7 @@ class TestRunPostProcessing:
                     "torrent_file_list": [],
                 }
             ],
-            1,
+            TorrentCounts(downloading=0, awaiting_metadata=0),
         )
 
         db = MagicMock()
@@ -473,7 +474,7 @@ class TestRunPostProcessing:
                     "torrent_file_list": [],
                 }
             ],
-            1,
+            TorrentCounts(downloading=0, awaiting_metadata=0),
         )
 
         db = MagicMock()
@@ -509,7 +510,7 @@ class TestRunPostProcessing:
                     "torrent_file_list": [],
                 }
             ],
-            1,
+            TorrentCounts(downloading=0, awaiting_metadata=0),
         )
 
         db = MagicMock()
@@ -584,6 +585,24 @@ class TestSafeRelativePath:
 class TestEdgeCases:
     """Tests for error paths in post-processor."""
 
+    def test_copy_phase_blank_save_path_is_a_failure(self) -> None:
+        """A blank save path is permanent, so it must be reported as a failure, not a wait state."""
+        from gamarr.config import Config
+        from gamarr.database import HistoryRow
+        from gamarr.post_processor import _run_copy_phase
+
+        config = Config()
+        config.post_process.library_path = "/lib/{title}"
+        row = MagicMock(spec=HistoryRow)
+        row.source = "fitgirl"
+        row.platform = "pc"
+        row.genres = "Action"
+        row.game_title = "Test Game"
+        db = MagicMock()
+
+        assert _run_copy_phase({"torrent_tag": "t", "torrent_save_path": ""}, config, row, db) == "failed"
+        db.set_post_process_state.assert_not_called()
+
     def test_copy_phase_empty_library_path(self) -> None:
         from gamarr.config import Config
         from gamarr.database import HistoryRow
@@ -598,8 +617,8 @@ class TestEdgeCases:
         fake_row.game_title = "Test Game"
         torrent = {"torrent_tag": "t", "torrent_save_path": "/dl"}
         db_mock = MagicMock()
-        _run_copy_phase(torrent, config, fake_row, db_mock)
-        # Should not call set_post_process_state (library_path is empty)
+        assert _run_copy_phase(torrent, config, fake_row, db_mock) == "nothing"
+        db_mock.set_post_process_state.assert_not_called()
 
     def test_build_copy_list_empty_save_path(self) -> None:
         from gamarr.post_processor import _build_copy_list
@@ -767,7 +786,7 @@ class TestEdgeCases:
                     "torrent_file_list": [],
                 }
             ],
-            1,
+            TorrentCounts(downloading=0, awaiting_metadata=0),
         )
         db = MagicMock()
         db.find_by_tag.side_effect = RuntimeError("DB crash")
@@ -801,8 +820,8 @@ class TestEdgeCases:
             patch.object(pp_mod.os.path, "isdir", return_value=False),
             patch.object(pp_mod, "make_directory", return_value=False),
         ):
-            _run_copy_phase(torrent, config, fake_row, db_mock)
-        # make_directory failed — should NOT set post_process_state
+            assert _run_copy_phase(torrent, config, fake_row, db_mock) == "failed"
+        db_mock.set_post_process_state.assert_not_called()
 
     def test_copy_phase_copy_with_verify_failure(self) -> None:
         from gamarr import post_processor as pp_mod
@@ -831,8 +850,8 @@ class TestEdgeCases:
             patch.object(pp_mod, "make_directory", return_value=True),
             patch.object(pp_mod, "copy_with_verify", return_value=False),
         ):
-            _run_copy_phase(torrent, config, fake_row, db_mock)
-        # copy_with_verify failed — should NOT set post_process_state
+            assert _run_copy_phase(torrent, config, fake_row, db_mock) == "failed"
+        db_mock.set_post_process_state.assert_not_called()
 
     def test_copy_failure_preserves_preexisting_destination_files(self, tmp_path: Path) -> None:
         from gamarr.config import Config
@@ -865,7 +884,7 @@ class TestEdgeCases:
         with patch("gamarr.post_processor.copy_with_verify", return_value=False):
             result = _run_copy_phase(torrent, config, row, db)
 
-        assert result is False
+        assert result == "failed"
         assert keep.read_text() == "keep"
         db.set_post_process_state.assert_not_called()
 
@@ -906,7 +925,7 @@ class TestDownloadingCount:
                         "torrent_file_list": [{"file_name": "game.iso", "file_size": 999999}],
                     },
                 ],
-                2,
+                TorrentCounts(downloading=1, awaiting_metadata=0),
             )
             db = MagicMock()
             db.find_by_tag.return_value = None
@@ -923,6 +942,216 @@ class TestDownloadingCount:
             )
         finally:
             loguru_logger.remove(sink_id)
+
+    def test_summary_separates_downloading_from_awaiting_metadata(self) -> None:
+        """Metadata-less torrents must not be reported as downloading torrents."""
+        from loguru import logger as loguru_logger
+
+        from gamarr.config import Config
+        from gamarr.post_processor import run_post_processing
+
+        captured: list[str] = []
+        sink_id = loguru_logger.add(
+            lambda msg: captured.append(f"{msg.record['level'].name}: {msg}"),
+            level="DEBUG",
+            format="{message}",
+        )
+        try:
+            config = Config()
+            config.post_process.post_process_enabled = True
+            config.post_process.library_path = "/lib/{title}"
+
+            qbt = MagicMock()
+            qbt.is_connected.return_value = True
+            qbt.list_completed.return_value = (
+                [],
+                TorrentCounts(downloading=2, awaiting_metadata=260),
+            )
+            db = MagicMock()
+            db.find_by_tag.return_value = None
+
+            run_post_processing(config, qbt, db)
+
+            assert any(
+                m.startswith("INFO:") and "2 downloading" in m and "260 awaiting metadata" in m for m in captured
+            ), f"Summary must name both states, got: {[m for m in captured if 'downloading' in m]}"
+        finally:
+            loguru_logger.remove(sink_id)
+
+
+class TestNothingToCopy:
+    """A torrent with no files is nothing to copy, never a copy failure."""
+
+    def test_skipped_row_is_not_retried(self) -> None:
+        """A row marked 'skipped' must not be copied, deleted, or re-processed."""
+        from gamarr.config import Config
+        from gamarr.database import HistoryRow
+
+        config = Config()
+        config.post_process.post_process_enabled = True
+        config.post_process.library_path = "/lib/{title}"
+
+        qbt = MagicMock()
+        qbt.is_connected.return_value = True
+        qbt.list_completed.return_value = (
+            [
+                {
+                    "torrent_tag": "gamarr-skip",
+                    "torrent_hash": "abc",
+                    "torrent_name": "Already Present Game",
+                    "torrent_save_path": "/dl",
+                    "torrent_state": "pausedUP",
+                    "torrent_file_list": [{"file_name": "game.iso", "file_size": 999999}],
+                }
+            ],
+            TorrentCounts(downloading=0, awaiting_metadata=0),
+        )
+
+        db = MagicMock()
+        fake_row = MagicMock(spec=HistoryRow)
+        fake_row.post_process_state = "skipped"
+        db.find_by_tag.return_value = fake_row
+
+        run_post_processing(config, qbt, db)
+
+        qbt.delete_torrent.assert_not_called()
+        db.set_post_process_state.assert_not_called()
+
+    def test_all_files_excluded_logs_info_and_never_warns_copy_failed(self) -> None:
+        """Exclusion rules removing every file is a wait state, not a copy failure."""
+        from loguru import logger as loguru_logger
+
+        from gamarr.config import Config
+        from gamarr.post_processor import _process_one
+
+        config = Config()
+        config.post_process.library_path = "/lib/{title}"
+        config.post_process.exclude_file_regex_list = [".*"]
+
+        row = MagicMock()
+        row.post_process_state = None
+        row.game_title = "Excluded Game"
+        row.source = "fitgirl"
+        row.platform = "pc"
+        row.genres = "Action"
+        db = MagicMock()
+        db.find_by_tag.return_value = row
+        torrent = {
+            "torrent_tag": "gamarr-excluded",
+            "torrent_save_path": "/downloads/Excluded Game",
+            "torrent_file_list": [{"file_name": "game.iso", "file_size": 999999}],
+        }
+
+        captured: list[str] = []
+        sink_id = loguru_logger.add(
+            lambda msg: captured.append(f"{msg.record['level'].name}: {msg}"),
+            level="DEBUG",
+            format="{message}",
+        )
+        try:
+            result = _process_one(torrent, config, MagicMock(), db)
+        finally:
+            loguru_logger.remove(sink_id)
+
+        assert result is None
+        assert not [m for m in captured if "Copy failed" in m], "Excluded files are not a copy failure"
+        assert any(m.startswith("INFO:") and "Excluded Game" in m for m in captured)
+        db.set_post_process_state.assert_not_called()
+
+    def test_one_warning_per_copy_failure(self) -> None:
+        """A genuine copy failure must produce exactly one WARNING for the whole pass."""
+        from loguru import logger as loguru_logger
+
+        from gamarr.config import Config
+        from gamarr.post_processor import run_post_processing
+
+        config = Config()
+        config.post_process.post_process_enabled = True
+        config.post_process.library_path = "/lib/{title}"
+
+        qbt = MagicMock()
+        qbt.is_connected.return_value = True
+        qbt.list_completed.return_value = (
+            [
+                {
+                    "torrent_tag": "gamarr-blank",
+                    "torrent_hash": "abc",
+                    "torrent_name": "Blank Save Path Game",
+                    "torrent_save_path": "",
+                    "torrent_state": "pausedUP",
+                    "torrent_file_list": [{"file_name": "game.iso", "file_size": 999999}],
+                }
+            ],
+            TorrentCounts(downloading=0, awaiting_metadata=0),
+        )
+
+        row = MagicMock()
+        row.post_process_state = None
+        row.game_title = "Blank Save Path Game"
+        row.source = "fitgirl"
+        row.platform = "pc"
+        row.genres = "Action"
+        db = MagicMock()
+        db.find_by_tag.return_value = row
+
+        captured: list[str] = []
+        sink_id = loguru_logger.add(
+            lambda msg: captured.append(f"{msg.record['level'].name}: {msg}"),
+            level="DEBUG",
+            format="{message}",
+        )
+        try:
+            run_post_processing(config, qbt, db)
+        finally:
+            loguru_logger.remove(sink_id)
+
+        warnings = [m for m in captured if m.startswith("WARNING:")]
+        assert len(warnings) == 1, f"Expected exactly one WARNING, got {warnings}"
+        assert "retaining torrent for retry" in warnings[0]
+        db.set_post_process_state.assert_not_called()
+
+    def test_empty_file_list_logs_info_and_never_warns_copy_failed(self) -> None:
+        """No files reported yet is a wait state, not a copy failure."""
+        from loguru import logger as loguru_logger
+
+        from gamarr.config import Config
+        from gamarr.post_processor import _process_one
+
+        config = Config()
+        config.post_process.library_path = "/lib/{title}"
+        config.post_process.copy_completed = True
+
+        row = MagicMock()
+        row.post_process_state = None
+        row.game_title = "Marvel Tokon: Fighting Souls"
+        row.source = "fitgirl"
+        row.platform = "pc"
+        row.genres = "2D Fighting"
+        db = MagicMock()
+        db.find_by_tag.return_value = row
+        torrent = {
+            "torrent_tag": "gamarr-nometa",
+            "torrent_save_path": "/downloads/Marvel Tokon",
+            "torrent_file_list": [],
+        }
+
+        captured: list[str] = []
+        sink_id = loguru_logger.add(
+            lambda msg: captured.append(f"{msg.record['level'].name}: {msg}"),
+            level="DEBUG",
+            format="{message}",
+        )
+        try:
+            result = _process_one(torrent, config, MagicMock(), db)
+        finally:
+            loguru_logger.remove(sink_id)
+
+        assert result is None
+        assert not [m for m in captured if "Copy failed" in m], "Must not claim a copy failed"
+        assert any(m.startswith("INFO:") and "Marvel Tokon: Fighting Souls" in m for m in captured), (
+            "The skip must be explained once, at INFO, naming the torrent"
+        )
+        db.set_post_process_state.assert_not_called()
 
 
 class TestPathCaseFormatting:
@@ -1020,7 +1249,7 @@ class TestPathCaseFormatting:
 class TestRunCopyPhase:
     """Tests for copy-phase retry and failure paths."""
 
-    def test_empty_src_files_returns_false(self) -> None:
+    def test_all_files_excluded_returns_nothing(self) -> None:
         """When no files match (all excluded), return False without copying."""
         from unittest.mock import MagicMock, patch
 
@@ -1052,11 +1281,11 @@ class TestRunCopyPhase:
         ):
             result = _run_copy_phase(torrent, config, row, db)
 
-        assert result is False
+        assert result == "nothing"
         db.set_post_process_state.assert_not_called()
 
-    def test_make_directory_fails_returns_false(self) -> None:
-        """When destination directory cannot be created, return False."""
+    def test_make_directory_fails_returns_failed(self) -> None:
+        """When the destination directory cannot be created, the copy failed."""
         from unittest.mock import MagicMock, patch
 
         from gamarr.config import Config
@@ -1087,7 +1316,7 @@ class TestRunCopyPhase:
         ):
             result = _run_copy_phase(torrent, config, row, db)
 
-        assert result is False
+        assert result == "failed"
         db.set_post_process_state.assert_not_called()
 
 
@@ -1171,7 +1400,7 @@ class TestCopyPhasePreservesStructure:
         with patch("gamarr.post_processor.os.path.isdir", return_value=False):
             result = _run_copy_phase(torrent, config, row, db)
 
-        assert result is True
+        assert result == "copied"
         lib = tmp_path / "library" / "Test Game"
         assert (lib / "game.exe").read_text() == "root"
         assert (lib / "DLC" / "bonus.exe").read_text() == "dlc"
@@ -1215,7 +1444,7 @@ class TestPostProcessingDatabaseLifecycle:
                 "torrent_state": "uploading",
                 "torrent_file_list": [{"file_name": "game.bin", "file_size": game_file.stat().st_size}],
             }
-            qbt.list_completed.return_value = ([torrent], 1)
+            qbt.list_completed.return_value = ([torrent], TorrentCounts(downloading=0, awaiting_metadata=0))
 
             run_post_processing(config, qbt, db)
 

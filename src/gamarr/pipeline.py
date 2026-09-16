@@ -1735,13 +1735,18 @@ def _deliver_match(
     Uses the pre-stored magnet from the source index if available,
     otherwise fetches the magnet from the source page.  Adds the
     torrent to qBittorrent, and sends a download notification on success.
-    On transient delivery failure the game stays in the pending queue
-    for retry on the next cycle — no permanent failure notification is
-    sent, since the game may succeed later.
+    A magnet qBittorrent already holds is never re-uploaded and produces exactly
+    one info line: a torrent gamarr owns (tagged earlier, or sitting in gamarr's
+    category) is adopted and recorded as passed so post-processing still copies
+    it, while a torrent outside gamarr's category is recorded as skipped, since
+    there is nothing for gamarr to copy.  On transient delivery failure the game
+    stays in the pending queue for retry on the next cycle — no permanent
+    failure notification is sent, since the game may succeed later.
 
     Returns:
-        A result dict with ``result`` set to ``"Passed"`` on successful
-        delivery, or ``"Error"`` on magnet-fetch / qBittorrent failure.
+        A result dict with ``result`` set to ``"Passed"`` on successful delivery
+        or adoption, ``"Skipped"`` when the torrent is present but not gamarr's,
+        or ``"Error"`` on magnet-fetch / qBittorrent failure.
     """
     source_url: str = str(best["url"])
     # Use pre-stored magnet if available, otherwise fetch from the source page.
@@ -1749,7 +1754,7 @@ def _deliver_match(
     # Always consume the cached page title (avoids unbounded growth on failed fetches).
     source_title = _fitgirl_page_title_cache.pop(source_url, None) or best["title"] or game_title
     if not magnet:
-        logger.warning("No magnet found for matched '{}' at {}", game_title, source_url)
+        logger.info("No magnet found for matched '{}' at {}", game_title, source_url)
         record_result = _record_delivery_error(
             db,
             game_slug=game_slug,
@@ -1760,6 +1765,24 @@ def _deliver_match(
             best=best,
         )
         return record_result
+
+    if qbt.is_torrent_present(magnet) is not False:
+        # Present, or the check could not be evaluated.  Never upload blindly:
+        # a duplicate add can be reported as successful while nothing was added.
+        return _deliver_present_torrent(
+            db,
+            qbt,
+            best=best,
+            magnet=magnet,
+            source_name=source_name,
+            source_title=source_title,
+            game_slug=game_slug,
+            game_title=game_title,
+            game_platform=game_platform,
+            game_metascore=game_metascore,
+            game_user_score=game_user_score,
+            game_genres=game_genres,
+        )
 
     display_name = _source_display(source_name)
     tag = qbt.add_torrent(magnet_url=magnet, title=f"[{display_name}] {source_title}")
@@ -1789,7 +1812,7 @@ def _deliver_match(
         )
     )
 
-    logger.info("\u2713 Sent matched '{}' to qBittorrent (tag: {})", _escape_markup(game_title), tag)
+    logger.info("\u2713 Delivered matched '{}' to qBittorrent (tag: {})", _escape_markup(game_title), tag)
     record_result = _record_result(
         db,
         source=source_name,
@@ -1825,6 +1848,89 @@ def _deliver_match(
         source_name=source_name,
         source_url=best["url"],
     )
+    return record_result
+
+
+def _deliver_present_torrent(
+    db: Database,
+    qbt: Any,
+    *,
+    best: dict[str, Any],
+    magnet: str,
+    source_name: str,
+    source_title: str,
+    game_slug: str,
+    game_title: str,
+    game_platform: str,
+    game_metascore: float | None,
+    game_user_score: float | None,
+    game_genres: list[str] | None = None,
+) -> dict[str, Any]:
+    """Record a magnet qBittorrent already holds, without re-uploading it.
+
+    A duplicate must not be re-added (qBittorrent rejects it) and must not be
+    retried every cycle.  A torrent gamarr owns - one it tagged earlier, or one
+    sitting in gamarr's category, which is the opt-in - is adopted with one INFO
+    line and recorded as delivered so post-processing still copies it.  A torrent
+    outside gamarr's category is recorded as skipped: there is nothing for
+    gamarr to copy, so the game is never retried.
+
+    Returns:
+        The result dict for the caller.  When the torrent cannot be confirmed or
+        adopted, the game stays pending so the next cycle retries it, exactly as
+        a delivery failure does.
+    """
+    adopted_tag = qbt.adopt_present_torrent(magnet, title=f"[{_source_display(source_name)}] {source_title}")
+    if adopted_tag is None:
+        # _record_delivery_error owns the single warning for this failure; this line
+        # records why the duplicate path could not settle.
+        logger.info(
+            "Could not confirm or adopt the already-present torrent for '{}' (unusable magnet, or qBittorrent "
+            "unreachable); keeping it pending for retry",
+            game_title,
+        )
+        return _record_delivery_error(
+            db,
+            game_slug=game_slug,
+            game_title=game_title,
+            game_platform=game_platform,
+            game_metascore=game_metascore,
+            game_user_score=game_user_score,
+            best=best,
+        )
+    if adopted_tag is False:
+        logger.info(
+            "Torrent '{}' already exists in qBittorrent outside gamarr's category; leaving it untouched.",
+            _escape_markup(game_title),
+        )
+        result, state = "Skipped", "skipped"
+        details = "Already present in qBittorrent; nothing for gamarr to copy"
+    else:
+        logger.info(
+            "Torrent '{}' already exists in qBittorrent; adopted it for post-processing instead of re-uploading.",
+            _escape_markup(game_title),
+        )
+        result, state = "Passed", None
+        details = "Already present in qBittorrent; adopted for post-processing"
+
+    record_result = _record_result(
+        db,
+        source=source_name,
+        source_title=game_title,
+        source_url=f"mc:{game_slug}",
+        game_title=game_title,
+        platform=game_platform,
+        metascore=game_metascore,
+        user_score=game_user_score,
+        result=result,
+        result_details=details,
+        magnet_url=magnet,
+        torrent_tag=adopted_tag if isinstance(adopted_tag, str) else None,
+        genres=", ".join(game_genres) if game_genres else None,
+        post_process_state=state,
+    )
+    record_result["slug"] = game_slug
+    db.remove_pending(game_slug)
     return record_result
 
 
@@ -2553,6 +2659,7 @@ def _record_result(
     magnet_url: str | None = None,
     torrent_tag: str | None = None,
     genres: str | None = None,
+    post_process_state: str | None = None,
 ) -> dict[str, Any]:
     """Persist a result row and return the result dict for the caller."""
     db.record_processed(
@@ -2568,6 +2675,7 @@ def _record_result(
         magnet_url=magnet_url,
         torrent_tag=torrent_tag,
         genres=genres,
+        post_process_state=post_process_state,
     )
     return {
         "result": result,

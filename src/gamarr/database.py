@@ -1029,6 +1029,7 @@ class Database:
         magnet_url: str | None = None,
         torrent_tag: str | None = None,
         genres: str | None = None,
+        post_process_state: str | None = None,
     ) -> None:
         with self._session() as session:
             row = HistoryRow(
@@ -1044,6 +1045,7 @@ class Database:
                 magnet_url=magnet_url,
                 torrent_tag=torrent_tag,
                 genres=genres,
+                post_process_state=post_process_state,
                 processed_at=datetime.datetime.now(tz=datetime.UTC).isoformat(),
             )
             session.add(row)
@@ -1076,7 +1078,8 @@ class Database:
 
         Args:
             tag: The torrent tag to update.
-            state: New post_process_state value ("copied" or "deleted").
+            state: New post_process_state value ("copied", "deleted" or
+                "skipped").
             copied_at: ISO timestamp for when the game was copied. Only set
                 when *state* is "copied" and *copied_at* is provided.
         """
@@ -1096,6 +1099,7 @@ class Database:
             passed = session.query(HistoryRow).filter(HistoryRow.result == "Passed").count()
             failed = session.query(HistoryRow).filter(HistoryRow.result == "Failed").count()
             already_owned = session.query(HistoryRow).filter(HistoryRow.result == "Already owned").count()
+            skipped = session.query(HistoryRow).filter(HistoryRow.result == "Skipped").count()
             error = session.query(HistoryRow).filter(HistoryRow.result == "Error").count()
             expired = session.query(HistoryRow).filter(HistoryRow.result == "Expired").count()
             return {
@@ -1103,6 +1107,7 @@ class Database:
                 "passed": passed,
                 "failed": failed,
                 "already_owned": already_owned,
+                "skipped": skipped,
                 "error": error,
                 "expired": expired,
             }

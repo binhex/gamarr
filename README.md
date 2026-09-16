@@ -53,6 +53,10 @@ stays fresh without lifting a finger.
 - **Post-processing** — a background thread polls qBittorrent for completed
   downloads, copies them to a configurable library path with SHA-256
   verification, and cleans up source torrents after seeding goals are met.
+  Torrents whose metadata has not been fetched yet (a paused magnet holds no
+  files) are not complete: they are skipped quietly and reported once per cycle
+  in the summary line (`N downloading, M awaiting metadata`), never as a copy
+  failure.
 
 ## Prerequisites
 
@@ -338,11 +342,13 @@ flowchart TD
    alone. The matched title gets its magnet link
    fetched (pre-stored for FreeGOG, on-demand for FitGirl).
 8. **Delivery** — Matched games are added to qBittorrent with a `gamarr-*`
-   tag. A torrent qBittorrent already holds that gamarr added, or that sits in
-   gamarr's category (that is the opt-in, even for a torrent you added), is
-   adopted and treated as delivered rather than retried
-   every cycle; a torrent outside gamarr's category is reported as delivered but
-   left completely untouched. The result is recorded in the history database.
+   tag. A magnet qBittorrent already holds is never re-uploaded: one info line
+   reports it. A torrent gamarr owns (one it tagged earlier, or one sitting in
+   gamarr's category — that is the opt-in, even for a torrent you added) is
+   adopted so post-processing still copies it, while a torrent outside gamarr's
+   category is recorded as skipped, since there is nothing for gamarr to copy.
+   If the torrent cannot be confirmed or adopted at all, the game stays pending
+   and is retried next cycle. The result is recorded in the history database.
 9. **Notifications** — Optional Apprise notifications on download, failure,
    or error.
 

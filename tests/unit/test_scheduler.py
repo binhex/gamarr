@@ -70,6 +70,31 @@ class TestSchedulerForeground:
             run_once(config)
         # No exception propagates: both timeout kinds abort the cycle cleanly.
 
+    def test_acquisition_summary_counts_skipped_duplicates(self) -> None:
+        """A cycle whose only outcome was duplicates must not read as all zeroes."""
+        from loguru import logger as loguru_logger
+
+        from gamarr.scheduler import _log_acquisition_summary
+
+        captured: list[str] = []
+        sink_id = loguru_logger.add(
+            lambda msg: captured.append(f"{msg.record['level'].name}: {msg}"),
+            level="INFO",
+            format="{message}",
+        )
+        try:
+            _log_acquisition_summary(
+                [
+                    {"result": "Skipped"},
+                    {"result": "Skipped"},
+                    {"result": "Passed"},
+                ]
+            )
+        finally:
+            loguru_logger.remove(sink_id)
+
+        assert any("1 passed" in m and "2 skipped" in m for m in captured), captured
+
     def test_scheduled_acquisition_swallows_watchdog_abort(self) -> None:
         """A watchdog abort is a cycle outcome, not an APScheduler job exception."""
         import time

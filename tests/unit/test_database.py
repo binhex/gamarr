@@ -635,6 +635,15 @@ class TestDatabaseAlreadyOwned:
         assert stats["already_owned"] == 2
         db.close()
 
+    def test_get_stats_counts_skipped_duplicates(self, tmp_path: Path) -> None:
+        """Duplicate deliveries recorded as Skipped must appear in the stats."""
+        db = Database(str(tmp_path / "test.db"))
+        db.record_processed(source="fitgirl", source_title="D", result="Skipped", post_process_state="skipped")
+        stats = db.get_stats()
+        assert stats["skipped"] == 1
+        assert stats["total"] == 1
+        db.close()
+
 
 class TestGameDetailCacheMetadata:
     """Game detail cache should store and return metadata (genres, etc.)."""

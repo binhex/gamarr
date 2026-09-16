@@ -13,6 +13,7 @@ import ntpath
 import os
 import re
 from datetime import UTC
+from functools import lru_cache
 from os.path import relpath
 from typing import TYPE_CHECKING, Any
 
@@ -96,7 +97,17 @@ def _build_destination_path(
 
 
 def _compile_exclusion_regexes(patterns: list[str], label: str) -> list[re.Pattern[str]]:
-    """Compile *patterns* into case-insensitive regexes."""
+    """Compile *patterns* into case-insensitive regexes, once per configuration.
+
+    The result is memoised because this runs for every torrent on every pass; a
+    bad pattern must not warn repeatedly for a problem that is already reported.
+    """
+    return list(_compiled_patterns(tuple(patterns), label))
+
+
+@lru_cache(maxsize=8)
+def _compiled_patterns(patterns: tuple[str, ...], label: str) -> tuple[re.Pattern[str], ...]:
+    """Compile *patterns* into case-insensitive regexes (memoised)."""
     result: list[re.Pattern[str]] = []
     for r in patterns:
         if not r.strip():
@@ -106,7 +117,7 @@ def _compile_exclusion_regexes(patterns: list[str], label: str) -> list[re.Patte
             result.append(re.compile(r, re.IGNORECASE))
         except re.error:
             logger.warning("Invalid {} regex '{}'; skipping.", label, r)
-    return result
+    return tuple(result)
 
 
 def _file_excluded(
@@ -157,21 +168,47 @@ def _process_one(
     if not _is_processable_row(row, tag):
         return None
 
-    if row.post_process_state is None and config.post_process.copy_completed:
-        if config.post_process.library_path:
-            if _run_copy_phase(torrent, config, row, db):
-                return "copied"
-            logger.warning("Copy failed for '{}'; retaining torrent for retry.", row.game_title)
-            return None
-        logger.info("Empty library_path; skipping copy for '{}'.", row.game_title)
+    if _copy_or_skip(torrent, config, row, db) == "copied":
+        return "copied"
 
     if _is_delete_eligible(row, config) and _run_delete_phase(torrent, config, qbt, row, db):
         return "deleted"
     return None
 
 
+def _copy_or_skip(
+    torrent: dict,
+    config: Config,
+    row: HistoryRow,
+    db: Database,
+) -> str | None:
+    """Run the copy phase when it applies, returning ``"copied"`` on success.
+
+    Returns ``None`` without logging when the row was already post-processed or
+    copying is disabled.  Otherwise the reason is logged and ``None`` is returned
+    when there is nothing to copy yet, or when the copy failed and the torrent is
+    retained for a later retry.
+    """
+    if row.post_process_state is not None or not config.post_process.copy_completed:
+        return None
+    if not config.post_process.library_path:
+        logger.info("Empty library_path; skipping copy for '{}'.", row.game_title)
+        return None
+    outcome = _run_copy_phase(torrent, config, row, db)
+    if outcome == "copied":
+        return "copied"
+    if outcome == "failed":
+        logger.warning("Copy failed for '{}'; retaining torrent for retry.", row.game_title)
+    return None
+
+
 def _is_delete_eligible(row: HistoryRow, config: Config) -> bool:
-    """Return True when deletion is enabled and copying completed or was skipped."""
+    """Return True when deletion is enabled and the copy phase is finished or disabled.
+
+    A row marked ``"copied"`` is eligible; a row with no post-process state is
+    eligible only when copying is turned off or no library path is configured.
+    Rows in any terminal state (``"deleted"``, ``"skipped"``) are not eligible.
+    """
     if not config.post_process.remove_completed:
         return False
     if row.post_process_state == "copied":
@@ -190,7 +227,23 @@ def _is_processable_row(row: HistoryRow | None, tag: str) -> TypeGuard[HistoryRo
     if row.post_process_state == "deleted":
         logger.info("Torrent '{}' already deleted; skipping.", tag)
         return False
+    if row.post_process_state == "skipped":
+        logger.debug("Torrent '{}' was skipped (already present); not retrying.", tag)
+        return False
     return True
+
+
+def _log_nothing_to_copy(torrent: dict, row: HistoryRow) -> None:
+    """Explain why a torrent has nothing copyable, distinguishing the two cases."""
+    reported = len(torrent.get("torrent_file_list") or [])
+    if reported:
+        logger.info(
+            "Nothing to copy for '{}' yet (all {} reported file(s) were skipped); skipping.",
+            row.game_title,
+            reported,
+        )
+    else:
+        logger.info("Nothing to copy for '{}' yet (no files reported); skipping.", row.game_title)
 
 
 def _run_copy_phase(
@@ -198,11 +251,15 @@ def _run_copy_phase(
     config: Config,
     row: HistoryRow,
     db: Database,
-) -> bool:
+) -> str:
     """Copy completed torrent files to the library.
 
-    Returns True if files were successfully copied (or already present),
-    False only if a retryable error occurred.
+    Returns:
+        ``"copied"`` when the files are present in the library (copied now, or
+        already matching), ``"nothing"`` when there is nothing copyable yet —
+        an empty file list, or every file removed by the exclusion rules — which
+        is a wait state rather than an error, or ``"failed"`` when a retryable
+        error occurred and the torrent should be kept for a later attempt.
     """
     pp = config.post_process
     tag = torrent["torrent_tag"]
@@ -217,16 +274,25 @@ def _run_copy_phase(
     )
     if not dst_dir:
         logger.info("Empty library_path; skipping copy for '{}'.", row.game_title)
-        return False
+        return "nothing"
+
+    save_path = torrent.get("torrent_save_path") or ""
+    if not save_path:
+        # A blank save path is permanent, not a wait state: report it as a
+        # failure so it is retried and counted.  _copy_or_skip owns the single
+        # user-facing warning; this line records the cause at INFO.
+        logger.info("torrent_save_path is empty for tag '{}'; cannot copy.", tag)
+        return "failed"
 
     src_files = _build_copy_list(torrent, pp)
     if not src_files:
-        logger.debug("No files to copy for '{}'.", row.game_title)
-        return False
+        _log_nothing_to_copy(torrent, row)
+        return "nothing"
 
     if not make_directory(dst_dir):
-        logger.error("Cannot create destination directory '{}'; skipping.", dst_dir)
-        return False
+        # The cause is logged by make_directory; _copy_or_skip reports the failure.
+        logger.info("Cannot create destination directory '{}'.", dst_dir)
+        return "failed"
 
     created_paths: list[str] = []
     created_dirs: list[str] = []
@@ -235,12 +301,13 @@ def _run_copy_phase(
         copied_at = datetime.datetime.now(tz=UTC).isoformat()
         db.set_post_process_state(tag, "copied", copied_at=copied_at)
         logger.info("Copied '{}' to '{}'.", row.game_title, dst_dir)
-        return True
+        return "copied"
     else:
         # Remove only files created by this attempt; preserve pre-existing data.
-        logger.warning("Copy failed for '{}'; retaining existing destination files.", row.game_title)
+        # The caller reports the failure; this line records what was rolled back.
+        logger.debug("Rolled back partial copy for '{}'; pre-existing destination files kept.", row.game_title)
         _remove_created_files(created_paths, created_dirs)
-        return False
+        return "failed"
 
 
 def _copy_destination_path(src_path: str, dst_dir: str, save_path: str) -> str | None:
@@ -379,8 +446,10 @@ def _build_copy_list(torrent: dict, pp: Any) -> list[str]:
     """Return absolute file paths that pass exclusion rules."""
     save_path = torrent.get("torrent_save_path") or ""
     if not save_path:
+        # _run_copy_phase screens this case and owns the reported failure, so this
+        # guard only serves direct callers.
         tag = torrent.get("torrent_tag", "unknown")
-        logger.warning("torrent_save_path is empty for tag '{}'; skipping copy.", tag)
+        logger.debug("torrent_save_path is empty for tag '{}'; nothing to copy.", tag)
         return []
 
     file_list = torrent.get("torrent_file_list") or []
@@ -489,12 +558,11 @@ def run_post_processing(config: Config, qbt: QBittorrentClient, db: Database) ->
         logger.warning("qBittorrent is unreachable; skipping post-processing.")
         return
 
-    completed, total_gamarr = qbt.list_completed()
-    if total_gamarr == 0:
+    completed, counts = qbt.list_completed()
+    if counts.downloading + counts.awaiting_metadata + len(completed) == 0:
         logger.debug("No completed torrents to post-process.")
         return
 
-    downloading = total_gamarr - len(completed)
     copied = 0
     deleted = 0
     errors = 0
@@ -511,8 +579,9 @@ def run_post_processing(config: Config, qbt: QBittorrentClient, db: Database) ->
             errors += 1
 
     logger.info(
-        "Post-processing: {} downloading, {} copied, {} deleted, {} errors",
-        downloading,
+        "Post-processing: {} downloading, {} awaiting metadata, {} copied, {} deleted, {} errors",
+        counts.downloading,
+        counts.awaiting_metadata,
         copied,
         deleted,
         errors,

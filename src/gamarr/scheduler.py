@@ -7,6 +7,7 @@ import math
 import os
 import signal
 import threading
+from collections import Counter
 from datetime import UTC
 from typing import TYPE_CHECKING, Any, Final
 
@@ -353,31 +354,49 @@ def _build_kwargs(config: Config) -> dict[str, Any]:
     }
 
 
-def run_once(config: Config) -> None:
-    """Run a single scan cycle (foreground mode)."""
-    logger.info("gamarr running in single-pass mode.")
-    kwargs = _build_kwargs(config)
-    # Foreground mode gets the same cycle watchdog as the daemon so a
-    # wedged browser cannot hang a single-pass run forever either. An abort
-    # must surface cleanly instead of an uncaught traceback.
+def _run_cycle_guarded(config: Config, kwargs: dict[str, Any]) -> list[dict[str, Any]]:
+    """Run one acquisition cycle under the watchdog, returning [] when it aborts.
+
+    Foreground mode gets the same cycle watchdog as the daemon so a wedged browser
+    cannot hang a single-pass run forever either. An abort must surface cleanly
+    instead of an uncaught traceback.
+    """
     try:
-        results = _run_acquisition_guarded(
+        cycle_results: list[dict[str, Any]] = _run_acquisition_guarded(
             run_acquisition,
             timeout_seconds=config.schedule.acquisition_timeout_mins * 60.0,
             **kwargs,
         )
     except AcquisitionWatchdogTimeoutError as exc:
         logger.critical("Acquisition cycle aborted by the watchdog: {}", exc)
-        results = []
+        return []
     except TimeoutExceededError as exc:
         # An escaping inner watchdog (e.g. a page fetch) is not this cycle's abort:
         # report it with its traceback so the cause is visible.
         logger.opt(exception=exc).critical("Acquisition cycle aborted by an inner timeout: {}", exc)
-        results = []
-    passed = sum(1 for r in results if r["result"] == "Passed")
-    failed = sum(1 for r in results if r["result"] == "Failed")
-    errors = sum(1 for r in results if r["result"] == "Error")
-    logger.info("Acquisition complete: {} passed, {} failed, {} errors", passed, failed, errors)
+        return []
+    else:
+        return cycle_results
+
+
+def _log_acquisition_summary(results: list[dict[str, Any]]) -> None:
+    """Log the passed/failed/error/skipped counts for one acquisition cycle."""
+    counts = Counter(result["result"] for result in results)
+    logger.info(
+        "Acquisition complete: {} passed, {} failed, {} errors, {} skipped",
+        counts["Passed"],
+        counts["Failed"],
+        counts["Error"],
+        counts["Skipped"],
+    )
+
+
+def run_once(config: Config) -> None:
+    """Run a single scan cycle (foreground mode)."""
+    logger.info("gamarr running in single-pass mode.")
+    kwargs = _build_kwargs(config)
+    results = _run_cycle_guarded(config, kwargs)
+    _log_acquisition_summary(results)
 
     from gamarr.database import Database
     from gamarr.post_processor import run_post_processing

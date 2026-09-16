@@ -6,6 +6,7 @@ import base64
 import binascii
 import re
 import uuid
+from dataclasses import dataclass
 from typing import Any
 
 import qbittorrentapi
@@ -13,6 +14,20 @@ from loguru import logger
 
 _TAG_PREFIX = "gamarr-"
 _INFOHASH_PATTERN = re.compile(r"xt=urn:btih:([0-9A-Za-z]+)", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class TorrentCounts:
+    """Breakdown of the gamarr torrents seen by :meth:`QBittorrentClient.list_completed`.
+
+    ``downloading`` counts the remaining torrents: those that hold their metadata
+    but are not finished, plus any whose file listing could not be read.  It lets a
+    summary line report in-progress work separately from torrents that are still
+    waiting for metadata.
+    """
+
+    downloading: int
+    awaiting_metadata: int
 
 
 def _magnet_infohash(magnet_url: str) -> str | None:
@@ -34,6 +49,28 @@ def _magnet_infohash(magnet_url: str) -> str | None:
         except (binascii.Error, ValueError):
             return None
     return None
+
+
+def _match_infohash(torrents: Any, infohash: str) -> Any | None:
+    """Return the torrent from *torrents* whose hash equals *infohash*.
+
+    The hash filter is only honoured from Web API 2.0.1 onwards, so the answer is
+    matched explicitly instead of being trusted positionally: a server that
+    ignores the filter returns every torrent in the session.
+    """
+    wanted = infohash.lower()
+    return next((t for t in torrents if str(getattr(t, "hash", "")).lower() == wanted), None)
+
+
+def _gamarr_tag_of(torrent: Any) -> str:
+    """Return the gamarr tag *torrent* carries, or "" when it carries none."""
+    return _extract_gamarr_tag(str(getattr(torrent, "tags", "") or ""))
+
+
+def _has_tag(torrent: Any, tag: str) -> bool:
+    """Return True when *torrent* carries *tag* in its comma-separated tag list."""
+    tags = {t.strip() for t in str(getattr(torrent, "tags", "") or "").split(",")}
+    return tag in tags
 
 
 def _extract_gamarr_tag(tags_str: str) -> str:
@@ -65,6 +102,55 @@ def _add_succeeded(result: Any) -> bool:
     return True
 
 
+def _int_or_none(value: Any) -> int | None:
+    """Return *value* as an int, or ``None`` when it is not a plain number."""
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _has_metadata(torrent: Any) -> bool:
+    """Return False only when qBittorrent explicitly reports missing metadata.
+
+    Unknown shapes (such as test doubles) count as having metadata, so only an
+    explicit ``has_metadata: false`` answer changes behaviour.
+    """
+    return getattr(torrent, "has_metadata", None) is not False
+
+
+def _has_completed_payload(torrent: Any) -> bool:
+    """Return True only when qBittorrent reports real, complete payload.
+
+    A magnet whose metadata has not been fetched yet answers ``amount_left == 0``
+    with ``has_metadata == false`` and ``size == 0``.  Reading that as complete
+    sends post-processing looking for files that do not exist, which surfaces as
+    a bogus copy failure on every post-processing cycle.
+    """
+    if not _has_metadata(torrent):
+        return False
+    amount_left = _int_or_none(getattr(torrent, "amount_left", None))
+    if amount_left is not None and amount_left != 0:
+        return False
+    size = _int_or_none(getattr(torrent, "size", None))
+    return size is None or size > 0
+
+
+def _classify_torrent(torrent: Any) -> str:
+    """Classify *torrent* as ``complete``, ``downloading`` or ``awaiting_metadata``."""
+    if _has_completed_payload(torrent):
+        return "complete"
+    return "downloading" if _has_metadata(torrent) else "awaiting_metadata"
+
+
+def _log_awaiting_metadata(names: list[str]) -> None:
+    """Log one DEBUG line per torrent still waiting for its metadata."""
+    for name in names:
+        logger.debug("Torrent '{}' has no metadata yet; post-processing will retry once data arrives.", name)
+
+
 def _is_gamarr_owned(torrent: Any, category: str) -> bool:
     """Return True when *torrent* should be adopted as gamarr's own.
 
@@ -74,7 +160,7 @@ def _is_gamarr_owned(torrent: Any, category: str) -> bool:
     left completely untouched, so an empty configured *category* matches nothing
     (without this guard every uncategorised torrent would look like gamarr's).
     """
-    if _extract_gamarr_tag(str(getattr(torrent, "tags", "") or "")):
+    if _gamarr_tag_of(torrent):
         return True
     return bool(category) and str(getattr(torrent, "category", "") or "") == category
 
@@ -136,15 +222,15 @@ class QBittorrentClient:
         A torrent qBittorrent already holds is not an error: the add is
         rejected with a 409 ("Conflict") when nothing is added, so the
         existing torrent is adopted and delivery is reported as successful.  A
-        torrent outside gamarr's category is likewise reported delivered but is
-        left completely untouched.
+        torrent outside gamarr's category is left completely untouched and
+        reported as a failure, so the caller keeps the game pending and records
+        it as skipped on the next cycle instead of inventing a tag for it.
 
         Returns:
             A ``gamarr-*`` tag on success — a fresh ``gamarr-{uuid}`` tag for a
-            new add, the adopted torrent's existing tag when it was already
-            present, or a fresh tag that is deliberately not applied when the
-            torrent exists outside gamarr's category — or False when the add
-            failed and no such torrent exists.
+            new add, or the adopted torrent's existing tag when it was already
+            present and gamarr's own — or False when nothing was added under
+            gamarr's ownership.
         """
         if not magnet_url:
             return False
@@ -179,6 +265,80 @@ class QBittorrentClient:
         self._reannounce_tag(tag, title)
         return tag
 
+    def is_torrent_present(self, magnet_url: str) -> bool | None:
+        """Report whether qBittorrent already holds the magnet's torrent.
+
+        Re-adding a magnet qBittorrent already holds is a duplicate, not a
+        delivery failure, so the caller can skip the upload instead of retrying
+        it forever.
+
+        Returns:
+            True when the torrent is present, False when it is definitely absent,
+            and ``None`` when the question could not be answered (unusable magnet,
+            or qBittorrent unreachable).  ``None`` must not be treated as absent:
+            a duplicate upload would then be reported as a success while nothing
+            was added.
+        """
+        infohash = _magnet_infohash(magnet_url or "")
+        if infohash is None:
+            return None
+        try:
+            present = _match_infohash(self._client.torrents_info(torrent_hashes=infohash), infohash)
+        except Exception as exc:
+            logger.info("Could not check whether the torrent is already present: {}", exc)
+            return None
+        return present is not None
+
+    def adopt_present_torrent(self, magnet_url: str, title: str = "") -> str | bool | None:
+        """Adopt an already-present torrent so gamarr keeps ownership of it.
+
+        A torrent gamarr already holds must not be re-uploaded, but it must stay
+        visible to post-processing: this tags an untagged torrent that sits in
+        gamarr's category (the documented opt-in) and returns the ``gamarr-*`` tag
+        it carries afterwards.
+
+        Returns:
+            The torrent's gamarr tag; ``False`` when the torrent is present but
+            sits outside gamarr's category, so there is nothing for gamarr to
+            copy; or ``None`` when the torrent could not be found or could not be
+            tagged, which the caller must treat as a retryable failure.
+        """
+        infohash = _magnet_infohash(magnet_url or "")
+        if infohash is None:
+            return None
+        torrent = self._find_torrent(infohash)
+        if torrent is None:
+            return None
+        if not _is_gamarr_owned(torrent, self._category):
+            return False
+        return self._tag_present_torrent(infohash, title, torrent)
+
+    def _tag_present_torrent(self, infohash: str, title: str, torrent: Any) -> str | None:
+        """Return the torrent's gamarr tag, applying gamarr's tag and category first.
+
+        The category matters as much as the tag: post-processing only ever lists
+        torrents in gamarr's category, so a torrent that carries a gamarr tag but
+        sits elsewhere would be recorded as delivered and then never copied.
+        """
+        existing = _gamarr_tag_of(torrent)
+        candidate = existing or f"{_TAG_PREFIX}{uuid.uuid4()}"
+        adopted = self._adopt_existing_torrent(infohash, candidate, torrent)
+        if not isinstance(adopted, str):
+            return None
+        if not self._tag_is_applied(infohash, adopted):
+            # qBittorrent answers 200 even for hashes it does not know, so an
+            # unverified adoption must not be recorded as delivered.
+            logger.info("Tag '{}' is not applied to torrent '{}' yet; retrying next cycle", adopted, infohash)
+            return None
+        if not existing:
+            logger.debug("Adopted already-present torrent '{}' as '{}'", title or infohash, candidate)
+        return adopted
+
+    def _tag_is_applied(self, infohash: str, tag: str) -> bool:
+        """Return True when *infohash* really carries *tag* after adoption."""
+        torrent = self._find_torrent(infohash)
+        return torrent is not None and _has_tag(torrent, tag)
+
     def _handle_add_failure(self, magnet_url: str, title: str, tag: str, exc: Exception) -> str | bool:
         """Interpret a failed add: adopt an already-present torrent, else fail.
 
@@ -192,19 +352,24 @@ class QBittorrentClient:
             torrent = self._find_torrent(infohash)
             if torrent is not None:
                 if _is_gamarr_owned(torrent, self._category):
-                    logger.info(
-                        "Torrent '{}' is already present in qBittorrent ({}) \u2014 adopting it for post-processing",
-                        title,
-                        infohash,
-                    )
-                    return self._adopt_existing_torrent(infohash, tag, torrent)
+                    adopted = self._adopt_existing_torrent(infohash, tag, torrent)
+                    if isinstance(adopted, str):
+                        logger.info(
+                            "Torrent '{}' is already present in qBittorrent ({}) \u2014 adopted it for post-processing",
+                            title,
+                            infohash,
+                        )
+                    return adopted
                 logger.info(
                     "Torrent '{}' is already present in qBittorrent ({}) but was not added by gamarr "
-                    "\u2014 treating as delivered without touching it",
+                    "\u2014 leaving it untouched",
                     title,
                     infohash,
                 )
-                return tag
+                # Not gamarr's to manage, so no tag is applied: report the failure
+                # so the game stays pending and the next cycle records it skipped
+                # once the presence check sees it.
+                return False
         logger.warning(
             "Failed to add torrent '{}' (infohash {}): {}",
             title,
@@ -214,9 +379,13 @@ class QBittorrentClient:
         return False
 
     def _reannounce_tag(self, tag: str, title: str) -> None:
-        """Reannounce the freshly added torrent so its trackers pick it up."""
+        """Reannounce the freshly added torrent so its trackers pick it up.
+
+        The tag filter is only honoured from Web API 2.8.3 onwards, so the answer
+        is matched against *tag* instead of trusting the first entry.
+        """
         try:
-            infos = self._client.torrents_info(tag=tag)
+            infos = [t for t in self._client.torrents_info(tag=tag) if _has_tag(t, tag)]
             if infos:
                 self._client.torrents_reannounce(torrent_hashes=str(infos[0].hash))
         except Exception as exc:
@@ -228,7 +397,7 @@ class QBittorrentClient:
             infos = list(self._client.torrents_info(torrent_hashes=infohash))
         except Exception:
             return None
-        return infos[0] if infos else None
+        return _match_infohash(infos, infohash)
 
     def _adopt_existing_torrent(self, infohash: str, fallback_tag: str, torrent: Any) -> str | bool:
         """Tag an already-present torrent so post-processing can see it.
@@ -241,14 +410,12 @@ class QBittorrentClient:
         invisible to post-processing, so reporting success would record the game
         as passed while it is never copied and never retried.
         """
-        existing = _extract_gamarr_tag(str(getattr(torrent, "tags", "") or ""))
+        existing = _gamarr_tag_of(torrent)
         if not existing:
             try:
                 self._client.torrents_add_tags(tags=fallback_tag, torrent_hashes=infohash)
             except Exception as exc:
-                logger.warning(
-                    "Could not tag already-present torrent '{}': {} \u2014 retrying next cycle", infohash, exc
-                )
+                logger.info("Could not tag already-present torrent '{}': {} \u2014 retrying next cycle", infohash, exc)
                 return False
             existing = fallback_tag
         if self._category:
@@ -256,7 +423,7 @@ class QBittorrentClient:
             try:
                 self._client.torrents_set_category(category=self._category, torrent_hashes=infohash)
             except Exception as exc:
-                logger.warning(
+                logger.info(
                     "Could not set category on already-present torrent '{}': {} \u2014 retrying next cycle",
                     infohash,
                     exc,
@@ -264,52 +431,66 @@ class QBittorrentClient:
                 return False
         return existing
 
-    def list_completed(self) -> tuple[list[dict[str, Any]], int]:
-        """Return (completed_list, total_gamarr_count) for gamarr-tagged torrents.
+    def _completed_entry(self, torrent: Any, tag: str) -> dict[str, Any] | None:
+        """Return the post-processing entry for *torrent*, or None if its files cannot be read."""
+        try:
+            files = self._client.torrents_files(torrent.hash)
+            props = self._client.torrents_properties(torrent.hash)
+        except Exception as exc:
+            logger.warning("Failed to fetch metadata for torrent '{}': {}; skipping.", torrent.hash, exc)
+            return None
+        return {
+            "torrent_tag": tag,
+            "torrent_hash": torrent.hash,
+            "torrent_name": torrent.name,
+            "torrent_save_path": props.save_path or torrent.save_path,
+            "torrent_state": torrent.state,
+            "torrent_file_list": [{"file_name": f.name, "file_size": f.size} for f in files],
+        }
 
-        Queries by category, filters to gamarr-tagged torrents with
-        ``amount_left == 0`` — no status filter (mirrors movarr).
+    def list_completed(self) -> tuple[list[dict[str, Any]], TorrentCounts]:
+        """Return (completed_list, counts) for gamarr-tagged torrents.
+
+        Queries by category, filters to gamarr-tagged torrents that actually hold
+        their payload (metadata present, ``amount_left == 0`` and a non-zero
+        size), then returns each torrent's files and properties.
+
+        A magnet whose metadata has not been fetched yet reports
+        ``amount_left == 0``, so it is excluded here and counted in
+        :class:`TorrentCounts` instead of being mistaken for a finished download.
 
         Returns:
-            A tuple of (completed_torrents, total_gamarr_torrents) where
-            ``completed_torrents`` contains 100%%-complete torrents and
-            ``total_gamarr_torrents`` is the count of ALL gamarr-tagged
-            torrents (including in-progress downloads).
+            A tuple of (completed_torrents, counts) where ``completed_torrents``
+            contains torrents whose payload is present and ``counts`` breaks the
+            remaining gamarr torrents down into in-progress and metadata-less.
         """
         try:
             all_torrents = self._client.torrents_info(category=self._category)
         except Exception as exc:
             logger.warning("Failed to list completed torrents: {}", exc)
-            return [], 0
+            return [], TorrentCounts(downloading=0, awaiting_metadata=0)
 
         results: list[dict[str, Any]] = []
+        awaiting_metadata: list[str] = []
         gamarr_count = 0
         for torrent in all_torrents:
-            tag = _extract_gamarr_tag(torrent.tags)
+            tag = _gamarr_tag_of(torrent)
             if not tag:
                 continue
             gamarr_count += 1
-            if int(torrent.amount_left) != 0:
-                continue
-
-            try:
-                files = self._client.torrents_files(torrent.hash)
-                props = self._client.torrents_properties(torrent.hash)
-            except Exception as exc:
-                logger.warning("Failed to fetch metadata for torrent '{}': {}; skipping.", torrent.hash, exc)
-                continue
-
-            results.append(
-                {
-                    "torrent_tag": tag,
-                    "torrent_hash": torrent.hash,
-                    "torrent_name": torrent.name,
-                    "torrent_save_path": props.save_path or torrent.save_path,
-                    "torrent_state": torrent.state,
-                    "torrent_file_list": [{"file_name": f.name, "file_size": f.size} for f in files],
-                }
-            )
-        return results, gamarr_count
+            state = _classify_torrent(torrent)
+            if state == "awaiting_metadata":
+                awaiting_metadata.append(str(getattr(torrent, "name", "") or tag))
+            elif state == "complete":
+                entry = self._completed_entry(torrent, tag)
+                if entry is not None:
+                    results.append(entry)
+        _log_awaiting_metadata(awaiting_metadata)
+        counts = TorrentCounts(
+            downloading=gamarr_count - len(awaiting_metadata) - len(results),
+            awaiting_metadata=len(awaiting_metadata),
+        )
+        return results, counts
 
     def delete_torrent(self, torrent_hash: str, *, delete_data: bool = False) -> bool:
         """Delete a torrent and optionally its downloaded data.

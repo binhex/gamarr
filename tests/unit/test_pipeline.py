@@ -699,6 +699,8 @@ class TestMaxCycleWeeks:
             mock_source = MagicMock()
             mock_source_cls.return_value = mock_source
             mock_qbt = MagicMock()
+            mock_qbt.is_torrent_present.return_value = False
+            mock_qbt.adopt_present_torrent.return_value = None
             mock_qbt.is_connected.return_value = True
             mock_qbt_cls.return_value = mock_qbt
 
@@ -726,6 +728,8 @@ class TestMaxCycleWeeks:
             mock_source = MagicMock()
             mock_source_cls.return_value = mock_source
             mock_qbt = MagicMock()
+            mock_qbt.is_torrent_present.return_value = False
+            mock_qbt.adopt_present_torrent.return_value = None
             mock_qbt.is_connected.return_value = True
             mock_qbt_cls.return_value = mock_qbt
 
@@ -759,6 +763,8 @@ class TestMaxCycleWeeks:
             mock_source = MagicMock()
             mock_source_cls.return_value = mock_source
             mock_qbt = MagicMock()
+            mock_qbt.is_torrent_present.return_value = False
+            mock_qbt.adopt_present_torrent.return_value = None
             mock_qbt.is_connected.return_value = True
             mock_qbt_cls.return_value = mock_qbt
 
@@ -794,6 +800,8 @@ class TestRunAcquisition:
             mock_mc_cls.return_value = mock_mc
 
             mock_qbt = MagicMock()
+            mock_qbt.is_torrent_present.return_value = False
+            mock_qbt.adopt_present_torrent.return_value = None
             mock_qbt.is_connected.return_value = True
             mock_qbt_cls.return_value = mock_qbt
 
@@ -813,6 +821,8 @@ class TestRunAcquisition:
             mock_source_cls.return_value = mock_source
 
             mock_qbt = MagicMock()
+            mock_qbt.is_torrent_present.return_value = False
+            mock_qbt.adopt_present_torrent.return_value = None
             mock_qbt.is_connected.return_value = False
             mock_qbt_cls.return_value = mock_qbt
 
@@ -865,6 +875,8 @@ class TestRunAcquisition:
             mock_mc_cls.return_value = mock_mc
 
             mock_qbt = MagicMock()
+            mock_qbt.is_torrent_present.return_value = False
+            mock_qbt.adopt_present_torrent.return_value = None
             mock_qbt.is_connected.return_value = True
             mock_qbt_cls.return_value = mock_qbt
 
@@ -897,6 +909,8 @@ class TestRunAcquisition:
             mock_mc.scan_recent_games.return_value = []
             mock_mc_cls.return_value = mock_mc
             mock_qbt = MagicMock()
+            mock_qbt.is_torrent_present.return_value = False
+            mock_qbt.adopt_present_torrent.return_value = None
             mock_qbt.is_connected.return_value = True
             mock_qbt_cls.return_value = mock_qbt
 
@@ -970,6 +984,8 @@ class TestRunAcquisition:
             mock_mc_cls.return_value = mock_mc
 
             mock_qbt = MagicMock()
+            mock_qbt.is_torrent_present.return_value = False
+            mock_qbt.adopt_present_torrent.return_value = None
             mock_qbt.is_connected.return_value = True
             mock_qbt_cls.return_value = mock_qbt
 
@@ -1286,6 +1302,7 @@ class TestMetacriticBrowse:
         )
 
         mock_qbt = MagicMock()
+        mock_qbt.is_torrent_present.return_value = False
         mock_qbt.add_torrent.return_value = "gamarr-tag"
         magnet_fetcher = MagicMock(return_value="magnet:?xt=urn:btih:test")
 
@@ -1369,6 +1386,7 @@ class TestMetacriticBrowse:
         )
 
         mock_qbt = MagicMock()
+        mock_qbt.is_torrent_present.return_value = False
         mock_qbt.add_torrent.return_value = "gamarr-tag"
         magnet_fetcher = MagicMock(return_value="magnet:?xt=urn:btih:test")
 
@@ -1428,6 +1446,7 @@ class TestMetacriticBrowse:
         )
 
         mock_qbt = MagicMock()
+        mock_qbt.is_torrent_present.return_value = False
         mock_qbt.add_torrent.return_value = "gamarr-tag"
         magnet_fetcher = MagicMock(return_value="magnet:?xt=urn:btih:test")
 
@@ -1440,6 +1459,8 @@ class TestMetacriticBrowse:
 
         output = buf.getvalue()
         assert len(matched) == 1
+        assert matched[0]["result"] == "Passed", "The game must be delivered, not skipped as a duplicate"
+        mock_qbt.add_torrent.assert_called_once()
         # The title should appear escaped (\< and \> — Loguru's escape syntax)
         assert r"Game \<Director's\>" in output, f"Title with < > should be escaped: {output}"
         db.close()
@@ -1454,6 +1475,7 @@ class TestMetacriticBrowse:
         db = Database(":memory:")
 
         mock_qbt = MagicMock()
+        mock_qbt.is_torrent_present.return_value = False
         mock_qbt.add_torrent.return_value = "tag-123"
         mock_qbt.add_paused = False
         mock_notifier = MagicMock()
@@ -1507,6 +1529,7 @@ class TestMetacriticBrowse:
         db.update_pending_scores(slug="test-game", metascore=85.0, user_score=8.0)
 
         mock_qbt = MagicMock()
+        mock_qbt.is_torrent_present.return_value = False
         mock_qbt.add_torrent.return_value = "gamarr-tag"
         mock_notifier = MagicMock()
 
@@ -1557,6 +1580,7 @@ class TestMetacriticBrowse:
         db.update_pending_scores(slug="test-game2", metascore=85.0, user_score=8.0)
 
         mock_qbt = MagicMock()
+        mock_qbt.is_torrent_present.return_value = False
         mock_qbt.add_torrent.return_value = "gamarr-tag"
         mock_notifier = MagicMock()
 
@@ -1610,6 +1634,7 @@ class TestMetacriticBrowse:
         db.update_pending_scores(slug="cyberpunk-2077", metascore=90.0, user_score=8.5)
 
         mock_qbt = MagicMock()
+        mock_qbt.is_torrent_present.return_value = False
         mock_qbt.add_torrent.return_value = "gamarr-tag"
         mock_notifier = MagicMock()
 
@@ -1640,6 +1665,177 @@ class TestMetacriticBrowse:
         )
         db.close()
 
+    def test_deliver_match_adopts_present_gamarr_torrent(self) -> None:
+        """An already-present torrent gamarr owns is adopted, not re-uploaded or abandoned."""
+        from unittest.mock import MagicMock
+
+        from loguru import logger as loguru_logger
+
+        from gamarr.pipeline import _deliver_match
+
+        db = MagicMock()
+        mock_qbt = MagicMock()
+        mock_qbt.is_torrent_present.return_value = True
+        mock_qbt.adopt_present_torrent.return_value = "gamarr-adopted"
+        magnet = "magnet:?xt=urn:btih:a53ef14444544a7ae1b133ea3ddfd63dcc11c978"
+        best = {
+            "title": "Marvel Tokon Fighting Souls",
+            "url": "https://fitgirl-repacks.site/marvel-tokon-fighting-souls/",
+            "magnet": magnet,
+        }
+
+        captured: list[str] = []
+        sink_id = loguru_logger.add(
+            lambda msg: captured.append(f"{msg.record['level'].name}: {msg}"),
+            level="DEBUG",
+            format="{message}",
+        )
+        try:
+            result = _deliver_match(
+                db,
+                qbt=mock_qbt,
+                magnet_fetcher=MagicMock(),
+                notifier=MagicMock(),
+                best=best,
+                game_slug="marvel-tokon",
+                game_title="Marvel Tokon: Fighting Souls",
+                game_platform="pc",
+                game_metascore=85.0,
+                game_user_score=8.0,
+                game_genres=["2D Fighting"],
+                source_name="fitgirl",
+            )
+        finally:
+            loguru_logger.remove(sink_id)
+
+        assert result["result"] == "Passed", "An owned torrent must stay visible to post-processing"
+        mock_qbt.add_torrent.assert_not_called()
+        recorded = db.record_processed.call_args.kwargs
+        assert recorded["torrent_tag"] == "gamarr-adopted"
+        assert recorded["post_process_state"] is None, "Post-processing must still be allowed to copy it"
+        assert recorded["genres"] == "2D Fighting", "Genres feed the {genre} path template"
+        db.remove_pending.assert_called_once_with("marvel-tokon")
+        infos = [m for m in captured if m.startswith("INFO:") and "already exists" in m]
+        assert len(infos) == 1, f"One duplicate must log exactly one INFO line, got {infos}"
+
+    def test_deliver_match_retries_when_adoption_cannot_be_confirmed(self) -> None:
+        """An unconfirmable adoption is a failure: the game must stay pending."""
+        from unittest.mock import MagicMock
+
+        from gamarr.pipeline import _deliver_match
+
+        db = MagicMock()
+        mock_qbt = MagicMock()
+        mock_qbt.is_torrent_present.return_value = None
+        mock_qbt.adopt_present_torrent.return_value = None
+        best = {
+            "title": "Some Game",
+            "url": "https://fitgirl-repacks.site/some-game/",
+            "magnet": "magnet:?xt=urn:btih:cccccccccccccccccccccccccccccccccccccccc",
+        }
+
+        result = _deliver_match(
+            db,
+            qbt=mock_qbt,
+            magnet_fetcher=MagicMock(),
+            notifier=MagicMock(),
+            best=best,
+            game_slug="some-game",
+            game_title="Some Game",
+            game_platform="pc",
+            game_metascore=85.0,
+            game_user_score=8.0,
+            source_name="fitgirl",
+        )
+
+        assert result["result"] == "Error"
+        mock_qbt.add_torrent.assert_not_called()
+        db.remove_pending.assert_not_called()
+
+    def test_deliver_match_skips_present_foreign_torrent(self) -> None:
+        """A torrent outside gamarr's category has nothing for gamarr to copy."""
+        from unittest.mock import MagicMock
+
+        from loguru import logger as loguru_logger
+
+        from gamarr.pipeline import _deliver_match
+
+        db = MagicMock()
+        mock_qbt = MagicMock()
+        mock_qbt.is_torrent_present.return_value = True
+        mock_qbt.adopt_present_torrent.return_value = False
+        best = {
+            "title": "Some Game",
+            "url": "https://fitgirl-repacks.site/some-game/",
+            "magnet": "magnet:?xt=urn:btih:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        }
+
+        captured: list[str] = []
+        sink_id = loguru_logger.add(
+            lambda msg: captured.append(f"{msg.record['level'].name}: {msg}"),
+            level="DEBUG",
+            format="{message}",
+        )
+        try:
+            result = _deliver_match(
+                db,
+                qbt=mock_qbt,
+                magnet_fetcher=MagicMock(),
+                notifier=MagicMock(),
+                best=best,
+                game_slug="some-game",
+                game_title="Some Game",
+                game_platform="pc",
+                game_metascore=85.0,
+                game_user_score=8.0,
+                source_name="fitgirl",
+            )
+        finally:
+            loguru_logger.remove(sink_id)
+
+        assert result["result"] == "Skipped"
+        mock_qbt.add_torrent.assert_not_called()
+        recorded = db.record_processed.call_args.kwargs
+        assert recorded["post_process_state"] == "skipped"
+        assert recorded["torrent_tag"] is None
+        db.remove_pending.assert_called_once_with("some-game")
+        assert any(m.startswith("INFO:") and "outside gamarr's category" in m for m in captured)
+
+    def test_deliver_match_uploads_when_torrent_absent(self) -> None:
+        """Normal delivery is unchanged when the magnet is not already present."""
+        from unittest.mock import MagicMock
+
+        from gamarr.pipeline import _deliver_match
+
+        db = MagicMock()
+        mock_qbt = MagicMock()
+        mock_qbt.is_torrent_present.return_value = False
+        mock_qbt.add_torrent.return_value = "gamarr-newtag"
+        best = {
+            "title": "Cyberpunk 2077",
+            "url": "https://fitgirl-repacks.site/cyberpunk-2077/",
+            "magnet": "magnet:?xt=urn:btih:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        }
+
+        result = _deliver_match(
+            db,
+            qbt=mock_qbt,
+            magnet_fetcher=MagicMock(),
+            notifier=MagicMock(),
+            best=best,
+            game_slug="cyberpunk-2077",
+            game_title="Cyberpunk 2077",
+            game_platform="pc",
+            game_metascore=90.0,
+            game_user_score=8.5,
+            source_name="fitgirl",
+        )
+
+        assert result["result"] == "Passed"
+        mock_qbt.add_torrent.assert_called_once()
+        assert db.record_processed.call_args.kwargs["torrent_tag"] == "gamarr-newtag"
+        assert db.record_processed.call_args.kwargs["post_process_state"] is None
+
     def test_deliver_match_records_freegog_source(self, tmp_path: Path) -> None:
         """_deliver_match should persist "freegog" as the history source for FreeGOG matches."""
         import datetime
@@ -1661,6 +1857,7 @@ class TestMetacriticBrowse:
         db.update_pending_scores(slug="hollow-knight-silksong", metascore=88.0, user_score=8.2)
 
         mock_qbt = MagicMock()
+        mock_qbt.is_torrent_present.return_value = False
         mock_qbt.add_torrent.return_value = "gamarr-tag2"
         mock_notifier = MagicMock()
 
@@ -2086,6 +2283,8 @@ class TestMetacriticBrowse:
         )
 
         mock_qbt = MagicMock()
+        mock_qbt.is_torrent_present.return_value = False
+        mock_qbt.adopt_present_torrent.return_value = None
         mock_qbt.add_torrent.return_value = "gamarr-tag"
         mock_mc = MagicMock()
         # Mock lookup returns None — no detail page scores available
@@ -2146,6 +2345,7 @@ class TestMetacriticBrowse:
         )
 
         mock_qbt = MagicMock()
+        mock_qbt.is_torrent_present.return_value = False
         # Mark the game as score-checked so it passes the gate in _match_pending_games
         db.update_pending_scores(
             slug="verified-game",
@@ -2156,6 +2356,7 @@ class TestMetacriticBrowse:
         )
 
         mock_qbt = MagicMock()
+        mock_qbt.is_torrent_present.return_value = False
         mock_qbt.add_torrent.return_value = "gamarr-tag"
         mock_mc = MagicMock()
         import types
@@ -2218,6 +2419,8 @@ class TestMetacriticBrowse:
         )
 
         mock_qbt = MagicMock()
+        mock_qbt.is_torrent_present.return_value = False
+        mock_qbt.adopt_present_torrent.return_value = None
         mock_qbt.add_torrent.return_value = "gamarr-tag"
         magnet_fetcher = MagicMock(return_value="magnet:?xt=urn:btih:test")
 
@@ -2293,6 +2496,8 @@ class TestMetacriticBrowse:
         )
 
         mock_qbt = MagicMock()
+        mock_qbt.is_torrent_present.return_value = False
+        mock_qbt.adopt_present_torrent.return_value = None
         mock_qbt.add_torrent.return_value = "gamarr-tag"
 
         # The HTML page has a full title with HV, but the sitemap entry doesn't
@@ -2358,6 +2563,8 @@ class TestMetacriticBrowse:
         )
 
         mock_qbt = MagicMock()
+        mock_qbt.is_torrent_present.return_value = False
+        mock_qbt.adopt_present_torrent.return_value = None
         mock_qbt.add_torrent.return_value = "gamarr-tag"
 
         # Page title is clean — no HV
@@ -2425,6 +2632,8 @@ class TestMetacriticBrowse:
         )
 
         mock_qbt = MagicMock()
+        mock_qbt.is_torrent_present.return_value = False
+        mock_qbt.adopt_present_torrent.return_value = None
         mock_qbt.add_torrent.return_value = "gamarr-tag"
 
         with patch("gamarr.pipeline.requests.get") as mock_get:
@@ -2618,6 +2827,8 @@ class TestMetacriticBrowse:
         )
 
         mock_qbt = MagicMock()
+        mock_qbt.is_torrent_present.return_value = False
+        mock_qbt.adopt_present_torrent.return_value = None
         mock_qbt.add_torrent.return_value = "gamarr-tag"
 
         # Title is clean, article is clean, but COMMENTS after </article> contain "hypervisor"
@@ -2686,6 +2897,8 @@ class TestMetacriticBrowse:
         )
 
         mock_qbt = MagicMock()
+        mock_qbt.is_torrent_present.return_value = False
+        mock_qbt.adopt_present_torrent.return_value = None
         mock_qbt.add_torrent.return_value = "gamarr-tag"
 
         # Title is clean. Article has "Lossless Repack" (non-HV badge) at top,
@@ -2857,6 +3070,7 @@ class TestMetacriticBrowse:
         )
 
         mock_qbt = MagicMock()
+        mock_qbt.is_torrent_present.return_value = False
         mock_qbt.add_torrent.return_value = "gamarr-tag"
         magnet_fetcher = MagicMock(return_value="magnet:?xt=urn:btih:test")
 
@@ -2904,6 +3118,8 @@ class TestMetacriticBrowse:
         )
 
         mock_qbt = MagicMock()
+        mock_qbt.is_torrent_present.return_value = False
+        mock_qbt.adopt_present_torrent.return_value = None
         magnet_fetcher = MagicMock(return_value=None)  # No magnet found
 
         matched = _match_pending_games(db, qbt=mock_qbt, magnet_fetcher=magnet_fetcher)
@@ -2945,6 +3161,7 @@ class TestMetacriticBrowse:
         )
 
         mock_qbt = MagicMock()
+        mock_qbt.is_torrent_present.return_value = False
         mock_qbt.add_torrent.return_value = False  # qBittorrent failure
         magnet_fetcher = MagicMock(return_value="magnet:?xt=urn:btih:test")
 
@@ -3009,6 +3226,7 @@ class TestMetacriticBrowse:
         )
 
         mock_qbt = MagicMock()
+        mock_qbt.is_torrent_present.return_value = False
         mock_qbt.add_paused = False
         mock_qbt.add_torrent.return_value = "gamarr-tag"
         mock_notifier = MagicMock()
@@ -3067,6 +3285,7 @@ class TestMetacriticBrowse:
         )
 
         mock_qbt = MagicMock()
+        mock_qbt.is_torrent_present.return_value = False
         mock_qbt.add_torrent.return_value = False
         mock_notifier = MagicMock()
         magnet_fetcher = MagicMock(return_value="magnet:?xt=urn:btih:test")
@@ -3078,9 +3297,12 @@ class TestMetacriticBrowse:
             notifier=mock_notifier,
         )
         assert len(matched) == 1
+        assert matched[0]["result"] == "Error", "A rejected upload must be reported as an error, not skipped"
+        mock_qbt.add_torrent.assert_called_once()
         # Delivery failures are transient — game stays pending for retry.
         # Failure notifications are NOT sent to avoid spam on persistent failures.
         mock_notifier.send_failure_notification.assert_not_called()
+        assert db.is_pending("elden-ring"), "Failed delivery must stay pending for retry"
         db.close()
 
     def test_match_pending_sends_failure_notification_on_magnet_failure(self, tmp_path: Path) -> None:
@@ -3113,6 +3335,8 @@ class TestMetacriticBrowse:
         )
 
         mock_qbt = MagicMock()
+        mock_qbt.is_torrent_present.return_value = False
+        mock_qbt.adopt_present_torrent.return_value = None
         mock_notifier = MagicMock()
         # Magnet fetcher returns None (failure)
         magnet_fetcher = MagicMock(return_value=None)
@@ -3163,6 +3387,7 @@ class TestMetacriticBrowse:
         )
 
         mock_qbt = MagicMock()
+        mock_qbt.is_torrent_present.return_value = False
         mock_qbt.add_paused = False
         mock_qbt.add_torrent.return_value = "gamarr-tag"
         mock_notifier = MagicMock()
@@ -3215,6 +3440,7 @@ class TestMetacriticBrowse:
         )
 
         mock_qbt = MagicMock()
+        mock_qbt.is_torrent_present.return_value = False
         mock_qbt.add_torrent.return_value = "gamarr-tag"
         magnet_fetcher = MagicMock(return_value="magnet:?xt=urn:btih:test")
         mock_library = MagicMock()
@@ -3662,6 +3888,8 @@ class TestRunAcquisitionMetacritic:
             patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
         ):
             mock_qbt = MagicMock()
+            mock_qbt.is_torrent_present.return_value = False
+            mock_qbt.adopt_present_torrent.return_value = None
             mock_qbt.is_connected.return_value = False
             mock_qbt_cls.return_value = mock_qbt
             # Mock sitemap fetch
@@ -3707,6 +3935,8 @@ class TestRunAcquisitionMetacritic:
             mock_mc_cls.return_value = mock_mc
 
             mock_qbt = MagicMock()
+            mock_qbt.is_torrent_present.return_value = False
+            mock_qbt.adopt_present_torrent.return_value = None
             mock_qbt.is_connected.return_value = True
             mock_qbt_cls.return_value = mock_qbt
 
@@ -3791,6 +4021,7 @@ class TestRunAcquisitionMetacritic:
             mock_mc_cls.return_value = mock_mc
 
             mock_qbt = MagicMock()
+            mock_qbt.is_torrent_present.return_value = False
             mock_qbt.is_connected.return_value = True
             mock_qbt.add_torrent.return_value = False
             mock_qbt_cls.return_value = mock_qbt
@@ -3841,6 +4072,8 @@ class TestPhaseBannerLogging:
                 mock_mc_cls.return_value = mock_mc
 
                 mock_qbt = MagicMock()
+                mock_qbt.is_torrent_present.return_value = False
+                mock_qbt.adopt_present_torrent.return_value = None
                 mock_qbt.is_connected.return_value = True
                 mock_qbt_cls.return_value = mock_qbt
 
@@ -3932,6 +4165,7 @@ class TestVerifyPendingScoresEdgeCases:
         )
 
         mock_qbt = MagicMock()
+        mock_qbt.is_torrent_present.return_value = False
         mock_qbt.add_torrent.return_value = "gamarr-tag"
         mock_mc = MagicMock()
         mock_mc.lookup_game.return_value = None  # Detail page not found
@@ -5501,6 +5735,8 @@ class TestCancellation:
             mock_mc.scan_recent_games.return_value = []
             mock_mc_cls.return_value = mock_mc
             mock_qbt = MagicMock()
+            mock_qbt.is_torrent_present.return_value = False
+            mock_qbt.adopt_present_torrent.return_value = None
             mock_qbt.is_connected.return_value = True
             mock_qbt_cls.return_value = mock_qbt
 
@@ -6407,6 +6643,7 @@ class TestAgedGamesMatchOrder:
             mock_mc_cls.return_value = mock_mc
 
             mock_qbt = MagicMock()
+            mock_qbt.is_torrent_present.return_value = False
             mock_qbt.is_connected.return_value = True
             mock_qbt.add_torrent.return_value = "gamarr-tag"
             mock_qbt_cls.return_value = mock_qbt
@@ -6455,6 +6692,8 @@ class TestScanWindowAdvancing:
             mock_mc_cls.return_value = mock_mc
 
             mock_qbt = MagicMock()
+            mock_qbt.is_torrent_present.return_value = False
+            mock_qbt.adopt_present_torrent.return_value = None
             mock_qbt.is_connected.return_value = True
             mock_qbt_cls.return_value = mock_qbt
 
@@ -6488,6 +6727,8 @@ class TestScanWindowAdvancing:
             mock_mc_cls.return_value = mock_mc
 
             mock_qbt = MagicMock()
+            mock_qbt.is_torrent_present.return_value = False
+            mock_qbt.adopt_present_torrent.return_value = None
             mock_qbt.is_connected.return_value = True
             mock_qbt_cls.return_value = mock_qbt
 
@@ -6520,6 +6761,8 @@ class TestScanWindowAdvancing:
             mock_mc_cls.return_value = mock_mc
 
             mock_qbt = MagicMock()
+            mock_qbt.is_torrent_present.return_value = False
+            mock_qbt.adopt_present_torrent.return_value = None
             mock_qbt.is_connected.return_value = True
             mock_qbt_cls.return_value = mock_qbt
 
@@ -6552,6 +6795,8 @@ class TestScanWindowAdvancing:
             mock_mc_cls.return_value = mock_mc
 
             mock_qbt = MagicMock()
+            mock_qbt.is_torrent_present.return_value = False
+            mock_qbt.adopt_present_torrent.return_value = None
             mock_qbt.is_connected.return_value = True
             mock_qbt_cls.return_value = mock_qbt
 
@@ -6597,6 +6842,8 @@ class TestBacklogAdvancing:
             mock_mc._recent_games_last_page = 4
             mock_mc_cls.return_value = mock_mc
             mock_qbt = MagicMock()
+            mock_qbt.is_torrent_present.return_value = False
+            mock_qbt.adopt_present_torrent.return_value = None
             mock_qbt.is_connected.return_value = True
             mock_qbt_cls.return_value = mock_qbt
 
@@ -6646,6 +6893,8 @@ class TestBacklogAdvancing:
             mock_mc._recent_games_last_page = 12
             mock_mc_cls.return_value = mock_mc
             mock_qbt = MagicMock()
+            mock_qbt.is_torrent_present.return_value = False
+            mock_qbt.adopt_present_torrent.return_value = None
             mock_qbt.is_connected.return_value = True
             mock_qbt_cls.return_value = mock_qbt
 
@@ -6924,6 +7173,8 @@ class TestYearDrainOrder:
         ):
             mock_source_cls.return_value = MagicMock()
             mock_qbt = MagicMock()
+            mock_qbt.is_torrent_present.return_value = False
+            mock_qbt.adopt_present_torrent.return_value = None
             mock_qbt.is_connected.return_value = True
             mock_qbt_cls.return_value = mock_qbt
 
@@ -6993,6 +7244,8 @@ class TestYearDrainOrder:
         ):
             mock_source_cls.return_value = MagicMock()
             mock_qbt = MagicMock()
+            mock_qbt.is_torrent_present.return_value = False
+            mock_qbt.adopt_present_torrent.return_value = None
             mock_qbt.is_connected.return_value = True
             mock_qbt_cls.return_value = mock_qbt
 
@@ -8131,6 +8384,8 @@ class TestRunAcquisitionNoVerifiedLogging:
             mock_mc.fetch_browse_pages.return_value = []
             mock_mc_cls.return_value = mock_mc
             mock_qbt = MagicMock()
+            mock_qbt.is_torrent_present.return_value = False
+            mock_qbt.adopt_present_torrent.return_value = None
             mock_qbt.is_connected.return_value = True
             mock_qbt_cls.return_value = mock_qbt
 
@@ -8259,6 +8514,7 @@ class TestPendingProcessingOrder:
         )
 
         mock_qbt = MagicMock()
+        mock_qbt.is_torrent_present.return_value = False
         mock_qbt.add_torrent.return_value = "gamarr-tag"
         magnet_fetcher = MagicMock(return_value="magnet:?xt=urn:btih:test")
 
