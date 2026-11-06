@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import itertools
 import re
 import threading
@@ -194,3 +195,86 @@ def normalise_for_compare(text: str) -> str:
 def is_cancelled(cancel_event: CancelSignal | None) -> bool:
     """Return True if *cancel_event* is not None and is set."""
     return cancel_event is not None and cancel_event.is_set()
+
+
+def current_year_month() -> int:
+    """Return the current calendar month as ``YYYYMM``.
+
+    Returns:
+        The current month, e.g. ``202511``.
+    """
+    now = datetime.datetime.now(tz=datetime.UTC)
+    return now.year * 100 + now.month
+
+
+def is_valid_year_month(value: object) -> bool:
+    """Return True when *value* is a usable ``max_date`` month.
+
+    ``0`` disables date mode; anything else must be an ``int`` (not ``bool``)
+    for a year of 1958 or later with a month of ``01``-``12``.
+
+    Args:
+        value: The candidate floor.
+
+    Returns:
+        True when the value is accepted.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return False
+    if value == 0:
+        return True
+    return 195801 <= value <= 999912 and 1 <= value % 100 <= 12
+
+
+def subtract_months(year_month: int, months: int) -> int:
+    """Return *year_month* (``YYYYMM``) reduced by *months* months.
+
+    ``months <= 0`` returns *year_month* unchanged, matching the project's
+    ``0 = no limit`` convention.
+
+    Args:
+        year_month: A ``YYYYMM`` value, e.g. ``202511``.
+        months: Whole months to subtract.
+
+    Returns:
+        The resulting ``YYYYMM`` value.
+    """
+    if months <= 0:
+        return year_month
+    index = (year_month // 100) * 12 + (year_month % 100 - 1) - months
+    return (index // 12) * 100 + (index % 12) + 1
+
+
+def month_of(date_str: str | None) -> int | None:
+    """Return the ``YYYYMM`` month of a release-date string.
+
+    Accepts the ISO (``YYYY-MM-DD``) and UK (``DD-MM-YYYY``) shapes the
+    Metacritic date parsing already tolerates.
+
+    Args:
+        date_str: The date string, or ``None``.
+
+    Returns:
+        The ``YYYYMM`` month, or ``None`` when absent or unparsable.
+    """
+    if not isinstance(date_str, str) or not date_str:
+        return None
+    for fmt in ("%Y-%m-%d", "%d-%m-%Y"):
+        try:
+            parsed = datetime.datetime.strptime(date_str.strip(), fmt)
+        except (ValueError, TypeError, AttributeError):
+            continue
+        return parsed.year * 100 + parsed.month
+    return None
+
+
+def year_month_to_date(year_month: int) -> str:
+    """Return the first day of a ``YYYYMM`` month as an ISO date string.
+
+    Args:
+        year_month: A ``YYYYMM`` value, e.g. ``202401``.
+
+    Returns:
+        ``"YYYY-MM-01"``, the form the browse scan's ``cutoff_date`` expects.
+    """
+    return f"{year_month // 100:04d}-{year_month % 100:02d}-01"

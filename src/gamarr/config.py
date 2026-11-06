@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import datetime
 import os
 import stat
 import tempfile
@@ -13,6 +14,8 @@ from typing import TYPE_CHECKING, Any, Literal
 import yaml
 from loguru import logger
 from pydantic import BaseModel, Field, RootModel, field_validator
+
+from gamarr.utils import current_year_month, is_valid_year_month
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -53,7 +56,7 @@ class SourceConfigEntry(BaseModel):
     name: str = Field(exclude=True)  # hidden from YAML, populated from dict key
     enabled: bool = True
     platform: str = "pc"
-    cache_pages_hours: int = Field(default=6, gt=0, le=168)
+    cache_hours: int = Field(default=6, gt=0, le=168)
     reject_keywords: list[str] = Field(default_factory=list)
     max_queue_days: int = Field(default=60, ge=0)
 
@@ -107,21 +110,59 @@ class DownloadSitesConfig(RootModel[list[SourceConfigEntry]]):
 
 
 class MetacriticPlatformConfig(BaseModel):
-    """Metacritic scoring thresholds for a single platform."""
+    """Metacritic scoring, caching, and browse options for a single platform."""
 
     min_criticscore: int = 75
     min_criticscore_reviews: int = 10
     min_user_score: float = 7.5
     min_user_reviews: int = 10
     cache_details_days: int = 7
-    cache_pages_hours: int = 6
+    cache_hours: int = 6
     max_queue_days: int = 30
     enabled: bool = True
     max_pages: int = Field(default=500, ge=1)
     max_cycle_pages: int | None = Field(default=0, ge=0)
+    max_date: int = 0
+    max_cycle_months: int = Field(default=0, ge=0, le=1200)
     sort_order: Literal["new", "criticscore", "userscore"] = "new"
     reject_genre: list[str] = Field(default_factory=list)
     reject_title: list[str] = Field(default_factory=list)  # case-insensitive substrings
+
+    @field_validator("max_date")
+    @classmethod
+    def _validate_max_date(cls, value: int) -> int:
+        """Validate ``YYYYMM`` and clamp a future floor to the current month.
+
+        ``0`` disables date mode. A floor later than the current calendar
+        month would sweep nothing, so it is clamped rather than rejected. Years
+        before 1958 are rejected because the browse API has no data there and a
+        year-by-year sweep would fetch empty listings for centuries.
+
+        Args:
+            value: The configured ``max_date``.
+
+        Returns:
+            ``0`` when disabled, otherwise the validated (possibly clamped)
+            ``YYYYMM`` month.
+
+        Raises:
+            ValueError: When *value* is neither 0 nor a valid ``YYYYMM`` month.
+        """
+        if not is_valid_year_month(value):
+            raise ValueError(
+                "max_date must be 0 (disabled) or YYYYMM with month 01-12 and year >= 1958, e.g. 202401",
+            )
+        if value == 0:
+            return 0
+        current_month = current_year_month()
+        if value > current_month:
+            logger.warning(
+                "Config: max_date {} is in the future — clamping to {}",
+                value,
+                current_month,
+            )
+            return current_month
+        return value
 
 
 class MetacriticConfig(BaseModel):
@@ -226,7 +267,6 @@ def _normalize_date_values(d: Any) -> Any:
     PyYAML parses ``2025-01-01`` as a ``datetime.date``, but the config
     model expects ``str``.  This catches that conversion at load time.
     """
-    import datetime
 
     if isinstance(d, datetime.date):
         return d.isoformat()
@@ -237,11 +277,24 @@ def _normalize_date_values(d: Any) -> Any:
     return d
 
 
-def _rename_config_key(mc_pc: dict[str, Any], old_key: str, new_key: str | None, platform_key: str) -> bool:
+def _rename_config_key(
+    mc_pc: dict[str, Any],
+    old_key: str,
+    new_key: str | None,
+    platform_key: str,
+    scope: str = "platform",
+) -> bool:
     """Rename *old_key* to *new_key* in *mc_pc* if it exists, logging the migration.
 
     If both old and new keys exist, the existing new-key value is preserved
     and only the old key is cleaned up (does not overwrite the user's value).
+
+    Args:
+        mc_pc: The raw config section, mutated in place.
+        old_key: The legacy key.
+        new_key: The replacement key, or ``None`` to drop the legacy key.
+        platform_key: The platform or source the section belongs to.
+        scope: What kind of owner *platform_key* names, for the log line.
 
     Returns True if a key was renamed or removed.
     """
@@ -251,19 +304,20 @@ def _rename_config_key(mc_pc: dict[str, Any], old_key: str, new_key: str | None,
         return False
     if new_key is None:
         del mc_pc[old_key]
-        logger.info("Config: removed old key '{}' for platform '{}'", old_key, platform_key)
+        logger.info("Config: removed old key '{}' for {} '{}'", old_key, scope, platform_key)
     elif new_key in mc_pc:
         # Both exist — clean up old key, preserve the user's new-key value
         del mc_pc[old_key]
         logger.info(
-            "Config: old key '{}' already migrated to '{}' for platform '{}' — keeping existing value",
+            "Config: old key '{}' already migrated to '{}' for {} '{}' — keeping existing value",
             old_key,
             new_key,
+            scope,
             platform_key,
         )
     else:
         mc_pc[new_key] = mc_pc.pop(old_key)
-        logger.info("Config: migrated '{}'\u2192'{}' for platform '{}'", old_key, new_key, platform_key)
+        logger.info("Config: migrated '{}'\u2192'{}' for {} '{}'", old_key, new_key, scope, platform_key)
     return True
 
 
@@ -819,7 +873,7 @@ def _migrate_add_freegog_to_download_sites(raw: dict[str, Any]) -> bool:
     _freegog_defaults = {
         "enabled": True,
         "platform": "pc",
-        "cache_pages_hours": 6,
+        "cache_hours": 6,
         "reject_keywords": [],
         "max_queue_days": 60,
     }
@@ -904,6 +958,74 @@ def _migrate_sort_order_critic_names(raw: dict[str, Any]) -> bool:
     return changed
 
 
+def _rename_metacritic_cache_hours(raw: dict[str, Any]) -> bool:
+    """Rename ``cache_pages_hours`` on every Metacritic platform override.
+
+    Args:
+        raw: The raw YAML config dict, mutated in place.
+
+    Returns:
+        True when at least one override key was renamed or cleaned up.
+    """
+    review_sites = raw.get("review_sites")
+    if not isinstance(review_sites, dict):
+        return False
+    metacritic = review_sites.get("metacritic")
+    if not isinstance(metacritic, dict):
+        return False
+    overrides = metacritic.get("platform_overrides")
+    if not isinstance(overrides, dict):
+        return False
+    changed = False
+    for platform_key, platform_cfg in overrides.items():
+        if isinstance(platform_cfg, dict):
+            changed |= _rename_config_key(platform_cfg, "cache_pages_hours", "cache_hours", str(platform_key))
+    return changed
+
+
+def _rename_source_cache_hours(raw: dict[str, Any]) -> bool:
+    """Rename ``cache_pages_hours`` on every download-source entry.
+
+    Args:
+        raw: The raw YAML config dict, mutated in place.
+
+    Returns:
+        True when at least one source key was renamed or cleaned up.
+    """
+    download_sites = raw.get("download_sites")
+    if not isinstance(download_sites, list):
+        return False
+    changed = False
+    for entry in download_sites:
+        if not isinstance(entry, dict):
+            continue
+        # An entry may carry several sources ({fitgirl: {...}, freegog: {...}}),
+        # so rename every mapping body, not only the first key.
+        for source_name, body in entry.items():
+            if isinstance(body, dict):
+                changed |= _rename_config_key(body, "cache_pages_hours", "cache_hours", str(source_name), "source")
+    return changed
+
+
+def _migrate_cache_pages_hours_to_cache_hours(raw: dict[str, Any]) -> bool:
+    """Rename ``cache_pages_hours`` to ``cache_hours`` for every owner.
+
+    The key exists on two different models — the Metacritic platform config
+    (browse-page cache) and each download source (sitemap cache) — so both
+    shapes are migrated here. Values are preserved unless both keys already
+    exist, in which case ``cache_hours`` wins and the legacy key is dropped.
+
+    Args:
+        raw: The raw YAML config dict, mutated in place.
+
+    Returns:
+        True when at least one key was renamed or cleaned up.
+    """
+    changed = _rename_metacritic_cache_hours(raw)
+    changed |= _rename_source_cache_hours(raw)
+    return changed
+
+
 def _migrate_config(raw: dict[str, Any]) -> bool:
     """Migrate renamed config keys in-place for all platforms.
 
@@ -938,6 +1060,12 @@ def _migrate_config(raw: dict[str, Any]) -> bool:
             _migrate_flatten_schedule_acquisition,
             _migrate_daemon_mode,
             _migrate_add_post_process_path_case,
+            # _migrate_cache_pages_hours_to_cache_hours must run BEFORE
+            # _migrate_add_freegog_to_download_sites: the freegog defaults
+            # injection now writes cache_hours, so a still-unrenamed legacy
+            # key would look "already migrated" and its value would be
+            # discarded in favour of the default.
+            _migrate_cache_pages_hours_to_cache_hours,
             _migrate_add_freegog_to_download_sites,
             _migrate_remove_search_mode,
             _migrate_sort_order_critic_names,

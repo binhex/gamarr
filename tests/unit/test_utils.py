@@ -172,3 +172,55 @@ class TestGraceWaitForOutcome:
         worker.start()
         result = _grace_wait_for_outcome(worker, outcome_pending=lambda: not done)
         assert result is False, "an outcome recorded during the grace window must not time out"
+
+
+class TestSubtractMonths:
+    """Tests for subtract_months()."""
+
+    def test_subtracts_within_year(self) -> None:
+        from gamarr.utils import subtract_months
+
+        assert subtract_months(202601, 2) == 202511
+
+    def test_subtracts_across_year_boundary(self) -> None:
+        from gamarr.utils import subtract_months
+
+        assert subtract_months(202501, 1) == 202412
+        assert subtract_months(202501, 13) == 202312
+
+    def test_zero_and_negative_months_return_input(self) -> None:
+        from gamarr.utils import subtract_months
+
+        assert subtract_months(202501, 0) == 202501
+        assert subtract_months(202501, -3) == 202501
+
+
+class TestMonthOf:
+    """Tests for month_of()."""
+
+    def test_iso_date(self) -> None:
+        from gamarr.utils import month_of
+
+        assert month_of("2025-11-14") == 202511
+
+    def test_uk_date(self) -> None:
+        from gamarr.utils import month_of
+
+        assert month_of("14-11-2025") == 202511
+
+    def test_none_and_unparsable(self) -> None:
+        from gamarr.utils import month_of
+
+        assert month_of(None) is None
+        assert month_of("") is None
+        assert month_of("not-a-date") is None
+
+
+class TestYearMonthToDate:
+    """Tests for year_month_to_date()."""
+
+    def test_returns_first_of_month(self) -> None:
+        from gamarr.utils import year_month_to_date
+
+        assert year_month_to_date(202511) == "2025-11-01"
+        assert year_month_to_date(202401) == "2024-01-01"

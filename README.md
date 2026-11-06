@@ -21,8 +21,11 @@ stays fresh without lifting a finger.
   substring matching (e.g. `["RPG"]` rejects "Action RPG", "JRPG", etc.).
 - **Keyword-based filtering** — reject games whose titles or FitGirl page
   description contain specific keywords.
-- **Relative date cutoff** — set a look-back window in weeks instead of
-  maintaining a static date (e.g. `max_pages: 500` for ~21 months of releases).
+- **Date-based backlog cutoff** — set the oldest month to review with
+  `max_date: 202401` and how much of the backlog one cycle covers with
+  `max_cycle_months: 2`. Pages remain available as `max_pages` /
+  `max_cycle_pages` for `criticscore`/`userscore`, whose browse lists are
+  score-ordered and have no date dimension.
 - **Re-verification with expiry** — games whose real Metacritic detail
   page scores don't match the browse page scores are kept in a pending queue
   for re-verification until they expire (`max_queue_days`). Once scores pass
@@ -144,13 +147,13 @@ download_sites:
   - freegog:
       enabled: true
       platform: pc
-      cache_pages_hours: 6
+      cache_hours: 6
       reject_keywords: []
       max_queue_days: 60
   - fitgirl:
       enabled: true
       platform: pc
-      cache_pages_hours: 6
+      cache_hours: 6
       reject_keywords: []
       max_queue_days: 60
 ```
@@ -161,7 +164,7 @@ download_sites:
 | ----- | ----------- | ------- |
 | `enabled` | Enable or disable this source. | `true` |
 | `platform` | Target platform for matching. | `pc` |
-| `cache_pages_hours` | How long to cache the source index before re-fetching. | `6` |
+| `cache_hours` | How long to cache the source index before re-fetching. | `6` |
 | `reject_keywords` | Reject games whose FitGirl page title or description contains any of these keywords (case-insensitive). | `[]` |
 | `max_queue_days` | How many days a game stays in the pending queue *after* its scores are verified (the source-matching phase). `0` = indefinite pending (no expiry). | `60` |
 
@@ -177,11 +180,13 @@ download_sites:
 | `min_user_reviews` | Minimum number of user reviews required. | `10` |
 | `max_pages` | Total browse page depth budget. The scanner progressively advances through pages across cycles. When the budget is exhausted, scanning resets to page 1. `0` = unlimited. | `500` |
 | `max_cycle_pages` | Maximum pages per cycle (pacing). `0` = unlimited. | `0` |
+| `max_date` | Date floor for the `new` sort order: sweep back to and including this month (`YYYYMM` with month `01`-`12` and year `1958` or later, e.g. `202401`). `0` = disabled. When set, it takes precedence over `max_pages` and is ignored for `criticscore`/`userscore`. A month later than the current one is clamped to the current month. | `0` |
+| `max_cycle_months` | Pace in date mode: how far back one cycle may sweep, counted in months from the cycle's newest release month (a month is included when a page holds any game at or after its first day, so a cycle can cover N+1 calendar months at a boundary). The floor set by `max_date` always wins — this value can only shorten a cycle, never extend past it. `0` = no month pacing; the maximum is `1200` (100 years), and a larger value is rejected at config load. | `0` |
 | `sort_order` | Discovery and pending processing order: `"new"` (newest release date first), `"criticscore"` (verified games by highest critic score), or `"userscore"` (verified games by highest user score). Unverified games follow verified games in score modes. Changing this value reprioritizes the entire pending queue, including games from previous cycles. | `"new"` |
 | `max_queue_days` | Days a game stays in the pending queue before expiring. `0` = indefinite pending (no expiry). | `30` |
 | `enabled` | Enable or disable the Metacritic browse step. Disabling skips game discovery entirely. | `true` |
 | `cache_details_days` | Days to cache Metacritic detail-page results. | `7` |
-| `cache_pages_hours` | Hours to cache Metacritic browse-page results. | `6` |
+| `cache_hours` | Hours to cache Metacritic browse-page results. | `6` |
 | `reject_genre` | Reject games whose Metacritic genre contains any of these substrings (case-insensitive). E.g. `["RPG"]` matches "Action RPG", "JRPG", "Western RPG". | `[]` |
 | `reject_title` | Reject games whose title contains any of these substrings (case-insensitive). E.g. `["Remake"]` matches "Resident Evil 4 Remake", "Remake Collection". | `[]` |
 
@@ -267,7 +272,7 @@ flowchart TD
     F -- Yes --> SKIP1([⛔ Skip])
     F -- No --> G{Meets score\nthresholds on\nbrowse page?}
     G -- No --> SKIP2([⛔ Skip])
-    G -- Yes --> H{Within cutoff\nweeks?}
+    G -- Yes --> H{Within max_date\nfloor / max_pages\nwindow?}
     H -- No --> SKIP3([⛔ Skip])
     H -- Yes --> I[Add to pending\nqueue]
 
@@ -302,13 +307,22 @@ flowchart TD
    browse-only metrics*, not the real 0–100 critic scores or 0–10 user scores.
    These rough scores are used only to build a candidate pool — the real
    filtering happens in step 4. Games are collected within the `max_pages`
-   browse window.
+   browse window. In date mode (`max_date` set with `sort_order: new`) the
+   window is a month floor instead: the sweep stops inside the boundary year as
+   soon as a page's games are all older than `max_date`, and
+   `max_cycle_months` limits how many months of backlog a single cycle covers.
+   `max_pages` and `max_cycle_pages` are then unused. For
+   `criticscore`/`userscore` the date keys are ignored, because those browse
+   lists mix years and no page corresponds to a date.
 2. **Browse-page filtering** — Games whose titles match `reject_title` are
-   skipped. Games outside the `max_pages` window
-   are skipped. `max_cycle_pages` controls the per-cycle page limit
-   (default `0` = unlimited). The scanner advances through the
-   `max_pages` window progressively — each cycle resumes where the
-   last one left off, with auto-reset to page 1 when the `max_pages` budget is exhausted.
+   skipped. In page mode, games outside the `max_pages` window are skipped,
+   `max_cycle_pages` controls the per-cycle page limit (default `0` =
+   unlimited), and the scanner advances through that window progressively —
+   each cycle resumes where the last one left off, with auto-reset to page 1
+   when the `max_pages` budget is exhausted. In date mode the window and the
+   pace come from `max_date` and `max_cycle_months` instead, both page keys are
+   unused, and each cycle resumes from the per-year page cursors, restarting at
+   the newest year once the floor has been swept.
    **Note:** browse scores are on a different scale and always
    exceed the configured thresholds — score filtering effectively starts
    at the verification step (phase 4), not here.
@@ -432,6 +446,8 @@ they get re-verified each cycle because a new FitGirl/FreeGOG repack could appea
 If you find the queue growing indefinitely:
 
 - Increase `max_pages` to catch more recently released games
+- Or set `max_date` with `sort_order: new` to state the oldest month you want
+  reviewed, so the cutoff is a date instead of a page count
 - Games with failing scores are re-verified each cycle — reduce `max_queue_days` if
   you want them to expire faster
 - The message `0 new + X from previous cycles` means browsing found nothing new

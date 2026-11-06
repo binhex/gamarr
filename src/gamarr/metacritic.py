@@ -21,7 +21,14 @@ from loguru import logger
 if TYPE_CHECKING:
     from gamarr.metacritic_cache import MetacriticCache
 
-from gamarr.utils import is_cancelled, normalise_for_compare
+from gamarr.utils import (
+    CancelSignal,
+    is_cancelled,
+    month_of,
+    normalise_for_compare,
+    subtract_months,
+    year_month_to_date,
+)
 
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -469,10 +476,17 @@ def _parse_date_flexible(date_str: str) -> datetime.date | None:
 
 
 def _page_is_before_cutoff(games: list[dict[str, Any]], cutoff_date: str | None) -> bool:
-    """Return True if every game on a page is older than *cutoff_date*.
+    """Return True if every dated game on a page is older than *cutoff_date*.
 
-    Returns False when *cutoff_date* is None (no filter) or when no
-    games on the page have a release date (unknown age \u2014 keep page).
+    Args:
+        games: The parsed games of one browse page.
+        cutoff_date: The date bound, or ``None`` for no filter.
+
+    Returns:
+        False when *cutoff_date* is ``None`` or when the page holds no dated
+        games at all (unknown age \u2014 keep the page).  A page that mixes
+        below-cutoff dated games with undated ones counts as before the cutoff:
+        only a fully undated page is treated as unknown age.
     """
     if cutoff_date is None:
         return False
@@ -566,12 +580,63 @@ class MetacriticClient:
         self.cache_hits = 0
         self.sort_order = "new"
         self._recent_games_last_page: int | None = None
-        # True only when the last scan ended because a page fetched cleanly and
-        # listed no games at a probe past page 1 (the caller resumed from prior
-        # progress), never when a fetch failed.
+        # True only when the last scan ended because a page past page 1 fetched
+        # cleanly and listed no games twice in a row (a confirmed drain, whether
+        # the scan walked there from page 1 or resumed from prior progress),
+        # never when a fetch failed.
         self._recent_games_exhausted: bool = False
         # True only when the last scan ended because a browse fetch failed.
         self._recent_games_failed: bool = False
+        # True only when the last scan ended because a page's games were all
+        # older than the effective cutoff (the absolute floor and/or the month
+        # span). A cutoff stop is not an exhausted listing, so the caller can
+        # tell "sweep reached its date bound" from "year listing ran out".
+        self._recent_games_cutoff_reached: bool = False
+        # The effective cutoff that stopped the last scan, so the caller can
+        # distinguish a stop at its own absolute floor from a pace (month-span)
+        # stop.  None when no date bound stopped the scan.
+        self._recent_games_stop_cutoff: str | None = None
+
+    def _classify_page(
+        self,
+        games: list[dict[str, Any]] | None,
+        page_number: int,
+        cancel_event: CancelSignal | None,
+    ) -> list[dict[str, Any]] | None:
+        """Return the page when the scan continues, or ``None`` when it must stop.
+
+        Records why a page ended the scan as a side effect.
+
+        Args:
+            games: The parsed page, or ``None`` when the fetch/parse failed.
+            page_number: The page just fetched.
+            cancel_event: The cancellation signal, if any.
+
+        Returns:
+            The non-empty parsed page, or ``None`` when the scan must stop.
+        """
+        if games is None:
+            # Fetch or parse failure — this year is not drained, so the caller
+            # must keep its progress row untouched.
+            self._recent_games_failed = True
+            return None
+        if is_cancelled(cancel_event):
+            # Checked before the empty-page branch: a shutdown must never record
+            # an unconfirmed drain.
+            logger.info(
+                "Scan cancelled by shutdown signal; returning after {} page(s)",
+                page_number - 1,
+            )
+            return None
+        if not games:
+            # The page was fetched and parsed but listed no games.  An empty page
+            # past page 1 means the listing ran out — whether the caller resumed
+            # from prior progress or walked there from page 1 in this call.  An
+            # empty *first* page carries no such evidence, so a transient empty
+            # listing cannot wipe progress.
+            self._recent_games_exhausted = page_number > 1
+            return None
+        return games
 
     def close(self) -> None:
         """Release cache resources (no-op; DB lifecycle owned by the pipeline)."""
@@ -788,11 +853,11 @@ class MetacriticClient:
         year's listing.  Pages with no release dates cannot disprove the scope
         and are accepted.
         """
-        if year_key <= 0:
-            return True
         if not cached:
             logger.debug("Ignoring cached browse page for year {} — empty legacy row", year_key)
             return False
+        if year_key <= 0:
+            return True
         years = {str(game.get("release_date"))[:4] for game in cached if game.get("release_date")}
         if years and not years <= {str(year_key)}:
             logger.debug(
@@ -817,6 +882,7 @@ class MetacriticClient:
         *,
         max_games: int = 0,
         max_pages: int = 0,
+        max_month_span: int = 0,
         cache_pages_hours: int = 6,
         year: int | None = None,
         cutoff_date: str | None = None,
@@ -827,15 +893,23 @@ class MetacriticClient:
         """Collect games from Metacritic browse pages.
 
         Fetches browse pages (newest-first) and collects games until
-        *max_games* is reached, pages run out, or *cutoff_date*
-        causes an early stop (when every game on a page is older than
-        the cutoff).  With default max_games=0 (unlimited), the
-        cutoff_date is the primary limiter.
+        *max_games* is reached, pages run out, or a date cutoff
+        (*cutoff_date* and/or *max_month_span*) causes an early stop
+        (when every game on a page is older than the effective cutoff).
+        With default max_games=0 (unlimited), the date cutoff is the
+        primary limiter.
 
         Args:
             max_games: Maximum number of game entries to collect (0 = unlimited).
+            max_month_span: Stop once a page's games are all older than
+                ``anchor month - max_month_span`` at month grain (0 = no month
+                pacing).  The anchor is the newest release *month* of this
+                call's first page that carries any dated game.  A caller that shares a
+                budget across calls must pass the remaining allowance each time,
+                or pass an absolute ``cutoff_date`` instead.
             cutoff_date: Date string in "YYYY-MM-DD" or "DD-MM-YYYY" format.
-                Pages whose games are all older than this date are skipped.
+                A page whose games are all older than this date stops the
+                scan.
             cancel_event: Optional threading.Event.  When set, the
                 scan stops early and returns partial results.
             start_page: Page number to start scanning from.  Pages 1..start_page-1
@@ -853,51 +927,46 @@ class MetacriticClient:
 
         cutoff_date = _validate_cutoff_date(cutoff_date)
 
-        effective_max = max_games if max_games > 0 else 999999
+        effective_max = _effective_page_cap(max_games)
         start_page = max(1, start_page)
         page_number = start_page
         self._recent_games_exhausted = False
         self._recent_games_failed = False
+        self._recent_games_cutoff_reached = False
+        self._recent_games_stop_cutoff = None
+        span_anchor: int | None = None
         while len(all_games) < effective_max and page_number <= 2000:
             games = self._fetch_browse_page(platform, page_number, cache_pages_hours, year=year)
-            if games is None:
-                # Fetch or parse failure — this year is not drained, so the
-                # caller must keep its progress row untouched.
-                self._recent_games_failed = True
-                break
-            if not games:
-                # The page was fetched and parsed but listed no games.  Only a
-                # probe past page 1 (the caller resumed from prior progress) is
-                # treated as drained; an empty first page carries no such
-                # evidence, so a transient empty listing cannot wipe progress.
-                self._recent_games_exhausted = start_page > 1
+            if games is not None and not games and page_number > 1 and not is_cancelled(cancel_event):
+                # Empty parses are never cached, so this re-probe is a real fetch.
+                # A transient gap must not be read as the end of the listing.
+                games = self._fetch_browse_page(platform, page_number, cache_pages_hours, year=year)
+            page = self._classify_page(games, page_number, cancel_event)
+            if page is None:
                 break
 
-            # Check for cancellation after the page fetch
-            if is_cancelled(cancel_event):
-                logger.info(
-                    "Scan cancelled by shutdown signal; returning after {} page(s)",
-                    page_number - 1,
-                )
-                break
+            if max_month_span > 0 and span_anchor is None:
+                span_anchor = _page_newest_month(page)
 
-            # Check early-stop conditions
-            if _should_stop_scan(
+            should_stop, cutoff_reached, stopping_cutoff = _page_stop_decision(
                 self.sort_order,
-                games,
+                page,
                 cutoff_date,
+                max_month_span,
+                span_anchor,
                 max_pages,
                 page_number,
                 start_page,
-            ):
+            )
+            if cutoff_reached:
+                self._recent_games_cutoff_reached = True
+                self._recent_games_stop_cutoff = stopping_cutoff
+            if should_stop:
                 break
 
             # Trim this page and collect up to effective_max
-            games = games[: effective_max - len(all_games)]
+            all_games.extend(page[: effective_max - len(all_games)])
 
-            all_games.extend(games)
-
-            # Log progress every 100 pages
             _log_batch_progress(page_number - start_page + 1, len(all_games), show_progress)
 
             page_number += 1
@@ -911,6 +980,101 @@ class MetacriticClient:
         return all_games
 
 
+def _effective_page_cap(max_games: int) -> int:
+    """Return the per-call game cap, treating 0 as unlimited.
+
+    Args:
+        max_games: The caller's cap; 0 or negative means unlimited.
+
+    Returns:
+        A large sentinel when unlimited, otherwise *max_games*.
+    """
+    return max_games if max_games > 0 else 999999
+
+
+def _page_newest_month(games: list[dict[str, Any]]) -> int | None:
+    """Return the newest release month (``YYYYMM``) on a browse page.
+
+    Args:
+        games: The parsed games of one browse page.
+
+    Returns:
+        The newest ``YYYYMM`` month, or ``None`` when no page entry has one.
+    """
+    months = [month for month in (month_of(g.get("release_date")) for g in games) if month is not None]
+    return max(months) if months else None
+
+
+def _effective_cutoff(cutoff_date: str | None, span_anchor: int | None, max_month_span: int) -> str | None:
+    """Return the newer of the absolute cutoff and the month-span cutoff.
+
+    Args:
+        cutoff_date: The caller's absolute date floor, if any.
+        span_anchor: The newest month of this call's first page, if known.
+        max_month_span: Months of pacing; 0 disables the span cutoff.
+
+    Returns:
+        The effective cutoff date string, or ``None`` when there is no date stop.
+    """
+    if max_month_span <= 0 or span_anchor is None:
+        return cutoff_date
+    span_cutoff = year_month_to_date(subtract_months(span_anchor, max_month_span))
+    if cutoff_date is None:
+        return span_cutoff
+    # Compare parsed dates, not strings: cutoff_date may be DD-MM-YYYY.
+    cutoff_parsed = _parse_date_flexible(cutoff_date)
+    span_parsed = _parse_date_flexible(span_cutoff)
+    if span_parsed is None:
+        # An absurd span can underflow the month arithmetic; never let a junk
+        # span discard the caller's floor.
+        logger.warning("Ignoring unparsable month-span cutoff {} — keeping {}", span_cutoff, cutoff_date)
+        return cutoff_date
+    if cutoff_parsed is None or span_parsed > cutoff_parsed:
+        return span_cutoff
+    return cutoff_date
+
+
+def _page_stop_decision(
+    sort_order: str,
+    games: list[dict[str, Any]],
+    cutoff_date: str | None,
+    max_month_span: int,
+    span_anchor: int | None,
+    max_pages: int,
+    page_number: int,
+    start_page: int,
+) -> tuple[bool, bool, str | None]:
+    """Decide whether a browse page ends the scan and whether a date caused it.
+
+    Args:
+        sort_order: The active browse order.
+        games: The parsed games of the current page.
+        cutoff_date: The caller's absolute date floor, if any.
+        max_month_span: Months of pacing; 0 disables the span cutoff.
+        span_anchor: The newest month of this call's first page, if known.
+        max_pages: Per-call page limit; 0 disables it.
+        page_number: The page just fetched.
+        start_page: The page this call started from.
+
+    Returns:
+        ``(should_stop, cutoff_reached, effective_cutoff)``.  The third element
+        lets the caller tell *which* date bound stopped the page: the caller's
+        absolute floor or a month-span (pace) bound derived from its own anchor.
+    """
+    effective_cutoff = _effective_cutoff(cutoff_date, span_anchor, max_month_span)
+    # Evaluate the date predicate once: it is both the "cutoff reached" signal
+    # and one of the two stop conditions.
+    cutoff_reached = sort_order == "new" and _page_is_before_cutoff(games, effective_cutoff)
+    if cutoff_reached:
+        logger.debug(
+            "Metacritic page {} reached (all games older than {}); stopping scan",
+            page_number,
+            effective_cutoff,
+        )
+    stop = cutoff_reached or _page_limit_reached(max_pages, page_number, start_page)
+    return stop, cutoff_reached, effective_cutoff
+
+
 def _log_scan_result(year: int | None, pages_fetched: int, game_count: int) -> None:
     """Log the outcome of one browse scan, naming the year when there is one."""
     if year is not None:
@@ -919,22 +1083,20 @@ def _log_scan_result(year: int | None, pages_fetched: int, game_count: int) -> N
         logger.info("Scan result: {} pages browsed, {} games collected", pages_fetched, game_count)
 
 
-def _should_stop_scan(
-    sort_order: str,
-    games: list[dict[str, Any]],
-    cutoff_date: str | None,
-    max_pages: int,
-    page_number: int,
-    start_page: int,
-) -> bool:
-    """Return True if the browse-page scan should stop early."""
-    if sort_order == "new" and _page_is_before_cutoff(games, cutoff_date):
-        logger.debug(
-            "Metacritic page {} reached (no games within the scan window, cutoff: {}); stopping scan",
-            page_number,
-            cutoff_date,
-        )
-        return True
+def _page_limit_reached(max_pages: int, page_number: int, start_page: int) -> bool:
+    """Return True when the per-call page limit has been reached.
+
+    Date stops are owned by :func:`_page_stop_decision`, which evaluates the
+    cutoff predicate once; this helper only covers the page budget.
+
+    Args:
+        max_pages: Per-call page limit; 0 disables it.
+        page_number: The page just fetched.
+        start_page: The page this call started from.
+
+    Returns:
+        True when the limit is spent.
+    """
     if max_pages > 0 and (page_number - start_page) >= max_pages:
         logger.debug(
             "Metacritic page limit {} reached (max_pages={}); stopping scan",

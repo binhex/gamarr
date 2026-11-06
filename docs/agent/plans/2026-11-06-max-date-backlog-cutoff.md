@@ -522,12 +522,24 @@ def _migrate_cache_pages_hours_to_cache_hours(raw: dict[str, Any]) -> bool:
     return changed
 ```
 
-Register it in the `_migrations` list in `_migrate_config`, appended after `_migrate_sort_order_critic_names`:
+Register it in the `_migrations` list in `_migrate_config` immediately before
+`_migrate_add_freegog_to_download_sites`, not at the end of the list:
 
 ```python
-            _migrate_sort_order_critic_names,
+            _migrate_add_post_process_path_case,
+            # _migrate_cache_pages_hours_to_cache_hours must run BEFORE
+            # _migrate_add_freegog_to_download_sites: the freegog defaults
+            # injection now writes cache_hours, so a still-unrenamed legacy
+            # key would look "already migrated" and its value would be
+            # discarded in favour of the default.
             _migrate_cache_pages_hours_to_cache_hours,
+            _migrate_add_freegog_to_download_sites,
 ```
+
+Position matters: an end-of-list registration makes
+`test_migrates_every_download_site` fail (`assert 6 == 9`) because
+`_rename_config_key` keeps the injected default and drops the user's legacy
+value. Running before the injection keeps the value-preservation guarantee.
 
 - [ ] **Step 5: Update the existing tests that assert the old name**
 
@@ -1091,7 +1103,9 @@ In `_run_discovery_phases`, replace the region from the line `browse_games: list
 
                     year_games = mc.scan_recent_games(
                         platform,
-                        cache_hours=cfg.cache_hours,
+                        # The client keeps its own parameter name (cache_pages_hours);
+                        # only config keys and the pipeline API were renamed.
+                        cache_pages_hours=cfg.cache_hours,
                         cutoff_date=cutoff_date,
                         cancel_event=cancel_event,
                         start_page=start_page,

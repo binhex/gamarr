@@ -120,24 +120,24 @@ class TestConfigModels:
         assert "cache_ttl_days" not in mc_pc, "Old key should not appear in defaults"
         assert mc_pc["cache_details_days"] == 7, "New key should have default 7"
 
-    def test_cache_pages_hours_replaces_cache_ttl_hours(self) -> None:
-        """MetacriticPlatformConfig should use cache_pages_hours, not cache_ttl_hours."""
+    def test_cache_hours_replaces_cache_ttl_hours(self) -> None:
+        """MetacriticPlatformConfig should use cache_hours, not cache_ttl_hours."""
         from gamarr.config import MetacriticPlatformConfig
 
         cfg = MetacriticPlatformConfig()
-        assert not hasattr(cfg, "cache_ttl_hours"), "Field was renamed to cache_pages_hours"
-        assert hasattr(cfg, "cache_pages_hours"), "New field name should exist"
-        assert cfg.cache_pages_hours == 6, "Default should remain 6"
+        assert not hasattr(cfg, "cache_ttl_hours"), "Field was renamed to cache_hours"
+        assert not hasattr(cfg, "cache_pages_hours"), "Field was renamed again to cache_hours"
+        assert cfg.cache_hours == 6, "Default should remain 6"
 
-    def test_source_config_entry_cache_pages_hours(self) -> None:
-        """SourceConfigEntry should use cache_pages_hours, not cache_ttl_hours."""
+    def test_source_config_entry_cache_hours(self) -> None:
+        """SourceConfigEntry should use cache_hours, not cache_ttl_hours."""
         cfg = SourceConfigEntry(name="fitgirl")
-        assert not hasattr(cfg, "cache_ttl_hours"), "Field was renamed to cache_pages_hours"
-        assert hasattr(cfg, "cache_pages_hours"), "New field name should exist"
-        assert cfg.cache_pages_hours == 6, "Default should remain 6"
+        assert not hasattr(cfg, "cache_ttl_hours"), "Field was renamed to cache_hours"
+        assert not hasattr(cfg, "cache_pages_hours"), "Field was renamed again to cache_hours"
+        assert cfg.cache_hours == 6, "Default should remain 6"
 
-    def test_migrate_cache_ttl_hours_to_cache_pages_hours(self) -> None:
-        """_migrate_config should rename cache_ttl_hours to cache_pages_hours."""
+    def test_migrate_cache_ttl_hours_to_cache_hours(self) -> None:
+        """_migrate_config should rename cache_ttl_hours to cache_hours."""
         from gamarr.config import _migrate_config
 
         raw: dict[str, Any] = {
@@ -152,10 +152,10 @@ class TestConfigModels:
         _migrate_config(raw)
         mc_pc = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
         assert "cache_ttl_hours" not in mc_pc, "Old key should be removed"
-        assert mc_pc["cache_pages_hours"] == 6, "New key should have the same value"
+        assert mc_pc["cache_hours"] == 6, "New key should have the same value"
 
-    def test_migrate_fitgirl_cache_ttl_hours_to_cache_pages_hours(self) -> None:
-        """_migrate_config should rename fitgirl.cache_ttl_hours to cache_pages_hours."""
+    def test_migrate_fitgirl_cache_ttl_hours_to_cache_hours(self) -> None:
+        """_migrate_config should rename fitgirl.cache_ttl_hours to cache_hours."""
         from gamarr.config import _migrate_config
 
         raw = {
@@ -171,16 +171,16 @@ class TestConfigModels:
         fg_entry = next(e for e in download_sites if isinstance(e, dict) and "fitgirl" in e)
         fg = fg_entry["fitgirl"]
         assert "cache_ttl_hours" not in fg, "Old key should be removed"
-        assert fg["cache_pages_hours"] == 12, "New key should have the same value"
+        assert fg["cache_hours"] == 12, "New key should have the same value"
 
-    def test_default_config_dict_contains_cache_pages_hours(self) -> None:
-        """The default config dict should use cache_pages_hours, not cache_ttl_hours."""
+    def test_default_config_dict_contains_cache_hours(self) -> None:
+        """The default config dict should use cache_hours, not cache_ttl_hours."""
         from gamarr.config import _default_config_dict
 
         defaults = _default_config_dict()
         mc_pc = defaults["review_sites"]["metacritic"]["platform_overrides"]["pc"]
         assert "cache_ttl_hours" not in mc_pc, "Old key should not appear in defaults"
-        assert mc_pc["cache_pages_hours"] == 6, "New key should have default 6"
+        assert mc_pc["cache_hours"] == 6, "New key should have default 6"
 
     def test_migrate_config_adds_freegog_to_download_sites(self) -> None:
         """_migrate_config should append freegog to download_sites when missing."""
@@ -205,7 +205,7 @@ class TestConfigModels:
         fg_entry = next(e["freegog"] for e in ds if isinstance(e, dict) and "freegog" in e)
         assert fg_entry["enabled"] is True
         assert fg_entry["platform"] == "pc"
-        assert fg_entry["cache_pages_hours"] == 6
+        assert fg_entry["cache_hours"] == 6
         assert fg_entry["reject_keywords"] == []
         assert fg_entry["max_queue_days"] == 60
 
@@ -226,7 +226,7 @@ class TestConfigModels:
         fg_entry = next(e["freegog"] for e in ds if isinstance(e, dict) and "freegog" in e)
         assert fg_entry["enabled"] is True
         assert fg_entry["platform"] == "pc", "platform should be populated"
-        assert fg_entry["cache_pages_hours"] == 6, "cache_pages_hours should be populated"
+        assert fg_entry["cache_hours"] == 6, "cache_hours should be populated"
         assert fg_entry["reject_keywords"] == [], "reject_keywords should be populated"
         assert fg_entry["max_queue_days"] == 60, "max_queue_days should be populated"
 
@@ -251,7 +251,7 @@ class TestConfigModels:
                     "freegog": {
                         "enabled": True,
                         "platform": "pc",
-                        "cache_pages_hours": 6,
+                        "cache_hours": 6,
                         "reject_keywords": [],
                         "max_queue_days": 60,
                     }
@@ -260,7 +260,7 @@ class TestConfigModels:
                     "fitgirl": {
                         "enabled": True,
                         "platform": "pc",
-                        "cache_pages_hours": 6,
+                        "cache_hours": 6,
                         "reject_keywords": [],
                         "max_queue_days": 60,
                     }
@@ -298,7 +298,7 @@ class TestConfigModels:
         assert "browse_cache_ttl_hours" not in mc_pc
         assert "cutoff_date" not in mc_pc
         assert mc_pc["enabled"] is True
-        assert mc_pc["cache_pages_hours"] == 4
+        assert mc_pc["cache_hours"] == 4
 
     def test_migrate_config_ignores_non_dict_overrides(self) -> None:
         """_migrate_config should skip platform overrides that are not dicts."""
@@ -339,7 +339,7 @@ class TestConfigModels:
         assert "cutoff_date" not in mc_pc
         assert mc_pc["enabled"] is False
         assert "max_games" not in mc_pc, "max_games was removed — use max_pages"
-        assert mc_pc["cache_pages_hours"] == 12
+        assert mc_pc["cache_hours"] == 12
 
     def test_migrate_config_handles_exception_gracefully(self) -> None:
         """_migrate_config should catch exceptions and log a warning."""
@@ -631,7 +631,7 @@ class TestLoadConfig:
         assert _migrate_config(raw) is True
         fitgirl = raw["download_sites"][0]["fitgirl"]
         assert fitgirl["reject_keywords"] == ["DLC"]
-        assert fitgirl["cache_pages_hours"] == 12
+        assert fitgirl["cache_hours"] == 12
         assert fitgirl["max_queue_days"] == 30
         assert "exclude_keywords" not in fitgirl
         assert "cache_ttl_hours" not in fitgirl
@@ -948,10 +948,10 @@ def test_rename_config_key_identical_keys() -> None:
     """_rename_config_key no-ops when old_key == new_key."""
     from gamarr.config import _rename_config_key
 
-    mc_pc = {"cache_pages_hours": 6}
-    result = _rename_config_key(mc_pc, "cache_pages_hours", "cache_pages_hours", "pc")
+    mc_pc = {"cache_hours": 6}
+    result = _rename_config_key(mc_pc, "cache_hours", "cache_hours", "pc")
     assert result is False
-    assert mc_pc["cache_pages_hours"] == 6  # Not deleted
+    assert mc_pc["cache_hours"] == 6  # Not deleted
 
 
 def test_rename_config_key_both_old_and_new_present() -> None:
@@ -1745,3 +1745,184 @@ class TestSortOrderCriticMigration:
         rewritten = path.read_text()
         assert "min_metascore" not in rewritten
         assert "sort_order: criticscore" in rewritten, "the second load must persist the migration"
+
+
+class TestMaxDateConfig:
+    """Tests for the max_date / max_cycle_months config keys."""
+
+    def test_defaults_are_zero(self) -> None:
+        """Both date keys default to 0 (disabled / no pacing)."""
+        from gamarr.config import MetacriticPlatformConfig
+
+        cfg = MetacriticPlatformConfig()
+        assert cfg.max_date == 0
+        assert cfg.max_cycle_months == 0
+
+    @pytest.mark.parametrize("value", [0, 195801, 202401])
+    def test_accepts_zero_and_valid_year_month(self, value: int) -> None:
+        """0 disables date mode; a real YYYYMM month is accepted."""
+        from gamarr.config import MetacriticPlatformConfig
+
+        assert MetacriticPlatformConfig(max_date=value).max_date == value
+
+    @pytest.mark.parametrize("value", [2024, 202413, 202400, -202401, 999, 100801, 195701])
+    def test_rejects_invalid_values(self, value: int) -> None:
+        """Anything that is not 0 or a valid YYYYMM month is a config error."""
+        from gamarr.config import MetacriticPlatformConfig
+
+        with pytest.raises(ValidationError) as excinfo:
+            MetacriticPlatformConfig(max_date=value)
+        assert "max_date must be 0 (disabled) or YYYYMM with month 01-12" in str(excinfo.value)
+
+    def test_rejects_dashed_string(self) -> None:
+        """A dashed date string is not an integer and must fail validation."""
+        from gamarr.config import MetacriticPlatformConfig
+
+        with pytest.raises(ValidationError):
+            MetacriticPlatformConfig(max_date="2024-01")  # type: ignore[arg-type]
+
+    def test_future_max_date_clamps_to_current_month(self) -> None:
+        """A future floor would sweep nothing, so it clamps with a warning."""
+        import datetime
+
+        from loguru import logger as loguru_logger
+
+        from gamarr.config import MetacriticPlatformConfig
+
+        now = datetime.datetime.now(tz=datetime.UTC)
+        future = (now.year + 2) * 100 + now.month
+        captured: list[str] = []
+        sink_id = loguru_logger.add(lambda msg: captured.append(str(msg)), level="WARNING", format="{message}")
+        try:
+            cfg = MetacriticPlatformConfig(max_date=future)
+        finally:
+            loguru_logger.remove(sink_id)
+        assert cfg.max_date == now.year * 100 + now.month
+        assert any("clamping to" in line for line in captured), captured
+
+    def test_max_cycle_months_rejects_negative(self) -> None:
+        """max_cycle_months is never negative."""
+        from gamarr.config import MetacriticPlatformConfig
+
+        with pytest.raises(ValidationError):
+            MetacriticPlatformConfig(max_cycle_months=-1)
+
+    def test_platform_override_carries_date_keys(self) -> None:
+        """Both keys work inside review_sites.metacritic.platform_overrides."""
+        from gamarr.config import Config
+
+        cfg = Config(
+            review_sites={
+                "metacritic": {
+                    "platform_overrides": {
+                        "pc": {"max_date": 202401, "max_cycle_months": 3},
+                    },
+                },
+            },  # type: ignore[arg-type]
+        )
+        pc = cfg.review_sites.metacritic.platform_overrides["pc"]
+        assert pc.max_date == 202401
+        assert pc.max_cycle_months == 3
+
+
+class TestCacheHoursRename:
+    """cache_pages_hours is renamed to cache_hours everywhere it appears."""
+
+    def test_migrates_metacritic_override(self) -> None:
+        from gamarr.config import _migrate_config
+
+        raw: dict[str, Any] = {
+            "review_sites": {
+                "metacritic": {
+                    "platform_overrides": {"pc": {"cache_pages_hours": 12}},
+                },
+            },
+        }
+        assert _migrate_config(raw) is True
+        pc = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
+        assert pc["cache_hours"] == 12
+        assert "cache_pages_hours" not in pc
+
+    def test_migrates_every_download_site(self) -> None:
+        from gamarr.config import _migrate_config
+
+        raw: dict[str, Any] = {
+            "download_sites": [
+                {"fitgirl": {"cache_pages_hours": 3}},
+                {"freegog": {"cache_pages_hours": 9}},
+            ],
+        }
+        assert _migrate_config(raw) is True
+        entries = {list(e.keys())[0]: e[list(e.keys())[0]] for e in raw["download_sites"]}
+        assert entries["fitgirl"]["cache_hours"] == 3
+        assert entries["freegog"]["cache_hours"] == 9
+        assert "cache_pages_hours" not in entries["fitgirl"]
+        assert "cache_pages_hours" not in entries["freegog"]
+
+    def test_existing_cache_hours_wins(self) -> None:
+        from gamarr.config import _migrate_config
+
+        raw: dict[str, Any] = {
+            "review_sites": {
+                "metacritic": {
+                    "platform_overrides": {"pc": {"cache_pages_hours": 1, "cache_hours": 24}},
+                },
+            },
+        }
+        _migrate_config(raw)
+        pc = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
+        assert pc["cache_hours"] == 24
+        assert "cache_pages_hours" not in pc
+
+    def test_default_config_dict_uses_cache_hours(self) -> None:
+        from gamarr.config import _default_config_dict
+
+        defaults = _default_config_dict()
+        pc = defaults["review_sites"]["metacritic"]["platform_overrides"]["pc"]
+        assert pc["cache_hours"] == 6
+        assert "cache_pages_hours" not in pc
+        for entry in defaults["download_sites"]:
+            name = list(entry.keys())[0]
+            assert entry[name]["cache_hours"] == 6
+            assert "cache_pages_hours" not in entry[name]
+
+    def test_migrates_every_key_of_a_multi_source_entry(self) -> None:
+        """A single entry carrying two sources must have both bodies renamed."""
+        from gamarr.config import _migrate_config
+
+        raw: dict[str, Any] = {
+            "download_sites": [
+                {"fitgirl": {"cache_pages_hours": 3}, "freegog": {"cache_pages_hours": 9}},
+            ],
+        }
+        _migrate_config(raw)
+        entry = raw["download_sites"][0]
+        assert entry["fitgirl"]["cache_hours"] == 3
+        assert entry["freegog"]["cache_hours"] == 9
+        assert "cache_pages_hours" not in entry["fitgirl"]
+        assert "cache_pages_hours" not in entry["freegog"]
+
+    def test_migration_runs_before_freegog_defaults_injection(self) -> None:
+        """A sparse freegog entry keeps its legacy value, not the injected default.
+
+        The cache rename must run before the freegog default injection; run in
+        the other order, the injected ``cache_hours`` looks already-migrated and
+        the user's legacy value is discarded.
+        """
+        from gamarr.config import _migrate_config
+
+        raw: dict[str, Any] = {"download_sites": [{"freegog": {"cache_pages_hours": 9}}]}
+        _migrate_config(raw)
+        freegog = next(e["freegog"] for e in raw["download_sites"] if "freegog" in e)
+        assert freegog["cache_hours"] == 9, "legacy value must survive the defaults injection"
+        assert "cache_pages_hours" not in freegog
+
+    def test_freegog_injection_uses_new_key(self) -> None:
+        """A config missing freegog gets the new key, not the legacy one."""
+        from gamarr.config import _migrate_config
+
+        raw: dict[str, Any] = {"download_sites": [{"fitgirl": {"enabled": True}}]}
+        _migrate_config(raw)
+        freegog = next(e["freegog"] for e in raw["download_sites"] if "freegog" in e)
+        assert freegog["cache_hours"] == 6
+        assert "cache_pages_hours" not in freegog

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -859,7 +859,7 @@ class TestScanRecentGames:
             {"title": "New Game", "slug": "new-1", "release_date": "2026-06-15"},
         ]
 
-        with patch.object(client, "_fetch_browse_page", side_effect=[page1, page2, []]):
+        with patch.object(client, "_fetch_browse_page", side_effect=[page1, page2, [], []]):
             result = client.scan_recent_games("pc", max_games=100, cutoff_date="2026-06-09")
         # Should NOT early-stop: both pages should be scanned
         assert len(result) > 0, "Critic-score browsing should not early-stop on old games"
@@ -1250,7 +1250,8 @@ class TestScanRecentGamesLogging:
         from loguru import logger
 
         client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
-        pages = [[{"title": "Game", "slug": "game", "score": 85, "user_rating": 8.0}], []]
+        # Two empty pages: the drain is confirmed by a second probe.
+        pages = [[{"title": "Game", "slug": "game", "score": 85, "user_rating": 8.0}], [], []]
 
         log_stream = io.StringIO()
         handler_id = logger.add(log_stream, format="{message}", level="INFO")
@@ -1282,6 +1283,7 @@ class TestScanRecentGamesLogging:
             for p in range(1, 151)
         ]
         pages.append([])  # empty page = no more games
+        pages.append([])  # confirmation probe for the drain
 
         from loguru import logger
 
@@ -1316,6 +1318,7 @@ class TestScanRecentGamesLogging:
             for p in range(101, 201)
         ]
         pages.append([])  # empty page = no more games
+        pages.append([])  # confirmation probe for the drain
 
         log_stream = io.StringIO()
         handler_id = logger.add(log_stream, format="{message}", level="INFO")
@@ -1344,6 +1347,7 @@ class TestScanRecentGamesLogging:
         client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
         pages = [[{"title": f"Game {p}", "slug": f"game-{p}", "score": 85, "user_rating": 8.0}] for p in range(13, 17)]
         pages.append([])  # empty page = no more games
+        pages.append([])  # confirmation probe for the drain
 
         log_stream = io.StringIO()
         handler_id = logger.add(log_stream, format="{message}", level="INFO")
@@ -1459,3 +1463,294 @@ class TestSortOrderURLSlug:
         url = mock_get.call_args.args[0]
         assert "/metascore/" in url, "criticscore must translate to the site's metascore slug"
         assert "/criticscore/" not in url
+
+
+class TestCutoffReachedFlag:
+    """A cutoff stop must be distinguishable from an exhausted listing."""
+
+    def _client(self) -> Any:
+        from gamarr.metacritic import MetacriticClient
+
+        client = MetacriticClient.__new__(MetacriticClient)
+        client.sort_order = "new"
+        client._recent_games_last_page = None
+        client._recent_games_exhausted = False
+        client._recent_games_failed = False
+        client._recent_games_cutoff_reached = False
+        return client
+
+    def test_cutoff_stop_sets_flag(self) -> None:
+        """A page entirely older than the cutoff sets the flag and stops."""
+        from unittest.mock import patch
+
+        client = self._client()
+        page = [{"title": "Old Game", "slug": "old-game", "release_date": "2019-05-01"}]
+        with patch.object(client, "_fetch_browse_page", return_value=page):
+            games = client.scan_recent_games("pc", cutoff_date="2024-01-01", year=2025)
+        assert games == []
+        assert client._recent_games_cutoff_reached is True
+        assert client._recent_games_stop_cutoff == "2024-01-01", "the stopping cutoff must be recorded"
+
+    def test_cancelled_empty_page_is_not_recorded_as_a_drain(self) -> None:
+        """A shutdown while the page is empty must not set the exhausted flag."""
+        import threading
+
+        client = MetacriticClient.__new__(MetacriticClient)
+        client._recent_games_exhausted = False
+        client._recent_games_failed = False
+        cancel_event = threading.Event()
+        cancel_event.set()
+
+        page = client._classify_page([], 4, cancel_event)
+
+        assert page is None
+        assert client._recent_games_exhausted is False
+
+    def test_confirmation_failure_is_a_failure_not_a_drain(self) -> None:
+        """An empty page then a failed re-probe must report failure, not a drain."""
+        from unittest.mock import patch
+
+        client = MetacriticClient.__new__(MetacriticClient)
+        client.sort_order = "new"
+        client._recent_games_last_page = None
+        client._recent_games_exhausted = False
+        client._recent_games_failed = False
+        client._recent_games_cutoff_reached = False
+        client._recent_games_stop_cutoff = None
+        page1 = [{"title": "A", "slug": "a", "release_date": "2025-11-01"}]
+        with patch.object(client, "_fetch_browse_page", side_effect=[page1, [], None]):
+            games = client.scan_recent_games("pc", year=2025)
+        assert [g["title"] for g in games] == ["A"]
+        assert client._recent_games_failed is True
+        assert client._recent_games_exhausted is False
+
+    def test_transient_empty_page_is_not_read_as_a_drain(self) -> None:
+        """A page that parses empty once must not end the listing."""
+        from unittest.mock import patch
+
+        client = MetacriticClient.__new__(MetacriticClient)
+        client.sort_order = "new"
+        client._recent_games_last_page = None
+        client._recent_games_exhausted = False
+        client._recent_games_failed = False
+        client._recent_games_cutoff_reached = False
+        client._recent_games_stop_cutoff = None
+        pages = {
+            1: [{"title": "A", "slug": "a", "release_date": "2025-11-01"}],
+            2: [],  # transient gap
+            3: [{"title": "B", "slug": "b", "release_date": "2025-10-01"}],
+        }
+        # p1 games, p2 empty (transient), p2 confirm -> p3 games, p4 empty, p4 confirm
+        responses = iter([pages[1], pages[2], pages[3], [], []])
+        with patch.object(client, "_fetch_browse_page", side_effect=lambda *_a, **_k: next(responses)):
+            games = client.scan_recent_games("pc", year=2025)
+        assert [g["title"] for g in games] == ["A", "B"], games
+        assert client._recent_games_exhausted is True
+
+    def test_fresh_scan_reports_exhaustion_when_a_later_page_is_empty(self) -> None:
+        """A drain reached from page 1 is exhaustion too, not just a resumed probe."""
+        from unittest.mock import patch
+
+        client = MetacriticClient.__new__(MetacriticClient)
+        client.sort_order = "new"
+        client._recent_games_last_page = None
+        client._recent_games_exhausted = False
+        client._recent_games_failed = False
+        client._recent_games_cutoff_reached = False
+        client._recent_games_stop_cutoff = None
+        pages = {1: [{"title": "A", "slug": "a", "release_date": "2025-11-01"}], 2: []}
+        with patch.object(client, "_fetch_browse_page", side_effect=lambda _p, page, *_a, **_k: pages.get(page)):
+            games = client.scan_recent_games("pc", year=2025)
+        assert [g["title"] for g in games] == ["A"]
+        assert client._recent_games_exhausted is True
+
+    def test_exhausted_listing_does_not_set_flag(self) -> None:
+        """An empty listing past page 1 is exhaustion, not a cutoff stop."""
+        from unittest.mock import patch
+
+        client = self._client()
+        with patch.object(client, "_fetch_browse_page", return_value=[]):
+            client.scan_recent_games("pc", start_page=2, year=2025)
+        assert client._recent_games_cutoff_reached is False
+        assert client._recent_games_exhausted is True
+
+    def test_score_mode_ignores_cutoff(self) -> None:
+        """Score modes have no date dimension, so the cutoff never applies."""
+        from unittest.mock import patch
+
+        client = self._client()
+        client.sort_order = "criticscore"
+        page = [{"title": "Old Game", "slug": "old-game", "release_date": "2019-05-01"}]
+        with patch.object(client, "_fetch_browse_page", return_value=page):
+            games = client.scan_recent_games("pc", cutoff_date="2024-01-01", max_games=1)
+        assert len(games) == 1
+        assert client._recent_games_cutoff_reached is False
+
+    def test_month_span_stops_the_call(self) -> None:
+        """max_month_span stops once pages reach older than the anchored span."""
+        from unittest.mock import patch
+
+        client = self._client()
+        pages = {
+            1: [{"title": "A", "slug": "a", "release_date": "2025-11-10"}],
+            2: [{"title": "B", "slug": "b", "release_date": "2025-10-10"}],
+            3: [{"title": "C", "slug": "c", "release_date": "2025-08-10"}],
+        }
+        with patch.object(client, "_fetch_browse_page", side_effect=lambda _p, page, *_a, **_k: pages.get(page)):
+            games = client.scan_recent_games("pc", year=2025, max_month_span=2)
+        assert [g["title"] for g in games] == ["A", "B"]
+        assert client._recent_games_cutoff_reached is True
+        assert client._recent_games_stop_cutoff == "2025-09-01", "the span cutoff must be recorded"
+
+    def test_month_span_zero_does_not_stop(self) -> None:
+        """0 means no month pacing, so every page is collected."""
+        from unittest.mock import patch
+
+        client = self._client()
+        pages = {
+            1: [{"title": "A", "slug": "a", "release_date": "2025-11-10"}],
+            2: [{"title": "C", "slug": "c", "release_date": "2025-08-10"}],
+        }
+        with patch.object(client, "_fetch_browse_page", side_effect=lambda _p, page, *_a, **_k: pages.get(page)):
+            games = client.scan_recent_games("pc", year=2025, max_month_span=0)
+        assert [g["title"] for g in games] == ["A", "C"]
+
+
+class TestCacheScopeEmptyRows:
+    """A stale empty cached browse row must never be trusted."""
+
+    def test_empty_row_rejected_for_all_time_key(self) -> None:
+        assert MetacriticClient._cache_scope_matches([], 0) is False
+
+    def test_empty_row_rejected_for_year_key(self) -> None:
+        assert MetacriticClient._cache_scope_matches([], 2025) is False
+
+    def test_non_empty_row_accepted_for_all_time_key(self) -> None:
+        page = [{"release_date": "2025-11-01"}]
+        assert MetacriticClient._cache_scope_matches(page, 0) is True
+
+
+class TestPageIsBeforeCutoff:
+    """Pins the mixed-dated-page rule that date mode now relies on."""
+
+    def test_fully_undated_page_is_kept(self) -> None:
+        from gamarr.metacritic import _page_is_before_cutoff
+
+        page: list[dict[str, Any]] = [{"release_date": None}, {"title": "no date"}]
+        assert _page_is_before_cutoff(page, "2024-01-01") is False
+
+    def test_mixed_undated_and_old_page_counts_as_before_cutoff(self) -> None:
+        from gamarr.metacritic import _page_is_before_cutoff
+
+        page: list[dict[str, Any]] = [{"release_date": "2019-05-01"}, {"release_date": None}]
+        assert _page_is_before_cutoff(page, "2024-01-01") is True
+
+    def test_page_with_a_recent_game_is_kept(self) -> None:
+        from gamarr.metacritic import _page_is_before_cutoff
+
+        page: list[dict[str, Any]] = [{"release_date": "2019-05-01"}, {"release_date": "2025-01-01"}]
+        assert _page_is_before_cutoff(page, "2024-01-01") is False
+
+
+class TestBrowseScanHelpers:
+    """Unit tests for the pure helpers extracted from scan_recent_games."""
+
+    def test_effective_page_cap_treats_zero_and_negative_as_unlimited(self) -> None:
+        from gamarr.metacritic import _effective_page_cap
+
+        assert _effective_page_cap(0) == 999999
+        assert _effective_page_cap(-4) == 999999
+        assert _effective_page_cap(7) == 7
+
+    def test_page_newest_month_empty_page(self) -> None:
+        from gamarr.metacritic import _page_newest_month
+
+        assert _page_newest_month([]) is None
+        assert _page_newest_month([{"title": "A"}]) is None
+
+    def test_page_newest_month_ignores_unparsable_dates(self) -> None:
+        from gamarr.metacritic import _page_newest_month
+
+        page: list[dict[str, Any]] = [
+            {"release_date": "2025-03-04"},
+            {"release_date": None},
+            {"release_date": "garbage"},
+            {"release_date": "04-11-2025"},
+        ]
+        assert _page_newest_month(page) == 202511
+
+    def test_effective_cutoff_without_span_returns_absolute_cutoff(self) -> None:
+        from gamarr.metacritic import _effective_cutoff
+
+        assert _effective_cutoff("2024-01-01", 202511, 0) == "2024-01-01"
+        assert _effective_cutoff("2024-01-01", None, 2) == "2024-01-01"
+        assert _effective_cutoff(None, None, 0) is None
+
+    def test_effective_cutoff_span_wins_when_newer(self) -> None:
+        from gamarr.metacritic import _effective_cutoff
+
+        assert _effective_cutoff("2024-01-01", 202511, 2) == "2025-09-01"
+
+    def test_effective_cutoff_absolute_wins_when_newer(self) -> None:
+        from gamarr.metacritic import _effective_cutoff
+
+        assert _effective_cutoff("2025-10-01", 202511, 2) == "2025-10-01"
+
+    def test_effective_cutoff_keeps_the_floor_when_the_span_underflows(self) -> None:
+        """An absurd span must not discard the caller's absolute floor."""
+        from gamarr.metacritic import _effective_cutoff
+
+        # 30000 months underflows the month arithmetic into negative years, so
+        # the derived span cutoff is unparsable.
+        assert _effective_cutoff("2024-06-01", 202401, 30000) == "2024-06-01"
+
+    def test_effective_cutoff_compares_dates_not_strings(self) -> None:
+        """A DD-MM-YYYY floor must not be overridden by lexical comparison."""
+        from gamarr.metacritic import _effective_cutoff
+
+        # 01-03-2026 is newer than the 2025-09-01 span cutoff, but sorts lower
+        # as a string.
+        assert _effective_cutoff("01-03-2026", 202511, 2) == "01-03-2026"
+
+    def test_page_stop_decision_flags_a_cutoff_page(self) -> None:
+        from gamarr.metacritic import _page_stop_decision
+
+        page: list[dict[str, Any]] = [{"release_date": "2019-05-01"}]
+        stop, cutoff_reached, stopping_cutoff = _page_stop_decision("new", page, "2024-01-01", 0, None, 0, 1, 1)
+        assert stop is True
+        assert cutoff_reached is True
+        assert stopping_cutoff == "2024-01-01", "the stop cause must name the bound that fired"
+
+    def test_page_stop_decision_collects_a_recent_page(self) -> None:
+        from gamarr.metacritic import _page_stop_decision
+
+        page: list[dict[str, Any]] = [{"release_date": "2025-11-01"}]
+        stop, cutoff_reached, _stopping_cutoff = _page_stop_decision("new", page, "2024-01-01", 0, None, 0, 1, 1)
+        assert stop is False
+        assert cutoff_reached is False
+
+    def test_classify_page_marks_cancellation_without_touching_drain_flags(self) -> None:
+        import threading
+
+        client = MetacriticClient.__new__(MetacriticClient)
+        client._recent_games_exhausted = False
+        client._recent_games_failed = False
+        cancel_event = threading.Event()
+        cancel_event.set()
+
+        page = client._classify_page([{"release_date": "2025-11-01"}], 3, cancel_event)
+
+        assert page is None
+        assert client._recent_games_exhausted is False
+        assert client._recent_games_failed is False
+
+    def test_classify_page_failure_and_exhaustion(self) -> None:
+        client = MetacriticClient.__new__(MetacriticClient)
+        client._recent_games_exhausted = False
+        client._recent_games_failed = False
+
+        assert client._classify_page(None, 1, None) is None
+        assert client._recent_games_failed is True
+
+        assert client._classify_page([], 2, None) is None
+        assert client._recent_games_exhausted is True

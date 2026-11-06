@@ -139,8 +139,13 @@ Config: max_pages/max_cycle_pages ignored because max_date is set (date mode)
   2. every `download_sites[].<source>` entry (FitGirl, FreeGOG, and any future
      source).
   Values are preserved, an INFO line names each migration, and it is registered
-  in `_migrations` (ordered after `_migrate_download_sites_to_keyed_list` so the
-  keyed-list shape already exists).
+  in `_migrations` **immediately before `_migrate_add_freegog_to_download_sites`**
+  (and therefore after `_migrate_platform_overrides`,
+  `_migrate_fitgirl_cache_ttl_hours` and `_migrate_download_sites_to_keyed_list`,
+  so it sees every legacy shape). The position matters: the freegog defaults
+  injection now writes `cache_hours`, so a still-unrenamed legacy key would be
+  treated as "already migrated" and its user value would be discarded in favour
+  of the injected default.
 - The `config_version` bump is automatic via the existing
   `migrated=True` write-back.
 - If both `cache_pages_hours` and `cache_hours` are present, `cache_hours` wins

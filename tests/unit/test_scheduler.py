@@ -144,7 +144,7 @@ class TestSchedulerForeground:
                 config.review_sites.metacritic.platform_overrides["pc"].min_user_reviews = 10
                 config.review_sites.metacritic.platform_overrides["pc"].max_pages = 12
                 config.review_sites.metacritic.platform_overrides["pc"].cache_details_days = 7
-                config.review_sites.metacritic.platform_overrides["pc"].cache_pages_hours = 4
+                config.review_sites.metacritic.platform_overrides["pc"].cache_hours = 4
                 config.download_sites.fitgirl.platform = "pc"
                 config.general.db_path = ":memory:"
                 config.torrent_client.qbittorrent.host = "localhost"
@@ -385,7 +385,7 @@ class TestDaemonMode:
                 config.review_sites.metacritic.platform_overrides["pc"].min_user_reviews = 10
                 config.review_sites.metacritic.platform_overrides["pc"].max_pages = 12
                 config.review_sites.metacritic.platform_overrides["pc"].cache_details_days = 7
-                config.review_sites.metacritic.platform_overrides["pc"].cache_pages_hours = 4
+                config.review_sites.metacritic.platform_overrides["pc"].cache_hours = 4
                 config.download_sites.fitgirl.platform = "pc"
                 config.general.db_path = ":memory:"
                 config.torrent_client.qbittorrent.host = "localhost"
@@ -440,7 +440,7 @@ class TestDaemonMode:
             config.review_sites.metacritic.platform_overrides["pc"].min_user_reviews = 10
             config.review_sites.metacritic.platform_overrides["pc"].max_pages = 12
             config.review_sites.metacritic.platform_overrides["pc"].cache_details_days = 7
-            config.review_sites.metacritic.platform_overrides["pc"].cache_pages_hours = 4
+            config.review_sites.metacritic.platform_overrides["pc"].cache_hours = 4
             config.download_sites.fitgirl.platform = "pc"
             config.general.db_path = ":memory:"
             config.torrent_client.qbittorrent.host = "localhost"
@@ -816,3 +816,33 @@ class TestAcquisitionWatchdog:
         result = _run_acquisition_guarded(job, timeout_seconds=5, cancel_event=shutdown_event)
         assert result == ["ok"]
         assert seen_cancelled == [True], "a set shutdown event must cancel the new cycle"
+
+
+class TestBuildKwargsDateKeys:
+    """_build_kwargs must forward the date keys and the renamed cache keys."""
+
+    def test_forwards_max_date_and_max_cycle_months(self) -> None:
+        from gamarr.scheduler import _build_kwargs
+
+        config = _make_config()
+        pc = config.review_sites.metacritic.platform_overrides["pc"]
+        pc.max_date = 202401
+        pc.max_cycle_months = 3
+
+        kwargs = _build_kwargs(config)
+        assert kwargs["max_date"] == 202401
+        assert kwargs["max_cycle_months"] == 3
+
+    def test_forwards_renamed_cache_keys(self) -> None:
+        from gamarr.scheduler import _build_kwargs
+
+        config = _make_config()
+        config.review_sites.metacritic.platform_overrides["pc"].cache_hours = 4
+        fitgirl = next(e for e in config.download_sites if e.name == "fitgirl")
+        fitgirl.cache_hours = 5
+
+        kwargs = _build_kwargs(config)
+        assert kwargs["cache_hours"] == 4
+        assert kwargs["fitgirl_cache_hours"] == 5
+        assert "cache_pages_hours" not in kwargs
+        assert "fitgirl_cache_pages_hours" not in kwargs

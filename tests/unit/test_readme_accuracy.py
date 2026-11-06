@@ -236,3 +236,35 @@ class TestReadmeYamlDefaults:
         assert schedule.get("enabled") is False, f"schedule.enabled: expected False, got {schedule.get('enabled')}"
         assert schedule.get("schedule_time_mins") == 60
         assert schedule.get("run_on_start") is True
+
+
+class TestReadmeDateModeRows:
+    """README must document max_date / max_cycle_months and their defaults."""
+
+    def _readme_defaults(self) -> dict[str, str]:
+        with open(README_PATH, encoding="utf-8") as f:
+            lines = f.readlines()
+        block = _find_config_block(lines, "review_sites.metacritic.platform_overrides.<platform>")
+        assert block is not None, "platform_overrides table missing from README"
+        return _parse_readme_defaults(block)
+
+    def test_max_date_default_row(self) -> None:
+        from gamarr.config import MetacriticPlatformConfig
+
+        cfg = MetacriticPlatformConfig()
+        defaults = self._readme_defaults()
+        assert defaults.get("max_date", "MISSING") == str(cfg.max_date)
+
+    def test_max_cycle_months_default_row(self) -> None:
+        from gamarr.config import MetacriticPlatformConfig
+
+        cfg = MetacriticPlatformConfig()
+        defaults = self._readme_defaults()
+        assert defaults.get("max_cycle_months", "MISSING") == str(cfg.max_cycle_months)
+
+    def test_cache_hours_rows_renamed(self) -> None:
+        """Both cache_hours rows exist and no legacy row survives."""
+        with open(README_PATH, encoding="utf-8") as f:
+            readme = f.read()
+        assert "cache_pages_hours" not in readme, "Legacy key must not remain in the README"
+        assert readme.count("| `cache_hours` |") >= 2, "Expected the Metacritic and per-source cache_hours rows"

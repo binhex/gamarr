@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, cast
 from unittest.mock import MagicMock, patch
 
 import pytest  # noqa: TC002 -- needed at runtime for @pytest.mark.xfail decorator
 
 from gamarr.pipeline import AcquisitionConfig, run_acquisition
+from gamarr.utils import month_of, subtract_months, year_month_to_date
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -1062,7 +1063,7 @@ class TestRunAcquisition:
         fitgirl_entry.name = "fitgirl"
         fitgirl_entry.enabled = True
         fitgirl_entry.platform = "pc"
-        fitgirl_entry.cache_pages_hours = 6
+        fitgirl_entry.cache_hours = 6
         fitgirl_entry.reject_keywords = []
         fitgirl_entry.max_queue_days = 60
 
@@ -1070,7 +1071,7 @@ class TestRunAcquisition:
         freegog_entry.name = "freegog"
         freegog_entry.enabled = True
         freegog_entry.platform = "pc"
-        freegog_entry.cache_pages_hours = 6
+        freegog_entry.cache_hours = 6
         freegog_entry.reject_keywords = []
         freegog_entry.max_queue_days = 60
 
@@ -8649,3 +8650,1071 @@ class TestPendingProcessingOrder:
         assert years == [anchor - offset for offset in range(5)], (
             f"Expected newest-year-first traversal starting at {anchor}, got: {years}"
         )
+
+
+class TestDateModeResolution:
+    """max_date switches sort_order "new" to date mode; score modes ignore it."""
+
+    @staticmethod
+    def _run(
+        *,
+        tmp_path: Path,
+        max_date: int = 0,
+        max_cycle_months: int = 0,
+        sort_order: Literal["new", "criticscore", "userscore"] = "new",
+        max_pages: int = 500,
+        max_cycle_pages: int = 0,
+        scan_games: list[dict[str, Any]] | None = None,
+        cutoff_reached: bool = False,
+        seed_pages: dict[int, int] | None = None,
+        db_path: str | None = None,
+        cache_hours: int = 6,
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        """Run one cycle and return (scan calls, log lines)."""
+        from loguru import logger as loguru_logger
+
+        calls: list[dict[str, Any]] = []
+        mock_mc = MagicMock()
+
+        def fake_scan(*_args: Any, **kwargs: Any) -> list:
+            calls.append(dict(kwargs))
+            mock_mc._recent_games_last_page = kwargs.get("start_page", 1)
+            mock_mc._recent_games_exhausted = False
+            mock_mc._recent_games_failed = False
+            mock_mc._recent_games_cutoff_reached = cutoff_reached
+            return scan_games or []
+
+        mock_mc._recent_games_last_page = 0
+        mock_mc._recent_games_exhausted = False
+        mock_mc._recent_games_failed = False
+        mock_mc._recent_games_cutoff_reached = False
+        mock_mc.scan_recent_games.side_effect = fake_scan
+
+        path = db_path or str(tmp_path / "date-mode.db")
+        if seed_pages:
+            from gamarr.database import Database
+
+            seed_db = Database(path)
+            for year, page in seed_pages.items():
+                seed_db.set_last_scanned_page("pc", year, page)
+            seed_db.close()
+
+        logs: list[str] = []
+        sink_id = loguru_logger.add(lambda msg: logs.append(str(msg)), level="INFO", format="{message}")
+        try:
+            with (
+                patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+                patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+                patch("gamarr.pipeline._check_scrape_health", return_value="metacritic_broken"),
+            ):
+                mock_mc_cls.return_value = mock_mc
+                mock_qbt = MagicMock()
+                mock_qbt.is_connected.return_value = True
+                mock_qbt_cls.return_value = mock_qbt
+                run_acquisition(
+                    platform="pc",
+                    db_path=path,
+                    qbt_host="localhost",
+                    qbt_port=8080,
+                    max_pages=max_pages,
+                    max_cycle_pages=max_cycle_pages,
+                    max_date=max_date,
+                    max_cycle_months=max_cycle_months,
+                    cache_hours=cache_hours,
+                    sort_order=sort_order,
+                )
+        finally:
+            loguru_logger.remove(sink_id)
+        return calls, logs
+
+    def test_date_mode_passes_floor_cutoff_and_no_page_limit(self, tmp_path: Path) -> None:
+        """Date mode bounds the scan by the floor date, not a page count."""
+        calls, _logs = self._run(tmp_path=tmp_path, max_date=202401, max_pages=500)
+        assert calls, "Expected at least one browse call"
+        for call in calls:
+            assert call["cutoff_date"] == "2024-01-01"
+            assert call["max_pages"] == 0
+            assert isinstance(call["year"], int) and call["year"] >= 2024
+
+    def test_date_mode_year_range_starts_at_floor_year(self, tmp_path: Path) -> None:
+        """The sweep never walks older than the floor year."""
+        calls, _logs = self._run(tmp_path=tmp_path, max_date=202401)
+        years = [c["year"] for c in calls]
+        assert min(years) == 2024
+
+    def test_score_mode_ignores_max_date(self, tmp_path: Path) -> None:
+        """criticscore has no year dimension, so the date keys are inert."""
+        calls, logs = self._run(tmp_path=tmp_path, max_date=202401, sort_order="criticscore", max_pages=40)
+        assert calls
+        for call in calls:
+            assert call["cutoff_date"] is None
+            assert call["year"] is None
+            assert call["max_pages"] == 40
+        assert any("max_date/max_cycle_months ignored" in line for line in logs)
+
+    def test_date_mode_logs_ignored_page_keys(self, tmp_path: Path) -> None:
+        """Page keys set alongside max_date are reported as ignored."""
+        _calls, logs = self._run(
+            tmp_path=tmp_path,
+            max_date=202401,
+            max_pages=500,
+            max_cycle_pages=4,
+        )
+        assert any("max_pages (500) is unused in date mode" in line for line in logs), logs
+        assert any("max_cycle_pages ignored in date mode" in line for line in logs)
+
+    def test_date_mode_passes_month_span(self, tmp_path: Path) -> None:
+        """The month allowance reaches the client as max_month_span."""
+        calls, _logs = self._run(tmp_path=tmp_path, max_date=202401, max_cycle_months=2)
+        assert calls[0]["max_month_span"] == 2
+
+    def test_no_month_span_when_pacing_disabled(self, tmp_path: Path) -> None:
+        """max_cycle_months 0 sweeps to the floor with no span and no pace cutoff.
+
+        The scan returns a game so the later-call branch is actually exercised:
+        with pacing off, every call must still see only the floor cutoff.
+        """
+        calls, _logs = self._run(
+            tmp_path=tmp_path,
+            max_date=202401,
+            max_cycle_months=0,
+            scan_games=[{"title": "G", "slug": "g", "release_date": "2025-11-05"}],
+        )
+        assert len(calls) >= 2, f"Expected a second year call, got {len(calls)}"
+        for call in calls:
+            assert call["max_month_span"] == 0
+            assert call["cutoff_date"] == "2024-01-01"
+
+    def test_date_mode_skips_budget_reset(self, tmp_path: Path) -> None:
+        """The page budget and its reset branch must not run in date mode."""
+        import datetime
+
+        year = datetime.datetime.now(tz=datetime.UTC).year
+        _calls, logs = self._run(
+            tmp_path=tmp_path,
+            max_date=202401,
+            max_pages=2,
+            seed_pages={year: 500},
+        )
+        assert not any("Budget exhausted" in line for line in logs)
+
+    @staticmethod
+    def _run_floor_cycle(
+        *,
+        path: str,
+        floor_month: int,
+        floor_games: list[dict[str, Any]],
+        stop_cutoff: str | None = None,
+        seed: dict[int, int] | None = None,
+        max_cycle_months: int = 0,
+        drain_newer: bool = False,
+    ) -> None:
+        """Run one cycle whose newer years are consumed and whose floor year ends it.
+
+        ``stop_cutoff``, when given, is the effective cutoff the fake client
+        reports as the cause of a date stop.  When omitted, the cutoff is derived
+        the way the real client does it (the cutoff it was given, or its own span
+        cutoff when a month span is in force).
+        """
+        floor_year = floor_month // 100
+        mock_mc = MagicMock()
+
+        def fake_scan(*_args: Any, **kwargs: Any) -> list:
+            scan_year = kwargs.get("year")
+            start_page = kwargs.get("start_page", 1)
+            mock_mc._recent_games_failed = False
+            if scan_year == floor_year:
+                # Model the real client: it reports the effective cutoff it was
+                # given, or its own span cutoff when a month span is in force.
+                span = kwargs.get("max_month_span", 0)
+                if span and floor_games:
+                    anchor = max(month_of(game.get("release_date")) or 0 for game in floor_games)
+                    span_cutoff = year_month_to_date(subtract_months(anchor, span))
+                    given = kwargs.get("cutoff_date")
+                    effective = span_cutoff if given is None or span_cutoff > given else given
+                else:
+                    effective = kwargs.get("cutoff_date")
+                if stop_cutoff is not None:
+                    effective = stop_cutoff
+                    reached = True
+                else:
+                    reached = effective is not None and bool(floor_games)
+                mock_mc._recent_games_cutoff_reached = reached
+                mock_mc._recent_games_stop_cutoff = effective if reached else None
+                if floor_games:
+                    mock_mc._recent_games_exhausted = False
+                    mock_mc._recent_games_last_page = start_page
+                    return floor_games
+                mock_mc._recent_games_exhausted = True
+                mock_mc._recent_games_last_page = start_page - 1
+                return []
+            if drain_newer:
+                mock_mc._recent_games_cutoff_reached = False
+                mock_mc._recent_games_stop_cutoff = None
+                mock_mc._recent_games_exhausted = True
+                mock_mc._recent_games_last_page = start_page - 1
+                return []
+            mock_mc._recent_games_cutoff_reached = False
+            mock_mc._recent_games_stop_cutoff = None
+            mock_mc._recent_games_exhausted = False
+            mock_mc._recent_games_last_page = start_page
+            return [{"title": f"G{scan_year}", "slug": f"g{scan_year}", "release_date": f"{scan_year}-06-01"}]
+
+        mock_mc._recent_games_last_page = 0
+        mock_mc._recent_games_exhausted = False
+        mock_mc._recent_games_failed = False
+        mock_mc._recent_games_cutoff_reached = False
+        mock_mc._recent_games_stop_cutoff = None
+        mock_mc.scan_recent_games.side_effect = fake_scan
+
+        if seed:
+            from gamarr.database import Database
+
+            seed_db = Database(path)
+            for seed_year, seed_page in seed.items():
+                seed_db.set_last_scanned_page("pc", seed_year, seed_page)
+            seed_db.close()
+
+        with (
+            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+            patch("gamarr.pipeline._check_scrape_health", return_value="metacritic_broken"),
+        ):
+            mock_mc_cls.return_value = mock_mc
+            mock_qbt = MagicMock()
+            mock_qbt.is_connected.return_value = True
+            mock_qbt_cls.return_value = mock_qbt
+            run_acquisition(
+                platform="pc",
+                db_path=path,
+                qbt_host="localhost",
+                qbt_port=8080,
+                max_date=floor_month,
+                max_cycle_months=max_cycle_months,
+                sort_order="new",
+            )
+
+    def test_date_mode_resets_progress_at_floor(self, tmp_path: Path) -> None:
+        """A stop at the ABSOLUTE floor in the floor year resets the cursors.
+
+        A June floor is used because a January floor can never be met by an
+        all-before-floor page inside its own year (that path is exhaustion).
+        """
+        from gamarr.database import Database
+
+        path = str(tmp_path / "floor.db")
+        self._run_floor_cycle(
+            path=path,
+            floor_month=202406,
+            floor_games=[{"title": "Floor", "slug": "floor", "release_date": "2024-05-20"}],
+        )
+        db = Database(path)
+        assert db.get_last_scanned_page("pc", 2024) == 0, "Floor reached must reset the year cursor"
+        db.close()
+
+    def test_resumed_floor_year_completes_in_the_same_cycle(self, tmp_path: Path) -> None:
+        """A floor year resumed mid-listing completes as soon as its probe is empty.
+
+        The real drain shape credits pages from the resume point and then hits an
+        empty probe, so completion must not require a zero-page year.
+        """
+        from gamarr.database import Database
+
+        path = str(tmp_path / "resumed-floor.db")
+        mock_mc = MagicMock()
+
+        def fake_scan(*_args: Any, **kwargs: Any) -> list:
+            scan_year = kwargs.get("year")
+            start_page = kwargs.get("start_page", 1)
+            mock_mc._recent_games_failed = False
+            mock_mc._recent_games_cutoff_reached = False
+            mock_mc._recent_games_stop_cutoff = None
+            if scan_year == 2026:
+                mock_mc._recent_games_exhausted = False
+                mock_mc._recent_games_last_page = start_page
+                return [{"title": "N", "slug": "n", "release_date": "2026-06-01"}]
+            # Floor year: one call credits pages 4..6 and its page-7 probe is empty,
+            # so the call reports credited pages AND exhaustion together.
+            mock_mc._recent_games_last_page = 6
+            mock_mc._recent_games_exhausted = True
+            return [{"title": "F", "slug": "f", "release_date": "2024-06-01"}]
+
+        mock_mc._recent_games_last_page = 0
+        mock_mc._recent_games_exhausted = False
+        mock_mc._recent_games_failed = False
+        mock_mc._recent_games_cutoff_reached = False
+        mock_mc._recent_games_stop_cutoff = None
+        mock_mc.scan_recent_games.side_effect = fake_scan
+
+        seed = Database(path)
+        seed.set_last_scanned_page("pc", 2024, 3)
+        seed.close()
+
+        with (
+            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+            patch("gamarr.pipeline._check_scrape_health", return_value="metacritic_broken"),
+        ):
+            mock_mc_cls.return_value = mock_mc
+            mock_qbt = MagicMock()
+            mock_qbt.is_connected.return_value = True
+            mock_qbt_cls.return_value = mock_qbt
+            run_acquisition(
+                platform="pc",
+                db_path=path,
+                qbt_host="localhost",
+                qbt_port=8080,
+                max_date=202401,
+                max_cycle_months=0,
+                sort_order="new",
+            )
+
+        db = Database(path)
+        assert db.get_last_scanned_page("pc", 2024) == 0, "resumed floor year must complete in-cycle"
+        db.close()
+
+    def test_data_free_floor_year_still_completes_the_sweep(self, tmp_path: Path) -> None:
+        """A floor year with no games starts at page 1, so it cannot report a drain.
+
+        It must still count as finished, otherwise completion waits for a later
+        cycle's all-empty re-probe.
+        """
+        from gamarr.database import Database
+
+        path = str(tmp_path / "empty-floor.db")
+        mock_mc = MagicMock()
+
+        def fake_scan(*_args: Any, **kwargs: Any) -> list:
+            scan_year = kwargs.get("year")
+            start_page = kwargs.get("start_page", 1)
+            mock_mc._recent_games_failed = False
+            mock_mc._recent_games_cutoff_reached = False
+            mock_mc._recent_games_stop_cutoff = None
+            mock_mc._recent_games_last_page = start_page - 1
+            if scan_year == 2024:
+                # Empty page 1: no drain evidence, no games, no failure.
+                mock_mc._recent_games_exhausted = False
+                return []
+            mock_mc._recent_games_exhausted = False
+            mock_mc._recent_games_last_page = start_page
+            return [{"title": f"G{scan_year}", "slug": f"g{scan_year}", "release_date": f"{scan_year}-06-01"}]
+
+        mock_mc._recent_games_last_page = 0
+        mock_mc._recent_games_exhausted = False
+        mock_mc._recent_games_failed = False
+        mock_mc._recent_games_cutoff_reached = False
+        mock_mc._recent_games_stop_cutoff = None
+        mock_mc.scan_recent_games.side_effect = fake_scan
+
+        with (
+            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+            patch("gamarr.pipeline._check_scrape_health", return_value="metacritic_broken"),
+        ):
+            mock_mc_cls.return_value = mock_mc
+            mock_qbt = MagicMock()
+            mock_qbt.is_connected.return_value = True
+            mock_qbt_cls.return_value = mock_qbt
+            run_acquisition(
+                platform="pc",
+                db_path=path,
+                qbt_host="localhost",
+                qbt_port=8080,
+                max_date=202401,
+                max_cycle_months=0,
+                sort_order="new",
+            )
+
+        db = Database(path)
+        assert db.get_last_scanned_page("pc", 2025) == 0, "the sweep must complete and reset"
+        db.close()
+
+    def test_pace_stop_in_floor_year_keeps_cursors(self, tmp_path: Path) -> None:
+        """A pace (month-span) stop in the floor year must NOT be read as completion.
+
+        The client reports the effective cutoff that stopped the page; if it is
+        not the floor, the sweep has not reached max_date yet, so resetting would
+        wipe every cursor and re-sweep forever without ever reaching the floor.
+        """
+        from gamarr.database import Database
+
+        path = str(tmp_path / "pace-stop.db")
+        self._run_floor_cycle(
+            path=path,
+            floor_month=202406,
+            floor_games=[{"title": "Pace", "slug": "pace", "release_date": "2024-10-20"}],
+            max_cycle_months=2,
+            drain_newer=True,
+        )
+        db = Database(path)
+        assert db.get_last_scanned_page("pc", 2024) == 1, "A pace stop must keep the floor-year cursor"
+        db.close()
+
+    def test_floor_year_exhaustion_completes_the_sweep(self, tmp_path: Path) -> None:
+        """A floor year that ends by listing exhaustion also completes the sweep.
+
+        A January floor can never be met by an all-before-floor page inside its
+        own year, so exhaustion has to count as completion too.
+        """
+        from gamarr.database import Database
+
+        path = str(tmp_path / "floor-exhausted.db")
+        self._run_floor_cycle(
+            path=path,
+            floor_month=202401,
+            floor_games=[],
+            stop_cutoff=None,
+            seed={2024: 3},
+        )
+        db = Database(path)
+        assert db.get_last_scanned_page("pc", 2024) == 0, "Exhausted floor year must reset the cursor"
+        db.close()
+
+    def test_mid_year_fetch_failure_does_not_reset_progress(self, tmp_path: Path) -> None:
+        """A failure after some pages were credited must still disqualify the sweep.
+
+        The failure flag is raised by the client for any failed page, not only a
+        zero-page probe; reading it only on a zero-page probe would let the floor
+        year "complete" and wipe a cursor for a year that was only partly listed.
+        """
+        import datetime
+
+        from gamarr.database import Database
+
+        current_year = datetime.datetime.now(tz=datetime.UTC).year
+        path = str(tmp_path / "mid-year-failure.db")
+        mock_mc = MagicMock()
+
+        def fake_scan(*_args: Any, **kwargs: Any) -> list:
+            scan_year = kwargs.get("year")
+            start_page = kwargs.get("start_page", 1)
+            if scan_year == current_year:
+                # One page credited, then the next fetch failed.
+                mock_mc._recent_games_last_page = start_page
+                mock_mc._recent_games_exhausted = False
+                mock_mc._recent_games_failed = True
+                mock_mc._recent_games_cutoff_reached = False
+                mock_mc._recent_games_stop_cutoff = None
+                return [{"title": "P", "slug": "p", "release_date": f"{scan_year}-06-01"}]
+            mock_mc._recent_games_last_page = start_page - 1
+            mock_mc._recent_games_exhausted = True
+            mock_mc._recent_games_failed = False
+            mock_mc._recent_games_cutoff_reached = False
+            mock_mc._recent_games_stop_cutoff = None
+            return []
+
+        mock_mc._recent_games_last_page = 0
+        mock_mc._recent_games_exhausted = False
+        mock_mc._recent_games_failed = False
+        mock_mc._recent_games_cutoff_reached = False
+        mock_mc._recent_games_stop_cutoff = None
+        mock_mc.scan_recent_games.side_effect = fake_scan
+
+        seed = Database(path)
+        seed.set_last_scanned_page("pc", 2024, 3)
+        seed.close()
+
+        with (
+            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+            patch("gamarr.pipeline._check_scrape_health", return_value="metacritic_broken"),
+        ):
+            mock_mc_cls.return_value = mock_mc
+            mock_qbt = MagicMock()
+            mock_qbt.is_connected.return_value = True
+            mock_qbt_cls.return_value = mock_qbt
+            run_acquisition(
+                platform="pc",
+                db_path=path,
+                qbt_host="localhost",
+                qbt_port=8080,
+                max_date=202401,
+                max_cycle_months=0,
+                sort_order="new",
+            )
+
+        db = Database(path)
+        assert db.get_last_scanned_page("pc", 2024) == 3, "a partial failure must not complete the sweep"
+        db.close()
+
+
+class TestMonthSpan:
+    """_month_span drives the year-loop allowance guard."""
+
+    def test_within_a_year(self) -> None:
+        from gamarr.pipeline import _month_span
+
+        assert _month_span(202511, 202508) == 3
+
+    def test_across_a_year_boundary(self) -> None:
+        from gamarr.pipeline import _month_span
+
+        assert _month_span(202601, 202512) == 1
+        assert _month_span(202512, 202412) == 12
+
+    def test_unknown_side_is_zero(self) -> None:
+        from gamarr.pipeline import _month_span
+
+        assert _month_span(None, 202401) == 0
+        assert _month_span(202511, None) == 0
+
+    def test_reversed_order_clamps_to_zero(self) -> None:
+        from gamarr.pipeline import _month_span
+
+        assert _month_span(202401, 202511) == 0
+
+
+class TestDateModeRegressions:
+    """Regressions found in code review rounds 1-3."""
+
+    def test_pipeline_call_kwargs_exist_on_client_signature(self, tmp_path: Path) -> None:
+        """Every kwarg the pipeline sends must exist on the real client method.
+
+        The pipeline holds the client as ``Any``, so mypy cannot see a renamed
+        keyword.  Without this test a stale kwarg raises TypeError inside the
+        per-year ``except`` and silently disables discovery.
+        """
+        import inspect
+
+        from gamarr.metacritic import MetacriticClient
+
+        calls, _logs = TestDateModeResolution._run(tmp_path=tmp_path, max_date=202401, max_cycle_months=2)
+        assert calls, "Expected at least one browse call"
+        allowed = set(inspect.signature(MetacriticClient.scan_recent_games).parameters)
+        for call in calls:
+            unknown = sorted(set(call) - allowed)
+            assert not unknown, f"pipeline sends kwargs the client does not accept: {unknown}"
+
+    def test_page_mode_call_shape_has_no_date_arguments(self, tmp_path: Path) -> None:
+        """max_date 0 must leave the client call byte-identical to page mode."""
+        calls, _logs = TestDateModeResolution._run(
+            tmp_path=tmp_path,
+            max_date=0,
+            max_pages=104,
+            max_cycle_pages=4,
+        )
+        assert calls, "Expected at least one browse call"
+        for call in calls:
+            assert call["cutoff_date"] is None
+            assert call["max_month_span"] == 0
+            assert call["cache_pages_hours"] == 6
+            assert call["max_pages"] > 0
+
+    def test_max_cycle_months_without_max_date_is_inert(self, tmp_path: Path) -> None:
+        """A pace set without a floor must not leak into page mode."""
+        calls, logs = TestDateModeResolution._run(
+            tmp_path=tmp_path,
+            max_date=0,
+            max_cycle_months=3,
+            max_pages=104,
+            max_cycle_pages=4,
+        )
+        assert calls, "Expected at least one browse call"
+        for call in calls:
+            assert call["cutoff_date"] is None
+            assert call["max_month_span"] == 0
+            assert call["max_pages"] > 0
+        assert any("max_cycle_months ignored" in line for line in logs), logs
+
+    def test_later_calls_use_the_cycle_anchor_not_a_fresh_span(self, tmp_path: Path) -> None:
+        """After the first call the pace must be an absolute cutoff, not a re-anchor."""
+        calls, _logs = TestDateModeResolution._run(
+            tmp_path=tmp_path,
+            max_date=202401,
+            max_cycle_months=2,
+            scan_games=[{"title": "G", "slug": "g", "release_date": "2025-11-05"}],
+        )
+        assert len(calls) >= 2, f"Expected a second year call, got {len(calls)}"
+        assert calls[0]["max_month_span"] == 2
+        for later in calls[1:]:
+            assert later["max_month_span"] == 0, later
+            assert later["cutoff_date"] is not None
+            assert later["cutoff_date"] > "2024-01-01", later
+
+    def test_floor_level_stop_above_the_floor_year_still_descends(self, tmp_path: Path) -> None:
+        """A mis-indexed floor-level stop above the floor year must not stall the sweep.
+
+        Breaking there would probe the same page every cycle and never reach the
+        floor year, so the loop must descend and let the floor year complete it.
+        """
+        import datetime
+
+        from gamarr.database import Database
+
+        current_year = datetime.datetime.now(tz=datetime.UTC).year
+        path = str(tmp_path / "descend.db")
+        mock_mc = MagicMock()
+
+        def fake_scan(*_args: Any, **kwargs: Any) -> list:
+            scan_year = kwargs.get("year")
+            start_page = kwargs.get("start_page", 1)
+            mock_mc._recent_games_failed = False
+            if scan_year == current_year:
+                # Mis-indexed: every page looks older than the floor.
+                mock_mc._recent_games_cutoff_reached = True
+                mock_mc._recent_games_stop_cutoff = "2024-01-01"
+                mock_mc._recent_games_exhausted = False
+                mock_mc._recent_games_last_page = start_page - 1
+                return []
+            if scan_year == 2024:
+                mock_mc._recent_games_cutoff_reached = False
+                mock_mc._recent_games_stop_cutoff = None
+                mock_mc._recent_games_exhausted = True
+                mock_mc._recent_games_last_page = start_page - 1
+                return []
+            mock_mc._recent_games_cutoff_reached = False
+            mock_mc._recent_games_stop_cutoff = None
+            mock_mc._recent_games_exhausted = False
+            mock_mc._recent_games_last_page = start_page
+            return [{"title": f"G{scan_year}", "slug": f"g{scan_year}", "release_date": f"{scan_year}-06-01"}]
+
+        mock_mc._recent_games_last_page = 0
+        mock_mc._recent_games_exhausted = False
+        mock_mc._recent_games_failed = False
+        mock_mc._recent_games_cutoff_reached = False
+        mock_mc._recent_games_stop_cutoff = None
+        mock_mc.scan_recent_games.side_effect = fake_scan
+
+        seed = Database(path)
+        seed.set_last_scanned_page("pc", 2024, 3)
+        seed.close()
+
+        from loguru import logger as loguru_logger
+
+        logs: list[str] = []
+        sink_id = loguru_logger.add(lambda msg: logs.append(str(msg)), level="WARNING", format="{message}")
+        try:
+            with (
+                patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+                patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+                patch("gamarr.pipeline._check_scrape_health", return_value="metacritic_broken"),
+            ):
+                mock_mc_cls.return_value = mock_mc
+                mock_qbt = MagicMock()
+                mock_qbt.is_connected.return_value = True
+                mock_qbt_cls.return_value = mock_qbt
+                run_acquisition(
+                    platform="pc",
+                    db_path=path,
+                    qbt_host="localhost",
+                    qbt_port=8080,
+                    max_date=202401,
+                    max_cycle_months=0,
+                    sort_order="new",
+                )
+        finally:
+            loguru_logger.remove(sink_id)
+
+        db = Database(path)
+        assert db.get_last_scanned_page("pc", 2024) == 0, "The sweep must reach the floor year and complete"
+        db.close()
+        assert any("mis-indexed" in line for line in logs), logs
+
+    def test_games_older_than_the_floor_are_not_queued(self) -> None:
+        """A mixed boundary page must not queue games older than max_date."""
+        from gamarr.pipeline import _games_at_or_after_floor
+
+        page: list[dict[str, Any]] = [
+            {"title": "InFloor", "release_date": "2024-07-01"},
+            {"title": "BelowFloor", "release_date": "2024-03-01"},
+            {"title": "InFloorMonth", "release_date": "2024-06-30"},
+            {"title": "Undated", "release_date": None},
+        ]
+        kept = [game["title"] for game in _games_at_or_after_floor(page, 202406)]
+        assert kept == ["InFloor", "InFloorMonth", "Undated"]
+
+    def test_below_floor_games_never_reach_the_pending_queue(self, tmp_path: Path) -> None:
+        """The date-mode filter is applied to what the client returns, end to end."""
+        from gamarr.database import Database
+
+        path = str(tmp_path / "queue-filter.db")
+        mock_mc = MagicMock()
+
+        def fake_scan(*_args: Any, **kwargs: Any) -> list:
+            mock_mc._recent_games_last_page = kwargs.get("start_page", 1)
+            mock_mc._recent_games_exhausted = False
+            mock_mc._recent_games_failed = False
+            mock_mc._recent_games_cutoff_reached = False
+            mock_mc._recent_games_stop_cutoff = None
+            base = {"score": 1478.0, "user_rating": 8.2, "critic_review_count": 40, "user_review_count": 40}
+            return [
+                {"title": "In Floor", "slug": "in-floor", "release_date": "2024-07-01", **base},
+                {"title": "Below Floor", "slug": "below-floor", "release_date": "2024-03-01", **base},
+            ]
+
+        mock_mc._recent_games_last_page = 0
+        mock_mc._recent_games_exhausted = False
+        mock_mc._recent_games_failed = False
+        mock_mc._recent_games_cutoff_reached = False
+        mock_mc._recent_games_stop_cutoff = None
+        mock_mc.scan_recent_games.side_effect = fake_scan
+        # Keep the queue assertion focused: no detail-page verification happens.
+        mock_mc.lookup_game.return_value = None
+
+        with (
+            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+            patch("gamarr.pipeline._check_scrape_health", return_value="metacritic_broken"),
+        ):
+            mock_mc_cls.return_value = mock_mc
+            mock_qbt = MagicMock()
+            mock_qbt.is_connected.return_value = True
+            mock_qbt_cls.return_value = mock_qbt
+            run_acquisition(
+                platform="pc",
+                db_path=path,
+                qbt_host="localhost",
+                qbt_port=8080,
+                max_date=202406,
+                max_cycle_months=0,
+                sort_order="new",
+            )
+
+        db = Database(path)
+        pending = {game.slug for game in db.get_pending(platform="pc")}
+        db.close()
+        assert "in-floor" in pending, f"in-floor game must be queued, got {pending}"
+        assert "below-floor" not in pending, f"below-floor game must be filtered out, got {pending}"
+
+    def test_invalid_max_date_from_a_direct_caller_is_ignored(self, tmp_path: Path) -> None:
+        """A direct API caller passing a bad month must fall back to page mode."""
+        calls, logs = TestDateModeResolution._run(tmp_path=tmp_path, max_date=202413, max_pages=104)
+        assert calls
+        for call in calls:
+            assert call["cutoff_date"] is None
+            assert call["max_month_span"] == 0
+        assert any("not a valid YYYYMM" in line for line in logs), logs
+
+    def test_negative_max_cycle_months_is_ignored(self, tmp_path: Path) -> None:
+        """A negative pace must be treated as no pacing, with a warning."""
+        calls, logs = TestDateModeResolution._run(
+            tmp_path=tmp_path,
+            max_date=202401,
+            max_cycle_months=-3,
+        )
+        assert calls
+        for call in calls:
+            assert call["max_month_span"] == 0
+        assert any("is negative" in line for line in logs), logs
+
+    def test_non_integer_max_date_from_a_direct_caller_is_ignored(self, tmp_path: Path) -> None:
+        """A string or bool floor must not be treated as a month."""
+        for bad in ("202401", True):
+            calls, logs = TestDateModeResolution._run(
+                tmp_path=tmp_path,
+                max_date=cast("int", bad),
+                max_pages=104,
+            )
+            assert calls
+            for call in calls:
+                assert call["cutoff_date"] is None, bad
+            assert any("not a valid YYYYMM" in line for line in logs), (bad, logs)
+
+    def test_future_max_date_from_a_direct_caller_is_clamped(self, tmp_path: Path) -> None:
+        """A future floor must be clamped, not swept as-is."""
+        import datetime
+
+        now = datetime.datetime.now(tz=datetime.UTC)
+        future = (now.year + 3) * 100 + now.month
+        calls, logs = TestDateModeResolution._run(tmp_path=tmp_path, max_date=future)
+        assert calls
+        expected = f"{now.year:04d}-{now.month:02d}-01"
+        assert all(call["cutoff_date"] == expected for call in calls), calls[:3]
+        assert any("in the future" in line for line in logs), logs
+
+    def test_implausible_max_cycle_months_is_clamped(self, tmp_path: Path) -> None:
+        """An absurd pace must be bounded so the month arithmetic cannot underflow."""
+        calls, logs = TestDateModeResolution._run(
+            tmp_path=tmp_path,
+            max_date=202401,
+            max_cycle_months=5000,
+        )
+        assert calls
+        assert calls[0]["max_month_span"] == 1200
+        assert any("implausibly large" in line for line in logs), logs
+
+    def test_cancelled_cycle_does_not_reset_date_mode_progress(self, tmp_path: Path) -> None:
+        """A shutdown mid-sweep must not wipe the per-year cursors."""
+        import threading
+
+        from gamarr.database import Database
+
+        path = str(tmp_path / "cancel-reset.db")
+        cancel_event = threading.Event()
+        mock_mc = MagicMock()
+
+        def fake_scan(*_args: Any, **kwargs: Any) -> list:
+            start_page = kwargs.get("start_page", 1)
+            scan_year = kwargs.get("year")
+            mock_mc._recent_games_failed = False
+            mock_mc._recent_games_last_page = start_page
+            mock_mc._recent_games_exhausted = False
+            if scan_year == 2024:
+                # Floor stop on the floor year; shutdown arrives right after it.
+                mock_mc._recent_games_cutoff_reached = True
+                mock_mc._recent_games_stop_cutoff = kwargs.get("cutoff_date")
+                kwargs["cancel_event"].set()
+                return [{"title": "F", "slug": "f", "release_date": "2024-06-01"}]
+            mock_mc._recent_games_cutoff_reached = False
+            mock_mc._recent_games_stop_cutoff = None
+            return [{"title": f"G{scan_year}", "slug": f"g{scan_year}", "release_date": f"{scan_year}-06-01"}]
+
+        mock_mc._recent_games_last_page = 0
+        mock_mc._recent_games_exhausted = False
+        mock_mc._recent_games_failed = False
+        mock_mc._recent_games_cutoff_reached = False
+        mock_mc._recent_games_stop_cutoff = None
+        mock_mc.scan_recent_games.side_effect = fake_scan
+
+        seed = Database(path)
+        seed.set_last_scanned_page("pc", 2024, 3)
+        seed.close()
+
+        with (
+            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+            patch("gamarr.pipeline._check_scrape_health", return_value="metacritic_broken"),
+        ):
+            mock_mc_cls.return_value = mock_mc
+            mock_qbt = MagicMock()
+            mock_qbt.is_connected.return_value = True
+            mock_qbt_cls.return_value = mock_qbt
+            run_acquisition(
+                platform="pc",
+                db_path=path,
+                qbt_host="localhost",
+                qbt_port=8080,
+                max_date=202401,
+                max_cycle_months=0,
+                sort_order="new",
+                cancel_event=cancel_event,
+            )
+
+        db = Database(path)
+        assert db.get_last_scanned_page("pc", 2024) != 0, "a cancelled cycle must not reset progress"
+        db.close()
+
+    def test_empty_cached_row_is_not_cached_browse_data(self, tmp_path: Path) -> None:
+        """An empty cached row must not suppress a scrape-failure notification."""
+        import datetime
+
+        current_year = datetime.datetime.now(tz=datetime.UTC).year
+        mock_mc = MagicMock()
+
+        def fake_scan(*_args: Any, **kwargs: Any) -> list:
+            mock_mc._recent_games_last_page = kwargs.get("start_page", 1)
+            mock_mc._recent_games_exhausted = False
+            mock_mc._recent_games_failed = False
+            mock_mc._recent_games_cutoff_reached = False
+            mock_mc._recent_games_stop_cutoff = None
+            return []
+
+        mock_mc._recent_games_last_page = 0
+        mock_mc._recent_games_exhausted = False
+        mock_mc._recent_games_failed = False
+        mock_mc._recent_games_cutoff_reached = False
+        mock_mc._recent_games_stop_cutoff = None
+        mock_mc.scan_recent_games.side_effect = fake_scan
+        # A legacy empty row is present in the cache: not usable browse data.
+        mock_mc._cache.get_browse_page.return_value = []
+
+        with (
+            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+            patch("gamarr.pipeline._check_scrape_health", return_value="metacritic_broken"),
+            patch("gamarr.pipeline._diagnose_and_notify_scrape") as mock_notify,
+        ):
+            mock_mc_cls.return_value = mock_mc
+            mock_qbt = MagicMock()
+            mock_qbt.is_connected.return_value = True
+            mock_qbt_cls.return_value = mock_qbt
+            run_acquisition(
+                platform="pc",
+                db_path=str(tmp_path / "empty-cache.db"),
+                qbt_host="localhost",
+                qbt_port=8080,
+                max_date=current_year * 100 + 1,
+                max_cycle_months=0,
+                sort_order="new",
+            )
+        mock_notify.assert_called_once()
+
+    def test_cache_hours_is_forwarded_to_the_client(self, tmp_path: Path) -> None:
+        """A non-default cache TTL must reach the client, not be hard-coded."""
+        calls, _logs = TestDateModeResolution._run(tmp_path=tmp_path, max_date=202401, cache_hours=7)
+        assert calls, "Expected at least one browse call"
+        assert all(call["cache_pages_hours"] == 7 for call in calls)
+
+    def test_year_loop_stops_when_the_allowance_is_already_spent(self, tmp_path: Path) -> None:
+        """A collected span >= max_cycle_months must skip the next year."""
+        calls, _logs = TestDateModeResolution._run(
+            tmp_path=tmp_path,
+            max_date=202401,
+            max_cycle_months=2,
+            scan_games=[
+                {"title": "A", "slug": "a", "release_date": "2025-11-05"},
+                {"title": "B", "slug": "b", "release_date": "2025-08-05"},
+            ],
+        )
+        assert len(calls) == 1, f"allowance already spent; expected 1 call, got {len(calls)}"
+
+    def test_drained_year_then_cutoff_year_does_not_reset_progress(self, tmp_path: Path) -> None:
+        """A drained probe plus a cutoff-stopped year must not wipe cursors.
+
+        The cutoff break happens before the page counter would advance, so
+        ``range_empty`` must not be judged on a page count that excludes the
+        call which stopped on the cutoff.
+        """
+        import datetime
+
+        from gamarr.database import Database
+
+        current_year = datetime.datetime.now(tz=datetime.UTC).year
+        older_year = current_year - 1
+        path = str(tmp_path / "drain-vs-cutoff.db")
+
+        seed = Database(path)
+        seed.set_last_scanned_page("pc", current_year, 5)
+        seed.close()
+
+        mock_mc = MagicMock()
+
+        def fake_scan(*_args: Any, **kwargs: Any) -> list:
+            mock_mc._recent_games_failed = False
+            if kwargs.get("year") == current_year:
+                mock_mc._recent_games_exhausted = True
+                mock_mc._recent_games_cutoff_reached = False
+                mock_mc._recent_games_stop_cutoff = None
+                mock_mc._recent_games_last_page = kwargs["start_page"] - 1
+                return []
+            mock_mc._recent_games_exhausted = False
+            mock_mc._recent_games_cutoff_reached = True
+            mock_mc._recent_games_stop_cutoff = f"{older_year}-09-01"
+            mock_mc._recent_games_last_page = kwargs["start_page"]
+            return [{"title": "G", "slug": "g", "release_date": f"{older_year}-11-01"}]
+
+        mock_mc._recent_games_last_page = 0
+        mock_mc._recent_games_exhausted = False
+        mock_mc._recent_games_failed = False
+        mock_mc._recent_games_cutoff_reached = False
+        mock_mc._recent_games_stop_cutoff = None
+        mock_mc.scan_recent_games.side_effect = fake_scan
+
+        with (
+            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+            patch("gamarr.pipeline._check_scrape_health", return_value="metacritic_broken"),
+        ):
+            mock_mc_cls.return_value = mock_mc
+            mock_qbt = MagicMock()
+            mock_qbt.is_connected.return_value = True
+            mock_qbt_cls.return_value = mock_qbt
+            run_acquisition(
+                platform="pc",
+                db_path=path,
+                qbt_host="localhost",
+                qbt_port=8080,
+                max_date=200001,
+                max_cycle_months=2,
+                sort_order="new",
+            )
+
+        db = Database(path)
+        assert db.get_last_scanned_page("pc", current_year) == 5, "drained year cursor must be kept"
+        assert db.get_last_scanned_page("pc", older_year) == 1, "cutoff-stopped year must keep its page"
+        db.close()
+
+    @staticmethod
+    def _run_single_year_cycle(
+        *,
+        path: str,
+        games: list[dict[str, Any]],
+        cutoff_reached: bool,
+        stop_cutoff: str | None,
+        fetch_fails: bool,
+    ) -> Any:
+        """Run one date-mode cycle over the current year and return the notify mock."""
+        import datetime
+
+        current_year = datetime.datetime.now(tz=datetime.UTC).year
+        mock_mc = MagicMock()
+
+        def fake_scan(*_args: Any, **kwargs: Any) -> list:
+            start_page = kwargs.get("start_page", 1)
+            if fetch_fails:
+                # A failed fetch credits no page and collects nothing.
+                mock_mc._recent_games_last_page = start_page - 1
+                mock_mc._recent_games_exhausted = False
+                mock_mc._recent_games_failed = True
+                mock_mc._recent_games_cutoff_reached = False
+                mock_mc._recent_games_stop_cutoff = None
+                return []
+            mock_mc._recent_games_failed = False
+            if cutoff_reached:
+                # A date stop fetches a page, collects nothing from it, and always
+                # reports the effective cutoff that fired.
+                mock_mc._recent_games_last_page = start_page - 1
+                mock_mc._recent_games_exhausted = False
+                mock_mc._recent_games_cutoff_reached = True
+                mock_mc._recent_games_stop_cutoff = stop_cutoff
+                return []
+            mock_mc._recent_games_last_page = start_page
+            mock_mc._recent_games_exhausted = False
+            mock_mc._recent_games_cutoff_reached = False
+            mock_mc._recent_games_stop_cutoff = None
+            return games
+
+        mock_mc._recent_games_last_page = 0
+        mock_mc._recent_games_exhausted = False
+        mock_mc._recent_games_failed = False
+        mock_mc._recent_games_cutoff_reached = False
+        mock_mc._recent_games_stop_cutoff = None
+        mock_mc.scan_recent_games.side_effect = fake_scan
+        # No cached browse page, so the scrape-health check reaches its notify path.
+        mock_mc._cache.get_browse_page.return_value = None
+
+        with (
+            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+            patch("gamarr.pipeline._check_scrape_health", return_value="metacritic_broken"),
+            patch("gamarr.pipeline._diagnose_and_notify_scrape") as mock_notify,
+        ):
+            mock_mc_cls.return_value = mock_mc
+            mock_qbt = MagicMock()
+            mock_qbt.is_connected.return_value = True
+            mock_qbt_cls.return_value = mock_qbt
+            run_acquisition(
+                platform="pc",
+                db_path=path,
+                qbt_host="localhost",
+                qbt_port=8080,
+                max_date=current_year * 100 + 1,
+                max_cycle_months=0,
+                sort_order="new",
+            )
+        return mock_notify
+
+    def test_date_mode_cutoff_stop_is_not_a_scrape_failure(self, tmp_path: Path) -> None:
+        """A date-mode cycle that ends on its own cutoff must not notify."""
+        import datetime
+
+        current_year = datetime.datetime.now(tz=datetime.UTC).year
+        notify = self._run_single_year_cycle(
+            path=str(tmp_path / "no-notify.db"),
+            games=[],
+            cutoff_reached=True,
+            stop_cutoff=f"{current_year}-01-01",
+            fetch_fails=False,
+        )
+        notify.assert_not_called()
+
+    def test_date_mode_fetch_failure_still_notifies(self, tmp_path: Path) -> None:
+        """A real fetch failure in date mode must still report a scrape failure."""
+        notify = self._run_single_year_cycle(
+            path=str(tmp_path / "notify.db"),
+            games=[],
+            cutoff_reached=False,
+            stop_cutoff=None,
+            fetch_fails=True,
+        )
+        notify.assert_called_once()
