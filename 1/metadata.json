@@ -1,0 +1,39 @@
+{
+  "cli_version": "0.12.2",
+  "checkpoint_id": "01M6RYY1BP0GQYFTC8HM1SVQJS",
+  "session_id": "01a1b097-e59a-707f-bf72-92d8816b8fc2",
+  "strategy": "manual-commit",
+  "created_at": "2026-11-06T17:36:34.560092111Z",
+  "branch": "main",
+  "checkpoints_count": 6,
+  "save_step_count": 1,
+  "files_touched": [],
+  "agent": "Pi",
+  "model": "deepseek-v4.1-flash",
+  "turn_id": "1577da162869",
+  "compact_transcript_start": 0,
+  "token_usage": {
+    "input_tokens": 53,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 595840,
+    "output_tokens": 480,
+    "api_call_count": 1
+  },
+  "redaction": {
+    "replacements": 15,
+    "layers": {
+      "betterleaks": 6,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 0,
+      "credentialed_uri": 0,
+      "entropy": 9,
+      "key_context": 0,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  },
+  "session_metrics": {
+    "turn_count": 11
+  }
+}
