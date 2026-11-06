@@ -303,7 +303,7 @@ Rules:
 | ------ | -------- |
 | `src/gamarr/config.py` | add 2 fields to `MetacriticPlatformConfig`; rename 2 cache fields; `max_date` validator; `_migrate_cache_pages_hours_to_cache_hours` + registration; default-config dict |
 | `src/gamarr/pipeline.py` | mode resolution; date-mode browse loop with `cutoff_date`; skip budget arithmetic in date mode; progress log; rename cache params |
-| `src/gamarr/metacritic.py` | one additive flag `_recent_games_cutoff_reached` so a cutoff stop is distinguishable from an exhausted listing |
+| `src/gamarr/metacritic.py` | `_recent_games_cutoff_reached` flag plus `max_month_span` pace parameter |
 | `src/gamarr/scheduler.py` | `_build_kwargs` key mapping |
 | `src/gamarr/utils.py` | three month helpers |
 | `README.md` | 2 new rows, 2 renamed rows, date-mode narrative, troubleshooting |
@@ -311,10 +311,30 @@ Rules:
 
 `src/gamarr/database.py` is **unchanged**: no schema change, and the per-year
 `backlog_progress` cursors remain the only persisted scan state. In
-`metacritic.py` the cutoff logic already exists; the only addition is the
-`_recent_games_cutoff_reached` flag.
-cutoff mechanism already exists; the pipeline simply passes a value for the
-first time.
+`metacritic.py` the cutoff logic already exists; the additions are the
+`_recent_games_cutoff_reached` flag and the `max_month_span` parameter described
+under Refinements below.
+
+## Refinements found while planning
+
+1. **The month pace needs a client-side span parameter.** The cycle's month
+   target is derived from the month of the first page the cycle fetches, and
+   only `MetacriticClient` sees per-page release dates before deciding whether to
+   stop. Passing a precomputed `cutoff_date` for the pace is therefore
+   impossible on the first call of a cycle (the origin is unknown), and handling
+   it in the pipeline would leave the first call of every cycle unbounded within
+   its year. `scan_recent_games` therefore gains `max_month_span: int = 0`; the
+   client anchors the span on the newest month of the call's first page and stops
+   when a page's games are all older than `origin - max_month_span`. The pipeline
+   still shares the allowance across years exactly as it shares
+   `max_cycle_pages` today: it passes the *remaining* span to each subsequent
+   year and stops visiting older years once the allowance is spent, so a cycle
+   cannot take a full allowance from every year.
+2. **One flag still suffices.** The client folds the pace boundary and the
+   absolute floor into a single effective cutoff, so a single
+   `_recent_games_cutoff_reached` flag reports "stopped on a date boundary". The
+   pipeline distinguishes a floor stop from a pace stop by comparing its own
+   months-covered against the span to the floor, as specified.
 
 ## Out of scope
 
