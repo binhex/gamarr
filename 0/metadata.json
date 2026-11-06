@@ -1,0 +1,57 @@
+{
+  "cli_version": "0.12.2",
+  "checkpoint_id": "01M6RYXSGFA1GC43T8MSAZK7VB",
+  "session_id": "01a1b097-e59a-707f-bf72-92d8816b8fc2",
+  "strategy": "manual-commit",
+  "created_at": "2026-11-06T17:36:27.292231445Z",
+  "branch": "main",
+  "checkpoints_count": 6,
+  "save_step_count": 5,
+  "files_touched": [
+    "README.md",
+    "docs/agent/plans/2026-11-06-max-date-backlog-cutoff.md",
+    "docs/agent/reviews/2026-11-06-max-date-backlog-cutoff-residuals.md",
+    "docs/agent/specs/2026-11-06-max-date-backlog-cutoff-design.md",
+    "src/gamarr/config.py",
+    "src/gamarr/metacritic.py",
+    "src/gamarr/pipeline.py",
+    "src/gamarr/scheduler.py",
+    "src/gamarr/utils.py",
+    "tests/unit/test_config.py",
+    "tests/unit/test_metacritic.py",
+    "tests/unit/test_pipeline.py",
+    "tests/unit/test_readme_accuracy.py",
+    "tests/unit/test_scheduler.py",
+    "tests/unit/test_utils.py"
+  ],
+  "agent": "Pi",
+  "model": "deepseek-v4.1-flash",
+  "turn_id": "1577da162869",
+  "checkpoint_transcript_start": 194,
+  "transcript_lines_at_start": 194,
+  "compact_transcript_start": 82,
+  "token_usage": {
+    "input_tokens": 997313,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 124156288,
+    "output_tokens": 218644,
+    "api_call_count": 313
+  },
+  "redaction": {
+    "replacements": 15,
+    "layers": {
+      "betterleaks": 6,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 0,
+      "credentialed_uri": 0,
+      "entropy": 9,
+      "key_context": 0,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  },
+  "session_metrics": {
+    "turn_count": 11
+  }
+}

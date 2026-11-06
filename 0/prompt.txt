@@ -1,0 +1,60 @@
+Apply the Sub-Agents skill. Step 1: Assess work size and count the independent seams — concurrency is capped by seams, not by file count. Step 2: Split work at dependency seams, then group chunks into waves — one writer per file per wave; a later wave may re-own a file once the previous wave's changes are staged. Step 3: Dispatch one wave per workflow, in parallel within the wave, using the model appropriate for the work size. Step 4: Collect results after each wave, re-dispatch any failed sub-agents, verify file changes, check for conflicts. Report which files were changed by which sub-agent.
+
+Do NOT dispatch review sub-agents — handle implementation only. The chain will handle review, verification, and finalising in subsequent steps.
+
+Context:
+
+---
+
+Follow the Verification skill. Verification commands run fresh. All tests pass. All spec requirements confirmed with evidence (not assertion).
+
+Do NOT claim "done" or "fixed" without fresh verification evidence.
+
+Context:
+
+---
+
+Apply the Tech Debt Remediation skill exactly as written, including its Upstream
+Workflow Barrier, Step 0 routing, and the announcements it requires. Do not
+substitute a workflow of your own.
+
+Do NOT scope down without user approval. If you need to negotiate scope or ask a
+question, use `ask_user_question` — the chain will wait for the answer. Do NOT
+write the question in prose and trust the chain to stop.
+
+Context:
+
+---
+
+Run the Adversarial Code Review skill exactly as written, including its
+max-round calculation, exemption/skip path, reviewer dispatch and completion
+barrier, and terminal REVIEW_GATE_STATUS marker. Do not substitute a workflow
+of your own.
+
+Do NOT stop the review loop early or reduce rounds below what the skill
+calculates. After all issues are fixed and the terminal marker is emitted,
+stop. The chain handles verification and finalising in subsequent steps.
+
+Context:
+
+---
+
+Run the QA Gate skill exactly as written, including its Upstream Workflow
+Barrier, language gates, auto-generated configs, and terminal QA_GATE_STATUS
+marker. Do not substitute a workflow of your own.
+
+Every applicable gate must pass: do NOT skip any gate, do NOT declare "all
+clean" if a check was skipped or failed, and if a gate fails, report it and
+stop. Do NOT dispatch subagents; run checks directly.
+
+Context:
+
+---
+
+Apply the Finishing a Development Branch skill exactly as written, including its Step 0 review and QA completion gates. Verify tests pass before presenting options. Detect the environment (worktree vs normal repo) and the harness commit mode.
+
+Present the integration options the skill generates for the detected commit mode and branch — do not substitute a fixed menu. Wait for the user's choice, execute it, then show a summary of the changes (diff stat + log). Clean up only if applicable.
+
+Do NOT skip the test verification step. Do NOT dispatch subagents for any remaining work.
+
+Context:
