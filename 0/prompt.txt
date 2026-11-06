@@ -1,0 +1,21 @@
+Detect the harness platform using the tables above. Set model variables (REVIEWER_A_MODEL, REVIEWER_B_MODEL, FAST_MODEL, IMPLEMENTER_MODEL) and agent variables (IMPLEMENTER_AGENT, REVIEWER_AGENT). Report which harness is active and the configured values.
+
+This step is ONLY harness detection and setup. Do NOT read any files, do NOT fix any code, do NOT debug any issues, do NOT dispatch any subagents. The chain will handle all subsequent steps automatically.
+
+Context:
+
+---
+
+Check if project context was already loaded by a previous chain step. If yes, report "Context already loaded." and stop. If not, gather context from session history, git log, README, and the agent design docs (newest spec and plan; every review ledger). Synthesise findings into 5-8 bullet points.
+
+This step is ONLY information gathering. Do NOT read files you would change, do NOT debug any issues, do NOT propose changes, do NOT dispatch any subagents. The skill's bounded read of the latest design docs is context gathering and is allowed. The chain will handle all subsequent steps automatically.
+
+Context:
+
+---
+
+Follow the Writing Plans skill. Check scope — if the spec covers multiple independent subsystems, suggest splitting into separate plans. Map which files will be created or modified. Decompose into bite-sized tasks with clear file paths, code snippets, test guidance, and documentation needs. Save the plan to docs/agent/plans/.
+
+Do NOT implement any code. This step is planning only. The chain will handle implementation in subsequent steps.
+
+Context:
