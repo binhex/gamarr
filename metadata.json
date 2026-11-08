@@ -1,0 +1,56 @@
+{
+  "cli_version": "0.12.2",
+  "checkpoint_id": "01M6Y1V6WQ30A5Z7VY3Q33PCSN",
+  "strategy": "manual-commit",
+  "branch": "main",
+  "checkpoints_count": 8,
+  "files_touched": [
+    "README.md",
+    "docs/agent/reviews/2026-11-06-discovery-modes-and-queue-hygiene-residuals.md",
+    "docs/agent/specs/2026-11-06-discovery-modes-and-queue-hygiene-design.md",
+    "src/gamarr/config.py",
+    "src/gamarr/database.py",
+    "src/gamarr/metacritic.py",
+    "src/gamarr/pipeline.py",
+    "src/gamarr/scheduler.py",
+    "tests/unit/test_config.py",
+    "tests/unit/test_database.py",
+    "tests/unit/test_file_utils.py",
+    "tests/unit/test_library.py",
+    "tests/unit/test_logger.py",
+    "tests/unit/test_metacritic.py",
+    "tests/unit/test_pipeline.py",
+    "tests/unit/test_readme_accuracy.py",
+    "tests/unit/test_scheduler.py"
+  ],
+  "sessions": [
+    {
+      "metadata": "/0/metadata.json",
+      "transcript": "/0/full.jsonl",
+      "compact_transcript": "/0/transcript.jsonl",
+      "content_hash": "/0/content_hash.txt",
+      "prompt": "/0/prompt.txt"
+    }
+  ],
+  "token_usage": {
+    "input_tokens": 1365913,
+    "cache_creation_tokens": 0,
+    "cache_read_tokens": 205506304,
+    "output_tokens": 262287,
+    "api_call_count": 466
+  },
+  "redaction": {
+    "replacements": 27,
+    "layers": {
+      "betterleaks": 7,
+      "connection_string": 0,
+      "credential_key": 0,
+      "credential_value": 1,
+      "credentialed_uri": 0,
+      "entropy": 19,
+      "key_context": 0,
+      "provider_token": 0,
+      "shell_stdin": 0
+    }
+  }
+}
