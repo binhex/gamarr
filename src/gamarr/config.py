@@ -118,9 +118,10 @@ class MetacriticPlatformConfig(BaseModel):
     min_user_reviews: int = 10
     cache_details_days: int = 7
     cache_hours: int = 6
+    mode: Literal["latest", "backlog"] = "backlog"
     max_queue_days: int = 30
     enabled: bool = True
-    max_pages: int = Field(default=500, ge=1)
+    max_pages: int = Field(default=500, ge=0)
     max_cycle_pages: int | None = Field(default=0, ge=0)
     max_date: int = 0
     max_cycle_months: int = Field(default=0, ge=0, le=1200)

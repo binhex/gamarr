@@ -169,7 +169,7 @@ class TestReadmeCriticRenameRows:
         defaults = _parse_readme_defaults(block)
 
         assert defaults.get("sort_order") == '"new"', defaults
-        row = next((ln for ln in block if "sort_order" in ln), "")
+        row = next((ln for ln in block if ln.startswith("| `sort_order`")), "")
         assert '"criticscore"' in row, "sort_order row must document criticscore"
         assert '"userscore"' in row, "sort_order row must document userscore"
         assert '"metascore"' not in row, "sort_order row must not mention the legacy metascore value"
@@ -239,7 +239,7 @@ class TestReadmeYamlDefaults:
 
 
 class TestReadmeDateModeRows:
-    """README must document max_date / max_cycle_months and their defaults."""
+    """README must document mode / max_date / max_cycle_months and their defaults."""
 
     def _readme_defaults(self) -> dict[str, str]:
         with open(README_PATH, encoding="utf-8") as f:
@@ -261,6 +261,13 @@ class TestReadmeDateModeRows:
         cfg = MetacriticPlatformConfig()
         defaults = self._readme_defaults()
         assert defaults.get("max_cycle_months", "MISSING") == str(cfg.max_cycle_months)
+
+    def test_mode_default_row(self) -> None:
+        from gamarr.config import MetacriticPlatformConfig
+
+        cfg = MetacriticPlatformConfig()
+        defaults = self._readme_defaults()
+        assert defaults.get("mode", "MISSING") == cfg.mode
 
     def test_cache_hours_rows_renamed(self) -> None:
         """Both cache_hours rows exist and no legacy row survives."""

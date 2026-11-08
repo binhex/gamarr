@@ -1926,3 +1926,26 @@ class TestCacheHoursRename:
         freegog = next(e["freegog"] for e in raw["download_sites"] if "freegog" in e)
         assert freegog["cache_hours"] == 6
         assert "cache_pages_hours" not in freegog
+
+
+class TestDiscoveryModeConfig:
+    """mode: latest | backlog."""
+
+    def test_default_is_backlog(self) -> None:
+        from gamarr.config import MetacriticPlatformConfig
+
+        assert MetacriticPlatformConfig().mode == "backlog"
+
+    def test_accepts_latest(self) -> None:
+        from gamarr.config import MetacriticPlatformConfig
+
+        assert MetacriticPlatformConfig(mode="latest").mode == "latest"
+
+    def test_rejects_unknown_mode(self) -> None:
+        import pytest
+        from pydantic import ValidationError
+
+        from gamarr.config import MetacriticPlatformConfig
+
+        with pytest.raises(ValidationError):
+            MetacriticPlatformConfig(mode="newest")  # type: ignore[arg-type]

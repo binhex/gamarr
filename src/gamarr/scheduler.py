@@ -310,6 +310,27 @@ def _find_fitgirl_entry(config: Config) -> Any | None:
     return None
 
 
+def _matching_window_days(config: Config, mc_cfg: Any) -> int:
+    """Return the source-matching window applied to queued games.
+
+    Args:
+        config: The loaded configuration.
+        mc_cfg: The ``review_sites.metacritic`` config.
+
+    Returns:
+        The FitGirl entry's window when a FitGirl source is configured, else the
+        first enabled source's own ``max_queue_days``, else the Metacritic-side
+        value.
+    """
+    fitgirl_entry = _find_fitgirl_entry(config)
+    if fitgirl_entry is not None and getattr(fitgirl_entry, "enabled", True):
+        return int(fitgirl_entry.max_queue_days)
+    for entry in config.download_sites:
+        if getattr(entry, "enabled", True):
+            return int(entry.max_queue_days)
+    return int(mc_cfg.max_queue_days)
+
+
 def _build_kwargs(config: Config) -> dict[str, Any]:
     """Extract acquisition pipeline kwargs from the config."""
     fitgirl_entry = _find_fitgirl_entry(config)
@@ -338,6 +359,7 @@ def _build_kwargs(config: Config) -> dict[str, Any]:
         "max_cycle_pages": mc_cfg.max_cycle_pages,
         "max_date": mc_cfg.max_date,
         "max_cycle_months": mc_cfg.max_cycle_months,
+        "mode": mc_cfg.mode,
         "sort_order": mc_cfg.sort_order,
         "reject_genre": mc_cfg.reject_genre,
         "reject_title": mc_cfg.reject_title,
@@ -349,7 +371,11 @@ def _build_kwargs(config: Config) -> dict[str, Any]:
         "notify_on_scrape_failure": config.notification.on_scrape_failure,
         "fitgirl_cache_hours": fitgirl_entry.cache_hours if fitgirl_entry else 6,
         "fitgirl_reject_keywords": fitgirl_entry.reject_keywords if fitgirl_entry else [],
-        "fitgirl_max_queue_days": fitgirl_entry.max_queue_days if fitgirl_entry else 60,
+        # Every queued game is inserted already verified, so it takes the
+        # source-matching window: the FitGirl entry's when present, else the
+        # first enabled source's own value, else the operator's
+        # review_sites.metacritic.max_queue_days — never a hidden default.
+        "fitgirl_max_queue_days": _matching_window_days(config, mc_cfg),
         "library_paths": config.library.paths,
         "download_sites": list(config.download_sites),
         "age_recheck_weeks": getattr(mc_cfg, "age_recheck_weeks", None),

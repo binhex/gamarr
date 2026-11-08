@@ -109,3 +109,30 @@ class TestLoggingIntercept:
         aps_logger = logging.getLogger("apscheduler")
         assert len(aps_logger.handlers) >= 1, "No handlers on apscheduler logger — raw messages will leak to stderr"
         assert aps_logger.propagate is False, "apscheduler logger should not propagate"
+
+
+def test_intercept_handler_falls_back_for_unknown_level() -> None:
+    """An unknown level name must fall back to the numeric level, not raise."""
+    import io
+    import logging
+
+    from gamarr.logger import InterceptHandler
+
+    stream = io.StringIO()
+    handler_id = _loguru_logger.add(stream, format="{message}", level="DEBUG")
+    try:
+        record = logging.LogRecord(
+            name="unknown-level-test",
+            level=logging.INFO,
+            pathname=__file__,
+            lineno=1,
+            msg="fallback level message",
+            args=None,
+            exc_info=None,
+        )
+        record.levelname = "NO_SUCH_LEVEL"
+        InterceptHandler().emit(record)
+    finally:
+        _loguru_logger.remove(handler_id)
+
+    assert "fallback level message" in stream.getvalue()

@@ -922,6 +922,11 @@ class MetacriticClient:
         Returns a list of game dicts with keys ``title``, ``slug``,
         ``score``, ``critic_review_count``, ``user_rating``,
         ``user_review_count``, ``release_date``.
+
+        ``max_games`` truncates the last page it reads, but
+        ``_recent_games_last_page`` still reports that page, so a caller that
+        advances cursors from it would skip the truncated tail.  No production
+        caller passes ``max_games``; keep it that way or handle the truncation.
         """
         all_games: list[dict[str, Any]] = []
 
@@ -935,9 +940,10 @@ class MetacriticClient:
         self._recent_games_cutoff_reached = False
         self._recent_games_stop_cutoff = None
         span_anchor: int | None = None
+        budget_spent = False
         while len(all_games) < effective_max and page_number <= 2000:
             games = self._fetch_browse_page(platform, page_number, cache_pages_hours, year=year)
-            if games is not None and not games and page_number > 1 and not is_cancelled(cancel_event):
+            if _needs_drain_confirmation(games, page_number, cancel_event):
                 # Empty parses are never cached, so this re-probe is a real fetch.
                 # A transient gap must not be read as the end of the listing.
                 games = self._fetch_browse_page(platform, page_number, cache_pages_hours, year=year)
@@ -945,8 +951,7 @@ class MetacriticClient:
             if page is None:
                 break
 
-            if max_month_span > 0 and span_anchor is None:
-                span_anchor = _page_newest_month(page)
+            span_anchor = _next_span_anchor(span_anchor, page, max_month_span)
 
             should_stop, cutoff_reached, stopping_cutoff = _page_stop_decision(
                 self.sort_order,
@@ -954,9 +959,6 @@ class MetacriticClient:
                 cutoff_date,
                 max_month_span,
                 span_anchor,
-                max_pages,
-                page_number,
-                start_page,
             )
             if cutoff_reached:
                 self._recent_games_cutoff_reached = True
@@ -969,9 +971,43 @@ class MetacriticClient:
 
             _log_batch_progress(page_number - start_page + 1, len(all_games), show_progress)
 
+            # The page budget is spent only once this page has been collected:
+            # checking it before collection cost one wasted fetch per call, which
+            # latest mode would pay on every cycle.
+            if _page_limit_reached(max_pages, page_number, start_page):
+                budget_spent = True
+                break
+
             page_number += 1
 
-        last_page_number = max(page_number - 1, 0)
+        return self._finish_scan(all_games, page_number, start_page, budget_spent, year)
+
+    def _finish_scan(
+        self,
+        all_games: list[dict[str, Any]],
+        page_number: int,
+        start_page: int,
+        budget_spent: bool,
+        year: int | None,
+    ) -> list[dict[str, Any]]:
+        """Record the last page this call collected, log the result and return the games.
+
+        A budget stop leaves the loop on a page that WAS collected; every other
+        stop (drain, failure, cutoff, cancel) fires before collection, so there
+        the last real page is the previous one.  Getting this wrong makes the
+        caller's cursor accounting skip pages or stall.
+
+        Args:
+            all_games: The games collected by this call.
+            page_number: The loop's page counter on exit.
+            start_page: The page this call started from.
+            budget_spent: True when the per-call page budget ended the loop.
+            year: The year being browsed, if any.
+
+        Returns:
+            *all_games*, unchanged.
+        """
+        last_page_number = page_number if budget_spent else max(page_number - 1, 0)
         # Report the pages fetched by this call, not the absolute page number,
         # so a resumed scan does not appear to have browsed every page so far.
         pages_fetched = max(last_page_number - start_page + 1, 0)
@@ -990,6 +1026,48 @@ def _effective_page_cap(max_games: int) -> int:
         A large sentinel when unlimited, otherwise *max_games*.
     """
     return max_games if max_games > 0 else 999999
+
+
+def _needs_drain_confirmation(
+    games: list[dict[str, Any]] | None,
+    page_number: int,
+    cancel_event: CancelSignal | None,
+) -> bool:
+    """Return True when an empty page past page 1 should be re-probed once.
+
+    Empty parses are never cached, so the re-probe is a real request.  A
+    transient empty page must not be mistaken for the end of the listing, and a
+    shutdown must not spend the extra request.
+
+    Args:
+        games: The parsed page, or ``None`` when the fetch failed.
+        page_number: The page just fetched.
+        cancel_event: The cancellation signal, if any.
+
+    Returns:
+        True when the caller should fetch the same page once more.
+    """
+    if games is None or games:
+        return False
+    return page_number > 1 and not is_cancelled(cancel_event)
+
+
+def _next_span_anchor(span_anchor: int | None, games: list[dict[str, Any]], max_month_span: int) -> int | None:
+    """Return the month-span anchor for this call, deriving it from the page when unset.
+
+    Args:
+        span_anchor: The anchor already established for this call, if any.
+        games: The page just collected.
+        max_month_span: Months of pacing; 0 disables the span.
+
+    Returns:
+        *span_anchor* when it is already set or no span is in force; otherwise
+        the page's newest month, which is ``None`` when the page carries no
+        dated game (the next page then retries).
+    """
+    if span_anchor is not None or max_month_span <= 0:
+        return span_anchor
+    return _page_newest_month(games)
 
 
 def _page_newest_month(games: list[dict[str, Any]]) -> int | None:
@@ -1040,11 +1118,12 @@ def _page_stop_decision(
     cutoff_date: str | None,
     max_month_span: int,
     span_anchor: int | None,
-    max_pages: int,
-    page_number: int,
-    start_page: int,
 ) -> tuple[bool, bool, str | None]:
-    """Decide whether a browse page ends the scan and whether a date caused it.
+    """Decide whether a date bound ends the scan before the page is collected.
+
+    The page budget is *not* decided here: it is spent only once the page has
+    been collected, so :func:`_page_limit_reached` is checked after collection.
+    Checking it here would fetch (and discard) one extra page per call.
 
     Args:
         sort_order: The active browse order.
@@ -1052,9 +1131,6 @@ def _page_stop_decision(
         cutoff_date: The caller's absolute date floor, if any.
         max_month_span: Months of pacing; 0 disables the span cutoff.
         span_anchor: The newest month of this call's first page, if known.
-        max_pages: Per-call page limit; 0 disables it.
-        page_number: The page just fetched.
-        start_page: The page this call started from.
 
     Returns:
         ``(should_stop, cutoff_reached, effective_cutoff)``.  The third element
@@ -1063,16 +1139,12 @@ def _page_stop_decision(
     """
     effective_cutoff = _effective_cutoff(cutoff_date, span_anchor, max_month_span)
     # Evaluate the date predicate once: it is both the "cutoff reached" signal
-    # and one of the two stop conditions.
+    # and the stop condition.  A page that trips it is fetched but never
+    # collected -- deliberate, since the cutoff is a property of the page.
     cutoff_reached = sort_order == "new" and _page_is_before_cutoff(games, effective_cutoff)
     if cutoff_reached:
-        logger.debug(
-            "Metacritic page {} reached (all games older than {}); stopping scan",
-            page_number,
-            effective_cutoff,
-        )
-    stop = cutoff_reached or _page_limit_reached(max_pages, page_number, start_page)
-    return stop, cutoff_reached, effective_cutoff
+        logger.debug("Metacritic page reached (all games older than {}); stopping scan", effective_cutoff)
+    return cutoff_reached, cutoff_reached, effective_cutoff
 
 
 def _log_scan_result(year: int | None, pages_fetched: int, game_count: int) -> None:
@@ -1091,18 +1163,15 @@ def _page_limit_reached(max_pages: int, page_number: int, start_page: int) -> bo
 
     Args:
         max_pages: Per-call page limit; 0 disables it.
-        page_number: The page just fetched.
+        page_number: The page just collected.
         start_page: The page this call started from.
 
     Returns:
         True when the limit is spent.
     """
-    if max_pages > 0 and (page_number - start_page) >= max_pages:
-        logger.debug(
-            "Metacritic page limit {} reached (max_pages={}); stopping scan",
-            page_number - start_page,
-            max_pages,
-        )
+    pages_collected = page_number - start_page + 1
+    if max_pages > 0 and pages_collected >= max_pages:
+        logger.debug("Metacritic page limit {} reached (max_pages={}); stopping scan", pages_collected, max_pages)
         return True
     return False
 

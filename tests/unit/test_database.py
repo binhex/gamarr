@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+from unittest.mock import patch
+
 import pytest
 
 from gamarr.database import Database
@@ -1246,17 +1248,6 @@ class TestBacklogProgress:
         assert db.sum_scanned_pages("pc", 2020, 2025) == 0
         db.close()
 
-    def test_reset_progress_new_sort(self, tmp_path: Path) -> None:
-        from gamarr.database import Database
-
-        db = Database(str(tmp_path / "test.db"))
-        db.set_last_scanned_page("pc", 2026, 10)
-        db.set_last_scanned_page("pc", 2025, 50)
-        db.reset_progress("pc", "new")
-        assert db.get_last_scanned_page("pc", 2026) == 0
-        assert db.get_last_scanned_page("pc", 2025) == 0
-        db.close()
-
     def test_reset_progress_criticscore_sentinel(self, tmp_path: Path) -> None:
         """Reset deletes all rows for the platform regardless of sort_order."""
         from gamarr.database import Database
@@ -1537,14 +1528,6 @@ class TestPendingUnified:
         assert rows[0].score_checks_passed is None
         db.close()
 
-    def test_update_pending_scores_nonexistent(self, tmp_path: Path) -> None:
-        from gamarr.database import Database
-
-        db = Database(str(tmp_path / "test.db"))
-        db.update_pending_scores(slug="nonexistent", metascore=85.0)  # should not raise
-        assert not db.is_pending("nonexistent")
-        db.close()
-
     def test_has_verified_pending(self, tmp_path: Path) -> None:
         from gamarr.database import Database
 
@@ -1673,7 +1656,7 @@ class TestTableMigration:
                     metascore=75.0,
                     discovered_at=now_iso,
                     expires_at=future_iso,
-                    score_checks_passed=None,
+                    score_checks_passed=True,
                 )
             )
             conn.execute(
@@ -1684,7 +1667,7 @@ class TestTableMigration:
                     metascore=80.0,
                     discovered_at=now_iso,
                     expires_at=future_iso,
-                    score_checks_passed=False,
+                    score_checks_passed=True,
                 )
             )
             conn.commit()
@@ -2026,3 +2009,505 @@ class TestPendingOrdering:
         assert first == ["a-tie", "b-tie", "c-tie"], f"Ties must order by slug, got: {first}"
         assert first == second, "Repeated reads must return an identical order"
         db.close()
+
+
+class TestRecordPendingVerified:
+    """record_pending can insert an already-verified row."""
+
+    def test_verified_row_carries_the_flag(self, tmp_path: Path) -> None:
+        from gamarr.database import Database
+
+        db = Database(str(tmp_path / "test.db"))
+        db.record_pending(
+            slug="verified-game",
+            game_title="Verified Game",
+            platform="pc",
+            metascore=88.0,
+            user_score=8.4,
+            score_checks_passed=True,
+        )
+        pending = db.get_pending()
+        assert len(pending) == 1
+        assert pending[0].score_checks_passed is True
+        db.close()
+
+    def test_default_row_is_unverified(self, tmp_path: Path) -> None:
+        from gamarr.database import Database
+
+        db = Database(str(tmp_path / "test.db"))
+        db.record_pending(slug="unverified-game", game_title="Unverified Game", platform="pc")
+        pending = db.get_pending()
+        assert pending[0].score_checks_passed is not True
+        db.close()
+
+
+class TestPendingQueueHygieneFailures:
+    """The destructive migration must fail closed."""
+
+    def test_failure_leaves_rows_and_stamp_untouched(self, tmp_path: Path) -> None:
+        from gamarr.database import Database
+
+        path = str(tmp_path / "queue.db")
+        db = Database(path)
+        db.record_pending(slug="keep-me", game_title="Keep Me", platform="pc", score_checks_passed=True)
+        db.record_pending(slug="drop-me", game_title="Drop Me", platform="pc")
+        db.close()
+
+        from gamarr import database as database_module
+
+        real_text = database_module.text
+
+        def failing_text(sql: str, *args: Any, **kwargs: Any) -> Any:
+            """Raise for the hygiene DELETE, so the migration's failure branch runs."""
+            if isinstance(sql, str) and sql.strip().upper().startswith("DELETE"):
+                raise RuntimeError("database is locked")
+            return real_text(sql, *args, **kwargs)
+
+        with patch.object(database_module, "text", side_effect=failing_text):
+            reopened = Database(path)  # must not raise
+            slugs = {game.slug for game in reopened.get_pending()}
+            reopened.close()
+        assert slugs == {"keep-me", "drop-me"}, "a failed migration must not delete rows"
+
+        final = Database(path)  # retried on the next open
+        slugs = {game.slug for game in final.get_pending()}
+        final.close()
+        assert slugs == {"keep-me"}, "the cleanup must still run on the next successful open"
+
+
+class TestPendingQueueHygieneMigration:
+    """Unverified rows are removed once, verified rows are kept."""
+
+    def test_removes_unverified_keeps_verified(self, tmp_path: Path) -> None:
+        from gamarr.database import Database
+
+        path = str(tmp_path / "queue.db")
+        db = Database(path)
+        db.record_pending(slug="keep-me", game_title="Keep Me", platform="pc", score_checks_passed=True)
+        db.record_pending(slug="drop-me", game_title="Drop Me", platform="pc")
+        db.close()
+
+        # Re-opening runs the guarded migration.
+        db = Database(path)
+        slugs = {game.slug for game in db.get_pending()}
+        assert slugs == {"keep-me"}
+        db.close()
+
+    def test_runs_only_once(self, tmp_path: Path) -> None:
+        from gamarr.database import Database
+
+        path = str(tmp_path / "queue.db")
+        db = Database(path)
+        db.close()
+
+        db = Database(path)
+        # A row queued by the new (verified-only) path after the migration must survive.
+        db.record_pending(slug="later-game", game_title="Later Game", platform="pc", score_checks_passed=True)
+        db.record_pending(slug="later-unverified", game_title="Later Unverified", platform="pc")
+        db.close()
+
+        db = Database(path)
+        slugs = {game.slug for game in db.get_pending()}
+        assert slugs == {"later-game", "later-unverified"}, "the migration must not repeat"
+        db.close()
+
+
+class TestLegacyPendingHygieneInteraction:
+    """A legacy upgrade also cleans unverified rows, because the cleanup is deferred until the copy lands."""
+
+    def test_unverified_legacy_rows_are_dropped_verified_kept(self, tmp_path: Path) -> None:
+        import sqlalchemy as sa
+
+        from gamarr.database import Database
+
+        path = str(tmp_path / "legacy.db")
+        engine = sa.create_engine(f"sqlite:///{path}")
+        metadata = sa.MetaData()
+        legacy = sa.Table(
+            "pending_games_backlog",
+            metadata,
+            sa.Column("slug", sa.String, primary_key=True),
+            sa.Column("game_title", sa.String, nullable=False),
+            sa.Column("platform", sa.String, nullable=False),
+            sa.Column("metascore", sa.Float),
+            sa.Column("metascore_reviews", sa.Integer),
+            sa.Column("user_score", sa.Float),
+            sa.Column("user_reviews", sa.Integer),
+            sa.Column("genres", sa.String),
+            sa.Column("release_date", sa.String),
+            sa.Column("discovered_at", sa.String, nullable=False),
+            sa.Column("expires_at", sa.String, nullable=False),
+            sa.Column("last_checked_at", sa.String),
+            sa.Column("score_checks_passed", sa.Boolean),
+        )
+        metadata.create_all(engine)
+        with engine.begin() as conn:
+            conn.execute(
+                legacy.insert().values(
+                    slug="legacy-verified",
+                    game_title="Legacy Verified",
+                    platform="pc",
+                    discovered_at="2026-01-01T00:00:00+00:00",
+                    expires_at="2099-01-01T00:00:00+00:00",
+                    score_checks_passed=True,
+                )
+            )
+            conn.execute(
+                legacy.insert().values(
+                    slug="legacy-unverified",
+                    game_title="Legacy Unverified",
+                    platform="pc",
+                    discovered_at="2026-01-01T00:00:00+00:00",
+                    expires_at="2099-01-01T00:00:00+00:00",
+                    score_checks_passed=None,
+                )
+            )
+        engine.dispose()
+
+        db = Database(path)
+        slugs = {game.slug for game in db.get_pending()}
+        db.close()
+        assert slugs == {"legacy-verified"}, f"unverified legacy rows must be cleaned, got {slugs}"
+
+
+class TestLegacyMigrationDeferral:
+    """A failed legacy copy must not stamp the one-time cleanup."""
+
+    def test_failed_legacy_copy_defers_the_stamp(self, tmp_path: Path) -> None:
+        import sqlalchemy as sa
+
+        from gamarr.database import Database
+
+        path = str(tmp_path / "legacy-fail.db")
+        engine = sa.create_engine(f"sqlite:///{path}")
+        metadata = sa.MetaData()
+        sa.Table("pending_games_backlog", metadata, sa.Column("slug", sa.String, primary_key=True))
+        metadata.create_all(engine)
+        engine.dispose()
+
+        with patch("gamarr.database.Database._migrate_unify_pending_tables", return_value=False):
+            db = Database(path)  # legacy tables present, copy "failed"
+            db.close()
+
+        with engine.connect() as conn:
+            version = int(conn.execute(sa.text("PRAGMA user_version")).scalar() or 0)
+        assert version == 0, "the cleanup must remain unstamped so it retries once the copy lands"
+
+
+class TestCursorSortOrderBackfill:
+    """An upgraded database adopts the old order for its existing cursors."""
+
+    def test_upgrade_backfills_cursor_order_from_last_sort_order(self, tmp_path: Path) -> None:
+        import sqlalchemy as sa
+
+        from gamarr.database import Database
+
+        path = str(tmp_path / "upgrade.db")
+        engine = sa.create_engine(f"sqlite:///{path}")
+        with engine.begin() as conn:
+            # Pre-migration shape: scan_state without cursor_sort_order.
+            conn.execute(
+                sa.text(
+                    "CREATE TABLE scan_state (platform VARCHAR PRIMARY KEY, last_cutoff_date VARCHAR, "
+                    "last_max_weeks INTEGER, last_sort_order VARCHAR)",
+                ),
+            )
+            conn.execute(
+                sa.text(
+                    "INSERT INTO scan_state (platform, last_sort_order) VALUES ('pc', 'criticscore')",
+                ),
+            )
+        engine.dispose()
+
+        db = Database(path)
+        assert db.get_cursor_sort_order("pc") == "criticscore", (
+            "existing cursors must adopt the order they were written under"
+        )
+        db.close()
+
+    def test_backfill_leaves_an_explicit_cursor_order_alone(self, tmp_path: Path) -> None:
+        from gamarr.database import Database
+
+        path = str(tmp_path / "explicit.db")
+        db = Database(path)
+        db.set_last_sort_order("pc", "new")
+        db.set_cursor_sort_order("pc", "criticscore")
+        db.close()
+
+        db = Database(path)
+        assert db.get_cursor_sort_order("pc") == "criticscore"
+        db.close()
+
+
+class TestInMemoryConcurrentWrites:
+    """The shared in-memory connection must survive concurrent writes from workers."""
+
+    def test_parallel_writes_do_not_raise(self) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
+        from gamarr.database import Database
+
+        db = Database(":memory:")
+
+        def write(index: int) -> None:
+            db.set_game_detail_cache(
+                slug=f"slug-{index}",
+                metascore=80.0,
+                metascore_reviews=10,
+                user_score=8.0,
+                user_reviews=10,
+                genres=None,
+                must_play=None,
+                release_date=None,
+                description=None,
+            )
+            db.record_pending(
+                slug=f"pending-{index}",
+                game_title=f"Game {index}",
+                platform="pc",
+                score_checks_passed=True,
+            )
+
+        with ThreadPoolExecutor(max_workers=10) as pool:
+            list(pool.map(write, range(40)))
+
+        pending = db.get_pending()
+        db.close()
+        assert len(pending) == 40
+
+
+class TestBackfillRepairsPartialMigration:
+    """A migration that died after the ALTER must repair itself on the next open."""
+
+    def test_null_column_with_last_sort_order_is_backfilled(self, tmp_path: Path) -> None:
+        import sqlalchemy as sa
+
+        from gamarr.database import Database
+
+        path = str(tmp_path / "partial.db")
+        engine = sa.create_engine(f"sqlite:///{path}")
+        with engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    "CREATE TABLE scan_state (platform VARCHAR PRIMARY KEY, last_cutoff_date VARCHAR, "
+                    "last_max_weeks INTEGER, last_sort_order VARCHAR, cursor_sort_order VARCHAR)",
+                ),
+            )
+            conn.execute(
+                sa.text(
+                    "INSERT INTO scan_state (platform, last_sort_order, cursor_sort_order) VALUES ('pc', 'new', NULL)"
+                ),
+            )
+        engine.dispose()
+
+        db = Database(path)
+        assert db.get_cursor_sort_order("pc") == "new"
+        db.close()
+
+
+class TestLegacyDetectionFailsClosed:
+    """An unreadable schema must defer the one-time cleanup, not stamp it."""
+
+    def test_inspection_failure_reports_legacy_present(self) -> None:
+        from unittest.mock import patch
+
+        from gamarr.database import Database
+
+        db = Database(":memory:")
+        with patch("gamarr.database.sa_inspect", side_effect=RuntimeError("cannot inspect")):
+            assert db._legacy_pending_tables_present() is True  # noqa: SLF001
+        db.close()
+
+
+class TestExpiryDoesNotBlacklist:
+    """An expired game must be discoverable again if a repack appears later."""
+
+    def test_expired_history_row_is_not_treated_as_processed(self, tmp_path: Path) -> None:
+        from gamarr.database import Database
+
+        db = Database(str(tmp_path / "expired.db"))
+        db.record_processed(
+            source="metacritic",
+            source_title="Late Repack",
+            source_url="mc:late-repack",
+            game_title="Late Repack",
+            result="Expired",
+        )
+        assert db.is_processed("metacritic", "mc:late-repack") is False, (
+            "expiry must only leave the queue, not blacklist the game forever"
+        )
+        db.close()
+
+    def test_a_real_failure_still_counts_as_processed(self, tmp_path: Path) -> None:
+        from gamarr.database import Database
+
+        db = Database(str(tmp_path / "failed.db"))
+        db.record_processed(
+            source="metacritic",
+            source_title="Rejected Game",
+            source_url="mc:rejected-game",
+            game_title="Rejected Game",
+            result="Failed",
+        )
+        assert db.is_processed("metacritic", "mc:rejected-game") is True
+        db.close()
+
+
+class TestHygieneKeepsLegacyVerifiedRows:
+    """Legacy rows with real detail scores were verified; do not delete them."""
+
+    def test_rows_with_detail_scores_survive_the_one_time_cleanup(self, tmp_path: Path) -> None:
+        import sqlalchemy as sa
+
+        from gamarr.database import Database
+
+        path = str(tmp_path / "legacy_verified.db")
+        engine = sa.create_engine(f"sqlite:///{path}")
+        with engine.begin() as conn:
+            # Pre-verify-before-queue shape: no score_checks_passed column.
+            conn.execute(
+                sa.text(
+                    "CREATE TABLE pending_games (slug VARCHAR PRIMARY KEY, game_title VARCHAR NOT NULL, "
+                    "platform VARCHAR NOT NULL, metascore FLOAT, metascore_reviews INTEGER, user_score FLOAT, "
+                    "user_reviews INTEGER, genres VARCHAR, release_date VARCHAR, discovered_at VARCHAR NOT NULL, "
+                    "expires_at VARCHAR NOT NULL, last_checked_at VARCHAR)",
+                ),
+            )
+            conn.execute(
+                sa.text(
+                    "INSERT INTO pending_games (slug, game_title, platform, metascore, discovered_at, expires_at) "
+                    "VALUES ('verified-legacy', 'Verified Legacy', 'pc', 88.0, '2026-01-01', '2027-01-01'), "
+                    "('browse-only', 'Browse Only', 'pc', NULL, '2026-01-01', '2027-01-01')",
+                ),
+            )
+        engine.dispose()
+
+        db = Database(path)
+        remaining = sorted(row.slug for row in db.get_pending())
+        db.close()
+        assert remaining == ["verified-legacy"], f"only genuinely unverified rows may be cleaned up: {remaining}"
+
+
+class TestHygieneAdoptionIgnoresBrowseScaleScores:
+    """Browse-page metrics live on a different scale; they were never verified."""
+
+    def test_browse_scale_row_is_deleted_and_real_score_row_kept(self, tmp_path: Path) -> None:
+        import sqlalchemy as sa
+
+        from gamarr.database import Database
+
+        path = str(tmp_path / "mixed_legacy.db")
+        engine = sa.create_engine(f"sqlite:///{path}")
+        with engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    "CREATE TABLE pending_games (slug VARCHAR PRIMARY KEY, game_title VARCHAR NOT NULL, "
+                    "platform VARCHAR NOT NULL, metascore FLOAT, metascore_reviews INTEGER, user_score FLOAT, "
+                    "user_reviews INTEGER, genres VARCHAR, release_date VARCHAR, discovered_at VARCHAR NOT NULL, "
+                    "expires_at VARCHAR NOT NULL, last_checked_at VARCHAR)",
+                ),
+            )
+            # 1998.0 is a browse-scale metric, not a Metacritic 0-100 score.
+            conn.execute(
+                sa.text(
+                    "INSERT INTO pending_games (slug, game_title, platform, metascore, discovered_at, expires_at) "
+                    "VALUES ('browse-scale', 'Browse Scale', 'pc', 1998.0, '2026-01-01', '2027-01-01'), "
+                    "('real-score', 'Real Score', 'pc', 88.0, '2026-01-01', '2027-01-01')",
+                ),
+            )
+        engine.dispose()
+
+        db = Database(path)
+        remaining = sorted(row.slug for row in db.get_pending())
+        db.close()
+        assert remaining == ["real-score"], f"only plausible detail scores mark a row verified: {remaining}"
+
+
+class TestHygieneKeepsUserScoreOnlyRows:
+    """The old flow could verify on user score alone, leaving metascore NULL."""
+
+    def test_user_score_only_row_survives_the_cleanup(self, tmp_path: Path) -> None:
+        import sqlalchemy as sa
+
+        from gamarr.database import Database
+
+        path = str(tmp_path / "user_only.db")
+        engine = sa.create_engine(f"sqlite:///{path}")
+        with engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    "CREATE TABLE pending_games (slug VARCHAR PRIMARY KEY, game_title VARCHAR NOT NULL, "
+                    "platform VARCHAR NOT NULL, metascore FLOAT, metascore_reviews INTEGER, user_score FLOAT, "
+                    "user_reviews INTEGER, genres VARCHAR, release_date VARCHAR, discovered_at VARCHAR NOT NULL, "
+                    "expires_at VARCHAR NOT NULL, last_checked_at VARCHAR)",
+                ),
+            )
+            conn.execute(
+                sa.text(
+                    "INSERT INTO pending_games (slug, game_title, platform, user_score, discovered_at, expires_at) "
+                    "VALUES ('user-only', 'User Only', 'pc', 8.5, '2026-01-01', '2027-01-01'), "
+                    "('browse-junk', 'Browse Junk', 'pc', 1478.0, '2026-01-01', '2027-01-01')",
+                ),
+            )
+        engine.dispose()
+
+        db = Database(path)
+        remaining = sorted(row.slug for row in db.get_pending())
+        db.close()
+        assert remaining == ["user-only"], f"a user-score-only verification must be kept: {remaining}"
+
+
+class TestLapsedRowDoesNotBlockRequeue:
+    """Browse runs before the expiry sweep, so a lapsed row must not count as known."""
+
+    def test_lapsed_pending_slug_is_not_in_the_known_set(self, tmp_path: Path) -> None:
+        import datetime
+
+        from gamarr.database import Database
+
+        db = Database(str(tmp_path / "lapsed.db"))
+        past = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=1)).isoformat()
+        future = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=10)).isoformat()
+        db.record_pending(slug="lapsed", game_title="Lapsed", platform="pc", expires_at=past)
+        db.record_pending(slug="alive", game_title="Alive", platform="pc", expires_at=future)
+
+        known = db.get_known_slugs(source="metacritic")
+        db.close()
+        assert "lapsed" not in known, "a lapsed row must be re-discoverable in the same cycle"
+        assert "alive" in known
+
+
+class TestHygieneKeepsMixedShapeRows:
+    """A legacy row can hold a stale browse metascore AND a real user score."""
+
+    def test_mixed_shape_row_survives(self, tmp_path: Path) -> None:
+        import sqlalchemy as sa
+
+        from gamarr.database import Database
+
+        path = str(tmp_path / "mixed_shape.db")
+        engine = sa.create_engine(f"sqlite:///{path}")
+        with engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    "CREATE TABLE pending_games (slug VARCHAR PRIMARY KEY, game_title VARCHAR NOT NULL, "
+                    "platform VARCHAR NOT NULL, metascore FLOAT, metascore_reviews INTEGER, user_score FLOAT, "
+                    "user_reviews INTEGER, genres VARCHAR, release_date VARCHAR, discovered_at VARCHAR NOT NULL, "
+                    "expires_at VARCHAR NOT NULL, last_checked_at VARCHAR)",
+                ),
+            )
+            conn.execute(
+                sa.text(
+                    "INSERT INTO pending_games (slug, game_title, platform, metascore, user_score, "
+                    "discovered_at, expires_at) VALUES "
+                    "('mixed', 'Mixed', 'pc', 1998.0, 8.5, '2026-01-01', '2027-01-01')",
+                ),
+            )
+        engine.dispose()
+
+        db = Database(path)
+        remaining = [row.slug for row in db.get_pending()]
+        db.close()
+        assert remaining == ["mixed"], (
+            "a real user score marks the row verified even when the stored metascore is browse-scale"
+        )

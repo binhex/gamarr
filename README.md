@@ -26,14 +26,20 @@ stays fresh without lifting a finger.
   `max_cycle_months: 2`. Pages remain available as `max_pages` /
   `max_cycle_pages` for `criticscore`/`userscore`, whose browse lists are
   score-ordered and have no date dimension.
-- **Re-verification with expiry** — games whose real Metacritic detail
-  page scores don't match the browse page scores are kept in a pending queue
-  for re-verification until they expire (`max_queue_days`). Once scores pass
-  thresholds, a fresh expiry window begins for the FitGirl-matching phase.
-- **Two-phase pending expiry** — games awaiting score review expire after
-  `max_queue_days` (under metacritic thresholds). Once scores pass, a fresh
-  expiry window (`download_sites.fitgirl.max_queue_days`) starts for the
-  FitGirl-matching phase. Set either value to `0` for indefinite pending.
+- **Verify before queueing** — a game's real Metacritic detail-page scores are
+  checked *before* it enters the pending queue, so the queue only ever holds
+  games that already pass the thresholds. Games that fail, or whose scores are
+  not published yet, are not queued: they are re-checked when a browse pass next
+  reaches their pages (immediately in `latest` mode, when the sweep wraps in
+  `backlog` mode) instead of occupying the queue for days.
+- **Source-matching expiry** — a queued (already verified) game waits
+  `download_sites.fitgirl.max_queue_days` for a matching repack (default 60, or
+  `0` for indefinite; the FitGirl entry supplies the window for every queued
+  game). Every game is queued already verified, so it takes that window at
+  insert, and later re-checks do not push the window forward, so a verified game
+  with no match still leaves the queue when the window lapses. Without a FitGirl
+  source, the source-matching window falls back to the Metacritic-side
+  `max_queue_days`.
 - **Multiple download sources** — supports FreeGOGPCGames (A-Z list-based)
   and FitGirl repacks (sitemap-based). Sources are configured as an ordered
   list — position determines priority, and the first source with a match
@@ -53,6 +59,10 @@ stays fresh without lifting a finger.
   single-pass execution.
 - **Automatic config migration** — upgrades the YAML config schema
   automatically on startup when new fields are added.
+- **One-time queue cleanup** — on first start after upgrading, pending games that never passed
+  detail verification are deleted. They are re-discovered when a browse pass next reaches their
+  pages (immediately in `latest` mode, when the sweep wraps in `backlog` mode). Verified games
+  awaiting a source match are kept.
 - **Post-processing** — a background thread polls qBittorrent for completed
   downloads, copies them to a configurable library path with SHA-256
   verification, and cleans up source torrents after seeding goals are met.
@@ -165,7 +175,7 @@ download_sites:
 | `enabled` | Enable or disable this source. | `true` |
 | `platform` | Target platform for matching. | `pc` |
 | `cache_hours` | How long to cache the source index before re-fetching. | `6` |
-| `reject_keywords` | Reject games whose FitGirl page title or description contains any of these keywords (case-insensitive). | `[]` |
+| `reject_keywords` | Reject games whose FitGirl page title or "Repack Features" block contains any of these keywords (case-insensitive). Matching is whole-word and negation-aware against the page title and the "Repack Features" block only, so "non-HV repack" does not match `hv`. | `[]` |
 | `max_queue_days` | How many days a game stays in the pending queue *after* its scores are verified (the source-matching phase). `0` = indefinite pending (no expiry). | `60` |
 
 ### `review_sites.metacritic`
@@ -178,17 +188,22 @@ download_sites:
 | `min_criticscore_reviews` | Minimum number of critic reviews required. | `10` |
 | `min_user_score` | Minimum Metacritic user score (0–10). | `7.5` |
 | `min_user_reviews` | Minimum number of user reviews required. | `10` |
-| `max_pages` | Total browse page depth budget. The scanner progressively advances through pages across cycles. When the budget is exhausted, scanning resets to page 1. `0` = unlimited. | `500` |
+| `mode` | Discovery mode. `"latest"` reads up to `max_pages` pages of the window every cycle (no cursors, no pacing) so new releases are always seen, spending the depth newest year first and keeping one page for the immediately lower year; `"backlog"` sweeps back through the window with per-year cursors and pacing. Latest requires `sort_order: "new"` — a score sort is warned about and coerced to `"new"` for that cycle. | `backlog` |
+| `max_pages` | Page budget. In `backlog` mode: total browse page depth budget; the scanner advances across cycles and resets to page 1 when exhausted. In `latest` mode: depth — the first N pages of the window are read every cycle. `0` = no page budget in backlog (the sweep is still bounded by the 10-year year window) and is clamped to a depth of 10 in latest. | `500` |
 | `max_cycle_pages` | Maximum pages per cycle (pacing). `0` = unlimited. | `0` |
-| `max_date` | Date floor for the `new` sort order: sweep back to and including this month (`YYYYMM` with month `01`-`12` and year `1958` or later, e.g. `202401`). `0` = disabled. When set, it takes precedence over `max_pages` and is ignored for `criticscore`/`userscore`. A month later than the current one is clamped to the current month. | `0` |
+| `max_date` | Date floor for the `new` sort order: sweep back to and including this month (`YYYYMM` with month `01`-`12` and year `1958` or later, e.g. `202401`). `0` = disabled. It bounds the window and is ignored for `criticscore`/`userscore`; in `backlog` mode it replaces the `max_pages` budget, while in `latest` mode `max_pages` still sets the depth inside that window. A month later than the current one is clamped to the current month. | `0` |
 | `max_cycle_months` | Pace in date mode: how far back one cycle may sweep, counted in months from the cycle's newest release month (a month is included when a page holds any game at or after its first day, so a cycle can cover N+1 calendar months at a boundary). The floor set by `max_date` always wins — this value can only shorten a cycle, never extend past it. `0` = no month pacing; the maximum is `1200` (100 years), and a larger value is rejected at config load. | `0` |
-| `sort_order` | Discovery and pending processing order: `"new"` (newest release date first), `"criticscore"` (verified games by highest critic score), or `"userscore"` (verified games by highest user score). Unverified games follow verified games in score modes. Changing this value reprioritizes the entire pending queue, including games from previous cycles. | `"new"` |
-| `max_queue_days` | Days a game stays in the pending queue before expiring. `0` = indefinite pending (no expiry). | `30` |
+| `sort_order` | Discovery and pending processing order: `"new"` (newest release date first), `"criticscore"` (verified games by highest critic score), or `"userscore"` (verified games by highest user score). Queued games are already verified (see "Verify before queueing"). Changing this value reprioritizes the entire pending queue, including games from previous cycles. | `"new"` |
+| `max_queue_days` | Fallback expiry window for queued games, used only when no FitGirl source is configured (its `max_queue_days` normally governs the source-matching window). `0` = indefinite pending (no expiry). | `30` |
 | `enabled` | Enable or disable the Metacritic browse step. Disabling skips game discovery entirely. | `true` |
 | `cache_details_days` | Days to cache Metacritic detail-page results. | `7` |
 | `cache_hours` | Hours to cache Metacritic browse-page results. | `6` |
 | `reject_genre` | Reject games whose Metacritic genre contains any of these substrings (case-insensitive). E.g. `["RPG"]` matches "Action RPG", "JRPG", "Western RPG". | `[]` |
 | `reject_title` | Reject games whose title contains any of these substrings (case-insensitive). E.g. `["Remake"]` matches "Resident Evil 4 Remake", "Remake Collection". | `[]` |
+
+Games are verified against their Metacritic detail page **before** they enter the pending
+queue, so the queue only ever holds games that already pass the score thresholds. Games whose
+scores are not published yet are re-checked on the next pass rather than queued.
 
 ### `torrent_client`
 
@@ -274,19 +289,16 @@ flowchart TD
     G -- No --> SKIP2([⛔ Skip])
     G -- Yes --> H{Within max_date\nfloor / max_pages\nwindow?}
     H -- No --> SKIP3([⛔ Skip])
-    H -- Yes --> I[Add to pending\nqueue]
+    H -- Yes --> K[Look up real scores\non Metacritic\ndetail page]
 
-    I --> J[For each pending game]
-    J --> K[Look up real scores\non Metacritic\ndetail page]
-    K --> L{Genre matches\nreject_genre?}
+    K --> M{Real scores\npass thresholds?}
+    M -- No --> SKIP4([⛔ Skip -\nre-checked next pass])
+    M -- Yes --> I[Add to pending queue,\nmarked verified]
+
+    I --> J[For each verified\npending game]
+    J --> L{Genre matches\nreject_genre?}
     L -- Yes --> FAIL1([❌ Remove -\nrejected genre])
-    L -- No --> M{Real scores\npass thresholds?}
-    M -- Yes --> N[Mark as verified\nwith real scores]
-    M -- No --> O{Attempts <\nmax_verify\n_attempts?}
-    O -- Yes --> P([Keep in queue\nfor re-check])
-    O -- No --> FAIL2([❌ Remove -\nmax attempts])
-
-    N --> Q[Match verified\ngames against\nFitGirl sitemap]
+    L -- No --> Q[Match verified\ngames against\nFitGirl sitemap]
     Q --> R{FitGirl match\nfound?}
     R -- No --> STAY([Stay in queue])
     R -- Yes --> S[Fetch magnet link\nfrom FitGirl page]
@@ -301,17 +313,21 @@ flowchart TD
 ### Detailed phases
 
 1. **Metacritic browse** — Scans Metacritic browse pages using the configured
-   `sort_order`; `new` traverses the newest year first. Pending verification,
-   source matching, and delivery use the same ordering, including games carried
-   over from previous cycles. **Important:** browse pages show *internal
-   browse-only metrics*, not the real 0–100 critic scores or 0–10 user scores.
-   These rough scores are used only to build a candidate pool — the real
-   filtering happens in step 4. Games are collected within the `max_pages`
-   browse window. In date mode (`max_date` set with `sort_order: new`) the
-   window is a month floor instead: the sweep stops inside the boundary year as
-   soon as a page's games are all older than `max_date`, and
-   `max_cycle_months` limits how many months of backlog a single cycle covers.
-   `max_pages` and `max_cycle_pages` are then unused. For
+   `sort_order`; `new` traverses the newest year first. Source matching and
+   delivery use the same ordering, including games carried over from previous
+   cycles. **Important:** browse pages show *internal browse-only metrics*, not
+   the real 0–100 critic scores or 0–10 user scores. These rough scores only
+   order and pre-filter candidates — the real threshold check happens before a
+   game is queued (phase 3). `mode: latest` reads up to `max_pages` pages of the
+   window every cycle, newest year first with one page held back for the years
+   below; `mode: backlog` sweeps back through it. Games are
+   collected within the `max_pages` browse window. In `backlog` date mode
+   (`max_date` set with `sort_order: new`) the window is a month floor instead:
+   the sweep stops inside the boundary year as soon as a page's games are all
+   older than `max_date`, and `max_cycle_months` limits how many months of
+   backlog a single cycle covers — `max_pages` and `max_cycle_pages` are then
+   unused. `mode: latest` still reads `max_pages` pages per cycle whatever the
+   date keys say. For
    `criticscore`/`userscore` the date keys are ignored, because those browse
    lists mix years and no page corresponds to a date.
 2. **Browse-page filtering** — Games whose titles match `reject_title` are
@@ -324,19 +340,28 @@ flowchart TD
    unused, and each cycle resumes from the per-year page cursors, restarting at
    the newest year once the floor has been swept.
    **Note:** browse scores are on a different scale and always
-   exceed the configured thresholds — score filtering effectively starts
-   at the verification step (phase 4), not here.
-3. **Pending queue** — Surviving games enter a `pending_games` queue with a
-   configurable expiry (`review_sites.metacritic.platform_overrides.*.max_queue_days`,
-   default 30, or `0` for indefinite). They wait for a detail-page
-   verification pass.
-4. **Score verification** — Each pending game's real Metacritic detail page
-   is fetched. The real 0–100 critic score and 0–10 user score are compared
-   against configured thresholds. Games whose real scores fail the checks
-   are kept for re-verification.
-   **When scores pass**, the game's expiry is recalculated to
-   `now + <source>.max_queue_days` (default 60 per source, or `0` for
-   indefinite), giving it a fresh window for the source-matching phase.
+   exceed the configured thresholds — they cannot filter, so the threshold
+   check happens on the detail page instead (phase 3).
+3. **Detail verification, then queueing** — Each surviving game's real
+   Metacritic detail page is fetched and its 0–100 critic score and 0–10 user
+   score are compared against the configured thresholds. **Only games that pass
+   are queued**, and they enter `pending_games` already marked verified with
+   their real scores, with the source-matching expiry window
+   (`download_sites.fitgirl.max_queue_days`, default 60, or `0` for indefinite;
+   `review_sites.metacritic.platform_overrides.*.max_queue_days` is used only
+   when no FitGirl source is configured). Games that fail — or whose scores are
+   not published yet — are not queued; they are re-checked on the next browse
+   pass.
+4. **Re-verification** — Verified queue entries are re-checked against the
+   detail page each cycle. A game whose scores drop is **not** re-queued on the
+   old numbers: it stays in the queue only until a match attempt re-verifies it
+   and rejects it, or until it expires, and it is never delivered on stale data.
+   **When scores first pass**, the game's expiry is set to
+   `now + <source>.max_queue_days` (the FitGirl entry's value, default 60, or
+   `0` for indefinite; another source's own value is used when no FitGirl source
+   is configured). Later passing re-checks do **not** extend it, so a game that
+   keeps passing but never matches still leaves the queue when the window
+   lapses.
 5. **Genre rejection** — Before score verification, the game's genres
    (extracted from the detail page) are checked against `reject_genre`.
    Matching games are removed from pending immediately — no score
@@ -448,8 +473,8 @@ If you find the queue growing indefinitely:
 - Increase `max_pages` to catch more recently released games
 - Or set `max_date` with `sort_order: new` to state the oldest month you want
   reviewed, so the cutoff is a date instead of a page count
-- Games with failing scores are re-verified each cycle — reduce `max_queue_days` if
-  you want them to expire faster
+- Games that fail score thresholds are not queued at all — they are re-checked when
+  the next browse pass reaches their pages again
 - The message `0 new + X from previous cycles` means browsing found nothing new
 
 **Q: Why does `max_queue_days` have two separate settings — one for Metacritic and one for FitGirl?**

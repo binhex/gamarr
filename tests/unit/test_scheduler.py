@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from datetime import UTC
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -644,6 +644,16 @@ class TestRescheduleAcquisition:
 class TestCancelEvent:
     """Cancel event wiring in _run_daemon and _ShutdownEvent."""
 
+    def test_cycle_guard_returns_empty_on_watchdog_abort(self) -> None:
+        from gamarr.scheduler import AcquisitionWatchdogTimeoutError, _run_cycle_guarded
+
+        config = _make_config(schedule_enabled=False)
+        with patch(
+            "gamarr.scheduler._run_acquisition_guarded",
+            side_effect=AcquisitionWatchdogTimeoutError("hung"),
+        ):
+            assert _run_cycle_guarded(config, {}) == []
+
     def test_shutdown_event_sets_cancel_event(self) -> None:
         """When _ShutdownEvent.__call__ is invoked, it should set the
         associated cancel_event."""
@@ -715,7 +725,6 @@ class TestAcquisitionWatchdog:
     def test_hung_acquisition_aborts_and_sets_cancel_event(self) -> None:
         import threading
         import time
-        from typing import Any
 
         from gamarr.scheduler import _run_acquisition_guarded
         from gamarr.utils import TimeoutExceededError
@@ -767,7 +776,6 @@ class TestAcquisitionWatchdog:
     def test_aborted_cycle_does_not_cancel_next_cycle(self) -> None:
         import threading
         import time
-        from typing import Any
 
         from gamarr.scheduler import _run_acquisition_guarded
         from gamarr.utils import TimeoutExceededError
@@ -799,7 +807,6 @@ class TestAcquisitionWatchdog:
 
     def test_shutdown_event_cancels_a_running_cycle(self) -> None:
         import threading
-        from typing import Any
 
         from gamarr.scheduler import _run_acquisition_guarded
 
@@ -846,3 +853,128 @@ class TestBuildKwargsDateKeys:
         assert kwargs["fitgirl_cache_hours"] == 5
         assert "cache_pages_hours" not in kwargs
         assert "fitgirl_cache_pages_hours" not in kwargs
+
+
+class TestBuildKwargsDiscoveryMode:
+    """_build_kwargs must forward the discovery mode."""
+
+    def test_forwards_mode(self) -> None:
+        from gamarr.scheduler import _build_kwargs
+
+        config = _make_config()
+        config.review_sites.metacritic.platform_overrides["pc"].mode = "latest"
+        assert _build_kwargs(config)["mode"] == "latest"
+
+
+class TestSchedulerErrorBranches:
+    """Guarded runs, cancel-event validation, and listener early returns."""
+
+    def test_run_guarded_swallows_exceptions(self) -> None:
+        from gamarr.scheduler import _run_guarded
+
+        def boom() -> None:
+            raise RuntimeError("boom")
+
+        _run_guarded("test task", boom)  # must not propagate
+
+    def test_rejects_foreign_cancel_event(self) -> None:
+        from gamarr.scheduler import _run_acquisition_guarded
+
+        with pytest.raises(TypeError):
+            _run_acquisition_guarded(MagicMock(), timeout_seconds=1.0, cancel_event="not-an-event")
+
+    def test_log_next_run_time_without_job_returns(self) -> None:
+        from gamarr.scheduler import _log_next_run_time
+
+        scheduler = MagicMock()
+        scheduler.get_job.return_value = None
+        _log_next_run_time(scheduler, "acquisition")
+
+    def test_acquisition_listener_ignores_other_jobs(self) -> None:
+        from gamarr.scheduler import _reschedule_acquisition
+
+        scheduler = MagicMock()
+        event = MagicMock()
+        event.job_id = "post_processing"
+        _reschedule_acquisition(scheduler, event, interval_mins=5)
+        scheduler.reschedule_job.assert_not_called()
+
+    def test_post_processing_listener_ignores_other_jobs(self) -> None:
+        from gamarr.scheduler import _reschedule_post_processing
+
+        scheduler = MagicMock()
+        event = MagicMock()
+        event.job_id = "acquisition"
+        _reschedule_post_processing(scheduler, event, interval_mins=5)
+        scheduler.reschedule_job.assert_not_called()
+
+    def test_post_processing_listener_survives_missing_job(self) -> None:
+        from apscheduler.jobstores.base import JobLookupError
+
+        from gamarr.scheduler import _reschedule_post_processing
+
+        scheduler = MagicMock()
+        scheduler.reschedule_job.side_effect = JobLookupError("post_processing")
+        event = MagicMock()
+        event.job_id = "post_processing"
+        _reschedule_post_processing(scheduler, event, interval_mins=5)  # must not propagate
+
+
+class TestMatchingWindowDays:
+    """The queue window must come from a source the operator actually configured."""
+
+    def _config(self, sites: list[dict], metacritic_days: int = 30) -> Any:
+        from gamarr.config import Config
+
+        return Config.model_validate(
+            {
+                "download_sites": sites,
+                "review_sites": {
+                    "metacritic": {"platform_overrides": {"pc": {"max_queue_days": metacritic_days}}},
+                },
+            },
+        )
+
+    @staticmethod
+    def _mc(config: Any) -> Any:
+        return config.review_sites.metacritic.platform_overrides["pc"]
+
+    def test_fitgirl_entry_wins(self) -> None:
+        from gamarr.scheduler import _matching_window_days
+
+        config = self._config([{"name": "fitgirl", "max_queue_days": 45}])
+        assert _matching_window_days(config, self._mc(config)) == 45
+
+    def test_another_source_window_is_used_without_fitgirl(self) -> None:
+        from gamarr.scheduler import _matching_window_days
+
+        config = self._config([{"name": "freegog", "max_queue_days": 10}], metacritic_days=30)
+        assert _matching_window_days(config, self._mc(config)) == 10, (
+            "a configured source window must not be replaced by the metacritic fallback"
+        )
+
+    def test_metacritic_value_is_the_last_resort(self) -> None:
+        from gamarr.scheduler import _matching_window_days
+
+        config = self._config([], metacritic_days=12)
+        assert _matching_window_days(config, self._mc(config)) == 12
+
+
+class TestMatchingWindowDisabledFitgirl:
+    """A disabled FitGirl entry must not govern the window it no longer matches."""
+
+    def test_disabled_fitgirl_falls_through_to_the_enabled_source(self) -> None:
+        from gamarr.config import Config
+        from gamarr.scheduler import _matching_window_days
+
+        config = Config.model_validate(
+            {
+                "download_sites": [
+                    {"name": "fitgirl", "enabled": False, "max_queue_days": 60},
+                    {"name": "freegog", "max_queue_days": 10},
+                ],
+                "review_sites": {"metacritic": {"platform_overrides": {"pc": {"max_queue_days": 30}}}},
+            },
+        )
+        mc_cfg = config.review_sites.metacritic.platform_overrides["pc"]
+        assert _matching_window_days(config, mc_cfg) == 10

@@ -1401,8 +1401,8 @@ class TestScanOutcomeFlags:
         assert client._recent_games_exhausted is False
         assert client._recent_games_failed is False
 
-    def test_scan_fetches_exactly_one_probe_page_past_the_limit(self) -> None:
-        """The scan credits max_pages and fetches one more page as the drain probe."""
+    def test_scan_fetches_exactly_max_pages(self) -> None:
+        """The page budget costs exactly max_pages fetches, not max_pages + 1."""
         from unittest.mock import patch
 
         client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
@@ -1412,8 +1412,8 @@ class TestScanOutcomeFlags:
             games = client.scan_recent_games("pc", max_games=0, max_pages=3)
 
         assert len(games) == 3, f"Expected exactly max_pages credited games, got {len(games)}"
-        assert mock_fetch.call_count == 4, (
-            f"Expected max_pages + 1 fetches (three credited plus one probe), got {mock_fetch.call_count}"
+        assert mock_fetch.call_count == 3, (
+            f"Expected exactly max_pages fetches (no fetch-and-discard past the budget), got {mock_fetch.call_count}"
         )
 
 
@@ -1716,7 +1716,7 @@ class TestBrowseScanHelpers:
         from gamarr.metacritic import _page_stop_decision
 
         page: list[dict[str, Any]] = [{"release_date": "2019-05-01"}]
-        stop, cutoff_reached, stopping_cutoff = _page_stop_decision("new", page, "2024-01-01", 0, None, 0, 1, 1)
+        stop, cutoff_reached, stopping_cutoff = _page_stop_decision("new", page, "2024-01-01", 0, None)
         assert stop is True
         assert cutoff_reached is True
         assert stopping_cutoff == "2024-01-01", "the stop cause must name the bound that fired"
@@ -1725,7 +1725,7 @@ class TestBrowseScanHelpers:
         from gamarr.metacritic import _page_stop_decision
 
         page: list[dict[str, Any]] = [{"release_date": "2025-11-01"}]
-        stop, cutoff_reached, _stopping_cutoff = _page_stop_decision("new", page, "2024-01-01", 0, None, 0, 1, 1)
+        stop, cutoff_reached, _stopping_cutoff = _page_stop_decision("new", page, "2024-01-01", 0, None)
         assert stop is False
         assert cutoff_reached is False
 
@@ -1754,3 +1754,38 @@ class TestBrowseScanHelpers:
 
         assert client._classify_page([], 2, None) is None
         assert client._recent_games_exhausted is True
+
+
+class TestBudgetStopPageAccounting:
+    """A budget stop must report the page it actually collected."""
+
+    def test_last_page_reports_the_collected_page(self) -> None:
+        from unittest.mock import patch
+
+        from gamarr.database import Database
+
+        client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
+        pages = [[{"title": f"Game {p}", "slug": f"game-{p}", "score": 85, "user_rating": 8.0}] for p in range(1, 11)]
+
+        with patch.object(client, "_fetch_browse_page", side_effect=pages):
+            client.scan_recent_games("pc", max_games=0, max_pages=3)
+
+        assert client._recent_games_last_page == 3, (
+            f"three pages were collected, so the caller must see last_page=3, got {client._recent_games_last_page}"
+        )
+
+    def test_resumed_budget_stop_still_advances(self) -> None:
+        """A one-page budget at an arbitrary start must not look like zero pages."""
+        from unittest.mock import patch
+
+        from gamarr.database import Database
+
+        client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
+        pages = [[{"title": f"Game {p}", "slug": f"game-{p}", "score": 85, "user_rating": 8.0}] for p in range(1, 11)]
+
+        with patch.object(client, "_fetch_browse_page", side_effect=pages):
+            client.scan_recent_games("pc", max_games=0, max_pages=1, start_page=5)
+
+        assert client._recent_games_last_page == 5, (
+            f"a one-page budget at page 5 must report 5, got {client._recent_games_last_page}"
+        )

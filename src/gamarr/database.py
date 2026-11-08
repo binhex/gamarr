@@ -5,16 +5,26 @@ from __future__ import annotations
 import contextlib
 import datetime
 import json
+import threading
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from loguru import logger
 from sqlalchemy import Boolean, Float, Integer, String, Text, create_engine, func, text
 from sqlalchemy import inspect as sa_inspect
-from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+from sqlalchemy.pool import StaticPool
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from sqlalchemy.orm import Session
 
 # Days to use for indefinite pending expiry (when max_queue_days is 0 or negative).
 _INDEFINITE_DAYS: int = 9999
+
+# PRAGMA user_version stamp for the one-time pending-queue hygiene migration.
+_QUEUE_HYGIENE_USER_VERSION = 1
 
 
 class Base(DeclarativeBase):
@@ -42,6 +52,11 @@ class HistoryRow(Base):
     post_process_state: Mapped[str | None] = mapped_column(String, nullable=True)
     post_process_copied_at: Mapped[str | None] = mapped_column(String, nullable=True)
     processed_at: Mapped[str] = mapped_column(String, nullable=False)
+
+
+# History result written when a queued game leaves the queue without a match.
+# Kept as a constant because it is excluded from the "already handled" check.
+_EXPIRED_RESULT = "Expired"
 
 
 class PendingGame(Base):
@@ -150,6 +165,10 @@ class ScanState(Base):
     last_cutoff_date: Mapped[str | None] = mapped_column(String, nullable=True)
     last_max_weeks: Mapped[int | None] = mapped_column(Integer, nullable=True)
     last_sort_order: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The order the per-year sweep cursors were last written under.  Kept apart
+    # from last_sort_order (the order the browse cache was written in), because
+    # latest mode re-orders the cache without touching the cursors.
+    cursor_sort_order: Mapped[str | None] = mapped_column(String, nullable=True)
 
 
 class BacklogProgress(Base):
@@ -184,25 +203,55 @@ class Database:
             path.mkdir(parents=True, exist_ok=True)
             self._db_path = str(path / "gamarr.db")
 
-        self._engine = create_engine(f"sqlite:///{self._db_path}", echo=False)
+        # A default in-memory SQLite engine hands every thread its own empty
+        # database, so the pooled browse/verify lookups would see no schema.
+        # StaticPool keeps one connection and shares it across threads — but a
+        # DBAPI connection is not itself thread-safe, so in-memory sessions are
+        # serialised by a lock (file databases get a connection per session).
+        self._memory_lock = threading.Lock() if self._db_path == ":memory:" else None
+        if self._db_path == ":memory:":
+            self._engine = create_engine(
+                "sqlite:///:memory:",
+                echo=False,
+                poolclass=StaticPool,
+                connect_args={"check_same_thread": False},
+            )
+        else:
+            self._engine = create_engine(f"sqlite:///{self._db_path}", echo=False)
         # WAL mode + busy_timeout for concurrent readers from thread pool
         with self._engine.connect() as conn:
             conn.execute(text("PRAGMA journal_mode=WAL"))
             conn.execute(text("PRAGMA busy_timeout=5000"))
             conn.commit()
+        # A database created by this open has no queue to clean up: the one-time
+        # hygiene delete targets queues written by a previous gamarr version.
+        pending_games_existed = sa_inspect(self._engine).has_table("pending_games")
         Base.metadata.create_all(self._engine)
         self._session_factory = sessionmaker(bind=self._engine)
-        self._migrate()
+        self._migrate(pending_games_existed=pending_games_existed)
         logger.debug("Database opened at '{}'", self._db_path)
 
-    def _migrate(self) -> None:
-        """Add columns added in newer versions of gamarr."""
+    def _migrate(self, *, pending_games_existed: bool = True) -> None:
+        """Apply schema and data migrations for newer versions of gamarr.
+
+        Args:
+            pending_games_existed: Whether the ``pending_games`` table already
+                existed before this open; forwarded to the one-time queue
+                hygiene migration.
+        """
         self._migrate_pending_games()
         self._migrate_game_detail_cache()
         self._migrate_source_titles()
         self._migrate_scan_state()
         self._migrate_browse_cache()
-        self._migrate_unify_pending_tables()
+        legacy_present = self._legacy_pending_tables_present()
+        legacy_migrated = self._migrate_unify_pending_tables()
+        if legacy_present and not legacy_migrated:
+            # The copy failed, so its unverified rows are not in pending_games yet;
+            # stamping now would let them escape the one-time cleanup forever.
+            logger.warning("Legacy pending tables could not be migrated — deferring the queue hygiene migration")
+        else:
+            self._migrate_pending_queue_hygiene(pending_games_existed=pending_games_existed or legacy_migrated)
         self._migrate_history_post_process()
 
     def _migrate_pending_games(self) -> None:
@@ -270,6 +319,25 @@ class Database:
                     session.execute(text("ALTER TABLE scan_state ADD COLUMN last_sort_order VARCHAR"))
                     session.commit()
                 logger.debug("Added last_sort_order column to scan_state")
+            if "cursor_sort_order" not in columns:
+                with self._session() as session:
+                    session.execute(text("ALTER TABLE scan_state ADD COLUMN cursor_sort_order VARCHAR"))
+                    session.commit()
+                logger.debug("Added cursor_sort_order column to scan_state")
+            # Existing rows: the old last_sort_order WAS the order the sweep
+            # cursors were written under, so adopt it.  Left NULL, the first
+            # post-upgrade order change would resume cursors that belong to the
+            # previous order and skip pages.  Run unconditionally (it is
+            # idempotent) so a migration that died between the ALTER and this
+            # UPDATE still repairs itself on the next open.
+            with self._session() as session:
+                session.execute(
+                    text(
+                        "UPDATE scan_state SET cursor_sort_order = last_sort_order "
+                        "WHERE cursor_sort_order IS NULL AND last_sort_order IS NOT NULL",
+                    ),
+                )
+                session.commit()
         except Exception:
             logger.debug("Migration of scan_state skipped (table may not exist yet)")
 
@@ -362,21 +430,102 @@ class Database:
         logger.info("Migrated and dropped table: {}", table_name)
         return True
 
-    def _migrate_unify_pending_tables(self) -> None:
-        """Migrate pending_games_backlog / pending_games_latest -> pending_games, then drop old tables."""
+    def _legacy_pending_tables_present(self) -> bool:
+        """Return True when any pre-unification pending table still exists.
+
+        Inspection failures report ``True``: the caller defers the one-time
+        pending-queue cleanup while legacy rows may still be waiting to be
+        copied in, and an unreadable schema is not evidence that they are gone.
+        Stamping the cleanup in that state would let legacy unverified rows
+        escape it forever.
+
+        Returns:
+            True when a legacy table exists, or when existence cannot be
+            determined.
+        """
+        try:
+            existing = set(sa_inspect(self._engine).get_table_names())
+        except Exception:
+            logger.warning("Could not inspect the database schema — deferring the pending queue cleanup")
+            return True
+        return any(name in existing for name in Database._LEGACY_PENDING_TABLES)
+
+    def _migrate_unify_pending_tables(self) -> bool:
+        """Migrate pending_games_backlog / pending_games_latest -> pending_games, then drop old tables.
+
+        Returns:
+            True when legacy tables were present and their rows copied in.
+        """
         try:
             inspector = sa_inspect(self._engine)
             existing_tables = inspector.get_table_names()
             legacy_names = Database._LEGACY_PENDING_TABLES
             if not any(t in existing_tables for t in legacy_names):
-                return
+                return False
             logger.info("Migrating pending_games_backlog / pending_games_latest -> pending_games")
             with self._session() as session:
                 for table_name in legacy_names:
                     if table_name in existing_tables:
                         self._migrate_one_legacy_table(session, table_name)
+            return True
         except Exception:
             logger.debug("Migration of pending_games_unify skipped (tables may not exist yet)")
+            return False
+
+    def _migrate_pending_queue_hygiene(self, *, pending_games_existed: bool = True) -> None:
+        """Delete pending rows that were never verified against a detail page (runs once).
+
+        Rows queued before verify-before-queue were admitted on browse-page
+        metrics, so most can never pass detail verification.  The delete is
+        stamped in ``PRAGMA user_version`` because repeating it on every open
+        would delete rows queued after the upgrade that are still awaiting
+        verification.
+
+        Args:
+            pending_games_existed: Whether ``pending_games`` already existed
+                before this open.  A database created by this open has no
+                legacy queue, so it is returned from without being stamped and
+                the cleanup runs on that file's next open.
+        """
+        if not pending_games_existed:
+            return
+        try:
+            with self._engine.connect() as conn:
+                version = int(conn.execute(text("PRAGMA user_version")).scalar() or 0)
+                if version >= _QUEUE_HYGIENE_USER_VERSION:
+                    return
+                # A pre-existing database gets score_checks_passed by ALTER, so
+                # every legacy row starts NULL.  A row carrying a plausible
+                # score was verified by the old detail flow (browse rows stored
+                # their own scale, e.g. 1998.0, which is why the ranges are
+                # bounded).  User-score-only rows count too: with
+                # min_criticscore: 0 the old flow verified on user score alone,
+                # leaving metascore NULL -- or holding the stale browse-scale
+                # value it was queued with, which is why the user score is
+                # checked independently.  A wrongly adopted row is re-verified
+                # before delivery; a wrongly deleted one is gone.
+                conn.execute(
+                    text(
+                        "UPDATE pending_games SET score_checks_passed = 1 "
+                        "WHERE score_checks_passed IS NULL AND ("
+                        "metascore BETWEEN 0 AND 100 "
+                        "OR user_score BETWEEN 0 AND 10)",
+                    ),
+                )
+                kept = conn.execute(
+                    text("SELECT COUNT(*) FROM pending_games WHERE score_checks_passed IS TRUE")
+                ).scalar()
+                result = conn.execute(text("DELETE FROM pending_games WHERE score_checks_passed IS NOT TRUE"))
+                removed = result.rowcount or 0
+                conn.execute(text(f"PRAGMA user_version = {_QUEUE_HYGIENE_USER_VERSION}"))
+                conn.commit()
+            logger.info(
+                "Queue migration: removed {} unverified pending rows ({} verified kept)",
+                removed,
+                kept or 0,
+            )
+        except Exception:
+            logger.warning("Queue migration of pending_games failed — rows left in place", exc_info=True)
 
     def _migrate_history_post_process(self) -> None:
         """Add genres, post_process_state, post_process_copied_at columns to history if missing."""
@@ -400,8 +549,31 @@ class Database:
     def close(self) -> None:
         self._engine.dispose()
 
-    def _session(self) -> Session:
-        return self._session_factory()
+    def _session(self) -> contextlib.AbstractContextManager[Session]:
+        """Return a session context manager.
+
+        For an in-memory database every session shares one DBAPI connection
+        (StaticPool), so the lock serialises them — a connection is not
+        thread-safe even with ``check_same_thread=False``.  File databases get a
+        connection per session and take no lock.
+        """
+        session = self._session_factory()
+        lock = self._memory_lock
+
+        @contextlib.contextmanager
+        def managed() -> Iterator[Session]:
+            if lock is not None:
+                lock.acquire()
+            try:
+                yield session
+            finally:
+                try:
+                    session.close()
+                finally:
+                    if lock is not None:
+                        lock.release()
+
+        return managed()
 
     def record_pending(
         self,
@@ -416,7 +588,17 @@ class Database:
         genres: list[str] | None = None,
         release_date: str | None = None,
         expires_at: str | None = None,
-    ) -> None:
+        score_checks_passed: bool = False,
+    ) -> bool:
+        """Insert a pending game unless its slug is already queued.
+
+        Args:
+            score_checks_passed: Mark the row verified at insert time.  A row left
+                unverified is skipped by the source-matching gate and, without an
+                explicit ``expires_at``, gets a ~27-year expiry while still
+                counting as a known slug.  Production callers pass both. (Used by
+                verify-before-queue).
+        """
         now = datetime.datetime.now(tz=datetime.UTC).isoformat()
         indefinite_default = (
             datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=_INDEFINITE_DAYS)
@@ -424,7 +606,7 @@ class Database:
         with self._session() as session:
             existing = session.get(PendingGame, slug)
             if existing is not None:
-                return  # Already pending
+                return False  # Already pending
             row = PendingGame(
                 slug=slug,
                 game_title=game_title,
@@ -438,9 +620,21 @@ class Database:
                 discovered_at=now,
                 expires_at=expires_at or indefinite_default,
                 last_checked_at=None,
+                score_checks_passed=True if score_checks_passed else None,
             )
+            if not score_checks_passed:
+                # Unverified rows are removed by the one-time queue hygiene
+                # migration on the next database open. Log it so a caller that
+                # relied on the default cannot wonder where its rows went.
+                logger.warning(
+                    "Queued '{}' unverified — the one-time queue hygiene migration deletes such rows only "
+                    "if it has not run yet on this database; afterwards they stay queued but are skipped "
+                    "by matching until they expire",
+                    game_title,
+                )
             session.add(row)
             session.commit()
+            return True
 
     def get_pending(
         self,
@@ -503,6 +697,24 @@ class Database:
         if row is None:
             return None
         return row.last_sort_order
+
+    def get_cursor_sort_order(self, platform: str) -> str | None:
+        """Return the sort order the sweep cursors were last written under."""
+        with self._session() as session:
+            row = session.get(ScanState, platform)
+            if row is None:
+                return None
+            return row.cursor_sort_order
+
+    def set_cursor_sort_order(self, platform: str, sort_order: str) -> None:
+        """Record the sort order the sweep cursors belong to."""
+        with self._session() as session:
+            row = session.get(ScanState, platform)
+            if row is None:
+                session.add(ScanState(platform=platform, cursor_sort_order=sort_order))
+            else:
+                row.cursor_sort_order = sort_order
+            session.commit()
 
     def set_last_sort_order(self, platform: str, sort_order: str) -> None:
         """Store or update the sort_order value for *platform*."""
@@ -568,8 +780,11 @@ class Database:
     def update_pending_expiry(self, slug: str, max_queue_days: int) -> None:
         """Recalculate expires_at to now + max_queue_days for a pending game.
 
-        Used to extend the expiry window when a game transitions from
-        the score-waiting phase to the FitGirl-matching phase.
+        Called only when a row newly qualifies (``score_checks_passed`` was not
+        already true).  Games queued by verify-before-queue arrive qualified, so
+        in practice this affects legacy rows waiting for re-verification.  Do NOT
+        call it on every passing re-check: that pushes the window forward forever
+        and the queue grows without bound.
 
         When *max_queue_days* is 0 or negative, the expiry is set to a far
         future date (~27 years), making the game pend indefinitely.
@@ -598,7 +813,13 @@ class Database:
         user_score: float | None = None,
         user_reviews: int | None = None,
     ) -> None:
-        """Update the Metacritic scores for a pending game with real detail-page values."""
+        """Update the Metacritic scores for a pending game with real detail-page values.
+
+        Also marks the row verified (``score_checks_passed``).  Callers must only
+        pass values that already satisfied the thresholds: the one-time hygiene
+        cleanup treats that flag as "ever verified", so storing a failing score
+        through this method would make the row permanently immune to it.
+        """
         with self._session() as session:
             row = session.get(PendingGame, slug)
             if row is None:
@@ -622,11 +843,13 @@ class Database:
             return session.get(PendingGame, slug) is not None
 
     def get_known_slugs(self, *, source: str) -> set[str]:
-        """Return the set of all slugs already processed or pending.
+        """Return the set of slugs already processed or pending.
 
         Replaces N+1 ``is_processed`` + ``is_pending`` calls made per game
         during browse processing.  Instead of querying the DB for each of
         35K games individually, two batch queries collect all known slugs.
+        Rows whose history result is ``Expired`` are excluded, matching
+        :meth:`is_processed`.
 
         Args:
             source: The source name (e.g. ``"metacritic"``).
@@ -642,7 +865,18 @@ class Database:
             # the source column now reflects the download origin (fitgirl,
             # freegog) rather than a fixed "metacritic" value.  Deduping
             # by source_url alone is correct — it is globally unique per game.
-            rows = session.query(HistoryRow.source_url).filter(HistoryRow.source_url.isnot(None)).all()
+            # "Expired" rows are excluded: expiry only means the game left the
+            # queue unmatched within its window, so the slug must stay eligible.
+            # Including them here (this is the set the browse path actually uses)
+            # turned every expiry into a permanent blacklist.
+            rows = (
+                session.query(HistoryRow.source_url)
+                .filter(
+                    HistoryRow.source_url.isnot(None),
+                    HistoryRow.result != _EXPIRED_RESULT,
+                )
+                .all()
+            )
             for (source_url,) in rows:
                 slug: str = str(source_url)
                 if slug.startswith("mc:"):
@@ -651,7 +885,14 @@ class Database:
                     known.add(slug)
             # Slugs from pending_games table (no platform filter — matches
             # old ``is_pending(slug)`` behavior which checked by PK only).
-            pending_rows = session.query(PendingGame.slug).all()
+            # Lapsed rows are excluded: browse runs before the expiry sweep, so
+            # counting them would make a game whose window just lapsed look
+            # "already known" and delay its re-discovery by a whole cycle.
+            pending_rows = (
+                session.query(PendingGame.slug)
+                .filter(PendingGame.expires_at > datetime.datetime.now(tz=datetime.UTC).isoformat())
+                .all()
+            )
             for (slug,) in pending_rows:
                 known.add(str(slug))
         return known
@@ -1004,11 +1245,26 @@ class Database:
             session.commit()
 
     def is_processed(self, source: str, source_url: str) -> bool:
+        """Return True when *source_url* was already handled.
+
+        An ``Expired`` row does not count.  Expiry only means the game left the
+        pending queue without a match within its window; treating it as handled
+        would turn that window into a permanent blacklist, so a repack published
+        the day after expiry could never be matched.
+
+        Args:
+            source: The source name (kept for call-site symmetry).
+            source_url: The URL or ``mc:<slug>`` key to look up.
+
+        Returns:
+            True when a non-expired history row exists for *source_url*.
+        """
         with self._session() as session:
             count = (
                 session.query(HistoryRow)
                 .filter(
                     HistoryRow.source_url == source_url,
+                    HistoryRow.result != _EXPIRED_RESULT,
                 )
                 .count()
             )

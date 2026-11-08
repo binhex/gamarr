@@ -14,6 +14,23 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
+def _passing_detail_client() -> MagicMock:
+    """Return a Metacritic stand-in whose detail lookup passes verification."""
+    from gamarr.metacritic import ScoreResult
+
+    mc = MagicMock()
+    mc.lookup_game.return_value = ScoreResult(
+        title="Game",
+        slug="game",
+        metascore=88.0,
+        metascore_review_count=40,
+        user_score=8.4,
+        user_review_count=40,
+        passed=True,
+    )
+    return mc
+
+
 class TestPageTitleHasDlcKeywords:
     """Tests for _page_title_has_dlc_keywords helper."""
 
@@ -926,62 +943,31 @@ class TestRunAcquisition:
             # Sitemap is NOT fetched when there are no pending games to match
             mock_source.fetch_sitemap.assert_not_called()
 
-    def test_run_acquisition_skips_sitemap_for_games_below_threshold(self, tmp_path: Path) -> None:
-        """Games below score thresholds must NOT trigger sitemap fetch.
+    def test_run_acquisition_skips_sitemap_when_no_verified_pending(self, tmp_path: Path) -> None:
+        """No verified pending game must NOT trigger a sitemap fetch.
 
-        When 52 pending games all have inflated browse-page scores that
-        fail real Metacritic verification, none should pass
-        score_checks_passed=True, so `has_verified_pending` returns
-        False and the sitemap is not fetched.  Games stay pending
-        for re-verification on a future cycle.
+        The queue is verified-only, so an empty queue is the ordinary
+        "nothing to match" state: a cycle with no new browse games and no
+        verified pending rows never fetches a source sitemap.
         """
-        import datetime
         from unittest.mock import MagicMock, patch
 
         from gamarr.database import Database
 
         db_path = str(tmp_path / "test.db")
-
-        # Pre-populate 52 pending games, all with inflated browse-page scores
-        db = Database(db_path)
-        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        for i in range(52):
-            db.record_pending(
-                slug=f"game-{i:02d}",
-                game_title=f"Game {i:02d}",
-                platform="pc",
-                metascore=1478.0,  # WRONG browse score, not 0-100
-                metascore_reviews=999,
-                user_score=2007.0,  # WRONG browse score, not 0-10
-                user_reviews=None,
-                release_date="2026-06-03",
-                expires_at=expires,
-            )
-        db.close()
+        Database(db_path).close()
 
         with (
             patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
             patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
             patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
         ):
-            import types
-
             mock_source = MagicMock()
             mock_source_cls.return_value = mock_source
 
             mock_mc = MagicMock()
-            # Browse returns no new games
+            # Browse returns no new games, so the queue stays empty.
             mock_mc.scan_recent_games.return_value = []
-            # All detail-page lookups return failing scores
-            mock_mc.lookup_game.return_value = types.SimpleNamespace(
-                metascore=62.0,
-                metascore_review_count=5,
-                user_score=None,
-                user_review_count=0,
-                genres=[],
-                must_play=False,
-                release_date="2026-06-03",
-            )
             mock_mc_cls.return_value = mock_mc
 
             mock_qbt = MagicMock()
@@ -1001,19 +987,13 @@ class TestRunAcquisition:
                 min_criticscore_reviews=5,
             )
 
-            # Sitemap must NOT be fetched because no pending game has
-            # passed score verification (all have score_checks_passed=None).
             mock_source.fetch_sitemap.assert_not_called()
             assert results == []
 
-            # Confirm ALL games are still pending for future re-verification
-            verify_db = Database(db_path)
-            remaining = verify_db.get_pending(platform="pc")
-            assert len(remaining) == 52, f"{len(remaining)} games should remain pending for re-check"
-            assert all(g.score_checks_passed is None or g.score_checks_passed is False for g in remaining), (
-                "No games should have passed score checks"
-            )
-            verify_db.close()
+        verify_db = Database(db_path)
+        assert verify_db.get_pending(platform="pc") == [], "the cycle must not queue anything"
+        assert verify_db.has_verified_pending(platform="pc") is False
+        verify_db.close()
 
     def test_source_error_does_not_block_other_source_matches(self, mocker: Any) -> None:
         """When one source errors during fetch_sitemap, other sources still match.
@@ -1253,7 +1233,7 @@ class TestMetacriticBrowse:
         buf = io.StringIO()
         logger_id = logger.add(buf, format="{level.name}:{message}", colorize=False)
         try:
-            _process_browse_games(browse_games, "pc", db, thresholds)
+            _process_browse_games(browse_games, "pc", db, thresholds, mc=_passing_detail_client())
         finally:
             logger.remove(logger_id)
 
@@ -2459,7 +2439,7 @@ class TestMetacriticBrowse:
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
-        _process_browse_games(browse_games, "pc", db, thresholds, max_queue_days=30)
+        _process_browse_games(browse_games, "pc", db, thresholds, max_queue_days=30, mc=_passing_detail_client())
         pending = db.get_pending(platform="pc")
         assert len(pending) == 1
         assert pending[0].slug == "elden-ring"
@@ -2688,12 +2668,12 @@ class TestMetacriticBrowse:
             [{"title": "Game With Body Keyword", "url": "https://fitgirl-repacks.site/game-with-body-keyword/"}],
         )
 
-        # Title is clean, but article body contains "Hypervisor"
+        # Title is clean, but the Repack Features block contains "Hypervisor"
         html = (
             "<html><head><title>Game With Body Keyword [FitGirl Repack]</title></head>"
             "<body>"
             "<article>"
-            "Hypervisor Bypass, Lossless Repack Game With Body Keyword"
+            "Repack Features Hypervisor Bypass, Lossless Repack Game With Body Keyword"
             "</article>"
             "</body></html>"
         )
@@ -2723,8 +2703,8 @@ class TestMetacriticBrowse:
                 game_release_date=None,
                 reject_keywords=["Hypervisor"],
             )
-            # SHOULD be rejected because article body contains "Hypervisor"
-            assert result is None, "Game should be rejected \u2014 article body contains Hypervisor"
+            # SHOULD be rejected because the Repack Features block contains "Hypervisor"
+            assert result is None, "Game should be rejected \u2014 Repack Features contains Hypervisor"
             assert db.is_pending("game-with-body-keyword"), "Should remain pending"
             db.close()
 
@@ -2872,85 +2852,65 @@ class TestMetacriticBrowse:
             assert result is not None, "Game should proceed \u2014 keyword only in comments section"
             db.close()
 
-    def test_reject_keywords_backwards_compat_excluded(self, tmp_path: Path) -> None:
-        """When reject keywords only appear in the "Backwards Compatibility" section
-        (describing a previous HV repack), the current non-HV repack should NOT be rejected."""
-        import datetime
-        from unittest.mock import MagicMock, patch
+    def test_reject_keywords_ignores_boilerplate_above_features(self, tmp_path: Path) -> None:
+        """Boilerplate above the Repack Features block must not reject a non-HV repack."""
+        from unittest.mock import patch
 
         from gamarr.database import Database
-        from gamarr.pipeline import _process_single_pending_match
+        from gamarr.pipeline import _check_reject_keywords
 
-        db = Database(str(tmp_path / "test.db"))
-        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
-            slug="lego-batman",
-            game_title="LEGO Batman: Legacy of the Dark Knight",
-            platform="pc",
-            metascore=85.0,
-            user_score=8.0,
-            expires_at=expires,
+        db = Database(str(tmp_path / "keywords.db"))
+        db.record_pending(slug="forza-horizon-6", game_title="Forza Horizon 6", platform="pc")
+        article = (
+            "Download Mirrors Only updated files for a new non-HV repack. "
+            "convert your INSTALLED HV version of the game "
+            "Repack Features Nothing ripped, 100% lossless, custom launcher added "
+            "Screenshots gallery"
         )
-        db.update_pending_scores(slug="lego-batman", metascore=85.0, user_score=8.0)
-        db.rebuild_source_titles(
-            "fitgirl",
-            [{"title": "LEGO Batman: Legacy of the Dark Knight", "url": "https://fitgirl-repacks.site/lego-batman/"}],
-        )
-
-        mock_qbt = MagicMock()
-        mock_qbt.is_torrent_present.return_value = False
-        mock_qbt.adopt_present_torrent.return_value = None
-        mock_qbt.add_torrent.return_value = "gamarr-tag"
-
-        # Title is clean. Article has "Lossless Repack" (non-HV badge) at top,
-        # but "Backwards Compatibility" section mentions old HV repack.
-        html = (
-            "<html><head><title>LEGO Batman: Legacy of the Dark Knight + 4 DLCs - FitGirl Repacks</title></head>"
-            "<body>"
-            "<article>"
-            "Lossless Repack LEGO Batman: Legacy of the Dark Knight + 4 DLCs 23/05/2026 FitGirl #6809 "
-            "Genres/Tags: Arcade, Beat-em-up, Third-person , 3D, Superheroes "
-            "Companies: Warner Bros. Interactive Entertainment, TT Games "
-            "Languages: RUS/ENG/MULTI16 "
-            "Original Size: 38.3 GB Repack Size: 28.6 GB "
-            "Download Mirrors ... "
-            "Repack Features ... "
-            "Backwards Compatibility "
-            "This repack IS EXTREMELY backwards compatible with my previous LEGO HV-based repack. "
-            "Run clean_hv_files.bat to remove unneeded hv files. "
-            "Hypervisor Bypass Repack Features Based on Steam BuildID 23222834 release: 39.3 GB Hypervisor Bypass"
-            "</article>"
-            "</body></html>"
-        )
-
-        with patch("gamarr.pipeline.requests.get") as mock_get:
-            mock_resp = MagicMock()
-            mock_resp.text = html
-            mock_resp.raise_for_status.return_value = None
-            mock_get.return_value = mock_resp
-
-            result = _process_single_pending_match(
+        with patch(
+            "gamarr.pipeline._fetch_fitgirl_page_content",
+            return_value=("Forza Horizon 6", article),
+        ):
+            skipped = _check_reject_keywords(
                 db,
-                mc=None,
-                thresholds=None,
-                qbt=mock_qbt,
-                magnet_fetcher=MagicMock(return_value="magnet:?xt=urn:btih:abc"),
-                notifier=None,
-                library=None,
-                can_deliver=True,
-                game_title="LEGO Batman: Legacy of the Dark Knight",
-                game_slug="lego-batman",
-                game_platform="pc",
-                game_metascore=85.0,
-                game_metascore_reviews=100,
-                game_user_score=8.0,
-                game_user_reviews=50,
-                game_release_date=None,
-                reject_keywords=["hv", "hypervisor"],
+                {"url": "https://fitgirl-repacks.site/forza-horizon-6/"},
+                "Forza Horizon 6",
+                "forza-horizon-6",
+                ["hv", "hypervisor", "emulator"],
             )
-            # Should NOT be rejected \u2014 keywords only in Backwards Compatibility section
-            assert result is not None, "Game should proceed \u2014 keywords only in backwards-compat section"
-            db.close()
+
+        assert skipped is False, "boilerplate mentions of HV must not reject a non-HV repack"
+        db.close()
+
+    def test_reject_keywords_rejects_a_real_hv_repack(self, tmp_path: Path) -> None:
+        """A repack that states a hypervisor bypass in its features is still rejected."""
+        from unittest.mock import patch
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _check_reject_keywords
+
+        db = Database(str(tmp_path / "keywords.db"))
+        db.record_pending(slug="black-myth-wukong", game_title="Black Myth: Wukong", platform="pc")
+        article = (
+            "Download Mirrors direct links "
+            "Repack Features Based on P2P Steam BuildID 21393610 release: 139.7 GB "
+            "Hypervisor Bypass (INTEL & AMD) by DenuvOwO + Goldberg emu added "
+            "Screenshots gallery"
+        )
+        with patch(
+            "gamarr.pipeline._fetch_fitgirl_page_content",
+            return_value=("Black Myth: Wukong - Digital Deluxe Edition", article),
+        ):
+            skipped = _check_reject_keywords(
+                db,
+                {"url": "https://fitgirl-repacks.site/black-myth-wukong/"},
+                "Black Myth: Wukong",
+                "black-myth-wukong",
+                ["hv", "hypervisor", "emulator"],
+            )
+
+        assert skipped is True, "a genuine HV repack must still be rejected"
+        db.close()
 
     def test_reject_keywords_fallback_sitemap_rejects_when_fetch_fails(self, tmp_path: Path) -> None:
         """When the FitGirl page cannot be fetched, the game should stay pending
@@ -3176,12 +3136,12 @@ class TestMetacriticBrowse:
         assert db.is_pending("elden-ring") is True
         db.close()
 
-    def test_match_pending_expired_game(self, tmp_path: Path) -> None:
-        """Expired pending games should be moved to history as 'Expired'."""
+    def test_expired_game_is_moved_to_history(self, tmp_path: Path) -> None:
+        """Expiry runs before the match-phase gate, so a lapsed row is always swept."""
         import datetime
 
         from gamarr.database import Database
-        from gamarr.pipeline import _match_pending_games
+        from gamarr.pipeline import _process_expired_games
 
         db = Database(str(tmp_path / "test.db"))
         past = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=1)).isoformat()
@@ -3191,7 +3151,7 @@ class TestMetacriticBrowse:
             platform="pc",
             expires_at=past,
         )
-        matched = _match_pending_games(db)
+        matched = _process_expired_games(db)
         # Expired game should be returned with result "Expired"
         assert len(matched) == 1
         assert matched[0]["result"] == "Expired"
@@ -3762,7 +3722,7 @@ class TestMetacriticBrowse:
             "min_user_score": 0.0,
             "min_user_reviews": 0,
         }
-        new_count = _process_browse_games(games, "pc", db, thresholds, max_queue_days=30)
+        new_count = _process_browse_games(games, "pc", db, thresholds, max_queue_days=30, mc=_passing_detail_client())
         assert new_count == 2, f"Expected 2 pending games, got {new_count}"
         pending = db.get_pending()
         assert len(pending) == 2
@@ -3813,6 +3773,7 @@ class TestMetacriticBrowse:
             thresholds,
             max_queue_days=30,
             reject_title=["DLC", "Soundtrack", "Bundle"],
+            mc=_passing_detail_client(),
         )
         assert new_count == 1, "Only the non-excluded game should be added"
         pending = db.get_pending()
@@ -4380,33 +4341,6 @@ class TestVerifyPendingScoresEdgeCases:
         output = buf.getvalue()
         assert "Passing Game" in output, "Game that passed score checks should appear in log"
         assert "score check" in output.lower() or "passed" in output.lower(), "Should mention that score check passed"
-        db.close()
-
-    def test_fail_game_without_result_details(self, tmp_path: Path) -> None:
-        """_fail_game_after_max_attempts should auto-generate result_details when none provided."""
-        import datetime
-        import types
-
-        from gamarr.database import Database
-        from gamarr.pipeline import _fail_game_after_max_attempts
-
-        db = Database(str(tmp_path / "test.db"))
-        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(slug="test-game", game_title="Test Game", platform="pc", expires_at=expires)
-
-        game = db.get_pending()[0]
-        result = types.SimpleNamespace(
-            metascore=62.0,
-            metascore_review_count=25,
-            user_score=3.3,
-            user_review_count=100,
-            genres=["Action"],
-            must_play=False,
-            release_date="2026-06-01",
-        )
-
-        _fail_game_after_max_attempts(db, game, result, attempts=3)
-        assert not db.is_pending("test-game")
         db.close()
 
     def test_reject_genre_matches(self, tmp_path: Path) -> None:
@@ -5203,6 +5137,7 @@ class TestRejectTitle:
             db,
             thresholds,
             reject_title=["Remake"],
+            mc=_passing_detail_client(),
         )
         assert added == 1, "Non-matching game should be added"
         assert db.is_pending("elden-ring")
@@ -5236,6 +5171,7 @@ class TestRejectTitle:
             db,
             thresholds,
             reject_title=[],
+            mc=_passing_detail_client(),
         )
         assert added == 1, "Empty reject_title should not filter anything"
         db.close()
@@ -5893,60 +5829,13 @@ class TestBrowseReviewCountPrefilter:
             db=db,
             thresholds=thresholds,
             max_queue_days=30,
+            mc=_passing_detail_client(),
         )
         assert new_count == 1, "Game with missing review data should enter pending"
         pending = db.get_pending(platform="pc")
         assert len(pending) == 1
         assert pending[0].slug == "no-review-data"
         db.close()
-
-
-class TestProcessByAge:
-    """Tests for _should_process_by_age helper."""
-
-    def test_process_by_age_returns_true_for_old_game(self) -> None:
-        """A game older than age_recheck_weeks should be processed."""
-        from datetime import datetime, timedelta
-
-        from gamarr.pipeline import _should_process_by_age
-
-        class FakeGame:
-            release_date = (datetime.now() - timedelta(days=400)).strftime("%Y-%m-%d")
-
-        result = _should_process_by_age(FakeGame(), age_recheck_weeks=52)
-        assert result is True
-
-    def test_process_by_age_returns_false_for_recent_game(self) -> None:
-        """A game newer than age_recheck_weeks should NOT be processed."""
-        from datetime import datetime, timedelta
-
-        from gamarr.pipeline import _should_process_by_age
-
-        class FakeGame:
-            release_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-
-        result = _should_process_by_age(FakeGame(), age_recheck_weeks=52)
-        assert result is False
-
-    def test_process_by_age_returns_false_when_disabled(self) -> None:
-        """age_recheck_weeks=None or 0 should disable processing."""
-        from gamarr.pipeline import _should_process_by_age
-
-        class FakeGame:
-            release_date = "2020-01-01"
-
-        assert _should_process_by_age(FakeGame(), age_recheck_weeks=None) is False
-        assert _should_process_by_age(FakeGame(), age_recheck_weeks=0) is False
-
-    def test_process_by_age_returns_false_when_no_release_date(self) -> None:
-        """A game with no release_date should NOT be processed."""
-        from gamarr.pipeline import _should_process_by_age
-
-        class FakeGame:
-            release_date = None
-
-        result = _should_process_by_age(FakeGame(), age_recheck_weeks=52)
-        assert result is False
 
 
 class TestLogVerifyProgress:
@@ -6711,40 +6600,6 @@ class TestScanWindowAdvancing:
 
     def test_max_cycle_pages_steady_state_persists_across_cycles(self, tmp_path: Path) -> None:
         """Acquisition runs with max_pages and max_cycle_pages."""
-        from unittest.mock import MagicMock, patch
-
-        from gamarr.pipeline import run_acquisition
-
-        with (
-            patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
-            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
-            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
-        ):
-            mock_source = MagicMock()
-            mock_source_cls.return_value = mock_source
-
-            mock_mc = MagicMock()
-            mock_mc.scan_recent_games.return_value = []
-            mock_mc_cls.return_value = mock_mc
-
-            mock_qbt = MagicMock()
-            mock_qbt.is_torrent_present.return_value = False
-            mock_qbt.adopt_present_torrent.return_value = None
-            mock_qbt.is_connected.return_value = True
-            mock_qbt_cls.return_value = mock_qbt
-
-            results = run_acquisition(
-                platform="pc",
-                db_path=":memory:",
-                qbt_host="localhost",
-                qbt_port=8080,
-                max_pages=104,
-                max_cycle_pages=100,
-            )
-            assert isinstance(results, list)
-
-    def test_backlog_restarts_when_max_pages_increased(self, tmp_path: Path) -> None:
-        """Acquisition runs with higher max_pages."""
         from unittest.mock import MagicMock, patch
 
         from gamarr.pipeline import run_acquisition
@@ -7596,41 +7451,8 @@ class TestBacklogLatestMode:
         assert scan_mock.call_args[1]["max_pages"] == 5
 
 
-def test_process_browse_games_latest_mode(tmp_path: Path) -> None:
-    """_process_browse_games dispatches to latest pending table."""
-    from gamarr.database import Database
-    from gamarr.pipeline import _process_browse_games
-
-    db = Database(tmp_path / "test.db")
-    browse_games = [
-        {
-            "title": "Latest Game",
-            "slug": "latest-game",
-            "score": 90,
-            "user_rating": 9.0,
-            "critic_review_count": 15,
-            "user_review_count": 20,
-            "release_date": None,
-        }
-    ]
-    thresholds = {"min_criticscore": 75, "min_criticscore_reviews": 10, "min_user_score": 7.5, "min_user_reviews": 10}
-    count = _process_browse_games(
-        browse_games,
-        "pc",
-        db,
-        thresholds,
-        max_queue_days=30,
-        reject_title=None,
-    )
-    assert count == 1
-    rows = db.get_pending(platform="pc")
-    assert len(rows) == 1
-    assert rows[0].game_title == "Latest Game"
-    db.close()
-
-
 def test_process_browse_games_backlog_mode(tmp_path: Path) -> None:
-    """_process_browse_games dispatches to backlog pending table."""
+    """A candidate that passes detail verification is queued as verified."""
     from gamarr.database import Database
     from gamarr.pipeline import _process_browse_games
 
@@ -7654,6 +7476,7 @@ def test_process_browse_games_backlog_mode(tmp_path: Path) -> None:
         thresholds,
         max_queue_days=30,
         reject_title=None,
+        mc=_passing_detail_client(),
     )
     assert count == 1
     rows = db.get_pending(platform="pc")
@@ -8298,6 +8121,7 @@ def test_process_browse_games_indefinite_max_queue_days(tmp_path: Path) -> None:
         thresholds,
         max_queue_days=0,
         reject_title=None,
+        mc=_passing_detail_client(),
     )
     assert count == 1
     rows = db.get_pending(platform="pc")
@@ -8347,6 +8171,7 @@ def test_process_browse_games_handles_duplicate_slugs(tmp_path: Path) -> None:
         thresholds,
         max_queue_days=30,
         reject_title=None,
+        mc=_passing_detail_client(),
     )
     assert count == 1, f"Expected 1 unique game added, got {count}"
     rows = db.get_pending(platform="pc")
@@ -8677,6 +8502,8 @@ class TestDateModeResolution:
         mock_mc = MagicMock()
 
         def fake_scan(*_args: Any, **kwargs: Any) -> list:
+            # Record the client's sort_order too: latest mode sets it as an
+            # attribute, so a bare kwargs capture cannot see the coercion.
             calls.append(dict(kwargs))
             mock_mc._recent_games_last_page = kwargs.get("start_page", 1)
             mock_mc._recent_games_exhausted = False
@@ -9326,6 +9153,7 @@ class TestDateModeRegressions:
     def test_below_floor_games_never_reach_the_pending_queue(self, tmp_path: Path) -> None:
         """The date-mode filter is applied to what the client returns, end to end."""
         from gamarr.database import Database
+        from gamarr.metacritic import ScoreResult
 
         path = str(tmp_path / "queue-filter.db")
         mock_mc = MagicMock()
@@ -9348,8 +9176,17 @@ class TestDateModeRegressions:
         mock_mc._recent_games_cutoff_reached = False
         mock_mc._recent_games_stop_cutoff = None
         mock_mc.scan_recent_games.side_effect = fake_scan
-        # Keep the queue assertion focused: no detail-page verification happens.
-        mock_mc.lookup_game.return_value = None
+        # Verify-before-queue: the in-floor game only queues because its detail
+        # page passes; the below-floor game is filtered before any lookup.
+        mock_mc.lookup_game.return_value = ScoreResult(
+            title="In Floor",
+            slug="in-floor",
+            metascore=88.0,
+            metascore_review_count=40,
+            user_score=8.4,
+            user_review_count=40,
+            passed=True,
+        )
 
         with (
             patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
@@ -9718,3 +9555,1367 @@ class TestDateModeRegressions:
             fetch_fails=True,
         )
         notify.assert_called_once()
+
+
+class TestExtractRepackFeatures:
+    """The keyword scan is scoped to the Repack Features block."""
+
+    def test_returns_block_after_heading(self) -> None:
+        from gamarr.pipeline import _extract_repack_features
+
+        article = (
+            "Company: Game Science Original Size: 140 GB Download Mirrors "
+            "Only updated files for a new non-HV repack. "
+            "Repack Features Based on P2P Steam BuildID 21393610 release: 139.7 GB "
+            "Hypervisor Bypass (INTEL & AMD) by DenuvOwO added "
+            "Screenshots Screenshot gallery text"
+        )
+        features = _extract_repack_features(article)
+        assert features is not None
+        assert "Hypervisor Bypass" in features
+        assert "Only updated files" not in features, "download-mirror boilerplate must be excluded"
+        assert "Screenshot gallery" not in features, "block must stop at the next heading"
+
+    def test_missing_heading_returns_none(self) -> None:
+        from gamarr.pipeline import _extract_repack_features
+
+        assert _extract_repack_features("Company: Ubisoft Repack Size: 40 GB") is None
+        assert _extract_repack_features(None) is None
+        assert _extract_repack_features("") is None
+
+    def test_block_is_capped(self) -> None:
+        from gamarr.pipeline import _extract_repack_features
+
+        article = "Repack Features " + ("word " * 2000)
+        features = _extract_repack_features(article)
+        assert features is not None
+        assert len(features) <= 4000, "a page missing the next heading must not scan the whole article"
+
+    def test_stops_at_backwards_compatibility_heading(self) -> None:
+        from gamarr.pipeline import _extract_repack_features
+
+        article = (
+            "Repack Features Nothing ripped, 100% lossless "
+            "Backwards Compatibility This repack works with the HV version"
+        )
+        features = _extract_repack_features(article)
+        assert features is not None
+        assert "lossless" in features
+        assert "works with the HV version" not in features
+
+
+class TestKeywordMatch:
+    """Whole-word matching with a negation guard."""
+
+    def test_plain_mention_matches(self) -> None:
+        from gamarr.pipeline import _keyword_match
+
+        assert _keyword_match("Hypervisor Bypass (INTEL & AMD) applied", ["hv", "hypervisor"]) == "hypervisor"
+
+    def test_hv_as_standalone_word_matches(self) -> None:
+        from gamarr.pipeline import _keyword_match
+
+        assert _keyword_match("Custom launcher added for easier HV steps processing", ["hv"]) == "hv"
+
+    def test_negated_non_hv_does_not_match(self) -> None:
+        from gamarr.pipeline import _keyword_match
+
+        assert _keyword_match("Only updated files for a new non-HV repack", ["hv"]) is None
+
+    def test_negated_without_hv_does_not_match(self) -> None:
+        from gamarr.pipeline import _keyword_match
+
+        assert _keyword_match("Works without HV and without VBS", ["hv"]) is None
+
+    def test_negated_no_hv_does_not_match(self) -> None:
+        from gamarr.pipeline import _keyword_match
+
+        assert _keyword_match("No HV required for this build", ["hv"]) is None
+
+    def test_keyword_inside_a_word_does_not_match(self) -> None:
+        from gamarr.pipeline import _keyword_match
+
+        assert _keyword_match("shevron graphics and whatever", ["hv"]) is None
+
+    def test_multi_word_keyword_matches(self) -> None:
+        from gamarr.pipeline import _keyword_match
+
+        assert _keyword_match("Includes the Goldberg emulator build", ["emulator"]) == "emulator"
+
+    def test_empty_inputs_return_none(self) -> None:
+        from gamarr.pipeline import _keyword_match
+
+        assert _keyword_match(None, ["hv"]) is None
+        assert _keyword_match("HV", None) is None
+        assert _keyword_match("HV", []) is None
+
+
+class TestVerifyBeforeQueue:
+    """Only games that already pass detail verification enter the queue."""
+
+    @staticmethod
+    def _run(tmp_path: Path, *, result: Any) -> list[str]:
+        from gamarr.database import Database
+        from gamarr.pipeline import _process_browse_games
+
+        db = Database(str(tmp_path / "queue.db"))
+        mc = MagicMock()
+        mc.lookup_game.return_value = result
+        games = [
+            {
+                "title": "Candidate",
+                "slug": "candidate",
+                "score": 1478.0,
+                "user_rating": 8.2,
+                "critic_review_count": 40,
+                "user_review_count": 40,
+                "release_date": "2026-11-01",
+            }
+        ]
+        _process_browse_games(
+            games,
+            "pc",
+            db,
+            {
+                "min_criticscore": 75,
+                "min_criticscore_reviews": 10,
+                "min_user_score": 7.5,
+                "min_user_reviews": 10,
+            },
+            max_queue_days=60,
+            mc=mc,
+            cache_details_days=7,
+            cache_pages_hours=6,
+        )
+        slugs = [game.slug for game in db.get_pending()]
+        db.close()
+        return slugs
+
+    def test_passing_game_is_queued_verified(self, tmp_path: Path) -> None:
+        from gamarr.metacritic import ScoreResult
+
+        result = ScoreResult(
+            title="Candidate",
+            slug="candidate",
+            metascore=88.0,
+            metascore_review_count=40,
+            user_score=8.4,
+            user_review_count=40,
+            passed=True,
+        )
+        assert self._run(tmp_path, result=result) == ["candidate"]
+
+    def test_failing_game_is_not_queued(self, tmp_path: Path) -> None:
+        from gamarr.metacritic import ScoreResult
+
+        result = ScoreResult(
+            title="Candidate",
+            slug="candidate",
+            metascore=40.0,
+            metascore_review_count=40,
+            user_score=4.0,
+            user_review_count=40,
+            passed=False,
+        )
+        assert self._run(tmp_path, result=result) == []
+
+    def test_unreviewed_game_is_not_queued(self, tmp_path: Path) -> None:
+        from gamarr.metacritic import ScoreResult
+
+        result = ScoreResult(
+            title="Candidate",
+            slug="candidate",
+            metascore=None,
+            metascore_review_count=None,
+            user_score=None,
+            user_review_count=None,
+            passed=False,
+        )
+        assert self._run(tmp_path, result=result) == []
+
+    def test_lookup_failure_is_not_queued(self, tmp_path: Path) -> None:
+        assert self._run(tmp_path, result=None) == []
+
+    def test_queued_row_is_marked_verified(self, tmp_path: Path) -> None:
+        from gamarr.database import Database
+        from gamarr.metacritic import ScoreResult
+
+        result = ScoreResult(
+            title="Candidate",
+            slug="candidate",
+            metascore=88.0,
+            metascore_review_count=40,
+            user_score=8.4,
+            user_review_count=40,
+            passed=True,
+        )
+        self._run(tmp_path, result=result)
+        db = Database(str(tmp_path / "queue.db"))
+        pending = db.get_pending()
+        assert pending and pending[0].score_checks_passed is True
+        assert pending[0].metascore == 88.0, "the real detail score must be stored, not the browse metric"
+        db.close()
+
+
+class TestLatestMode:
+    """Latest mode reads the top of the window and never touches cursors."""
+
+    @staticmethod
+    def _run(
+        *,
+        tmp_path: Path,
+        mode: Literal["latest", "backlog"] = "latest",
+        max_pages: int = 3,
+        max_date: int = 0,
+        max_cycle_months: int = 0,
+        max_cycle_pages: int = 0,
+        sort_order: Literal["new", "criticscore", "userscore"] = "new",
+        db_path: str | None = None,
+        sort_orders: list[str] | None = None,
+    ) -> tuple[list[dict[str, Any]], list[str]]:
+        """Run one cycle and return (scan calls, log lines).
+
+        Pass *sort_orders* to collect the client's ``sort_order`` per call: the
+        pipeline sets it as an attribute, so the kwargs capture cannot see it.
+        """
+        from loguru import logger as loguru_logger
+
+        calls: list[dict[str, Any]] = []
+        mock_mc = MagicMock()
+
+        def fake_scan(*_args: Any, **kwargs: Any) -> list:
+            calls.append(dict(kwargs))
+            if sort_orders is not None:
+                sort_orders.append(mock_mc.sort_order)
+            mock_mc._recent_games_last_page = kwargs.get("start_page", 1)
+            mock_mc._recent_games_exhausted = False
+            mock_mc._recent_games_failed = False
+            mock_mc._recent_games_cutoff_reached = False
+            mock_mc._recent_games_stop_cutoff = None
+            return [{"title": "G", "slug": "g", "release_date": "2026-11-01"}]
+
+        mock_mc._recent_games_last_page = 0
+        mock_mc._recent_games_exhausted = False
+        mock_mc._recent_games_failed = False
+        mock_mc._recent_games_cutoff_reached = False
+        mock_mc._recent_games_stop_cutoff = None
+        mock_mc.scan_recent_games.side_effect = fake_scan
+
+        logs: list[str] = []
+        sink = loguru_logger.add(lambda msg: logs.append(str(msg)), level="INFO", format="{message}")
+        try:
+            with (
+                patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+                patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+                patch("gamarr.pipeline._check_scrape_health", return_value="metacritic_broken"),
+            ):
+                mock_mc_cls.return_value = mock_mc
+                mock_qbt = MagicMock()
+                mock_qbt.is_connected.return_value = True
+                mock_qbt_cls.return_value = mock_qbt
+                run_acquisition(
+                    platform="pc",
+                    db_path=db_path or str(tmp_path / f"{mode}.db"),
+                    qbt_host="localhost",
+                    qbt_port=8080,
+                    mode=mode,
+                    max_pages=max_pages,
+                    max_date=max_date,
+                    max_cycle_months=max_cycle_months,
+                    max_cycle_pages=max_cycle_pages,
+                    sort_order=sort_order,
+                )
+        finally:
+            loguru_logger.remove(sink)
+        return calls, logs
+
+    def test_starts_at_page_one_and_stops_at_depth(self, tmp_path: Path) -> None:
+        calls, _logs = self._run(tmp_path=tmp_path, max_pages=3)
+        assert calls, "expected at least one browse call"
+        assert calls[0]["start_page"] == 1
+        assert all(call["start_page"] == 1 for call in calls)
+        assert calls[0]["max_pages"] == 2, "one page of the depth is reserved for the years below"
+        # The fake yields one page per call, so the call count is the pages read.
+        assert len(calls) <= 3, "the cycle may not exceed its depth"
+        assert all(call["max_pages"] <= 3 for call in calls), "no call may exceed the depth"
+
+    def test_does_not_persist_cursors(self, tmp_path: Path) -> None:
+        import datetime
+
+        from gamarr.database import Database
+
+        current_year = datetime.datetime.now(tz=datetime.UTC).year
+        path = str(tmp_path / "latest.db")
+        self._run(tmp_path=tmp_path, max_pages=3)
+        db = Database(path)
+        assert db.get_last_scanned_page("pc", current_year) == 0, "latest mode must not write cursors"
+        db.close()
+
+    def test_logs_the_mode_and_scan_summary(self, tmp_path: Path) -> None:
+        _calls, logs = self._run(tmp_path=tmp_path, max_pages=3)
+        assert any("Discovery mode: latest" in line for line in logs), logs
+        assert any("Latest scan:" in line for line in logs), logs
+
+    def test_inert_pacing_keys_are_reported(self, tmp_path: Path) -> None:
+        _calls, logs = self._run(tmp_path=tmp_path, max_pages=3, max_cycle_months=2, max_cycle_pages=4)
+        assert any("max_cycle_months ignored in latest mode" in line for line in logs), logs
+        assert any("max_cycle_pages ignored in latest mode" in line for line in logs), logs
+
+    def test_score_sort_is_coerced_with_a_warning(self, tmp_path: Path) -> None:
+        orders: list[str] = []
+        calls, logs = self._run(tmp_path=tmp_path, max_pages=3, sort_order="criticscore", sort_orders=orders)
+        assert any("latest mode requires sort_order 'new'" in line.lower() for line in logs), logs
+        assert calls[0]["year"] is not None, "coerced scans must keep the per-year dimension"
+        assert orders[0] == "new", (
+            "the coerced cycle must actually browse in 'new' order, else the date stop logic is dead"
+        )
+
+    def test_zero_depth_is_clamped(self, tmp_path: Path) -> None:
+        calls, logs = self._run(tmp_path=tmp_path, max_pages=0)
+        assert calls[0]["max_pages"] == 9, "the clamped depth of 10 keeps one page for the next year"
+        assert any("clamping" in line.lower() for line in logs), logs
+
+    def test_latest_with_a_floor_bounds_the_window_and_filters_the_queue(self, tmp_path: Path) -> None:
+        """latest + max_date still passes the floor cutoff and the queue filter."""
+        calls, _logs = self._run(tmp_path=tmp_path, max_pages=3, max_date=202401)
+        assert calls, "expected at least one browse call"
+        for call in calls:
+            assert call["cutoff_date"] == "2024-01-01", call
+            assert call["year"] is not None, "latest keeps the per-year dimension"
+
+    def test_latest_sort_coercion_does_not_wipe_backlog_cursors(self, tmp_path: Path) -> None:
+        """A coerced latest cycle must leave the stored sort order and cursors alone."""
+        from gamarr.database import Database
+
+        path = str(tmp_path / "coerce.db")
+        seed = Database(path)
+        seed.set_last_sort_order("pc", "criticscore")
+        seed.set_last_scanned_page("pc", 2025, 7)
+        seed.close()
+
+        self._run(tmp_path=tmp_path, max_pages=3, sort_order="criticscore", db_path=path)
+
+        db = Database(path)
+        assert db.get_last_scanned_page("pc", 2025) == 7, "latest mode must not reset backlog progress"
+        assert db.get_last_sort_order("pc") == "new", "the order the cache was written in is persisted"
+        db.close()
+
+    def test_backlog_after_latest_resets_cursors_from_another_order(self, tmp_path: Path) -> None:
+        """Returning to backlog must not resume cursors that belong to another order.
+
+        Regression guard for the HIGH finding: latest wrote the cache order into
+        the field backlog used to validate its cursors, so a flipback could
+        resume at page 8 of a differently-ordered listing and skip pages 1-7.
+        """
+        from gamarr.database import Database
+
+        path = str(tmp_path / "flipback.db")
+        seed = Database(path)
+        seed.set_last_sort_order("pc", "criticscore")
+        seed.set_cursor_sort_order("pc", "criticscore")
+        seed.set_last_scanned_page("pc", 2025, 7)
+        seed.close()
+
+        # One coerced latest cycle: critic score sort -> scan order "new".
+        self._run(tmp_path=tmp_path, max_pages=3, sort_order="criticscore", db_path=path)
+
+        # Back to backlog in date mode (no page-budget auto-reset to mask it),
+        # with the default order: the 2025 cursor belongs to another order.
+        calls, _logs = self._run(
+            tmp_path=tmp_path,
+            mode="backlog",
+            max_pages=3,
+            max_date=202401,
+            sort_order="new",
+            db_path=path,
+        )
+
+        year_calls = [call for call in calls if call.get("year") == 2025]
+        assert year_calls, f"expected a 2025 scan call, got {calls}"
+        assert year_calls[0]["start_page"] == 1, (
+            f"must resume from page 1, not from a cursor written under another order "
+            f"(got {year_calls[0]['start_page']})"
+        )
+        db = Database(path)
+        assert db.get_last_scanned_page("pc", 2025) == 1, "the run read exactly one page from the top"
+        assert db.get_cursor_sort_order("pc") == "new"
+        db.close()
+
+    def test_coerced_latest_does_not_clear_the_cache_every_cycle(self, tmp_path: Path) -> None:
+        """After the first coerced cycle the stored order matches, so no second clear."""
+        from gamarr.database import Database
+
+        path = str(tmp_path / "cache-thrash.db")
+        seed = Database(path)
+        seed.set_last_sort_order("pc", "criticscore")
+        seed.close()
+
+        cleared: list[str] = []
+        original = Database.clear_browse_cache
+
+        def spy(self: Database, platform: str) -> None:
+            cleared.append(platform)
+            return original(self, platform)
+
+        with patch.object(Database, "clear_browse_cache", spy):
+            self._run(tmp_path=tmp_path, max_pages=3, sort_order="criticscore", db_path=path)
+            self._run(tmp_path=tmp_path, max_pages=3, sort_order="criticscore", db_path=path)
+
+        assert len(cleared) == 1, f"expected one cache clear for the order change, got {len(cleared)}"
+
+    def test_backlog_mode_keeps_using_cursors(self, tmp_path: Path) -> None:
+        import datetime
+
+        from gamarr.database import Database
+
+        current_year = datetime.datetime.now(tz=datetime.UTC).year
+        path = str(tmp_path / "backlog.db")
+        self._run(tmp_path=tmp_path, mode="backlog", max_pages=3)
+        db = Database(path)
+        assert db.get_last_scanned_page("pc", current_year) >= 1, "backlog mode must still advance cursors"
+        db.close()
+
+
+class TestBrowseLookupPool:
+    """The threaded browse lookup preserves order, isolates failures, and honours cancellation."""
+
+    @staticmethod
+    def _games() -> list[dict[str, Any]]:
+        return [
+            {
+                "title": f"Game {index}",
+                "slug": f"game-{index}",
+                "score": 1478.0,
+                "user_rating": 8.2,
+                "critic_review_count": 40,
+                "user_review_count": 40,
+                "release_date": "2026-11-01",
+            }
+            for index in (1, 2, 3)
+        ]
+
+    @staticmethod
+    def _client(boom_slug: str | None = None) -> MagicMock:
+        from gamarr.metacritic import ScoreResult
+
+        mock_mc = MagicMock()
+
+        def lookup(title: str, platform: str, **kwargs: Any) -> ScoreResult:
+            if boom_slug is not None and kwargs.get("slug") == boom_slug:
+                raise RuntimeError("malformed detail page")
+            return ScoreResult(
+                title=title,
+                slug=str(kwargs.get("slug")),
+                metascore=88.0,
+                metascore_review_count=40,
+                user_score=8.4,
+                user_review_count=40,
+                passed=True,
+            )
+
+        mock_mc.lookup_game.side_effect = lookup
+        return mock_mc
+
+    def _run(
+        self,
+        tmp_path: Path,
+        *,
+        boom_slug: str | None = None,
+        cancelled: bool = False,
+        db_path: str | None = None,
+    ) -> tuple[int, list[str], MagicMock]:
+        import threading
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _process_browse_games
+
+        mock_mc = self._client(boom_slug)
+        db = Database(db_path or str(tmp_path / "pool.db"))
+        cancel_event = threading.Event()
+        if cancelled:
+            cancel_event.set()
+        count = _process_browse_games(
+            self._games(),
+            "pc",
+            db,
+            {
+                "min_criticscore": 75,
+                "min_criticscore_reviews": 10,
+                "min_user_score": 7.5,
+                "min_user_reviews": 10,
+            },
+            max_queue_days=60,
+            mc=mock_mc,
+            cancel_event=cancel_event,
+        )
+        slugs = [game.slug for game in db.get_pending()]
+        db.close()
+        return count, slugs, mock_mc
+
+    def test_candidate_order_is_preserved(self, tmp_path: Path) -> None:
+        count, slugs, _mc = self._run(tmp_path=tmp_path)
+        assert count == 3
+        assert slugs == ["game-1", "game-2", "game-3"], f"pool.map must preserve order, got {slugs}"
+
+    def test_one_raising_lookup_does_not_abort_the_batch(self, tmp_path: Path) -> None:
+        count, slugs, _mc = self._run(tmp_path=tmp_path, boom_slug="game-2")
+        assert count == 2
+        assert slugs == ["game-1", "game-3"], f"only the failing candidate is skipped, got {slugs}"
+
+    def test_lookup_uses_direct_only(self, tmp_path: Path) -> None:
+        _count, _slugs, mock_mc = self._run(tmp_path=tmp_path)
+        for call in mock_mc.lookup_game.call_args_list:
+            assert call.kwargs.get("direct_only") is True, call
+
+    def test_cancelled_batch_queues_nothing(self, tmp_path: Path) -> None:
+        count, slugs, _mc = self._run(tmp_path=tmp_path, cancelled=True)
+        assert count == 0
+        assert slugs == [], "an abandoned cycle must not queue games"
+
+    def test_cancellation_arriving_during_lookups_discards_the_batch(self, tmp_path: Path) -> None:
+        """An event set while the pool runs must still discard the whole batch."""
+        import threading
+
+        from gamarr.database import Database
+        from gamarr.metacritic import ScoreResult
+        from gamarr.pipeline import _process_browse_games
+
+        db = Database(str(tmp_path / "cancel-mid.db"))
+        cancel_event = threading.Event()
+        mock_mc = MagicMock()
+
+        def lookup(title: str, platform: str, **kwargs: Any) -> ScoreResult:
+            cancel_event.set()  # shutdown lands mid-batch
+            return ScoreResult(
+                title=title,
+                slug=str(kwargs.get("slug")),
+                metascore=88.0,
+                metascore_review_count=40,
+                user_score=8.4,
+                user_review_count=40,
+                passed=True,
+            )
+
+        mock_mc.lookup_game.side_effect = lookup
+        count = _process_browse_games(
+            self._games(),
+            "pc",
+            db,
+            {
+                "min_criticscore": 75,
+                "min_criticscore_reviews": 10,
+                "min_user_score": 7.5,
+                "min_user_reviews": 10,
+            },
+            max_queue_days=60,
+            mc=mock_mc,
+            cancel_event=cancel_event,
+        )
+        slugs = [game.slug for game in db.get_pending()]
+        db.close()
+        assert count == 0, "a cycle cancelled during lookups must not queue"
+        assert slugs == []
+
+    def test_in_memory_database_works_from_worker_threads(self) -> None:
+        """A pooled lookup reads the DB off-thread, so :memory: must be shared.
+
+        The fake lookup performs a real cache read from the worker thread — which
+        is what the production client does — so a per-thread in-memory database
+        would raise ``no such table`` and queue nothing.
+        """
+        from gamarr.database import Database
+        from gamarr.metacritic import ScoreResult
+        from gamarr.metacritic_cache import MetacriticCache
+        from gamarr.pipeline import _process_browse_games
+
+        db = Database(":memory:")
+        cache = MetacriticCache(db)
+        mock_mc = MagicMock()
+
+        def lookup(title: str, platform: str, **kwargs: Any) -> ScoreResult:
+            cache.get_browse_page(platform, 1, ttl_hours=1, year=0)  # real DB read, off-thread
+            return ScoreResult(
+                title=title,
+                slug=str(kwargs.get("slug")),
+                metascore=88.0,
+                metascore_review_count=40,
+                user_score=8.4,
+                user_review_count=40,
+                passed=True,
+            )
+
+        mock_mc.lookup_game.side_effect = lookup
+        count = _process_browse_games(
+            self._games(),
+            "pc",
+            db,
+            {
+                "min_criticscore": 75,
+                "min_criticscore_reviews": 10,
+                "min_user_score": 7.5,
+                "min_user_reviews": 10,
+            },
+            max_queue_days=60,
+            mc=mock_mc,
+        )
+        slugs = [game.slug for game in db.get_pending()]
+        db.close()
+        assert count == 3, "the in-memory engine must be visible to worker threads"
+        assert slugs == ["game-1", "game-2", "game-3"]
+
+
+class TestKeywordNegationEdges:
+    """Negation rules after the round-3 fixes: no forward look, contractions handled."""
+
+    def test_not_supported_is_not_negation(self) -> None:
+        from gamarr.pipeline import _keyword_match
+
+        assert (
+            _keyword_match("Includes the Goldberg emulator (not supported for online play)", ["emulator"]) == "emulator"
+        )
+
+    def test_hv_with_unrelated_not_required_is_not_negated(self) -> None:
+        """A neighbouring item's negation must not excuse an HV mention."""
+        from gamarr.pipeline import _keyword_match
+
+        assert _keyword_match("Hypervisor Bypass included, DX11 not required", ["hypervisor"]) == "hypervisor"
+
+    def test_contraction_negation_is_understood(self) -> None:
+        from gamarr.pipeline import _keyword_match
+
+        assert _keyword_match("This repack doesn't include an HV version", ["hv"]) is None
+
+    def test_negation_before_a_filler_phrase_is_understood(self) -> None:
+        from gamarr.pipeline import _keyword_match
+
+        assert _keyword_match("It is not needed for HV support", ["hv"]) is None
+
+    def test_negation_after_the_keyword_is_treated_as_a_genuine_mention(self) -> None:
+        """Deliberate conservatism: a trailing negation never excuses an HV mention.
+
+        A forward look cannot tell "HV bypass, DX not required" from "HV not
+        required", and a missed rejection delivers a repack the user excluded, so
+        only backward negation counts.
+        """
+        from gamarr.pipeline import _keyword_match
+
+        assert _keyword_match("HV not needed for this build", ["hv"]) == "hv"
+
+    def test_article_between_negation_and_keyword(self) -> None:
+        from gamarr.pipeline import _keyword_match
+
+        assert _keyword_match("This is not an HV repack", ["hv"]) is None
+
+
+class TestExtractRepackFeaturesHeadings:
+    """Stop headings must be matched by their canonical spelling."""
+
+    def test_included_dlcs_bullet_does_not_truncate_the_block(self) -> None:
+        """A features bullet mentioning 'included DLCs' must not end the block."""
+        from gamarr.pipeline import _extract_repack_features
+
+        article = (
+            "Repack Features Based on Steam release "
+            "All included DLCs are present in the installer "
+            "Hypervisor Bypass (INTEL & AMD) applied "
+            "Screenshots gallery"
+        )
+        features = _extract_repack_features(article)
+        assert features is not None
+        assert "Hypervisor Bypass" in features, "the HV line must stay inside the scanned block"
+        assert "Screenshot gallery" not in features
+
+
+class TestMissingFeaturesBlockWarning:
+    """The keyword check reports when it has no text to scan."""
+
+    def test_no_block_and_no_title_is_reported(self, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _check_reject_keywords
+
+        db = Database(str(tmp_path / "kw2.db"))
+        db.record_pending(slug="plain-game", game_title="Plain Game", platform="pc")
+        captured: list[str] = []
+
+        from loguru import logger as loguru_logger
+
+        sink = loguru_logger.add(lambda msg: captured.append(str(msg)), level="WARNING", format="{message}")
+        try:
+            with patch(
+                "gamarr.pipeline._fetch_fitgirl_page_content",
+                return_value=(None, "Download Mirrors boilerplate only"),
+            ):
+                skipped = _check_reject_keywords(
+                    db,
+                    {"url": "https://fitgirl-repacks.site/plain-game/"},
+                    "Plain Game",
+                    "plain-game",
+                    ["hv"],
+                )
+        finally:
+            loguru_logger.remove(sink)
+        db.close()
+        assert skipped is False
+        assert any("neither a Repack Features block nor a page title" in line for line in captured), captured
+
+
+class TestExpiryRefreshedOnlyOnQualification:
+    """A continuously-verified game must not have its window pushed forward forever."""
+
+    def test_recheck_does_not_extend_an_existing_expiry(self, tmp_path: Path) -> None:
+        from types import SimpleNamespace
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _process_verify_result
+
+        db = Database(str(tmp_path / "expiry.db"))
+        db.record_pending(
+            slug="keeps-passing",
+            game_title="Keeps Passing",
+            platform="pc",
+            metascore=90.0,
+            score_checks_passed=True,
+        )
+        later = "2999-01-01T00:00:00+00:00"
+        with db._session() as session:  # noqa: SLF001 - pinning the stored expiry
+            from gamarr.database import PendingGame
+
+            row = session.get(PendingGame, "keeps-passing")
+            assert row is not None
+            row.expires_at = later
+            session.commit()
+
+        game = db.get_pending()[0]
+        result = SimpleNamespace(
+            metascore=92.0,
+            user_score=8.5,
+            metascore_review_count=40,
+            user_review_count=200,
+            genres=[],
+        )
+        outcome = _process_verify_result(
+            db,
+            game,
+            result,
+            {
+                "min_criticscore": 80.0,
+                "min_criticscore_reviews": 5,
+                "min_user_score": 8.0,
+                "min_user_reviews": 5,
+            },
+            fitgirl_max_queue_days=60,
+        )
+        after = db.get_pending()[0]
+        db.close()
+        assert outcome == 1
+        assert after.expires_at == later
+
+    def test_first_qualification_extends_the_window(self, tmp_path: Path) -> None:
+        from types import SimpleNamespace
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _process_verify_result
+
+        db = Database(str(tmp_path / "expiry2.db"))
+        import datetime
+
+        # Tomorrow: still queued, but inside the 60-day window the check refreshes.
+        soon = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=1)).isoformat()
+        db.record_pending(
+            slug="freshly-verified",
+            game_title="Freshly Verified",
+            platform="pc",
+            expires_at=soon,
+        )
+        before = db.get_pending()[0]
+        game = db.get_pending()[0]
+        result = SimpleNamespace(
+            metascore=92.0,
+            user_score=8.5,
+            metascore_review_count=40,
+            user_review_count=200,
+            genres=[],
+        )
+        outcome = _process_verify_result(
+            db,
+            game,
+            result,
+            {
+                "min_criticscore": 80.0,
+                "min_criticscore_reviews": 5,
+                "min_user_score": 8.0,
+                "min_user_reviews": 5,
+            },
+            fitgirl_max_queue_days=60,
+        )
+        after = db.get_pending()[0]
+        db.close()
+        assert outcome == 1
+        assert after.expires_at > before.expires_at
+
+
+class TestNegationEncoding:
+    """Typographic apostrophes and HTML entities must not defeat the negation guard."""
+
+    @staticmethod
+    def _features(apostrophe: str) -> str:
+        return (
+            "Repack Features Based on Steam release This repack doesn"
+            f"{apostrophe}t include an HV version Screenshots gallery"
+        )
+
+    def test_ascii_apostrophe_negates(self) -> None:
+        from gamarr.pipeline import _keyword_match
+
+        assert _keyword_match(self._features("'"), ["hv"]) is None
+
+    def test_typographic_apostrophe_negates(self) -> None:
+        from gamarr.pipeline import _keyword_match
+
+        assert _keyword_match(self._features("\u2019"), ["hv"]) is None
+
+    def test_generic_contraction_negates(self) -> None:
+        from gamarr.pipeline import _keyword_match
+
+        text = "Repack Features This repack can't use HV code Screenshots gallery"
+        assert _keyword_match(text, ["hv"]) is None
+
+    def test_html_entity_is_decoded_before_scanning(self) -> None:
+        from unittest.mock import patch
+
+        from gamarr.pipeline import _fetch_fitgirl_page_content
+
+        html = (
+            "<html><head><title>Some Game</title></head><body><article>"
+            "Repack Features This repack doesn&#8217;t include an HV version"
+            "</article></body></html>"
+        )
+        with patch("gamarr.pipeline.requests.get") as mock_get:
+            mock_get.return_value.text = html
+            mock_get.return_value.raise_for_status.return_value = None
+            _title, article = _fetch_fitgirl_page_content("https://fitgirl-repacks.site/some-game/")
+        assert article is not None
+        assert "&#8217;" not in article
+        assert "doesn\u2019t include an HV version" in article
+
+
+class TestNegativePageBudget:
+    """A negative budget must fall back to the default, not become unbounded."""
+
+    def test_negative_max_pages_uses_the_default_budget(self) -> None:
+        from gamarr.pipeline import _DEFAULT_MAX_PAGES, _normalise_latest_depth
+
+        assert _normalise_latest_depth(-5, "backlog") == _DEFAULT_MAX_PAGES
+        assert _normalise_latest_depth(-5, "latest") == _DEFAULT_MAX_PAGES
+
+    def test_zero_still_clamps_in_latest_mode(self) -> None:
+        from gamarr.pipeline import _normalise_latest_depth
+
+        assert _normalise_latest_depth(0, "latest") == 10
+        assert _normalise_latest_depth(None, "backlog") is None
+
+
+class TestCancelWhileQueueing:
+    """A cancel landing after the lookup pool drains must stop the insert loop."""
+
+    def test_cancel_between_lookup_and_insert_queues_nothing(self, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _process_browse_games
+
+        db = Database(str(tmp_path / "cancel.db"))
+
+        def _browse(slug: str, title: str, score: float) -> dict:
+            # The cheap pre-filter reads the browse fields, not the detail scores.
+            return {
+                "title": title,
+                "slug": slug,
+                "score": score,
+                "user_rating": 8.7,
+                "critic_review_count": 50,
+                "user_review_count": 500,
+            }
+
+        candidates = [_browse("game-one", "Game One", 90), _browse("game-two", "Game Two", 88)]
+        from types import SimpleNamespace
+
+        def _passing() -> SimpleNamespace:
+            return SimpleNamespace(
+                metascore=90.0,
+                metascore_review_count=50,
+                user_score=8.7,
+                user_review_count=500,
+                genres=[],
+                must_play=None,
+                release_date=None,
+                description=None,
+            )
+
+        details = [_passing(), _passing()]
+        thresholds = {
+            "min_criticscore": 80.0,
+            "min_criticscore_reviews": 5,
+            "min_user_score": 8.0,
+            "min_user_reviews": 5,
+        }
+
+        class _CancelAfterDrain:
+            """Cancelled only once the lookups have been consumed."""
+
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def is_set(self) -> bool:
+                self.calls += 1
+                return self.calls > 2
+
+        with patch("gamarr.pipeline._lookup_details", return_value=details):
+            queued = _process_browse_games(
+                candidates,
+                "pc",
+                db,
+                thresholds,
+                max_queue_days=30,
+                mc=MagicMock(),
+                cancel_event=_CancelAfterDrain(),
+            )
+        remaining = [row.slug for row in db.get_pending()]
+        db.close()
+        assert queued == 1, "the cancel must stop the insert loop after the first candidate"
+        assert remaining == ["game-one"], f"only the already-inserted row may remain: {remaining}"
+
+
+class TestVerifyBeforeQueueUsesTheMatchingWindow:
+    """A game queued already-verified must get the source-matching window."""
+
+    def test_insert_uses_fitgirl_window_not_the_metacritic_one(self, tmp_path: Path) -> None:
+        import datetime
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from gamarr.database import Database
+        from gamarr.pipeline import run_acquisition
+
+        detail = SimpleNamespace(
+            metascore=95.0,
+            metascore_review_count=100,
+            user_score=9.2,
+            user_review_count=1000,
+            genres=["Action"],
+            must_play=True,
+            release_date="2026-11-01",
+            description=None,
+        )
+        browse = [
+            {
+                "title": "New Release",
+                "slug": "new-release",
+                "score": 95,
+                "user_rating": 9.2,
+                "critic_review_count": 100,
+                "user_review_count": 1000,
+                "release_date": "2026-11-01",
+            },
+        ]
+        mock_mc = MagicMock()
+        mock_mc.scan_recent_games.return_value = browse
+        mock_mc.lookup_game.return_value = None
+        mock_mc._recent_games_last_page = 1
+        mock_mc._recent_games_exhausted = False
+        mock_mc._recent_games_failed = False
+        mock_mc._recent_games_cutoff_reached = False
+
+        db_path = str(tmp_path / "window.db")
+        with (
+            patch("gamarr.pipeline.MetacriticClient", return_value=mock_mc),
+            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+            patch("gamarr.pipeline._check_scrape_health", return_value="metacritic_broken"),
+            patch("gamarr.pipeline._lookup_details", return_value=[detail]),
+        ):
+            mock_qbt = MagicMock()
+            mock_qbt.is_connected.return_value = True
+            mock_qbt_cls.return_value = mock_qbt
+            run_acquisition(
+                platform="pc",
+                db_path=db_path,
+                qbt_host="localhost",
+                qbt_port=8080,
+                mode="latest",
+                max_pages=1,
+                max_queue_days=1,
+                fitgirl_max_queue_days=60,
+            )
+
+        db = Database(db_path)
+        pending = db.get_pending(platform="pc")
+        db.close()
+        assert len(pending) == 1, "the verified candidate should be queued"
+        expiry = datetime.datetime.fromisoformat(pending[0].expires_at)
+        now = datetime.datetime.now(tz=datetime.UTC)
+        assert now + datetime.timedelta(days=59) < expiry < now + datetime.timedelta(days=61), (
+            f"a match-waiting game needs the 60-day source window, got {expiry}"
+        )
+
+
+class TestMissingFeaturesBlockIsFailClosed:
+    """With no features block there is nothing to scope to, so scan the article."""
+
+    def _run(self, tmp_path: Path, article: str) -> tuple[bool, list[str]]:
+        from unittest.mock import patch
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _check_reject_keywords
+
+        db = Database(str(tmp_path / "failclosed.db"))
+        db.record_pending(slug="no-block", game_title="No Block Game", platform="pc")
+        captured: list[str] = []
+        from loguru import logger as loguru_logger
+
+        sink = loguru_logger.add(lambda msg: captured.append(str(msg)), level="INFO", format="{message}")
+        try:
+            with patch(
+                "gamarr.pipeline._fetch_fitgirl_page_content",
+                return_value=("No Block Game", article),
+            ):
+                skipped = _check_reject_keywords(
+                    db,
+                    {"url": "https://fitgirl-repacks.site/no-block/"},
+                    "No Block Game",
+                    "no-block",
+                    ["hv"],
+                )
+        finally:
+            loguru_logger.remove(sink)
+        db.close()
+        return skipped, captured
+
+    def test_hv_mentioned_without_a_features_block_still_rejects(self, tmp_path: Path) -> None:
+        skipped, logs = self._run(
+            tmp_path,
+            "No Block Game description. HV Bypass (INTEL & AMD) applied by DenuvOwO.",
+        )
+        assert skipped is True, "a page with no features block must not degrade to title-only"
+        assert any("neither a Repack Features block nor a page title" in line for line in logs) or any(
+            "no Repack Features block" in line for line in logs
+        ), logs
+
+    def test_clean_page_without_a_block_is_still_matched(self, tmp_path: Path) -> None:
+        skipped, _logs = self._run(tmp_path, "No Block Game description. Nothing special here.")
+        assert skipped is False
+
+
+class TestLatestModeReachesTheFloorYear:
+    """A deep newest year must not starve the previous year's listing."""
+
+    @staticmethod
+    def _run(tmp_path: Path, *, max_pages: int) -> list[dict[str, Any]]:
+        """Run one latest cycle against a client whose years are all deep."""
+        from loguru import logger as loguru_logger
+
+        calls: list[dict[str, Any]] = []
+        mock_mc = MagicMock()
+
+        def fake_scan(*_args: Any, **kwargs: Any) -> list:
+            calls.append(dict(kwargs))
+            grant = kwargs.get("max_pages", 0) or 1
+            start_page = kwargs.get("start_page", 1)
+            mock_mc._recent_games_last_page = start_page + grant - 1
+            mock_mc._recent_games_exhausted = False
+            mock_mc._recent_games_failed = False
+            mock_mc._recent_games_cutoff_reached = False
+            mock_mc._recent_games_stop_cutoff = None
+            return [{"title": f"G{p}", "slug": f"g-{kwargs.get('year')}-{p}"} for p in range(grant)]
+
+        mock_mc._recent_games_last_page = 0
+        mock_mc._recent_games_exhausted = False
+        mock_mc._recent_games_failed = False
+        mock_mc._recent_games_cutoff_reached = False
+        mock_mc._recent_games_stop_cutoff = None
+        mock_mc.scan_recent_games.side_effect = fake_scan
+
+        logs: list[str] = []
+        sink = loguru_logger.add(lambda msg: logs.append(str(msg)), level="INFO", format="{message}")
+        try:
+            with (
+                patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+                patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+                patch("gamarr.pipeline._check_scrape_health", return_value="metacritic_broken"),
+                patch("gamarr.pipeline._lookup_details", return_value=[]),
+            ):
+                mock_mc_cls.return_value = mock_mc
+                mock_qbt = MagicMock()
+                mock_qbt.is_connected.return_value = True
+                mock_qbt_cls.return_value = mock_qbt
+                run_acquisition(
+                    platform="pc",
+                    db_path=str(tmp_path / "floor.db"),
+                    qbt_host="localhost",
+                    qbt_port=8080,
+                    mode="latest",
+                    max_pages=max_pages,
+                )
+        finally:
+            loguru_logger.remove(sink)
+        return calls
+
+    def test_previous_year_is_scanned_when_the_newest_year_is_deep(self, tmp_path: Path) -> None:
+        import datetime
+
+        current_year = datetime.datetime.now(tz=datetime.UTC).year
+        calls = self._run(tmp_path, max_pages=3)
+
+        years = [call["year"] for call in calls]
+        assert current_year in years, years
+        assert (current_year - 1) in years, (
+            f"the depth budget consumed the newest year and never reached the previous one: {years}"
+        )
+
+    def test_a_one_page_depth_still_scans_something(self, tmp_path: Path) -> None:
+        calls = self._run(tmp_path, max_pages=1)
+        assert calls, "a depth of one must still browse a page"
+        assert calls[0]["max_pages"] == 1
+
+
+class TestExpiryAllowsRediscovery:
+    """After expiry a game must be discoverable again — expiry is not a blacklist."""
+
+    @staticmethod
+    def _browse_game() -> dict:
+        return {
+            "title": "Late Repack",
+            "slug": "late-repack",
+            "score": 90,
+            "user_rating": 8.8,
+            "critic_review_count": 60,
+            "user_review_count": 600,
+        }
+
+    @staticmethod
+    def _detail() -> Any:
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            metascore=90.0,
+            metascore_review_count=60,
+            user_score=8.8,
+            user_review_count=600,
+            genres=["Action"],
+            must_play=None,
+            release_date="2026-05-01",
+            description=None,
+        )
+
+    def test_expired_slug_is_requeued_by_the_next_browse_pass(self, tmp_path: Path) -> None:
+        from unittest.mock import patch
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _process_browse_games
+
+        db = Database(str(tmp_path / "requeue.db"))
+        db.record_processed(
+            source="metacritic",
+            source_title="Late Repack",
+            source_url="mc:late-repack",
+            game_title="Late Repack",
+            result="Expired",
+        )
+        thresholds = {
+            "min_criticscore": 75.0,
+            "min_criticscore_reviews": 5,
+            "min_user_score": 7.5,
+            "min_user_reviews": 10,
+        }
+        with patch("gamarr.pipeline._lookup_details", return_value=[self._detail()]):
+            queued = _process_browse_games(
+                [self._browse_game()],
+                "pc",
+                db,
+                thresholds,
+                max_queue_days=60,
+                mc=MagicMock(),
+            )
+        pending = db.get_pending()
+        db.close()
+        assert queued == 1, "a game whose queue entry expired must be re-queueable"
+        assert len(pending) == 1
+
+    def test_a_failed_game_is_still_never_requeued(self, tmp_path: Path) -> None:
+        """Only Expired is exempt; a rejection stays permanent."""
+        from unittest.mock import patch
+
+        from gamarr.database import Database
+        from gamarr.pipeline import _process_browse_games
+
+        db = Database(str(tmp_path / "failed.db"))
+        db.record_processed(
+            source="metacritic",
+            source_title="Late Repack",
+            source_url="mc:late-repack",
+            game_title="Late Repack",
+            result="Failed",
+        )
+        thresholds = {
+            "min_criticscore": 75.0,
+            "min_criticscore_reviews": 5,
+            "min_user_score": 7.5,
+            "min_user_reviews": 10,
+        }
+        with patch("gamarr.pipeline._lookup_details", return_value=[self._detail()]):
+            queued = _process_browse_games(
+                [self._browse_game()],
+                "pc",
+                db,
+                thresholds,
+                max_queue_days=60,
+                mc=MagicMock(),
+            )
+        db.close()
+        assert queued == 0
+
+
+class TestExpiryRunsWithoutVerifiedPending:
+    """A lapsed row must be swept even when nothing verified is waiting."""
+
+    def test_last_lapsed_row_does_not_stay_queued_forever(self, tmp_path: Path) -> None:
+        import datetime
+
+        from gamarr.database import Database, HistoryRow
+
+        db_path = str(tmp_path / "zombie.db")
+        past = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=1)).isoformat()
+        seed = Database(db_path)
+        seed.record_pending(
+            slug="lapsed-row",
+            game_title="Lapsed Row",
+            platform="pc",
+            metascore=90.0,
+            score_checks_passed=True,
+            expires_at=past,
+        )
+        seed.close()
+
+        TestLatestMode._run(tmp_path=tmp_path, max_pages=1, db_path=db_path)
+
+        db = Database(db_path)
+        still_pending = db.is_pending("lapsed-row")
+        db.close()
+        assert still_pending is False, (
+            "expiry must run before the match-phase gate, else the last lapsed row never leaves"
+        )
+        check = Database(db_path)
+        with check._session() as session:  # noqa: SLF001 - no public history reader
+            results = [row.result for row in session.query(HistoryRow).all()]
+        check.close()
+        assert "Expired" in results, results
+
+
+class TestLapsedRowRequeueSameCycle:
+    """A game whose window lapsed must be re-queueable in the very same cycle."""
+
+    def test_a_single_cycle_sweeps_and_requeues(self, tmp_path: Path) -> None:
+        import datetime
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from loguru import logger as loguru_logger
+
+        from gamarr.database import Database
+        from gamarr.pipeline import run_acquisition
+
+        db_path = str(tmp_path / "same_cycle.db")
+        past = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=1)).isoformat()
+        seed = Database(db_path)
+        seed.record_pending(
+            slug="g",
+            game_title="G",
+            platform="pc",
+            metascore=40.0,
+            score_checks_passed=True,
+            expires_at=past,
+        )
+        seed.close()
+
+        detail = SimpleNamespace(
+            metascore=91.0,
+            metascore_review_count=70,
+            user_score=8.9,
+            user_review_count=700,
+            genres=["Action"],
+            must_play=None,
+            release_date="2026-05-01",
+            description=None,
+        )
+        mock_mc = MagicMock()
+        mock_mc.scan_recent_games.return_value = [
+            {
+                "title": "G",
+                "slug": "g",
+                "score": 91,
+                "user_rating": 8.9,
+                "critic_review_count": 70,
+                "user_review_count": 700,
+                "release_date": "2026-05-01",
+            },
+        ]
+        mock_mc.lookup_game.return_value = None
+        mock_mc._recent_games_last_page = 1
+        mock_mc._recent_games_exhausted = False
+        mock_mc._recent_games_failed = False
+        mock_mc._recent_games_cutoff_reached = False
+
+        sink = loguru_logger.add(lambda _msg: None, level="INFO")
+        try:
+            with (
+                patch("gamarr.pipeline.MetacriticClient", return_value=mock_mc),
+                patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+                patch("gamarr.pipeline._check_scrape_health", return_value="metacritic_broken"),
+                patch("gamarr.pipeline._lookup_details", return_value=[detail]),
+            ):
+                mock_qbt = MagicMock()
+                mock_qbt.is_connected.return_value = True
+                mock_qbt_cls.return_value = mock_qbt
+                run_acquisition(
+                    platform="pc",
+                    db_path=db_path,
+                    qbt_host="localhost",
+                    qbt_port=8080,
+                    mode="latest",
+                    max_pages=1,
+                )
+        finally:
+            loguru_logger.remove(sink)
+
+        db = Database(db_path)
+        pending = db.get_pending()
+        db.close()
+        assert [row.slug for row in pending] == ["g"], (
+            "one cycle must sweep the lapsed row and re-queue it with fresh scores"
+        )
+        assert pending[0].metascore == 91.0
+
+
+class TestFitgirlUrlHostCheck:
+    """TLS verification is disabled for FitGirl, so the host must match exactly."""
+
+    def test_prefix_test_would_have_accepted_the_lookalike(self) -> None:
+        """The reviewed bug: a prefix test accepts a suffix-domain lookalike."""
+        lookalike = "https://fitgirl-repacks.site.evil.example/game/"
+        assert lookalike.startswith("https://fitgirl-repacks.site") is True
+
+    def test_accepts_the_real_host(self) -> None:
+        from gamarr.pipeline import _is_fitgirl_url
+
+        assert _is_fitgirl_url("https://fitgirl-repacks.site/game/") is True
+        assert _is_fitgirl_url("https://www.fitgirl-repacks.site/game/") is True
+
+    def test_rejects_a_prefix_lookalike(self) -> None:
+        from gamarr.pipeline import _is_fitgirl_url
+
+        assert _is_fitgirl_url("https://fitgirl-repacks.site.evil.example/game/") is False, (
+            "a prefix match would fetch an attacker host with verify=False"
+        )
+        assert _is_fitgirl_url("https://evil.example/fitgirl-repacks.site") is False
+        assert _is_fitgirl_url("not a url") is False

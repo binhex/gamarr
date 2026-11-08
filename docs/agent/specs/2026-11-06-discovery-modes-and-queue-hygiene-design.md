@@ -173,23 +173,30 @@ for game in browse_games:
   verified state (score edits, cache expiry) and for games whose scores were unavailable when
   queued — but its steady-state workload drops to the few verified rows awaiting a match.
 - `max_queue_days` keeps its meaning for verified rows (the source-matching window), so a
-  verified game that never matches still expires.
+  verified game that never matches still expires. Because verify-before-queue inserts every
+  row already verified, the *insert* expiry is the source-matching window
+  (`fitgirl_max_queue_days`), not the Metacritic-side `max_queue_days`; that key now only
+  affects legacy rows queued unverified. The window is refreshed only when a row *newly*
+  qualifies (`score_checks_passed` was not already true), because re-verification runs every
+  cycle and refreshing on each pass would push the expiry forward forever.
 
 ### 4. Keyword matcher (`src/gamarr/pipeline.py`)
 
 Two changes in `_check_reject_keywords` and its helpers:
 
 - **Scope**: extract the FitGirl page `<title>` and the **Repack Features** block only.
-  The block starts at the "Repack Features" heading and ends at the first of: a known
-  section heading (`Screenshots`, `System Requirements`, `Backwards Compatibility`,
-  `Game Description`, `Included DLCs`, `Download Mirrors`), a heading-like line that starts
-  before a blank line and ends with a colon within 60 characters, or 4000 characters — so a
-  page missing the following heading cannot silently scan the whole article.
+  The block starts at the "Repack Features" heading and ends at the first known section
+  heading (`Screenshots`, `System Requirements`, `Backwards Compatibility`,
+  `Game Description`, `Included DLCs`, `Download Mirrors`) or after 4000 characters,
+  whichever comes first — so a page missing the following heading cannot silently scan the
+  whole article. (The extracted article text has whitespace collapsed, so a
+  colon-terminated heading line cannot be detected; the known-heading list replaces it.)
   The `Backwards Compatibility` truncation is removed (`_truncate_at_backwards_compat` is
   deleted with its call site), because the scope now excludes both the false-positive
   boilerplate above the block and the historical references below it.
   Pages whose features block cannot be found fall back to title-only matching and log at
-  DEBUG; they are never blocked on an absent block.
+  WARNING (a title-only match can miss an HV repack, so the degradation is visible); they are
+  never blocked on an absent block.
 - **Match rule**: whole-word, negation-aware.
 
   ```text

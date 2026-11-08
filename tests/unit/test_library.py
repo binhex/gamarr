@@ -166,10 +166,6 @@ class TestLibraryScannerEdgeCases:
         scanner = LibraryScanner([str(tmp_path)])
         assert scanner.check_game("") is None
 
-    def test_check_game_not_found_no_index(self) -> None:
-        scanner = LibraryScanner([])
-        assert scanner.check_game("Elden Ring") is None
-
 
 class TestLibraryScannerFalsePositive:
     """Regression test for false positive matches from deep data folders."""
@@ -221,3 +217,50 @@ class TestPartialMatchTokens:
         result = _partial_match("elden ring", "elden ring deluxe edition")
         assert result is not None
         assert result > 0
+
+
+class TestLibraryScannerEdgeBranches:
+    """Extension stripping, parent-dir walking, and empty/no-match lookups."""
+
+    def test_strip_extension_split_archive(self) -> None:
+        from gamarr.library import _strip_extension
+
+        assert _strip_extension("Game.iso.001") == "Game"
+
+    def test_strip_extension_partial_download(self) -> None:
+        from gamarr.library import _strip_extension
+
+        assert _strip_extension("Game.iso.part") == "Game"
+
+    def test_partial_match_above_threshold_returns_match(self) -> None:
+        scanner = LibraryScanner([])
+        scanner._index["elden ring"] = ["/lib/elden ring"]
+        match = scanner.check_game("Elden Ring Deluxe Edition")
+        assert match is not None and match.found is True
+
+    def test_strip_extension_unknown_extension_returns_name(self) -> None:
+        from gamarr.library import _strip_extension
+
+        assert _strip_extension("Game.unknown") == "Game.unknown"
+
+    def test_index_parent_dirs_skips_when_root_is_library(self) -> None:
+        scanner = LibraryScanner([])
+        scanner._index_parent_dirs("/lib/game", "/lib/game")
+        assert scanner._index == {}
+
+    def test_index_parent_dirs_stops_at_filesystem_root(self) -> None:
+        scanner = LibraryScanner([])
+        # "/a/b/c" -> parents "/a/b" and "/a", then "/" whose parent is itself,
+        # where the walk must break instead of looping.
+        scanner._index_parent_dirs("/a/b/c", "/nonexistent-library-root")
+        assert sorted(scanner._index) == ["a", "b"], f"expected the two real parents, got {scanner._index}"
+
+    def test_check_game_blank_title_returns_none(self) -> None:
+        scanner = LibraryScanner([])
+        scanner._index["elden ring"] = ["/lib/elden ring"]
+        assert scanner.check_game("!!!") is None
+
+    def test_partial_match_below_threshold_returns_none(self) -> None:
+        scanner = LibraryScanner([])
+        scanner._index["elden ring"] = ["/lib/elden ring"]
+        assert scanner.check_game("zzzz qqqq") is None

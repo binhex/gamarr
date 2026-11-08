@@ -160,3 +160,70 @@ class TestCopyWithVerify:
     def test_make_directory_permission_error(self, tmp_path: Path) -> None:
         with patch("pathlib.Path.mkdir", side_effect=PermissionError("denied")):
             assert make_directory(str(tmp_path / "nope")) is False
+
+
+class TestCopyWithVerifyErrorPaths:
+    """Error branches must fail closed instead of crashing or half-copying."""
+
+    def test_make_directory_os_error_returns_false(self, tmp_path: Path) -> None:
+        from gamarr import file_utils
+
+        with patch("pathlib.Path.mkdir", side_effect=OSError("no space left")):
+            assert file_utils.make_directory(tmp_path / "x") is False
+
+    def test_unusable_parent_directory_fails_closed(self, tmp_path: Path) -> None:
+        from gamarr import file_utils
+
+        src = tmp_path / "src.bin"
+        src.write_bytes(b"data")
+        with patch.object(file_utils, "make_directory", return_value=False):
+            assert copy_with_verify(str(src), str(tmp_path / "dst" / "src.bin")) is False
+
+    def test_source_disappearing_before_verification_fails(self, tmp_path: Path) -> None:
+        from gamarr import file_utils
+
+        src = tmp_path / "src.bin"
+        dst = tmp_path / "dst.bin"
+        src.write_bytes(b"data")
+        dst.write_bytes(b"other")
+        with patch.object(file_utils, "_sha256", side_effect=OSError("gone")):
+            assert copy_with_verify(str(src), str(dst)) is False
+
+    def test_temporary_hash_failure_fails_closed(self, tmp_path: Path) -> None:
+        from gamarr import file_utils
+
+        src = tmp_path / "src.bin"
+        src.write_bytes(b"data")
+        with (
+            patch.object(file_utils, "_copy_to_temporary", return_value=tmp_path / "tmp.bin"),
+            patch.object(file_utils, "_hash_source_for_verification", return_value="abc"),
+            patch.object(file_utils, "_hash_temporary_for_verification", return_value=None),
+            patch.object(file_utils, "_remove_temp_copy"),
+        ):
+            assert file_utils._perform_copy(src, tmp_path / "dst.bin") is False
+
+    def test_replace_failure_fails_closed(self, tmp_path: Path) -> None:
+        from gamarr import file_utils
+
+        src = tmp_path / "src.bin"
+        src.write_bytes(b"data")
+        with (
+            patch.object(file_utils, "_copy_to_temporary", return_value=tmp_path / "tmp.bin"),
+            patch.object(file_utils, "_hash_source_for_verification", return_value="abc"),
+            patch.object(file_utils, "_hash_temporary_for_verification", return_value="abc"),
+            patch.object(file_utils, "_replace_with_verified_copy", return_value=False),
+            patch.object(file_utils, "_remove_temp_copy"),
+        ):
+            assert file_utils._perform_copy(src, tmp_path / "dst.bin") is False
+
+    def test_replace_os_error_returns_false(self, tmp_path: Path) -> None:
+        from gamarr import file_utils
+
+        with patch("os.replace", side_effect=OSError("locked")):
+            assert file_utils._replace_with_verified_copy(tmp_path / "t", tmp_path / "d") is False
+
+    def test_temporary_hash_os_error_returns_none(self, tmp_path: Path) -> None:
+        from gamarr import file_utils
+
+        with patch.object(file_utils, "_sha256", side_effect=OSError("gone")):
+            assert file_utils._hash_temporary_for_verification(tmp_path / "t") is None

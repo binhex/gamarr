@@ -10,11 +10,12 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from html import unescape
 from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import urlparse
 
 import requests
 from loguru import logger
 
-from gamarr.database import _INDEFINITE_DAYS, Database
+from gamarr.database import _EXPIRED_RESULT, _INDEFINITE_DAYS, Database
 from gamarr.metacritic import MetacriticClient
 from gamarr.metacritic_cache import MetacriticCache
 from gamarr.models import SOURCE_DISPLAY
@@ -111,6 +112,114 @@ def _is_older_than(release_date: str | None, days: int) -> bool:
         return False
 
 
+def _normalise_mode(mode: str) -> Literal["latest", "backlog"]:
+    """Validate the discovery mode passed through the API.
+
+    Args:
+        mode: The caller's mode.
+
+    Returns:
+        ``"latest"`` or ``"backlog"``; an unknown value falls back to backlog
+        with a warning.
+    """
+    normalised = mode.casefold() if isinstance(mode, str) else ""
+    if normalised == "latest":
+        return "latest"
+    if normalised != "backlog":
+        logger.warning("mode {!r} is not 'latest' or 'backlog' — using backlog", mode)
+    return "backlog"
+
+
+def _normalise_max_date(max_date: int) -> int:
+    """Validate a ``max_date`` passed through the API and clamp a future month.
+
+    The config layer rejects invalid values; this guard keeps a direct caller
+    from turning a typo into a century-long scan.
+
+    Args:
+        max_date: The caller's floor, ``0`` for none.
+
+    Returns:
+        A valid ``YYYYMM`` month, or ``0`` when the value was unusable.
+    """
+    if not is_valid_year_month(max_date):
+        logger.warning("max_date {!r} is not a valid YYYYMM month — ignoring it", max_date)
+        return 0
+    current = current_year_month()
+    if max_date > current:
+        logger.warning("max_date {} is in the future — clamping to {}", max_date, current)
+        return current
+    return max_date
+
+
+def _normalise_cycle_months(max_cycle_months: int) -> int:
+    """Validate the month pace passed through the API.
+
+    Args:
+        max_cycle_months: The caller's pace, ``0`` for no pacing.
+
+    Returns:
+        A pace between 0 and 1200 months.
+    """
+    if isinstance(max_cycle_months, bool) or not isinstance(max_cycle_months, int):
+        logger.warning("max_cycle_months {!r} is not an integer — ignoring it", max_cycle_months)
+        return 0
+    if max_cycle_months < 0:
+        logger.warning("max_cycle_months {} is negative — ignoring it", max_cycle_months)
+        return 0
+    if max_cycle_months > 1200:
+        logger.warning("max_cycle_months {} is implausibly large — clamping to 1200", max_cycle_months)
+        return 1200
+    return max_cycle_months
+
+
+_DEFAULT_MAX_PAGES = 500
+
+
+def _latest_call_depth(allowance: int, reserve: int) -> int:
+    """Return the page depth for one year in latest mode.
+
+    Args:
+        allowance: Pages left of this cycle's depth budget.
+        reserve: Pages to keep for the years below.
+
+    Returns:
+        The depth for this call.  ``0`` when the allowance is spent; when the
+        allowance is at or below the reserve the reserve is dropped, since
+        scanning nothing would be strictly worse.  A depth that small cannot
+        honour the previous-year guarantee, so ``max_pages`` should be >= 2.
+    """
+    if allowance <= 0:
+        return 0
+    return max(allowance - reserve, 0) or allowance
+
+
+def _normalise_latest_depth(max_pages: int | None, mode: str) -> int | None:
+    """Clamp the latest-mode page depth.
+
+    ``None`` and ``0`` both mean "unbounded", which in latest mode would scan the
+    whole window — that is what backlog mode is for.
+
+    Args:
+        max_pages: The caller's page budget or depth.
+        mode: The resolved discovery mode.
+
+    Returns:
+        ``10`` when latest mode was given no depth, otherwise *max_pages*
+        unchanged.
+    """
+    if max_pages is not None and max_pages < 0:
+        # Not "unset": in backlog an unset budget means no page cap at all, so a
+        # negative typo would silently enlarge the scan.  Use the documented
+        # default (mirrors MetacriticConfig.max_pages) instead.
+        logger.warning("max_pages {} is negative — using the default budget of {}", max_pages, _DEFAULT_MAX_PAGES)
+        max_pages = _DEFAULT_MAX_PAGES
+    if mode == "latest" and not max_pages:
+        logger.warning("mode: latest with no max_pages is unbounded — clamping depth to 10 pages")
+        return 10
+    return max_pages
+
+
 def _games_at_or_after_floor(games: list[dict[str, Any]], floor_month: int) -> list[dict[str, Any]]:
     """Return the games whose release month is unknown or at/after *floor_month*.
 
@@ -166,6 +275,7 @@ class AcquisitionConfig:
     max_cycle_pages: int | None = None
     max_date: int = 0
     max_cycle_months: int = 0
+    mode: Literal["latest", "backlog"] = "backlog"
     reject_genre: list[str] | None = None
     reject_title: list[str] | None = None
     fitgirl_max_queue_days: int = 60
@@ -196,6 +306,7 @@ def run_acquisition(
     max_cycle_pages: int | None = None,
     max_date: int = 0,
     max_cycle_months: int = 0,
+    mode: Literal["latest", "backlog"] = "backlog",
     fitgirl_max_queue_days: int = 60,
     notify_on_scrape_failure: bool = True,
     reject_genre: list[str] | None = None,
@@ -214,30 +325,19 @@ def run_acquisition(
 ) -> list[dict[str, Any]]:
     """Execute one scan cycle.
 
-    Discovers games by browsing Metacritic in the configured ``sort_order``,
-    verifies each game's real Metacritic detail-page scores against the
-    configured thresholds, then matches survivors against each
-    configured source's sitemap and delivers to qBittorrent.
+    Discovers games by browsing Metacritic in *mode*: ``"latest"`` re-reads the
+    newest end of the window every cycle — at most *max_pages* pages (clamped to
+    10 when unset) — without persisting or resetting the scan cursors, and
+    always browses in ``"new"`` order whatever ``sort_order`` says;
+    ``"backlog"`` sweeps the window with durable cursors and month pacing in the
+    configured ``sort_order``.  Each game's real Metacritic detail-page scores
+    are verified against the configured thresholds, then survivors are matched
+    against each configured source's sitemap and delivered to qBittorrent.
     """
-    if not is_valid_year_month(max_date):
-        logger.warning("max_date {!r} is not a valid YYYYMM month — ignoring it", max_date)
-        max_date = 0
-    elif max_date > current_year_month():
-        logger.warning(
-            "max_date {} is in the future — clamping to {}",
-            max_date,
-            current_year_month(),
-        )
-        max_date = current_year_month()
-    if isinstance(max_cycle_months, bool) or not isinstance(max_cycle_months, int):
-        logger.warning("max_cycle_months {!r} is not an integer — ignoring it", max_cycle_months)
-        max_cycle_months = 0
-    elif max_cycle_months < 0:
-        logger.warning("max_cycle_months {} is negative — ignoring it", max_cycle_months)
-        max_cycle_months = 0
-    elif max_cycle_months > 1200:
-        logger.warning("max_cycle_months {} is implausibly large — clamping to 1200", max_cycle_months)
-        max_cycle_months = 1200
+    mode = _normalise_mode(mode)
+    max_date = _normalise_max_date(max_date)
+    max_cycle_months = _normalise_cycle_months(max_cycle_months)
+    max_pages = _normalise_latest_depth(max_pages, mode)
 
     cfg = AcquisitionConfig(
         min_criticscore=min_criticscore,
@@ -252,6 +352,7 @@ def run_acquisition(
         max_cycle_pages=max_cycle_pages,
         max_date=max_date,
         max_cycle_months=max_cycle_months,
+        mode=mode,
         fitgirl_max_queue_days=fitgirl_max_queue_days,
         notify_on_scrape_failure=notify_on_scrape_failure,
         reject_genre=reject_genre,
@@ -317,6 +418,14 @@ def run_acquisition(
         Metacritic-first: browse Metacritic first; only fetch a source's
         sitemap if Metacritic produced at least one game to match.
         """
+        # Expiry runs FIRST, before browse: a lapsed row is invisible to
+        # get_pending and absent from get_known_slugs, so browse would treat the
+        # game as a fresh candidate and record_pending would then reject it on
+        # the primary key (the row is still there).  Sweeping here lets the same
+        # cycle re-queue it.  Results are NOT folded into `matched`: an expiry is
+        # not a match.
+        expired_count = len(_process_expired_games(db, cancel_event=cancel_event))
+
         # Metacritic-first discovery: browse Metacritic for games that pass
         # score thresholds and age filter. The FitGirl sitemap is fetched
         # only if Metacritic produced games to match against.
@@ -324,12 +433,28 @@ def run_acquisition(
         new_pending: int = 0
         scan_year_anchor = datetime.datetime.now(tz=datetime.UTC).year
 
-        # Mode resolution: a date bound needs the per-year browse dimension,
-        # which only sort_order "new" has.  Everywhere else the page budget and
-        # its pace stay in charge.
-        date_mode = bool(cfg.max_date) and cfg.sort_order == "new"
+        # Mode resolution.  "latest" reads the top of the window every cycle and
+        # never persists cursors; "backlog" sweeps with cursors and pacing.  A
+        # date bound needs the per-year browse dimension, which only sort_order
+        # "new" has.
+        latest_mode = cfg.mode == "latest"
+        scan_order: Literal["new", "criticscore", "userscore"] = "new" if latest_mode else cfg.sort_order
+        if latest_mode and cfg.sort_order != "new":
+            logger.warning(
+                "Latest mode requires sort_order 'new' — scanning in 'new' order for this cycle (configured '{}')",
+                cfg.sort_order,
+            )
+        date_mode = bool(cfg.max_date) and scan_order == "new"
         floor_month = cfg.max_date if date_mode else 0
         floor_cutoff = year_month_to_date(floor_month) if date_mode else None
+        if latest_mode:
+            logger.info(
+                "Discovery mode: latest (depth {} pages, window floor {})",
+                cfg.max_pages,
+                floor_month or "none",
+            )
+        else:
+            logger.info("Discovery mode: backlog")
 
         pages_this_cycle = 0
         min_month_seen: int | None = None
@@ -339,45 +464,79 @@ def run_acquisition(
         if cfg.enabled:
             # Detect sort_order change and reset progress if needed
             previous_sort_order = db.get_last_sort_order(platform)
-            if previous_sort_order is not None and previous_sort_order != cfg.sort_order:
+            if previous_sort_order is not None and previous_sort_order != scan_order:
                 logger.info(
                     "Sort order changed from '{}' to '{}'",
                     previous_sort_order,
-                    cfg.sort_order,
+                    scan_order,
                 )
+                # The cached pages were fetched with a different browse order.
                 db.clear_browse_cache(platform)
-                db.reset_progress(platform, cfg.sort_order)
 
-            mc.sort_order = cfg.sort_order
+            if latest_mode:
+                # Latest re-orders the cache but never reads the sweep cursors,
+                # so it must not invalidate them: a user trying latest must be
+                # able to return to a mid-sweep backlog position.
+                if db.get_cursor_sort_order(platform) is not None and db.get_cursor_sort_order(platform) != scan_order:
+                    logger.info("Latest mode leaves the backlog cursors untouched (they belong to another order)")
+            else:
+                cursor_order = db.get_cursor_sort_order(platform)
+                if cursor_order is not None and cursor_order != scan_order:
+                    # The recorded page positions belong to a different browse
+                    # order, so resuming from them would skip unseen pages.
+                    logger.info(
+                        "Sweep cursors belong to sort order '{}' — resetting them for '{}'",
+                        cursor_order,
+                        scan_order,
+                    )
+                    db.reset_progress(platform, scan_order)
+                db.set_cursor_sort_order(platform, scan_order)
 
-            if cfg.max_date and not date_mode:
+            # Record the order the cache is about to hold BEFORE the scan runs: a
+            # cycle abandoned by the watchdog must not leave the cache in one
+            # order while the stored order still claims another.
+            db.set_last_sort_order(platform, scan_order)
+
+            mc.sort_order = scan_order
+
+            if not latest_mode and cfg.max_date and not date_mode:
                 logger.info(
                     "Config: max_date/max_cycle_months ignored because sort_order is '{}'",
-                    cfg.sort_order,
+                    scan_order,
                 )
-            elif cfg.max_cycle_months and not date_mode:
+            if not latest_mode and cfg.max_cycle_months and not date_mode:
                 logger.info(
                     "Config: max_cycle_months ignored because date mode is off (max_date={}, sort_order='{}')",
                     cfg.max_date,
-                    cfg.sort_order,
+                    scan_order,
                 )
-            if date_mode and cfg.max_pages:
+            if date_mode and not latest_mode and cfg.max_pages:
                 logger.info(
                     "Config: max_pages ({}) is unused in date mode (max_date={})",
                     cfg.max_pages,
                     floor_month,
                 )
-            if date_mode and cfg.max_cycle_pages:
+            if date_mode and not latest_mode and cfg.max_cycle_pages:
                 logger.info(
                     "Config: max_cycle_pages ignored in date mode (max_cycle_pages={}, max_cycle_months={})",
                     cfg.max_cycle_pages,
                     cfg.max_cycle_months,
                 )
+            if latest_mode:
+                if cfg.max_cycle_months:
+                    logger.info("Config: max_cycle_months ignored in latest mode ({})", cfg.max_cycle_months)
+                if cfg.max_cycle_pages:
+                    logger.info("Config: max_cycle_pages ignored in latest mode ({})", cfg.max_cycle_pages)
 
             # Calculate year range
-            if cfg.sort_order == "new":
+            if scan_order == "new":
                 if date_mode:
                     cutoff_year = min(scan_year_anchor, floor_month // 100)
+                elif latest_mode:
+                    # No floor configured: also include the previous year, so a
+                    # game released in December whose scores publish in January
+                    # is still discoverable at the turn of the year.
+                    cutoff_year = scan_year_anchor - 1
                 else:
                     years_back = max(0, math.ceil((cfg.max_pages if cfg.max_pages else 500) / 52))
                     cutoff_year = scan_year_anchor - years_back
@@ -388,7 +547,11 @@ def run_acquisition(
                 current_year = 0
 
             max_pages_cfg = cfg.max_pages if cfg.max_pages else 0
-            if date_mode:
+            if latest_mode:
+                # Latest depth is per cycle: no durable budget, no reset.
+                remaining_pages = 0
+                cycle_allowance = 0
+            elif date_mode:
                 # Date mode has no page budget: the floor bounds the sweep and
                 # the month allowance paces it.
                 remaining_pages = 0
@@ -403,7 +566,7 @@ def run_acquisition(
                         total_scanned,
                         max_pages_cfg,
                     )
-                    db.reset_progress(platform, cfg.sort_order)
+                    db.reset_progress(platform, scan_order)
                     total_scanned = 0
 
                 remaining_pages = max_pages_cfg - total_scanned if max_pages_cfg > 0 else 0
@@ -422,7 +585,10 @@ def run_acquisition(
             for scan_year in range(current_year, cutoff_year - 1, -1):
                 if is_cancelled(cancel_event):
                     break
-                if date_mode:
+                if latest_mode:
+                    if pages_this_cycle >= max_pages_cfg:
+                        break
+                elif date_mode:
                     if cfg.max_cycle_months and _month_span(max_month_seen, min_month_seen) >= cfg.max_cycle_months:
                         break
                 else:
@@ -430,9 +596,19 @@ def run_acquisition(
                         break
                     if cycle_allowance > 0 and pages_this_cycle >= cycle_allowance:
                         break
-                start_page = db.get_last_scanned_page(platform, scan_year) + 1
+                start_page = 1 if latest_mode else db.get_last_scanned_page(platform, scan_year) + 1
                 try:
-                    if date_mode:
+                    if latest_mode:
+                        # Leave a page for the years below when one is still in
+                        # the window: a newest year deeper than the depth budget
+                        # would otherwise consume it all, and the previous year is
+                        # the only listing a December release with January scores
+                        # appears in.
+                        reserve = 1 if scan_year > cutoff_year else 0
+                        per_call_max = _latest_call_depth(max_pages_cfg - pages_this_cycle, reserve)
+                        cutoff_date = floor_cutoff
+                        month_span_left = 0
+                    elif date_mode:
                         per_call_max = 0
                         month_span_left = 0
                         cutoff_date = year_month_to_date(floor_month)
@@ -467,7 +643,7 @@ def run_acquisition(
                         cancel_event=cancel_event,
                         start_page=start_page,
                         show_progress=True,
-                        year=scan_year if cfg.sort_order == "new" else None,
+                        year=scan_year if scan_order == "new" else None,
                         max_pages=per_call_max,
                         max_month_span=month_span_left,
                     )
@@ -481,7 +657,7 @@ def run_acquisition(
                     # exhausted year keeps its last real page so the next cycle
                     # probes the same page instead of creeping forward and
                     # spending the budget on empty fetches.
-                    if pages_scanned > 0:
+                    if pages_scanned > 0 and not latest_mode:
                         db.set_last_scanned_page(platform, scan_year, last_page)
 
                     # Only a probe the client confirmed as an empty listing counts
@@ -549,7 +725,7 @@ def run_acquisition(
                     fetch_failed = True
                     logger.exception("Scan failed for year {} — will retry next cycle", scan_year)
 
-            if date_mode:
+            if date_mode and not latest_mode:
                 # A date sweep is complete once the floor year itself is finished
                 # (exhausted or date-bounded), or when no page at all was fetched
                 # and every year probed empty.  A fetch failure never counts.
@@ -564,8 +740,8 @@ def run_acquisition(
                         reached,
                         year_month_to_date(floor_month)[:7],
                     )
-                    db.reset_progress(platform, cfg.sort_order)
-            else:
+                    db.reset_progress(platform, scan_order)
+            elif not latest_mode:
                 # A full pass that found no pages anywhere means the range is fully
                 # drained: restart from the newest year so new releases are picked up.
                 if pages_this_cycle == 0 and drained_probes > 0 and not fetch_failed and not is_cancelled(cancel_event):
@@ -574,9 +750,7 @@ def run_acquisition(
                         cutoff_year,
                         current_year,
                     )
-                    db.reset_progress(platform, cfg.sort_order)
-
-            db.set_last_sort_order(platform, cfg.sort_order)
+                    db.reset_progress(platform, scan_order)
 
             # ── Shared: process browse results into pending queue ──
             if browse_games:
@@ -591,12 +765,18 @@ def run_acquisition(
                     platform,
                     db,
                     thresholds,
-                    max_queue_days=cfg.max_queue_days,
+                    # A row is inserted already verified, so it sits in the
+                    # source-matching phase from the start and needs that window.
+                    max_queue_days=cfg.fitgirl_max_queue_days,
                     reject_title=cfg.reject_title,
+                    mc=mc,
+                    cache_details_days=cfg.cache_details_days,
+                    cache_pages_hours=cfg.cache_hours,
+                    cancel_event=cancel_event,
                 )
                 if new_pending:
                     logger.info(
-                        "{} of {} collected games passed title/age filters — added to pending queue",
+                        "{} of {} collected games passed filters and detail verification — added to pending queue",
                         new_pending,
                         len(browse_games),
                     )
@@ -715,6 +895,7 @@ def run_acquisition(
 
         matched: list[dict[str, Any]] = []
         phase = 1  # Phase counter for logging
+
         if not is_cancelled(cancel_event) and db.has_verified_pending(platform=platform):
             match_thresholds = {
                 "min_criticscore": cfg.min_criticscore,
@@ -776,11 +957,12 @@ def run_acquisition(
             phase,
         )
         logger.info(
-            "{} games browsed, {} queued, {} matched, {} delivered",
+            "{} games browsed, {} queued, {} matched, {} delivered, {} expired",
             len(browse_games),
             new_pending,
             len(matched),
             delivered,
+            expired_count,
         )
 
         # Process old verified games AFTER the matching phase.
@@ -790,9 +972,19 @@ def run_acquisition(
         # from pending before it could be delivered.
         _process_aged_games(db, cfg, platform, cancel_event=cancel_event)
 
-        # Log scan progress: date mode reports the deepest month reached, page
-        # mode keeps the page-budget percentage.
-        if cfg.enabled and date_mode:
+        # Log scan progress: latest reports the depth window it read, date mode
+        # reports the deepest month reached, page mode keeps the page-budget
+        # percentage.
+        if cfg.enabled and latest_mode:
+            logger.info(
+                "Latest scan: {} page(s) read of a {} budget, window floor {} ({} collected, {} queued)",
+                pages_this_cycle,
+                max_pages_cfg,
+                f"{floor_month // 100}" if floor_month else "current year and previous",
+                len(browse_games),
+                new_pending,
+            )
+        elif cfg.enabled and date_mode:
             logger.info(
                 "Backlog: reached {} (floor {}, {} page(s) this cycle)",
                 year_month_to_date(min_month_seen)[:7] if min_month_seen else "unknown",
@@ -868,14 +1060,182 @@ def _reject_by_browse_review_counts(
     return None
 
 
-def _title_contains_keywords(title: str, keywords: list[str] | None) -> str | None:
-    """Return the first matching keyword (lowercased), or None if no match."""
-    if not keywords:
+# Section headings that end the FitGirl "Repack Features" block.  Scoping the
+# keyword scan this way is deliberate: the download-mirror boilerplate above the
+# block mentions "non-HV repack" and "INSTALLED HV version" even on pages whose
+# repack is not HV at all, and the backwards-compatibility prose below it refers
+# to older releases.
+_FEATURES_HEADING = "repack features"
+# Headings that end the "Repack Features" block, in FitGirl's own capitalisation.
+# Matched exactly: a features bullet that merely mentions a heading ("All included
+# DLCs are present") must not truncate the block, and ".title()" cannot be used
+# because it mangles acronyms ("Included Dlcs").
+_FEATURES_STOP_HEADINGS: tuple[str, ...] = (
+    "Screenshots",
+    "System Requirements",
+    "Backwards Compatibility",
+    "Game Description",
+    "Included DLCs",
+    "Download Mirrors",
+)
+_FEATURES_MAX_CHARS = 4000
+
+
+def _extract_repack_features(article_text: str | None) -> str | None:
+    """Return the FitGirl "Repack Features" block, or None when it is absent.
+
+    The block starts at the "Repack Features" heading (canonical spelling
+    preferred, else a case-insensitive match) and ends at the first canonical
+    following heading, or after ``_FEATURES_MAX_CHARS`` characters, whichever
+    comes first — so a page without a nearby following heading cannot silently
+    scan the whole article.  Stop headings are matched by their canonical
+    spelling only: a features bullet that merely mentions one must not end the
+    block, so a page that spells its next heading in other casing falls back to
+    the length cap.
+
+    Known limit: a bullet whose text starts with a canonical stop heading
+    ("Included DLCs: ...") still ends the block, so an HV marker listed after it
+    is not scanned.  Matching on a sentence/bullet boundary was tried and is not
+    viable: FitGirl's collapsed text puts real headings straight after a word
+    ("... lossless Backwards Compatibility ..."), so any boundary rule drops
+    genuine headings.
+
+    Args:
+        article_text: The stripped ``<article>`` text, or ``None``.
+
+    Returns:
+        The feature block, or ``None`` when the page has no such heading.
+    """
+    if not article_text:
         return None
-    title_lower = title.lower()
-    for kw in keywords:
-        if kw.lower() in title_lower:
-            return kw.lower()
+    lowered = article_text.lower()
+    start = article_text.find("Repack Features")
+    if start < 0:
+        start = lowered.find(_FEATURES_HEADING)
+    if start < 0:
+        return None
+    body = article_text[start:]
+    cut = len(body)
+    # Prefer the heading's capitalisation so a features bullet that merely
+    # mentions "included DLCs" does not truncate the block.
+    # Canonical spelling only: a features bullet that merely mentions a heading
+    # ("All included DLCs are present") must not truncate the block.  Pages whose
+    # following heading uses other casing simply fall back to the length cap.
+    for heading in _FEATURES_STOP_HEADINGS:
+        index = body.find(heading, len(_FEATURES_HEADING))
+        if 0 <= index < cut:
+            cut = index
+    return body[: min(cut, _FEATURES_MAX_CHARS)].strip()
+
+
+# Words that negate a keyword when they appear immediately before it, e.g.
+# "non-HV repack" or "without HV".  FitGirl's patch-note prose uses these when
+# describing how to move *off* an HV release, which must not reject the page.
+_NEGATION_TOKENS: tuple[str, ...] = ("non-", "without", "no", "not")
+_NEGATION_FILLER: tuple[str, ...] = (
+    "a",
+    "an",
+    "the",
+    "any",
+    "need",
+    "needed",
+    "needing",
+    "require",
+    "for",
+    "of",
+    "to",
+    "be",
+    "include",
+    "includes",
+    "including",
+    "enable",
+    "enabled",
+    "use",
+    "uses",
+    "using",
+)
+
+# Contractions hide negation from a token scan ("doesn't include an HV version").
+_CONTRACTIONS: tuple[tuple[str, str], ...] = (
+    ("doesn't", "does not"),
+    ("can't", "can not"),
+    ("isn't", "is not"),
+    ("don't", "do not"),
+    ("won't", "will not"),
+    ("cannot", "can not"),
+)
+_NEGATION_WINDOW = 25
+
+
+def _is_negated(text: str, start: int) -> bool:
+    """Return True when the keyword at *start* is preceded by a negation.
+
+    Looks only backwards, over the ``_NEGATION_WINDOW`` characters before the
+    match, skipping articles and lightweight filler ("not an HV repack",
+    "doesn't include an HV version").  Contractions are expanded first.
+
+    A trailing negation ("HV ... not required") deliberately does NOT count: a
+    forward look cannot distinguish it from a neighbouring item's negation
+    ("HV bypass, DX not required"), and a missed rejection would deliver a
+    repack the user excluded.
+
+    Args:
+        text: The text being scanned.
+        start: Index of the keyword's first character.
+
+    Returns:
+        True when the occurrence should be ignored.
+    """
+    # Expand over a wider slice so a contraction straddling the window edge is
+    # still recognised, then keep only the window's worth of characters.
+    wider = text[max(0, start - _NEGATION_WINDOW - 12) : start].lower()
+    # FitGirl is a WordPress site: typographic apostrophes are as common as
+    # ASCII ones, and an unnormalised U+2019 splits "doesn't" into two tokens.
+    for apostrophe in ("\u2019", "\u02bc", "\u00b4"):
+        wider = wider.replace(apostrophe, "'")
+    for contraction, expanded in _CONTRACTIONS:
+        wider = wider.replace(contraction, expanded)
+    # Catch the unlisted "n't" forms (shouldn't, wasn't, wouldn't) generically.
+    wider = wider.replace("n't", " not")
+    before = wider[-_NEGATION_WINDOW:]
+    tokens = [token for token in re.split(r"[^a-z0-9-]+", before) if token]
+    # Articles and prepositions may sit between the negation and the keyword
+    # ("not an HV repack", "no need for HV"), so skip over them.
+    while tokens and tokens[-1] in _NEGATION_FILLER:
+        tokens.pop()
+    # No forward look: "HV bypass, DX not required" would otherwise read as a
+    # negated keyword and deliver an HV repack.  Backward negation already covers
+    # the "no HV required" phrasing that matters.
+    return bool(tokens) and tokens[-1] in _NEGATION_TOKENS
+
+
+def _keyword_match(text: str | None, keywords: list[str] | None) -> str | None:
+    """Return the first matching keyword that is not negated, trying keywords in order.
+
+    Matching is case-insensitive and anchored on word boundaries, so ``hv``
+    matches "HV version" but not "shevron".  An occurrence is skipped when the
+    25 characters immediately before it end with a negation token
+    (``non-``, ``without``, ``no``, ``not``) — that is the difference between
+    "a new non-HV repack" (not this repack) and "an HV version" (this repack).
+
+    Args:
+        text: The text to scan, or ``None``.
+        keywords: Configured reject keywords, or ``None``.
+
+    Returns:
+        The matched keyword, lowercased, or ``None``.
+    """
+    if not text or not keywords:
+        return None
+    for keyword in keywords:
+        needle = keyword.strip()
+        if not needle:
+            continue
+        pattern = re.compile(rf"\b{re.escape(needle)}\b", re.IGNORECASE)
+        for match in pattern.finditer(text):
+            if _is_negated(text, match.start()):
+                continue
+            return needle.lower()
     return None
 
 
@@ -899,7 +1259,8 @@ def _game_passes_thresholds(game: dict[str, Any], thresholds: dict[str, Any]) ->
     metrics on a different scale (e.g. 1478), not real 0-100 metascores
     or 0-10 user scores.  Real score verification happens during the
     detail-page phase.  Review count filtering is now handled by
-    ``_reject_by_browse_review_counts`` in ``_process_browse_games``.
+    ``_reject_by_browse_review_counts``, called from
+    ``_browse_game_reject_reason``.
     """
     metascore = game.get("score")
     user_score = game.get("user_rating")
@@ -931,7 +1292,10 @@ def _is_game_eligible(
     *,
     known_slugs: set[str] | None = None,
 ) -> bool:
-    """Return True if *game* passes all filters and should be added to pending.
+    """Return True if *game* passes the cheap, network-free filters.
+
+    Passing only means the game is worth a detail-page verification:
+    ``_process_browse_games`` still checks its real scores before queueing it.
 
     Args:
         known_slugs: Pre-computed set of known slugs (processed or pending).
@@ -967,14 +1331,22 @@ def _process_browse_games(
     *,
     max_queue_days: int = 30,
     reject_title: list[str] | None = None,
+    mc: Any = None,
+    cache_details_days: int = 7,
+    cache_pages_hours: int = 6,
+    cancel_event: CancelSignal | None = None,
 ) -> int:
     """Evaluate browse-page games and insert qualifying ones into the pending queue.
 
-    Browse listings from ``_parse_browse_page`` already include scores
-    in their dict (``score`` = critic metascore, ``user_rating`` = user
-    score).  Games that pass the thresholds are inserted into
-    ``pending_games``.  Already-processed or already-pending games are
-    skipped.
+    Browse listings from ``_parse_browse_page`` carry their own ``score`` and
+    ``user_rating`` fields; those only act as a pre-filter.  Games that survive
+    ``_browse_game_reject_reason`` — already-processed and already-pending games
+    are rejected there — are verified against the Metacritic detail page, and
+    only the ones whose real scores pass *thresholds* are inserted into
+    ``pending_games``, with the detail-page scores, review counts, genres and
+    ``score_checks_passed`` set.  Games that fail, or whose scores are not
+    published yet, are not inserted — they are not marked known either, so the
+    next browse pass re-evaluates them.
 
     Args:
         browse_games: List from ``_parse_browse_page``.
@@ -983,64 +1355,237 @@ def _process_browse_games(
         thresholds: Dict with ``min_criticscore`` keys.
         max_queue_days: How many days to keep the game pending before expiry.
         reject_title: Titles matching any of these are skipped.
+        mc: Metacritic client used for the detail-page verification.
+        cache_details_days: TTL in days for the detail-page cache.
+        cache_pages_hours: TTL in hours for the browse-page cache.
 
     Returns:
         Number of new pending games added.
     """
     known_slugs = db.get_known_slugs(source="metacritic")
-    new_count = 0
     seen_slugs: set[str] = set()
+    candidates: list[dict[str, Any]] = []
     for game in browse_games:
-        if not _is_game_eligible(game, db, thresholds, known_slugs=known_slugs):
-            continue
-        if _title_matches_reject(game.get("title", ""), reject_title):
-            logger.debug("Skipping '{}' — matches reject_title", game.get("title", ""))
-            continue
-
-        reject_reason = _reject_by_browse_review_counts(
+        reject_reason = _browse_game_reject_reason(
             game,
-            min_critic_reviews=thresholds.get("min_criticscore_reviews", 0),
-            min_user_reviews=thresholds.get("min_user_reviews", 0),
+            db,
+            thresholds,
+            reject_title=reject_title,
+            known_slugs=known_slugs,
         )
         if reject_reason is not None:
-            logger.debug(
-                "Skipping '{}' — {}",
-                game.get("title", ""),
-                reject_reason,
-            )
+            logger.debug("Skipping '{}' — {}", game.get("title", ""), reject_reason)
             continue
-
         g_slug = game.get("slug", "")
-        g_title = game.get("title", "")
-
         # Skip duplicate slugs within this batch — the DB layer would
         # silently no-op, but we avoid the unnecessary roundtrip.
         if g_slug in seen_slugs:
             continue
         seen_slugs.add(g_slug)
+        candidates.append(game)
 
-        expires_at = _calculate_pending_expiry(max_queue_days)
+    if not candidates:
+        return 0
 
-        db.record_pending(
-            slug=g_slug,
-            game_title=g_title,
-            platform=platform,
-            metascore=float(game.get("score") or 0),
-            metascore_reviews=game.get("critic_review_count"),
-            user_score=float(game.get("user_rating") or 0),
-            user_reviews=game.get("user_review_count"),
-            release_date=game.get("release_date"),
-            expires_at=expires_at,
-        )
-        new_count += 1
-        logger.debug(
-            "Added pending game: '{}' (slug: {}, expires {})",
-            g_title,
-            g_slug,
-            expires_at,
-        )
+    details = _lookup_details(
+        candidates,
+        mc,
+        platform,
+        cache_details_days,
+        cache_pages_hours,
+        cancel_event=cancel_event,
+    )
+    if is_cancelled(cancel_event):
+        # A shutdown during the lookups must not queue games from an abandoned cycle.
+        logger.info("Browse phase cancelled — discarding {} verified candidate(s)", len(candidates))
+        return 0
 
+    return _queue_verified_candidates(
+        db,
+        candidates,
+        details,
+        platform,
+        thresholds,
+        max_queue_days,
+        cancel_event,
+    )
+
+
+def _queue_verified_candidates(
+    db: Database,
+    candidates: list[dict[str, Any]],
+    details: list[Any],
+    platform: str,
+    thresholds: dict[str, Any],
+    max_queue_days: int,
+    cancel_event: CancelSignal | None,
+) -> int:
+    """Insert verified candidates, stopping early when the cycle is cancelled.
+
+    Args:
+        db: Database instance.
+        candidates: Browse games that survived the cheap pre-filters.
+        details: One ``ScoreResult`` (or ``None``) per candidate, in order.
+        platform: Platform key for the pending rows.
+        thresholds: Score thresholds used to verify each detail result.
+        max_queue_days: Expiry window for newly queued rows.
+        cancel_event: Cancellation signal checked before each insert.
+
+    Returns:
+        The number of rows queued before the loop finished or was cancelled.
+    """
+    new_count = 0
+    for game, detail in zip(candidates, details, strict=True):
+        if is_cancelled(cancel_event):
+            logger.info("Cancelled while queueing verified games — dropping the remaining candidates")
+            return new_count
+        if _queue_verified_game(db, game, detail, platform, thresholds, max_queue_days):
+            new_count += 1
     return new_count
+
+
+def _queue_verified_game(
+    db: Database,
+    game: dict[str, Any],
+    detail: Any,
+    platform: str,
+    thresholds: dict[str, Any],
+    max_queue_days: int,
+) -> bool:
+    """Queue one candidate when its detail scores pass, else skip it.
+
+    Args:
+        db: Database instance.
+        game: The browse game dict.
+        detail: The candidate's ``ScoreResult``, or ``None`` when lookup failed.
+        platform: Platform identifier.
+        thresholds: The configured score thresholds.
+        max_queue_days: Expiry window for the queued row.
+
+    Returns:
+        True when a row was inserted.
+    """
+    g_slug = game.get("slug", "")
+    g_title = game.get("title", "")
+    if detail is None:
+        logger.debug("Skipping '{}' — detail lookup failed, retried on the next pass", g_title)
+        return False
+    if not _real_scores_pass_thresholds(detail, thresholds):
+        logger.debug("Skipping '{}' — detail scores do not pass the thresholds yet", g_title)
+        return False
+
+    expires_at = _calculate_pending_expiry(max_queue_days)
+    inserted = db.record_pending(
+        slug=g_slug,
+        game_title=g_title,
+        platform=platform,
+        metascore=detail.metascore,
+        metascore_reviews=detail.metascore_review_count,
+        user_score=detail.user_score,
+        user_reviews=detail.user_review_count,
+        genres=detail.genres,
+        release_date=detail.release_date or game.get("release_date"),
+        expires_at=expires_at,
+        score_checks_passed=True,
+    )
+    if inserted:
+        logger.debug("Added pending game: '{}' (slug: {}, expires {})", g_title, g_slug, expires_at)
+    return inserted
+
+
+_QUEUE_LOOKUP_WORKERS = 10
+
+
+def _lookup_details(
+    candidates: list[dict[str, Any]],
+    mc: Any,
+    platform: str,
+    cache_details_days: int,
+    cache_pages_hours: int,
+    cancel_event: CancelSignal | None = None,
+) -> list[Any]:
+    """Look up every candidate's detail page, preserving candidate order.
+
+    The lookups are network-bound, so they run through a small pool rather than
+    one at a time — a cold cache with many new candidates would otherwise
+    serialise hundreds of requests and can exceed the cycle watchdog. Each
+    lookup is isolated: one malformed page becomes ``None`` for that candidate
+    instead of aborting the cycle.
+
+    Args:
+        candidates: Browse games that survived the cheap filters.
+        mc: The Metacritic client.
+        platform: Platform identifier.
+        cache_details_days: TTL for the detail-page cache.
+        cache_pages_hours: TTL for the browse-page cache.
+
+    Notes:
+        Cancellation stops tasks that have not started; a lookup already in
+        flight runs to completion, so the pool drains within the HTTP read
+        timeout even after a cancel.  Callers treat that as the shutdown bound
+        rather than assuming an immediate stop.
+
+    Returns:
+        One ``ScoreResult`` or ``None`` per candidate, in the same order.
+    """
+
+    def lookup(game: dict[str, Any]) -> Any:
+        if is_cancelled(cancel_event):
+            return None
+        try:
+            # direct_only: the slug came from the browse listing, so the
+            # fallback browse scan would only re-fail the same lookup.
+            return mc.lookup_game(
+                game.get("title", ""),
+                platform,
+                cache_details_days=cache_details_days,
+                cache_pages_hours=cache_pages_hours,
+                direct_only=True,
+                slug=game.get("slug", ""),
+            )
+        except Exception:
+            logger.exception("Detail lookup failed for '{}' — treating as unverified", game.get("title", ""))
+            return None
+
+    if not candidates:
+        return []
+    with ThreadPoolExecutor(max_workers=_QUEUE_LOOKUP_WORKERS) as pool:
+        return list(pool.map(lookup, candidates))
+
+
+def _browse_game_reject_reason(
+    game: dict[str, Any],
+    db: Database,
+    thresholds: dict[str, Any],
+    *,
+    reject_title: list[str] | None,
+    known_slugs: set[str],
+) -> str | None:
+    """Return why a browse game is skipped before detail verification.
+
+    Covers the cheap, network-free filters only: already-known slugs, score
+    eligibility, ``reject_title`` and the browse-page review counts.
+
+    Args:
+        game: One browse-page game dict.
+        db: Database used for the processed/pending lookup.
+        thresholds: The configured score thresholds.
+        reject_title: Title substrings to reject, or ``None``.
+        known_slugs: Slugs already processed or pending.
+
+    Returns:
+        A short reason when the game is skipped, ``None`` when it should be
+        verified against its detail page.
+    """
+    if not _is_game_eligible(game, db, thresholds, known_slugs=known_slugs):
+        return "already known or ineligible"
+    if _title_matches_reject(game.get("title", ""), reject_title):
+        return "matches reject_title"
+    return _reject_by_browse_review_counts(
+        game,
+        min_critic_reviews=thresholds.get("min_criticscore_reviews", 0),
+        min_user_reviews=thresholds.get("min_user_reviews", 0),
+    )
 
 
 def _log_verify_progress(verified: int, max_verify: int, total: int) -> None:
@@ -1180,50 +1725,6 @@ def _real_scores_pass_thresholds(
     return all(checks)
 
 
-def _fail_game_after_max_attempts(
-    db: Database,
-    game: Any,
-    result: Any,
-    attempts: int,
-    result_details: str | None = None,
-) -> None:
-    """Record a game as permanently failed and remove from pending queue.
-
-    When *result_details* is provided it overrides the auto-generated
-    "below thresholds" message (e.g. for genre-rejected games).
-    """
-    game_slug = str(game.slug)
-    if result_details is None:
-        score_info = f"({result.metascore}, {result.user_score})" if _scores_present(result) else "(no scores)"
-        result_details = f"Scores {score_info} below thresholds after {attempts} attempts"
-    db.record_processed(
-        source="metacritic",
-        source_title=str(game.game_title),
-        source_url=f"mc:{game_slug}",
-        game_title=str(game.game_title),
-        platform=str(game.platform),
-        metascore=result.metascore,
-        user_score=result.user_score,
-        result="Failed",
-        result_details=result_details,
-    )
-    if _scores_present(result):
-        logger.debug(
-            "Removed '{}' from queue \u2014 Metacritic scores ({}, {}) below thresholds after {} attempts",
-            game.game_title,
-            result.metascore,
-            result.user_score,
-            attempts,
-        )
-    else:
-        logger.debug(
-            "Removed '{}' from queue \u2014 no Metacritic review scores yet after {} attempts",
-            game.game_title,
-            attempts,
-        )
-    db.remove_pending(str(game.slug))
-
-
 def _reject_by_genre(
     game: Any,
     result: Any,
@@ -1280,21 +1781,6 @@ def _reject_by_title(
 def _scores_fail_check(result: Any, thresholds: dict[str, Any]) -> bool:
     """Return True when scores are missing or fail the configured thresholds."""
     return not _scores_present(result) or not _real_scores_pass_thresholds(result, thresholds)
-
-
-def _should_process_by_age(game: Any, age_recheck_weeks: int | None) -> bool:
-    """Return True if *game* is old enough to be permanently processed.
-
-    When *age_recheck_weeks* is ``None`` or ``0``, processing is disabled.
-    Games without a ``release_date`` are never processed (we can't determine
-    their age).
-    """
-    if age_recheck_weeks is None:
-        return False
-    release_date = getattr(game, "release_date", None)
-    if not release_date:
-        return False
-    return _is_older_than(release_date, days=age_recheck_weeks * 7)
 
 
 def _should_age_game(game: Any, age_recheck_weeks: int) -> bool:
@@ -1383,12 +1869,22 @@ def _process_verify_result(
 ) -> int:
     """Process one score-check result.
 
+    The expiry window is refreshed only when a row *newly* qualifies.  Every
+    queued game is re-verified each cycle, so refreshing on every pass would
+    push the window forward forever and a verified game that never matches
+    would never expire - the unbounded queue growth this mode exists to stop.
+    Rows queued by verify-before-queue arrive already qualified and take the
+    source-matching window at insert, so this refresh only affects legacy rows
+    queued unverified (and rows whose verification lapsed).
+
     Returns:
         -2 if the game was removed (rejected by genre or title).
         -1 if the game was kept but did not pass score thresholds
             (including when the game was not found on Metacritic).
          1 if the game was kept and scores passed thresholds.
     """
+    # Captured before any write: update_pending_scores() flips this flag.
+    was_verified = game.score_checks_passed is True
     matched_genre = _reject_by_genre(game, result, reject_genre)
     if matched_genre is not None:
         db.record_processed(
@@ -1446,7 +1942,8 @@ def _process_verify_result(
         user_score=result.user_score,
         user_reviews=result.user_review_count,
     )
-    db.update_pending_expiry(str(game.slug), fitgirl_max_queue_days)
+    if not was_verified:
+        db.update_pending_expiry(str(game.slug), fitgirl_max_queue_days)
     logger.debug(
         "'{}' passed score check \u2014 ({}, {}) with ({} reviews, {} reviews)",
         game.game_title,
@@ -1597,7 +2094,7 @@ def _process_verify_batch(
         # futures may exceed the count of consumed results.
         _log_batch_summary(checked, int(mc.cache_hits), passed=passed, removed=removed, kept_failed=kept_failed)
     finally:
-        pool.shutdown(wait=False)
+        pool.shutdown(wait=True)
 
     return removed, any_success
 
@@ -1861,7 +2358,7 @@ def _match_pending_games(
          game's scores via *mc* before delivering (prevents games with
          wrong browse-only metrics from being downloaded)
       4. If no match: update ``last_checked_at``
-      5. On expiry: move to history with ``result="Expired"``
+      5. (Expiry is NOT handled here — see ``_process_expired_games``)
 
     When *qbt* and *magnet_fetcher* are provided, matched games are
     delivered to qBittorrent.  Without them, only a history record
@@ -1927,9 +2424,6 @@ def _match_pending_games(
         )
         if result is not None:
             results.append(result)
-
-    # Expire overdue pending games
-    results.extend(_process_expired_games(db))
 
     return results
 
@@ -2175,6 +2669,52 @@ def _skip_for_reject_keywords(
     )
 
 
+def _reject_scan_text(article_text: str | None, page_title: str | None, game_title: str) -> str:
+    """Return the text to scan for reject keywords.
+
+    The "Repack Features" block when the page has one, else the first
+    ``_FEATURES_MAX_CHARS`` characters of the article.  With no block there is
+    nothing to scope to, and degrading to the title would let an HV mention in
+    the description through; the cap only bounds a pathological page.  When a block does exist it is
+    used on its own: the boilerplate above it names "non-HV" releases, and
+    scanning that produced the false positives this scoping removed.
+
+    Args:
+        article_text: The stripped ``<article>`` text, or ``None``.
+        page_title: The parsed ``<title>``, or ``None``.
+        game_title: The game being matched, for the log line.
+
+    Returns:
+        The text to scan; may be empty.
+    """
+    features = _extract_repack_features(article_text)
+    if features is not None:
+        return features
+    _warn_missing_features_block(page_title, game_title)
+    return (article_text or "")[:_FEATURES_MAX_CHARS]
+
+
+def _warn_missing_features_block(page_title: str | None, game_title: str) -> None:
+    """Report that a FitGirl page yielded no Repack Features text.
+
+    Args:
+        page_title: The parsed ``<title>``, or ``None`` when it did not parse.
+        game_title: The game being matched, for the log line.
+    """
+    if page_title:
+        logger.warning(
+            "FitGirl page for '{}' has no Repack Features block — scanning the article preamble and "
+            "the page title instead, which may miss an HV repack",
+            game_title,
+        )
+        return
+    logger.warning(
+        "FitGirl page for '{}' has neither a Repack Features block nor a page title — "
+        "only the article preamble could be scanned for reject keywords",
+        game_title,
+    )
+
+
 def _check_reject_keywords(
     db: Database,
     best: dict[str, Any],
@@ -2186,17 +2726,15 @@ def _check_reject_keywords(
 
     Returns True if the match should be skipped, keeping the game
     pending for the next cycle.  Fetches the FitGirl HTML page and
-    checks the **article body** first (most descriptive), then the
-    HTML ``<title>`` tag, against *reject_keywords*.  When the page
+    checks the "Repack Features" block first (most descriptive), then
+    the HTML ``<title>`` tag, against *reject_keywords*.  When the page
     cannot be fetched, the match is kept pending for re-check in the
     next cycle (the sitemap title is too weak a signal).
 
-    The check is deliberately scoped to the ``<article>`` element to
-    exclude sidebar navigation (which contains "Hypervisor" links on
-    every page) and the comments section (rogue comments should never
-    block a download).  Article text is additionally truncated before
-    the "Backwards Compatibility" section to avoid false positives from
-    historical references to previous repacks.
+    The check reads only the page ``<title>`` and the "Repack Features" block.
+    Scanning the whole article produced false positives: the download-mirror
+    boilerplate mentions "non-HV repack" even on pages whose repack is not HV,
+    and the backwards-compatibility prose refers to older releases.
     """
     if not reject_keywords:
         return False
@@ -2209,31 +2747,26 @@ def _check_reject_keywords(
         # Erring on the side of caution — keep game pending so it can
         # be re-checked in the next cycle when the page may be reachable.
         logger.warning(
-            "Could not fetch page content for '{}' \u2014 keeping '{}' pending for re-check",
+            "Could not fetch page content for '{}' — cannot check '{}' for reject keywords, "
+            "so this candidate is skipped for now",
             best["url"],
             game_title,
         )
         db.touch_pending(game_slug)
         return True
 
-    # Truncate article text before "Backwards Compatibility" section.
-    # FitGirl pages describe backwards compatibility with previous repacks
-    # there, which may reference keywords (e.g. "HV", "hypervisor") from
-    # older releases — causing false positives for current non-HV repacks.
-    article_text = _truncate_at_backwards_compat(article_text)
-
-    if article_text and (matched := _title_contains_keywords(article_text, reject_keywords)):
+    if matched := _keyword_match(_reject_scan_text(article_text, page_title, game_title), reject_keywords):
         logger.info(
-            "Skipping match for '{}' \u2014 FitGirl article body contains rejected keyword '{}'",
+            "Skipping match for '{}' — FitGirl Repack Features contains rejected keyword '{}'",
             game_title,
             matched,
         )
         db.touch_pending(game_slug)
         return True
 
-    if page_title and (matched := _title_contains_keywords(page_title, reject_keywords)):
+    if page_title and (matched := _keyword_match(page_title, reject_keywords)):
         logger.info(
-            "Skipping match for '{}' \u2014 FitGirl page title '{}' contains rejected keyword '{}'",
+            "Skipping match for '{}' — FitGirl page title '{}' contains rejected keyword '{}'",
             game_title,
             page_title,
             matched,
@@ -2242,23 +2775,6 @@ def _check_reject_keywords(
         return True
 
     return False
-
-
-def _truncate_at_backwards_compat(article_text: str | None) -> str | None:
-    """Truncate *article_text* before the backwards-compatibility section.
-
-    FitGirl article pages include a "Backwards Compatibility" section that
-    describes how to migrate from a previous repack (which may have been an
-    HV/hypervisor release). Checking keywords in that section produces false
-    positives for the current (non-HV) repack.
-
-    Returns the original text when the section marker is absent or when
-    *article_text* is ``None``.
-    """
-    if not article_text:
-        return article_text
-    idx = article_text.lower().find("backwards compatibility")
-    return article_text[:idx] if idx >= 0 else article_text
 
 
 # Common English stop words excluded from token overlap matching.
@@ -2677,11 +3193,29 @@ def _process_single_pending_match(
 
 def _process_expired_games(
     db: Database,
+    *,
+    cancel_event: CancelSignal | None = None,
 ) -> list[dict[str, Any]]:
-    """Move expired pending games to history and return their result dicts."""
+    """Move expired pending games to history and return their result dicts.
+
+    Checks *cancel_event* before each row: a shutdown during a large lapsed
+    backlog must not run an uninterruptible burst of history inserts.
+
+    Args:
+        db: Database instance.
+        cancel_event: Optional cancellation signal.
+
+    Returns:
+        One result dict per swept row.
+    """
     results: list[dict[str, Any]] = []
     expired = db.get_expired_pending()
     for game in expired:
+        if is_cancelled(cancel_event):
+            logger.info(
+                "Cancelled during the expiry sweep — {} row(s) left for the next cycle", len(expired) - len(results)
+            )
+            break
         game_title = str(game.game_title)
         game_slug = str(game.slug)
         record_result = _record_result(
@@ -2693,7 +3227,7 @@ def _process_expired_games(
             platform=str(game.platform),
             metascore=game.metascore,
             user_score=game.user_score,
-            result="Expired",
+            result=_EXPIRED_RESULT,
             result_details="Not available on any source within pending window",
         )
         record_result["slug"] = game_slug
@@ -2971,6 +3505,29 @@ def _article_contains_all_dlcs(article_text: str | None) -> bool:
     return any(pattern.search(article_text) for pattern in _ALL_DLCS_PATTERNS)
 
 
+_FITGIRL_HOST = "fitgirl-repacks.site"
+
+
+def _is_fitgirl_url(url: str) -> bool:
+    """Return True when *url* points at fitgirl-repacks.site.
+
+    Compares the parsed host exactly.  A ``str.startswith`` test would also match
+    ``https://fitgirl-repacks.site.example.com/...``, which is then fetched with
+    ``verify=False``.
+
+    Args:
+        url: The URL to test.
+
+    Returns:
+        True when the host (ignoring a ``www.`` prefix) is FitGirl's.
+    """
+    try:
+        netloc = urlparse(url).netloc.casefold()
+    except ValueError:
+        return False
+    return netloc.removeprefix("www.") == _FITGIRL_HOST
+
+
 def _fetch_fitgirl_page_content(url: str) -> tuple[str | None, str | None]:
     """Fetch a FitGirl repack page and extract its <title> and <article> text.
 
@@ -2985,8 +3542,11 @@ def _fetch_fitgirl_page_content(url: str) -> tuple[str | None, str | None]:
         A ``(title, article_text)`` tuple.
     """
     try:
-        # Only fetch from FitGirl (uses self-signed cert — verify=False is intentional)
-        if not url.startswith("https://fitgirl-repacks.site"):
+        # Only fetch from FitGirl (uses self-signed cert — verify=False is intentional).
+        # Compare the host exactly: a prefix test would also accept
+        # "fitgirl-repacks.site.example.com", which would then be fetched with
+        # TLS verification disabled.
+        if not _is_fitgirl_url(url):
             return None, None
         resp = requests.get(
             url,
@@ -3016,6 +3576,9 @@ def _fetch_fitgirl_page_content(url: str) -> tuple[str | None, str | None]:
         # the cracking method and do not describe the game's requirements.
         article_html = re.sub(r"<a[^>]*>.*?</a>", "", article_html, flags=re.IGNORECASE | re.DOTALL)
         article_text = re.sub(r"<[^>]+>", " ", article_html)
+        # Decode entities so "doesn&#8217;t include an HV version" reaches the
+        # negation check as text rather than as an entity sequence.
+        article_text = unescape(article_text)
         article_text = re.sub(r"\s+", " ", article_text).strip()
 
     return title, article_text
@@ -3043,7 +3606,7 @@ def _default_magnet_fetcher(url: str) -> str | None:
     it without a second HTTP request.
     """
     try:
-        if url.startswith("https://fitgirl-repacks.site"):
+        if _is_fitgirl_url(url):
             verify = False
         elif url.startswith("https://freegogpcgames.com"):
             verify = True
