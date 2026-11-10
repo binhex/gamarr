@@ -15,7 +15,7 @@ import yaml
 from loguru import logger
 from pydantic import BaseModel, Field, RootModel, field_validator
 
-from gamarr.utils import current_year_month, is_valid_year_month
+from gamarr.utils import EARLIEST_BROWSE_YEAR, current_year_month, is_valid_year_month
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -136,8 +136,9 @@ class MetacriticPlatformConfig(BaseModel):
 
         ``0`` disables date mode. A floor later than the current calendar
         month would sweep nothing, so it is clamped rather than rejected. Years
-        before 1958 are rejected because the browse API has no data there and a
-        year-by-year sweep would fetch empty listings for centuries.
+        before ``EARLIEST_BROWSE_YEAR`` are rejected because the browse API has no
+        data there and a year-by-year sweep would fetch empty listings for
+        centuries.
 
         Args:
             value: The configured ``max_date``.
@@ -151,7 +152,8 @@ class MetacriticPlatformConfig(BaseModel):
         """
         if not is_valid_year_month(value):
             raise ValueError(
-                "max_date must be 0 (disabled) or YYYYMM with month 01-12 and year >= 1958, e.g. 202401",
+                "max_date must be 0 (disabled) or YYYYMM with month 01-12 and year >= "
+                f"{EARLIEST_BROWSE_YEAR}, e.g. 202401",
             )
         if value == 0:
             return 0

@@ -52,6 +52,10 @@ below fixes the false positives only and is **not** expected to restore AAA deli
 
 1. **Latest depth = top-of-window, N pages.** Latest mode starts at page 1 every cycle,
    scans `max_pages` pages, and stops. No cursors, no reset.
+   > **Superseded (2026-11-09):** when `max_date` or `max_cycle_months` is set, latest is
+   > date-driven instead — those keys decide the window and `max_pages` is only the fallback
+   > when neither is set. See "Date keys win in latest mode" below; this decision records the
+   > original depth-only contract.
 2. **Pass-or-drop at queue time.** Verify the detail page before inserting into
    `pending_games`; insert only games that pass. Games that fail, or have no scores yet,
    are not inserted and are re-evaluated on the next pass (unqueued slugs are not "known").
@@ -60,7 +64,8 @@ below fixes the false positives only and is **not** expected to restore AAA deli
 4. **Scope refined after measuring the page layout**: matching only that scope is what
    distinguishes a real HV repack from boilerplate.
 5. **`mode: latest | backlog`**, default `backlog`, and `max_pages` keeps its key name:
-   total sweep budget in backlog, first-N-pages depth in latest.
+   total sweep budget in backlog, first-N-pages depth in latest (the fallback when neither
+   date key is set — see "Date keys win in latest mode").
 6. **Latest requires `sort_order: new`.** A score sort configured with latest logs one
    warning per cycle and scans in `new` order for that cycle; backlog keeps all three sorts.
 7. **One-time queue migration**: delete rows where `score_checks_passed IS NOT TRUE`,
@@ -108,19 +113,24 @@ below fixes the false positives only and is **not** expected to restore AAA deli
 
   | Key | `backlog` | `latest` |
   | ----- | ----------- | ---------- |
-  | `max_pages` | total sweep budget (today) | depth: first N pages (N is read as-is; only `0` is clamped, see below) |
+  | `max_pages` | total sweep budget (today) | depth fallback: first N pages, used only when neither date key is set (N is read as-is; only `0` is clamped, see below) |
   | `max_cycle_pages` | per-cycle pace (page mode) | inert |
-  | `max_date` | floor of the sweep | floor of the window (informational; depth decides) |
-  | `max_cycle_months` | per-cycle pace (date mode) | inert |
+  | `max_date` | floor of the sweep | floor of the window; makes the cycle date-driven and `max_pages` unused |
+  | `max_cycle_months` | per-cycle pace (date mode) | per-cycle pace; also makes the cycle date-driven, with or without a floor |
   | `sort_order` | all three values | must be `new`; otherwise warned and coerced |
 
-- **Inert-key warnings**: latest mode logs `max_cycle_pages ignored in latest mode` and
-  `max_cycle_months ignored in latest mode` once per cycle, matching the existing
-  `max_pages … unused in date mode` style (`pipeline.py:311-320`).
-- **Depth clamp**: `max_pages: 0` in latest mode means "unbounded", which is just backlog;
-  latest clamps `0` to `10` and logs a warning naming both the clamped value and the reason.
-  The clamp lives in the pipeline normalisation next to the existing `max_date` /
-  `max_cycle_months` guards (`pipeline.py:225-241`), so direct API callers get it too.
+- **Date keys win in latest mode.** Either `max_date` or `max_cycle_months` makes the cycle
+  date-driven: the call shape is the backlog date-mode shape (no page cap, floor plus month
+  pace), and `max_pages` is reported as unused instead of capping the cycle. Both keys unset
+  keeps the page-depth fallback. `_date_driven` is the single predicate, used by the depth
+  normaliser and the pipeline so the two cannot disagree.
+- **Inert-key warnings**: latest mode logs `max_cycle_pages ignored in latest mode`, and a
+  date-driven latest cycle logs `max_pages (N) is unused in latest date mode`, matching the
+  existing `max_pages … unused in date mode` style (`pipeline.py:587-605`).
+- **Depth clamp**: `max_pages: 0` in latest depth mode means "unbounded", which is just
+  backlog; latest clamps `0` to `10` and logs a warning naming both the clamped value and the
+  reason. A date-driven latest cycle has no depth, so nothing is clamped there (a negative
+  value is still sanitised, because it is a typo either way).
 - `run_acquisition` and `AcquisitionConfig` gain `mode: Literal["latest", "backlog"] =
   "backlog"`; `scheduler._build_kwargs` forwards it.
 
@@ -130,21 +140,26 @@ One predicate, one branch. No second copy of the year loop.
 
 ```text
 use_cursors = (cfg.mode == "backlog")
-depth_pages = cfg.max_pages            # latest only, already clamped
 scan_order  = "new" if cfg.mode == "latest" else cfg.sort_order
               (warn once per cycle when a score sort was coerced)
+# Computed AFTER the coercion: latest coerces first, so its date keys always apply.
+date_driven = _date_driven(scan_order, latest, max_date, max_cycle_months)
+depth_pages = cfg.max_pages            # latest depth fallback, clamped unless date_driven
 ```
 
-- **Latest**: for each year in the window (newest first), read from `start_page = 1`, scan
-  until `depth_pages` pages have been read across the cycle, and stop. `get_last_scanned_page`
-  / `set_last_scanned_page` are not called; `reset_progress` is never called for pacing.
-  The date floor from `max_date` still bounds the year range, and the floor/pacing cutoffs
-  already implemented (`cutoff_date`, `max_month_span`) apply unchanged.
+- **Latest**: for each year in the window (newest first), read from `start_page = 1` and stop
+  when the window is exhausted. `get_last_scanned_page` / `set_last_scanned_page` are not
+  called; `reset_progress` is never called for pacing. The window is decided by the date keys
+  when either is set: `max_date` is the floor, `max_cycle_months` the per-cycle pace, and both
+  are applied through the existing `cutoff_date` / `max_month_span` plumbing. With neither key
+  set, latest falls back to the page depth above. A date-driven cycle has no page cap.
 - **Backlog**: unchanged — cursor sweep, `max_date` floor, `max_cycle_months` /
   `max_cycle_pages` pacing, drained/floor reset.
-- **Logging**: latest replaces the page-budget percentage line with
-  `Latest scan: pages 1..N of <window>, M collected, K queued`; backlog keeps today's lines.
-- The mode is reported once per cycle (`Discovery mode: latest (depth 10 pages)` /
+- **Logging**: latest reports its date window or its depth
+  (`Latest scan: N page(s) read, floor YYYYMM, pace M month(s) …`), and an unpaced date-driven
+  cycle warns that every cycle re-reads the whole window; backlog keeps today's lines.
+- The mode is reported once per cycle (`Discovery mode: latest (date window: floor 202601,
+  pace 1 month(s))` / `Discovery mode: latest (depth 10 pages, window floor none)` /
   `Discovery mode: backlog`) so the log always states which mode ran.
 
 ### 3. Verify before queueing (`src/gamarr/pipeline.py`)
@@ -241,7 +256,7 @@ Two changes in `_check_reject_keywords` and its helpers:
 | Detail lookup returns no review data yet | Not inserted; retried on the next pass |
 | Features block missing on a FitGirl page | Title-only keyword matching, DEBUG log, never blocks |
 | `mode: latest` with a score sort | WARN once per cycle, scan in `new` order for that cycle |
-| `mode: latest` with `max_pages: 0` | WARN, clamp depth to 10 |
+| `mode: latest` with `max_pages: 0` | WARN, clamp depth to 10 (latest depth mode only; a date-driven cycle has no depth) |
 | `max_pages`/`max_cycle_*` set but inert in the active mode | INFO once per cycle, naming the key and the reason |
 | Queue migration fails | WARNING, leave the rows, continue; retried on the next open |
 | Invalid `mode` value | Config load fails validation with the Literal message |
@@ -254,9 +269,11 @@ Two changes in `_check_reject_keywords` and its helpers:
     `hypervisor` inside a word (no match), missing block (title-only), empty keywords.
   - Scope extraction: features block bounded by the next heading; boilerplate above the
     block is not scanned; title always scanned.
-  - Mode resolution matrix: latest/backlog × page/date window; latest ignores cursors
-    (`get_last_scanned_page` never called); latest stops at the depth; latest warns and
-    coerces a score sort; inert-key logs.
+  - Mode resolution matrix: latest/backlog × date/depth window; latest ignores cursors
+    (`get_last_scanned_page` never called) in both sub-modes; a date-driven latest cycle
+    passes `max_pages=0` and never caps on pages; the floor year is probed whenever the pace
+    reaches it, and the pace never opens years below the floor; latest warns and coerces a
+    score sort; inert-key logs.
   - Verify-before-insert: passes → inserted with `score_checks_passed=True` and real scores;
     fails → not inserted; lookup returns `None` → not inserted and re-attempted next cycle;
     a known slug is still skipped.
@@ -272,7 +289,7 @@ Two changes in `_check_reject_keywords` and its helpers:
 | File | Change |
 | ------ | -------- |
 | `src/gamarr/config.py` | `mode` field on `MetacriticPlatformConfig` |
-| `src/gamarr/pipeline.py` | mode resolution and latest depth; verify-before-insert in `_process_browse_games`; keyword scope + whole-word/negation matcher; remove `_truncate_at_backwards_compat`; mode/depth logging; inert-key warnings |
+| `src/gamarr/pipeline.py` | mode resolution and latest date/depth window; verify-before-insert in `_process_browse_games`; keyword scope + whole-word/negation matcher; remove `_truncate_at_backwards_compat`; mode/window logging; inert-key warnings |
 | `src/gamarr/database.py` | one-time `pending_games` cleanup guarded by `PRAGMA user_version` |
 | `src/gamarr/scheduler.py` | `_build_kwargs` forwards `mode` |
 | `README.md` | `mode` row, per-mode key meanings, keyword-scope note, queue-migration note |

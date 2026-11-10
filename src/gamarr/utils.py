@@ -197,6 +197,16 @@ def is_cancelled(cancel_event: CancelSignal | None) -> bool:
     return cancel_event is not None and cancel_event.is_set()
 
 
+EARLIEST_BROWSE_YEAR = 1958
+"""Oldest year the sweeps may reach.
+
+Mirrors the ``max_date`` floor: the site has no data before this, so a
+year-by-year sweep below it would fetch empty listings for centuries.  The
+browse URL's all-time range (``releaseYearMin``) is a separate site capability
+and has its own literal.
+"""
+
+
 def current_year_month() -> int:
     """Return the current calendar month as ``YYYYMM``.
 
@@ -210,8 +220,8 @@ def current_year_month() -> int:
 def is_valid_year_month(value: object) -> bool:
     """Return True when *value* is a usable ``max_date`` month.
 
-    ``0`` disables date mode; anything else must be an ``int`` (not ``bool``)
-    for a year of 1958 or later with a month of ``01``-``12``.
+    ``0`` disables the floor; anything else must be an ``int`` (not ``bool``)
+    for a year of ``EARLIEST_BROWSE_YEAR`` or later with a month of ``01``-``12``.
 
     Args:
         value: The candidate floor.
@@ -223,7 +233,7 @@ def is_valid_year_month(value: object) -> bool:
         return False
     if value == 0:
         return True
-    return 195801 <= value <= 999912 and 1 <= value % 100 <= 12
+    return EARLIEST_BROWSE_YEAR * 100 + 1 <= value <= 999912 and 1 <= value % 100 <= 12
 
 
 def subtract_months(year_month: int, months: int) -> int:

@@ -27,6 +27,7 @@ from gamarr.sources.freegog import FreeGOGSource, _extract_magnet_from_freegog_p
 # Re-exported for use by _tokenize_title()
 from gamarr.utils import (
     _ROMAN_TO_ARABIC,
+    EARLIEST_BROWSE_YEAR,
     CancelSignal,
     current_year_month,
     is_cancelled,
@@ -174,6 +175,9 @@ def _normalise_cycle_months(max_cycle_months: int) -> int:
 
 
 _DEFAULT_MAX_PAGES = 500
+# Years of extra descent allowed below a floorless latest cycle's pace window, to
+# absorb a newest release that lags today because the recent listings are empty.
+_FLOORLESS_LATEST_SLACK_YEARS = 3
 
 
 def _latest_call_depth(allowance: int, reserve: int) -> int:
@@ -194,18 +198,71 @@ def _latest_call_depth(allowance: int, reserve: int) -> int:
     return max(allowance - reserve, 0) or allowance
 
 
-def _normalise_latest_depth(max_pages: int | None, mode: str) -> int | None:
+def _floorless_latest_bound(max_cycle_months: int, current_year: int) -> int:
+    """Return the oldest year a floorless latest cycle may probe.
+
+    A floorless latest config only promises "read back N months from the newest
+    release", and that release can lag today when the recent listings are empty.
+    The descent therefore gets twice the pace window plus a few years of slack, so
+    the full window still fits when the anchor lags by up to the pace window plus
+    that slack.  The bound must not be derived from today's month alone (see the
+    year-range branch), and it must never go below the catalogue's first year: a
+    listing that carries no release dates at all would otherwise be crawled for
+    decades every cycle.
+
+    Args:
+        max_cycle_months: The configured month pace; always positive here.
+        current_year: The cycle's current year.
+
+    Returns:
+        The oldest year to probe.
+    """
+    pace_years = math.ceil(max_cycle_months / 12)
+    return max(EARLIEST_BROWSE_YEAR, current_year - (2 * pace_years + _FLOORLESS_LATEST_SLACK_YEARS))
+
+
+def _date_driven(scan_order: str, latest_mode: bool, max_date: int, max_cycle_months: int) -> bool:
+    """Return True when date keys bound the scan instead of a page count.
+
+    Both date keys only have meaning in the ``new`` browse order, whose pages
+    carry a release-date dimension.  Backlog needs ``max_date`` because there
+    the floor replaces the sweep budget; latest accepts either key, since it has
+    no cursor to pace and a date floor alone would re-read the whole window on
+    every cycle.
+
+    Args:
+        scan_order: The resolved browse order.
+        latest_mode: True when this cycle runs in latest mode.
+        max_date: The configured floor month, ``0`` when disabled.
+        max_cycle_months: The configured month pace, ``0`` when disabled.
+
+    Returns:
+        True when the date window governs this cycle.
+    """
+    if scan_order != "new":
+        return False
+    if max_date:
+        return True
+    return latest_mode and bool(max_cycle_months)
+
+
+def _normalise_latest_depth(max_pages: int | None, mode: str, *, date_driven: bool = False) -> int | None:
     """Clamp the latest-mode page depth.
 
     ``None`` and ``0`` both mean "unbounded", which in latest mode would scan the
-    whole window — that is what backlog mode is for.
+    whole window — that is what backlog mode is for.  A latest cycle bounded by
+    either date key has no page depth at all, so the zero clamp does not apply
+    there; a negative value is still sanitised, because it is a typo either way.
 
     Args:
         max_pages: The caller's page budget or depth.
         mode: The resolved discovery mode.
+        date_driven: True when date keys bound this cycle.  A latest cycle then
+            has no depth, so the zero clamp does not apply; backlog behaviour is
+            unaffected by this flag (its zero clamp was always latest-only).
 
     Returns:
-        ``10`` when latest mode was given no depth, otherwise *max_pages*
+        ``10`` when latest depth mode was given no depth, otherwise *max_pages*
         unchanged.
     """
     if max_pages is not None and max_pages < 0:
@@ -214,7 +271,9 @@ def _normalise_latest_depth(max_pages: int | None, mode: str) -> int | None:
         # default (mirrors MetacriticConfig.max_pages) instead.
         logger.warning("max_pages {} is negative — using the default budget of {}", max_pages, _DEFAULT_MAX_PAGES)
         max_pages = _DEFAULT_MAX_PAGES
-    if mode == "latest" and not max_pages:
+    if mode == "latest" and not max_pages and not date_driven:
+        # Only depth-driven latest treats 0/None as "unbounded".  A date-driven
+        # cycle has no depth, so those values are meaningless there, not unsafe.
         logger.warning("mode: latest with no max_pages is unbounded — clamping depth to 10 pages")
         return 10
     return max_pages
@@ -326,18 +385,22 @@ def run_acquisition(
     """Execute one scan cycle.
 
     Discovers games by browsing Metacritic in *mode*: ``"latest"`` re-reads the
-    newest end of the window every cycle — at most *max_pages* pages (clamped to
-    10 when unset) — without persisting or resetting the scan cursors, and
-    always browses in ``"new"`` order whatever ``sort_order`` says;
-    ``"backlog"`` sweeps the window with durable cursors and month pacing in the
-    configured ``sort_order``.  Each game's real Metacritic detail-page scores
-    are verified against the configured thresholds, then survivors are matched
-    against each configured source's sitemap and delivered to qBittorrent.
+    newest end of the window every cycle without persisting or resetting the
+    scan cursors, and always browses in ``"new"`` order whatever ``sort_order``
+    says.  A latest cycle is date-driven when *max_date* or *max_cycle_months* is
+    set — *max_date* is the floor and *max_cycle_months* the per-cycle pace, so
+    *max_pages* is unused — and otherwise falls back to a page depth of
+    *max_pages* (clamped to 10 when unset).  ``"backlog"`` sweeps the window with
+    durable cursors and month pacing in the configured ``sort_order``.  Each
+    game's real Metacritic detail-page scores are verified against the configured
+    thresholds, then survivors are matched against each configured source's
+    sitemap and delivered to qBittorrent.
     """
     mode = _normalise_mode(mode)
     max_date = _normalise_max_date(max_date)
     max_cycle_months = _normalise_cycle_months(max_cycle_months)
-    max_pages = _normalise_latest_depth(max_pages, mode)
+    date_driven = _date_driven("new" if mode == "latest" else sort_order, mode == "latest", max_date, max_cycle_months)
+    max_pages = _normalise_latest_depth(max_pages, mode, date_driven=date_driven)
 
     cfg = AcquisitionConfig(
         min_criticscore=min_criticscore,
@@ -444,15 +507,21 @@ def run_acquisition(
                 "Latest mode requires sort_order 'new' — scanning in 'new' order for this cycle (configured '{}')",
                 cfg.sort_order,
             )
-        date_mode = bool(cfg.max_date) and scan_order == "new"
+        # Date keys govern the scan when present: max_date is the floor, and in
+        # latest mode max_cycle_months paces how much of that window one cycle
+        # reads.  Either key makes a page depth pointless, so max_pages is only
+        # the fallback for a latest cycle that sets neither.
+        date_mode = _date_driven(scan_order, latest_mode, cfg.max_date, cfg.max_cycle_months)
         floor_month = cfg.max_date if date_mode else 0
-        floor_cutoff = year_month_to_date(floor_month) if date_mode else None
-        if latest_mode:
+        floor_cutoff = year_month_to_date(floor_month) if floor_month else None
+        if latest_mode and date_mode:
             logger.info(
-                "Discovery mode: latest (depth {} pages, window floor {})",
-                cfg.max_pages,
+                "Discovery mode: latest (date window: floor {}, pace {})",
                 floor_month or "none",
+                f"{cfg.max_cycle_months} month(s)" if cfg.max_cycle_months else "unpaced",
             )
+        elif latest_mode:
+            logger.info("Discovery mode: latest (depth {} pages, window floor none)", cfg.max_pages)
         else:
             logger.info("Discovery mode: backlog")
 
@@ -522,19 +591,79 @@ def run_acquisition(
                     cfg.max_cycle_pages,
                     cfg.max_cycle_months,
                 )
-            if latest_mode:
-                if cfg.max_cycle_months:
-                    logger.info("Config: max_cycle_months ignored in latest mode ({})", cfg.max_cycle_months)
-                if cfg.max_cycle_pages:
-                    logger.info("Config: max_cycle_pages ignored in latest mode ({})", cfg.max_cycle_pages)
+            if date_mode and latest_mode and cfg.max_pages:
+                logger.info(
+                    "Config: max_pages ({}) is unused in latest date mode (max_date={}, max_cycle_months={})",
+                    cfg.max_pages,
+                    floor_month or "none",
+                    cfg.max_cycle_months or "none",
+                )
+            if latest_mode and cfg.max_cycle_pages:
+                logger.info(
+                    "Config: max_cycle_pages ({}) ignored in latest mode — the whole cycle is one pass",
+                    cfg.max_cycle_pages,
+                )
+            # An unpaced window repeats on every cycle and nothing caps it, so name
+            # the cost.  A pace that covers the whole window is NOT unpaced in that
+            # sense: it means full coverage, which is the healthy case.  What is
+            # worth stating instead is the opposite shape, a pace narrower than the
+            # floored window: latest re-reads only the newest N months every cycle
+            # (no cursors), so the older months are never read there at all.
+            floor_span = _month_span(current_year_month(), floor_month) if floor_month else 0
+            floorless_catalogue_wide = (
+                bool(cfg.max_cycle_months)
+                and not floor_month
+                and (_floorless_latest_bound(cfg.max_cycle_months, scan_year_anchor) <= EARLIEST_BROWSE_YEAR)
+            )
+            # A one-month window costs nothing to re-read, so it warrants no warning;
+            # the floorless shape has no month span to measure.
+            if (
+                latest_mode
+                and date_mode
+                and (not cfg.max_cycle_months or floorless_catalogue_wide)
+                and (not floor_month or floor_span > 0)
+            ):
+                logger.warning(
+                    "Latest mode's date window is effectively unpaced (max_cycle_months={}) — every cycle "
+                    "re-reads the whole window back to {} with no page cap (max_pages is unused), and a window "
+                    "deeper than the run timeout never reaches its floor; {}",
+                    cfg.max_cycle_months or "none",
+                    floor_month or _floorless_latest_bound(cfg.max_cycle_months, scan_year_anchor),
+                    "set max_cycle_months to pace it"
+                    if not cfg.max_cycle_months
+                    else "lower max_cycle_months to pace it",
+                )
+            elif latest_mode and date_mode and floor_span > 0 and cfg.max_cycle_months < floor_span:
+                logger.info(
+                    "Latest mode is paced at {} month(s) — max_date={} is the floor, not a sweep target; "
+                    "anything older than that pace is covered only in backlog mode",
+                    cfg.max_cycle_months,
+                    floor_month,
+                )
 
             # Calculate year range
             if scan_order == "new":
-                if date_mode:
+                if date_mode and not latest_mode:
                     cutoff_year = min(scan_year_anchor, floor_month // 100)
+                elif latest_mode and date_mode:
+                    # The date stops end the loop; this bound is only a safety net
+                    # beneath them.  The floored branch must be absolute: the pace
+                    # anchors on the newest release the listings actually carry,
+                    # which can lag today by years when recent listings are empty,
+                    # and a bound of "today minus the pace" would then skip the
+                    # paced window silently (latest persists no cursors, so nothing
+                    # would ever come back for it).  The floorless branch has no
+                    # floor to anchor on, so it substitutes twice the paced window
+                    # plus slack, and a descent that found no listing at all is
+                    # reported after the loop.
+                    cutoff_year = (
+                        floor_month // 100
+                        if floor_month
+                        else _floorless_latest_bound(cfg.max_cycle_months, scan_year_anchor)
+                    )
                 elif latest_mode:
-                    # No floor configured: also include the previous year, so a
-                    # game released in December whose scores publish in January
+                    # No date keys configured: also include the previous year, so
+                    # a game released in December whose scores publish in January
                     # is still discoverable at the turn of the year.
                     cutoff_year = scan_year_anchor - 1
                 else:
@@ -582,14 +711,37 @@ def run_acquisition(
             # Year loop — newest year first, one year at a time: a year is
             # drained until it has no pages left before the next year down is
             # touched, and the cycle stops once its allowance is spent.
+            # A single failed year is not an outage: the year listings are
+            # independent, and one broken listing (a 5xx on a deep page, a parse
+            # change on one year) must not abandon a cycle that the year below can
+            # still serve.  Two consecutive failures are evidence of a run-wide
+            # outage, and latest cannot resume next cycle (no cursors), so stop
+            # rather than spend the run timeout on years that cost a full request
+            # timeout each.  This holds after the first dated page too: an outage
+            # that begins mid-window cannot be paced, because a failed year
+            # collects no games and so never advances the month span.
+            failed_years_in_a_row = 0
+            undated_listing = False
             for scan_year in range(current_year, cutoff_year - 1, -1):
                 if is_cancelled(cancel_event):
                     break
-                if latest_mode:
+                if latest_mode and not date_mode:
                     if pages_this_cycle >= max_pages_cfg:
                         break
                 elif date_mode:
                     if cfg.max_cycle_months and _month_span(max_month_seen, min_month_seen) >= cfg.max_cycle_months:
+                        break
+                    if latest_mode and failed_years_in_a_row >= 2:
+                        logger.warning(
+                            "Latest date scan: {} consecutive years failed to browse — stopping the descent",
+                            failed_years_in_a_row,
+                        )
+                        break
+                    if latest_mode and undated_listing:
+                        logger.warning(
+                            "Latest date scan: a whole listing carried no release dates — stopping the descent "
+                            "before it crawls every year",
+                        )
                         break
                 else:
                     if max_pages_cfg > 0 and remaining_pages <= 0:
@@ -598,31 +750,41 @@ def run_acquisition(
                         break
                 start_page = 1 if latest_mode else db.get_last_scanned_page(platform, scan_year) + 1
                 try:
-                    if latest_mode:
-                        # Leave a page for the years below when one is still in
-                        # the window: a newest year deeper than the depth budget
-                        # would otherwise consume it all, and the previous year is
-                        # the only listing a December release with January scores
-                        # appears in.
-                        reserve = 1 if scan_year > cutoff_year else 0
-                        per_call_max = _latest_call_depth(max_pages_cfg - pages_this_cycle, reserve)
-                        cutoff_date = floor_cutoff
-                        month_span_left = 0
-                    elif date_mode:
+                    if date_mode:
+                        # Date bounds own the stop: the floor and, when paced,
+                        # the month cutoff derived from the cycle's own anchor.
+                        # Latest uses the same call shape as backlog date mode;
+                        # it differs only in never reading or writing cursors.
                         per_call_max = 0
                         month_span_left = 0
-                        cutoff_date = year_month_to_date(floor_month)
+                        cutoff_date = floor_cutoff
                         if max_month_seen is not None and cfg.max_cycle_months:
                             # Later calls: derive the pace cutoff from the cycle's
                             # own anchor so a new year's listing cannot re-anchor it
                             # and overshoot the allowance by up to a month.  With
                             # pacing off (0) the floor is the only bound.
                             pace_month = subtract_months(max_month_seen, cfg.max_cycle_months)
-                            cutoff_date = max(year_month_to_date(pace_month), cutoff_date)
+                            # A pace older than the catalogue can only be a config
+                            # extreme; leaving the cutoff unset keeps the floor (or
+                            # no bound) in charge instead of sending a date no page
+                            # can meet.
+                            if pace_month >= EARLIEST_BROWSE_YEAR * 100 + 1:
+                                pace_cutoff = year_month_to_date(pace_month)
+                                cutoff_date = max(pace_cutoff, cutoff_date) if cutoff_date else pace_cutoff
                         elif max_month_seen is None:
                             # First call of the cycle: the client anchors the month
                             # span on this call's newest page.
                             month_span_left = cfg.max_cycle_months
+                    elif latest_mode:
+                        # Depth-driven fallback: leave a page for the years below
+                        # when one is still in the window.  A newest year deeper
+                        # than the depth budget would otherwise consume it all,
+                        # and the previous year is the only listing a December
+                        # release with January scores appears in.
+                        reserve = 1 if scan_year > cutoff_year else 0
+                        per_call_max = _latest_call_depth(max_pages_cfg - pages_this_cycle, reserve)
+                        cutoff_date = None
+                        month_span_left = 0
                     else:
                         # Allowance for this call: the smaller of the remaining
                         # budget and what is left of the cycle allowance (0 = no
@@ -647,7 +809,7 @@ def run_acquisition(
                         max_pages=per_call_max,
                         max_month_span=month_span_left,
                     )
-                    if date_mode:
+                    if floor_month:
                         year_games = _games_at_or_after_floor(year_games, floor_month)
                     browse_games.extend(year_games)
                     last_page = mc._recent_games_last_page if isinstance(mc._recent_games_last_page, int) else 0
@@ -669,6 +831,9 @@ def run_acquisition(
                     # not just a zero-page probe.
                     if getattr(mc, "_recent_games_failed", None) is True:
                         fetch_failed = True
+                        failed_years_in_a_row += 1
+                    else:
+                        failed_years_in_a_row = 0
                     if pages_scanned == 0 and getattr(mc, "_recent_games_exhausted", None) is True:
                         drained_probes += 1
 
@@ -683,6 +848,22 @@ def run_acquisition(
                                 min_month_seen = game_month
                             if max_month_seen is None or game_month > max_month_seen:
                                 max_month_seen = game_month
+                        if (
+                            latest_mode
+                            and max_month_seen is None
+                            and pages_scanned > 0
+                            and getattr(mc, "_recent_games_exhausted", None) is True
+                        ):
+                            # The year was drained end to end and still carried no
+                            # release date, and no earlier year in this cycle carried
+                            # one either, so no date bound can ever fire.  Stop here
+                            # instead of crawling every year down to the bound.  A
+                            # listing that is undated *and* hits the client's page cap
+                            # is not detected here; the post-loop warning still
+                            # reports it.  The latch is never cleared, so a dated year
+                            # below this one is not probed in this cycle: that is the
+                            # accepted cost of not crawling the whole window.
+                            undated_listing = True
                         cutoff_reached = getattr(mc, "_recent_games_cutoff_reached", False) is True
                         if cutoff_reached:
                             cutoff_stopped = True
@@ -723,7 +904,36 @@ def run_acquisition(
                         remaining_pages -= pages_scanned
                 except Exception:
                     fetch_failed = True
+                    failed_years_in_a_row += 1
                     logger.exception("Scan failed for year {} — will retry next cycle", scan_year)
+
+            if date_mode and pages_this_cycle > 0 and max_month_seen is None and not is_cancelled(cancel_event):
+                # No page carried a parsable release date at or after the floor, so no
+                # date bound could fire and the client drained the listings instead.
+                # Say so: this is the silent-crawl shape (site markup change), not a
+                # quiet site.
+                logger.warning(
+                    "Browse pages carried no usable release dates — the date window cannot bound this {} cycle; "
+                    "check that the site still publishes release dates",
+                    "latest" if latest_mode else "backlog",
+                )
+            elif (
+                latest_mode
+                and date_mode
+                and not floor_month
+                and not fetch_failed
+                and pages_this_cycle == 0
+                and not is_cancelled(cancel_event)
+            ):
+                # Nothing at all was listed down to the bound.  For a floorless
+                # window that bound is synthetic, so the paced window may lie
+                # below it — say which year the descent gave up at.
+                logger.warning(
+                    "Latest date scan: no listing was found from {} down to {} — the paced window may lie "
+                    "below it; set max_date or use backlog mode",
+                    scan_year_anchor,
+                    cutoff_year,
+                )
 
             if date_mode and not latest_mode:
                 # A date sweep is complete once the floor year itself is finished
@@ -972,15 +1182,23 @@ def run_acquisition(
         # from pending before it could be delivered.
         _process_aged_games(db, cfg, platform, cancel_event=cancel_event)
 
-        # Log scan progress: latest reports the depth window it read, date mode
-        # reports the deepest month reached, page mode keeps the page-budget
-        # percentage.
-        if cfg.enabled and latest_mode:
+        # Log scan progress: latest reports the window it read (a date window or a
+        # depth), date mode reports the deepest month reached, page mode keeps the
+        # page-budget percentage.
+        if cfg.enabled and latest_mode and date_mode:
             logger.info(
-                "Latest scan: {} page(s) read of a {} budget, window floor {} ({} collected, {} queued)",
+                "Latest scan: {} page(s) read, floor {}, pace {} ({} collected, {} queued)",
+                pages_this_cycle,
+                floor_month or "none",
+                f"{cfg.max_cycle_months} month(s)" if cfg.max_cycle_months else "unpaced",
+                len(browse_games),
+                new_pending,
+            )
+        elif cfg.enabled and latest_mode:
+            logger.info(
+                "Latest scan: {} page(s) read of a {} page budget, window current year and previous ({} collected, {} queued)",
                 pages_this_cycle,
                 max_pages_cfg,
-                f"{floor_month // 100}" if floor_month else "current year and previous",
                 len(browse_games),
                 new_pending,
             )

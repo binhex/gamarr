@@ -30,8 +30,8 @@ stays fresh without lifting a finger.
   checked *before* it enters the pending queue, so the queue only ever holds
   games that already pass the thresholds. Games that fail, or whose scores are
   not published yet, are not queued: they are re-checked when a browse pass next
-  reaches their pages (immediately in `latest` mode, when the sweep wraps in
-  `backlog` mode) instead of occupying the queue for days.
+  reaches their pages (every cycle inside the `latest` window, when the
+  sweep wraps in `backlog` mode) instead of occupying the queue for days.
 - **Source-matching expiry** — a queued (already verified) game waits
   `download_sites.fitgirl.max_queue_days` for a matching repack (default 60, or
   `0` for indefinite; the FitGirl entry supplies the window for every queued
@@ -61,8 +61,8 @@ stays fresh without lifting a finger.
   automatically on startup when new fields are added.
 - **One-time queue cleanup** — on first start after upgrading, pending games that never passed
   detail verification are deleted. They are re-discovered when a browse pass next reaches their
-  pages (immediately in `latest` mode, when the sweep wraps in `backlog` mode). Verified games
-  awaiting a source match are kept.
+  pages (every cycle inside the `latest` window, when the sweep wraps in `backlog` mode).
+  Verified games awaiting a source match are kept.
 - **Post-processing** — a background thread polls qBittorrent for completed
   downloads, copies them to a configurable library path with SHA-256
   verification, and cleans up source torrents after seeding goals are met.
@@ -188,11 +188,11 @@ download_sites:
 | `min_criticscore_reviews` | Minimum number of critic reviews required. | `10` |
 | `min_user_score` | Minimum Metacritic user score (0–10). | `7.5` |
 | `min_user_reviews` | Minimum number of user reviews required. | `10` |
-| `mode` | Discovery mode. `"latest"` reads up to `max_pages` pages of the window every cycle (no cursors, no pacing) so new releases are always seen, spending the depth newest year first and keeping one page for the immediately lower year; `"backlog"` sweeps back through the window with per-year cursors and pacing. Latest requires `sort_order: "new"` — a score sort is warned about and coerced to `"new"` for that cycle. | `backlog` |
-| `max_pages` | Page budget. In `backlog` mode: total browse page depth budget; the scanner advances across cycles and resets to page 1 when exhausted. In `latest` mode: depth — the first N pages of the window are read every cycle. `0` = no page budget in backlog (the sweep is still bounded by the 10-year year window) and is clamped to a depth of 10 in latest. | `500` |
-| `max_cycle_pages` | Maximum pages per cycle (pacing). `0` = unlimited. | `0` |
-| `max_date` | Date floor for the `new` sort order: sweep back to and including this month (`YYYYMM` with month `01`-`12` and year `1958` or later, e.g. `202401`). `0` = disabled. It bounds the window and is ignored for `criticscore`/`userscore`; in `backlog` mode it replaces the `max_pages` budget, while in `latest` mode `max_pages` still sets the depth inside that window. A month later than the current one is clamped to the current month. | `0` |
-| `max_cycle_months` | Pace in date mode: how far back one cycle may sweep, counted in months from the cycle's newest release month (a month is included when a page holds any game at or after its first day, so a cycle can cover N+1 calendar months at a boundary). The floor set by `max_date` always wins — this value can only shorten a cycle, never extend past it. `0` = no month pacing; the maximum is `1200` (100 years), and a larger value is rejected at config load. | `0` |
+| `mode` | Discovery mode. `"latest"` re-reads the newest end of the window every cycle with no cursors. In `latest` mode, setting `max_date` or `max_cycle_months` makes the cycle date-driven: `max_date` is the floor and `max_cycle_months` paces how much one cycle reads back, so `max_pages` is unused. With neither date key set it falls back to a page depth: the first `max_pages` pages of the window every cycle, newest year first, keeping one page for the immediately lower year. `"backlog"` sweeps back through the window with per-year cursors and pacing. Latest requires `sort_order: "new"` — a score sort is warned about and coerced to `"new"` for that cycle. | `backlog` |
+| `max_pages` | Page budget. In `backlog` mode: total browse page depth budget; the scanner advances across cycles and resets to page 1 when exhausted. In `latest` mode it is the depth — the first N pages of the window are read every cycle — but only when neither `max_date` nor `max_cycle_months` is set; a date-driven latest cycle logs that `max_pages` is unused. **A `max_date`-only latest config therefore reads its whole window every cycle, even if `max_pages` was bounding it before — set `max_cycle_months` to pace it.** `0` = no page budget in backlog (the sweep is still bounded by the 10-year window) and is clamped to a depth of 10 in latest depth mode. | `500` |
+| `max_cycle_pages` | Maximum pages per cycle (pacing) for `backlog` page mode. Ignored in `latest` (the whole cycle is one pass) and in date mode, where `max_cycle_months` paces the sweep. `0` = unlimited. | `0` |
+| `max_date` | Date floor for the `new` sort order: sweep back to and including this month (`YYYYMM` with month `01`-`12` and year `1958` or later, e.g. `202401`). `0` = disabled. It bounds the window and is ignored for `criticscore`/`userscore`. In `backlog` mode it replaces the `max_pages` budget; in `latest` mode it sets the window floor and makes `max_pages` unused — `max_cycle_months` then decides how much of that window one cycle reads (`0` = read it all). A month later than the current one is clamped to the current month. | `0` |
+| `max_cycle_months` | Pace: how far back one cycle reads, counted in months from the cycle's newest release month (a month is included when a page holds any game at or after its first day, so a cycle can cover N+1 calendar months at a boundary). In `backlog` date mode it paces the sweep; in `latest` mode it is the per-cycle window, on its own or combined with `max_date`, and it applies with or without a floor. In `latest` a pace narrower than the `max_date` window means the older months are never read (there are no cursors to resume from) — use `backlog` to sweep them. The floor set by `max_date` always wins — this value can only shorten a cycle, never extend past it. `0` = no month pacing, so a dated `latest` cycle reads its whole window every cycle (and a window deeper than the run timeout never reaches the floor); the maximum is `1200` (100 years), and a larger value is rejected at config load. | `0` |
 | `sort_order` | Discovery and pending processing order: `"new"` (newest release date first), `"criticscore"` (verified games by highest critic score), or `"userscore"` (verified games by highest user score). Queued games are already verified (see "Verify before queueing"). Changing this value reprioritizes the entire pending queue, including games from previous cycles. | `"new"` |
 | `max_queue_days` | Fallback expiry window for queued games, used only when no FitGirl source is configured (its `max_queue_days` normally governs the source-matching window). `0` = indefinite pending (no expiry). | `30` |
 | `enabled` | Enable or disable the Metacritic browse step. Disabling skips game discovery entirely. | `true` |
@@ -318,27 +318,31 @@ flowchart TD
    cycles. **Important:** browse pages show *internal browse-only metrics*, not
    the real 0–100 critic scores or 0–10 user scores. These rough scores only
    order and pre-filter candidates — the real threshold check happens before a
-   game is queued (phase 3). `mode: latest` reads up to `max_pages` pages of the
-   window every cycle, newest year first with one page held back for the years
-   below; `mode: backlog` sweeps back through it. Games are
-   collected within the `max_pages` browse window. In `backlog` date mode
-   (`max_date` set with `sort_order: new`) the window is a month floor instead:
-   the sweep stops inside the boundary year as soon as a page's games are all
-   older than `max_date`, and `max_cycle_months` limits how many months of
-   backlog a single cycle covers — `max_pages` and `max_cycle_pages` are then
-   unused. `mode: latest` still reads `max_pages` pages per cycle whatever the
-   date keys say. For
-   `criticscore`/`userscore` the date keys are ignored, because those browse
-   lists mix years and no page corresponds to a date.
+   game is queued (phase 3). `mode: latest` re-reads the newest end of the
+   window every cycle; `mode: backlog` sweeps back through it. A latest cycle
+   with `max_date` and/or `max_cycle_months` set is date-driven: it reads back
+   at most `max_cycle_months` months from the newest release (with
+   `max_cycle_months: 0` it reads the whole window), never past the `max_date`
+   floor, and `max_pages` is unused. With neither date key set, latest
+   falls back to a page depth — the first `max_pages` pages every cycle, newest
+   year first with one page held back for the years below. In `backlog` date
+   mode (`max_date` set with `sort_order: new`) the window is a month floor
+   instead: the sweep stops inside the boundary year as soon as a page's games
+   are all older than `max_date`, and `max_cycle_months` limits how many months
+   of backlog a single cycle covers — `max_pages` and `max_cycle_pages` are then
+   unused. In `backlog` mode, `criticscore`/`userscore` ignore the date keys,
+   because those browse lists mix years and no page corresponds to a date; a
+   `latest` cycle coerces the sort to `new` first, so its date keys always apply.
 2. **Browse-page filtering** — Games whose titles match `reject_title` are
    skipped. In page mode, games outside the `max_pages` window are skipped,
    `max_cycle_pages` controls the per-cycle page limit (default `0` =
    unlimited), and the scanner advances through that window progressively —
    each cycle resumes where the last one left off, with auto-reset to page 1
-   when the `max_pages` budget is exhausted. In date mode the window and the
-   pace come from `max_date` and `max_cycle_months` instead, both page keys are
-   unused, and each cycle resumes from the per-year page cursors, restarting at
-   the newest year once the floor has been swept.
+   when the `max_pages` budget is exhausted. In `backlog` date mode the window
+   and the pace come from `max_date` and `max_cycle_months` instead, both page
+   keys are unused, and each cycle resumes from the per-year page cursors,
+   restarting at the newest year once the floor has been swept. A `latest` date
+   window has no cursors: it restarts from the newest page every cycle.
    **Note:** browse scores are on a different scale and always
    exceed the configured thresholds — they cannot filter, so the threshold
    check happens on the detail page instead (phase 3).
@@ -470,7 +474,8 @@ Games that pass score thresholds but have **no source match** stay in the queue 
 they get re-verified each cycle because a new FitGirl/FreeGOG repack could appear.
 If you find the queue growing indefinitely:
 
-- Increase `max_pages` to catch more recently released games
+- Increase `max_pages` to catch more recently released games (in `backlog` mode or a
+  `latest` cycle with no date keys — a date-driven `latest` cycle ignores it)
 - Or set `max_date` with `sort_order: new` to state the oldest month you want
   reviewed, so the cutoff is a date instead of a page count
 - Games that fail score thresholds are not queued at all — they are re-checked when

@@ -891,6 +891,17 @@ git commit -m "feat: add explicit discovery mode to config and pipeline"
 
 ### Task 6: Latest-mode resolution and depth
 
+> **Superseded (2026-11-09):** latest mode is now date-driven. When `max_date` or
+> `max_cycle_months` is set, those keys decide the window and `max_pages` is a fallback used
+> only when neither is set. Two excerpts in this task were removed by that change and must
+> **not** be re-implemented: the `max_cycle_months ignored in latest mode` warning and the
+> `test_inert_pacing_keys_are_reported` assertion. The `Discovery mode: latest (depth ...)`
+> line still exists for depth-driven latest — only its wording and arguments changed. The
+> rest of the task is the historical record; the live contract is in
+> `docs/agent/specs/2026-11-06-discovery-modes-and-queue-hygiene-design.md`
+> ("Date keys win in latest mode"), which is the file to update if the behaviour changes
+> again.
+
 **Files:**
 
 - Modify: `src/gamarr/pipeline.py` (`run_acquisition` normalisation; `_run_discovery_phases` mode block, year loop, progress log)

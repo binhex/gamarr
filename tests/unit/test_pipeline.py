@@ -11,6 +11,7 @@ from gamarr.pipeline import AcquisitionConfig, run_acquisition
 from gamarr.utils import month_of, subtract_months, year_month_to_date
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 
@@ -9772,11 +9773,18 @@ class TestLatestMode:
         sort_order: Literal["new", "criticscore", "userscore"] = "new",
         db_path: str | None = None,
         sort_orders: list[str] | None = None,
+        games_for_year: Callable[[int], list[dict[str, Any]]] | None = None,
+        fail_all_years: bool = False,
+        fail_years: set[int] | None = None,
+        raise_years: set[int] | None = None,
+        cutoff_years: set[int] | None = None,
+        exhausted: bool = False,
     ) -> tuple[list[dict[str, Any]], list[str]]:
         """Run one cycle and return (scan calls, log lines).
 
         Pass *sort_orders* to collect the client's ``sort_order`` per call: the
         pipeline sets it as an attribute, so the kwargs capture cannot see it.
+        Pass *games_for_year* to shape each year's listing (empty years included).
         """
         from loguru import logger as loguru_logger
 
@@ -9788,11 +9796,29 @@ class TestLatestMode:
             if sort_orders is not None:
                 sort_orders.append(mock_mc.sort_order)
             mock_mc._recent_games_last_page = kwargs.get("start_page", 1)
-            mock_mc._recent_games_exhausted = False
-            mock_mc._recent_games_failed = False
+            mock_mc._recent_games_exhausted = exhausted
+            mock_mc._recent_games_failed = fail_all_years
             mock_mc._recent_games_cutoff_reached = False
             mock_mc._recent_games_stop_cutoff = None
-            return [{"title": "G", "slug": "g", "release_date": "2026-11-01"}]
+            year = int(kwargs.get("year") or 0)
+            if raise_years is not None and year in raise_years:
+                raise RuntimeError("browse client blew up")
+            if fail_all_years or (fail_years is not None and year in fail_years):
+                # A failed fetch yields no games; the pipeline reads the flag, not the list.
+                mock_mc._recent_games_failed = True
+                mock_mc._recent_games_last_page = 0
+                return []
+            page_games = (
+                games_for_year(int(kwargs.get("year") or 0))
+                if games_for_year is not None
+                else [{"title": "G", "slug": "g", "release_date": "2026-11-01"}]
+            )
+            if cutoff_years is not None and year in cutoff_years:
+                mock_mc._recent_games_cutoff_reached = True
+                mock_mc._recent_games_stop_cutoff = "2024-01-01"
+            # An empty listing reports no page, matching the client's own accounting.
+            mock_mc._recent_games_last_page = kwargs.get("start_page", 1) if page_games else 0
+            return page_games
 
         mock_mc._recent_games_last_page = 0
         mock_mc._recent_games_exhausted = False
@@ -9856,10 +9882,287 @@ class TestLatestMode:
         assert any("Discovery mode: latest" in line for line in logs), logs
         assert any("Latest scan:" in line for line in logs), logs
 
-    def test_inert_pacing_keys_are_reported(self, tmp_path: Path) -> None:
-        _calls, logs = self._run(tmp_path=tmp_path, max_pages=3, max_cycle_months=2, max_cycle_pages=4)
-        assert any("max_cycle_months ignored in latest mode" in line for line in logs), logs
-        assert any("max_cycle_pages ignored in latest mode" in line for line in logs), logs
+    def test_two_raising_years_stop_the_descent(self, tmp_path: Path) -> None:
+        """An exception outage must advance the streak, not crawl the window."""
+        import datetime
+
+        current_year = datetime.datetime.now(tz=datetime.UTC).year
+        calls, logs = self._run(
+            tmp_path=tmp_path,
+            max_pages=3,
+            max_date=201501,
+            max_cycle_months=6,
+            raise_years={current_year, current_year - 1, current_year - 2},
+        )
+        assert len(calls) == 2, f"two raising years must stop the descent: {[c['year'] for c in calls]}"
+        assert any("consecutive years failed to browse" in line for line in logs), logs
+
+    def test_max_cycle_months_wires_the_pace_and_max_pages_is_unused(self, tmp_path: Path) -> None:
+        """A date key wins in latest mode: the pace bounds the cycle, not the depth."""
+        depth = 3
+        calls, logs = self._run(tmp_path=tmp_path, max_pages=depth, max_cycle_months=2, max_cycle_pages=4)
+        assert calls, "the paced cycle must still browse"
+        assert calls[0]["max_pages"] == 0, "a date-driven cycle has no page cap"
+        assert calls[0]["max_month_span"] == 2, "the first call anchors the pace on its own page"
+        assert calls[0]["cutoff_date"] is None, "no floor configured leaves the month pace as the only bound"
+        assert any("max_pages (3) is unused in latest date mode" in line for line in logs), logs
+        assert not any("max_cycle_months ignored" in line for line in logs), logs
+        assert not any("effectively unpaced" in line for line in logs), logs
+        assert any("ignored in latest mode" in line and "max_cycle_pages" in line for line in logs), logs
+        # A date-driven cycle must not be capped by max_pages: the fake serves one
+        # page per year, so a working pace window is six years deep with pace 2.
+        assert len(calls) > depth, f"max_pages must not cap a date-driven cycle: {len(calls)} page(s)"
+
+    def test_max_date_and_pace_beat_max_pages(self, tmp_path: Path) -> None:
+        """max_date is the floor and max_cycle_months the pace; max_pages never caps."""
+        calls, _logs = self._run(tmp_path=tmp_path, max_pages=3, max_date=202401, max_cycle_months=12)
+        assert calls, "expected at least one browse call"
+        assert calls[0]["cutoff_date"] == "2024-01-01", "the first call carries the floor"
+        assert calls[0]["max_month_span"] == 12, "the first call anchors the pace on its own page"
+        assert all(call["max_pages"] == 0 for call in calls), "a page cap must not survive a date window"
+        assert len(calls) > 1, "a 12-month pace from November reaches into the previous year"
+        assert calls[1]["cutoff_date"] > "2024-01-01", (
+            "later calls must use the pace cutoff derived from the cycle anchor, not just the floor"
+        )
+
+    def test_a_floor_alone_bounds_latest_without_pacing(self, tmp_path: Path) -> None:
+        """max_date without max_cycle_months sweeps to the floor in one cycle."""
+        calls, _logs = self._run(tmp_path=tmp_path, max_pages=3, max_date=202401)
+        assert calls
+        assert all(call["max_pages"] == 0 for call in calls)
+        assert all(call["cutoff_date"] == "2024-01-01" for call in calls)
+        assert all(call["max_month_span"] == 0 for call in calls), "no pace means no span stop"
+        years = {call["year"] for call in calls}
+        assert 2024 in years, f"the floor year must be probed, not just the current year: {years}"
+        assert min(years) == 2024, f"the loop must stop at the floor year: {years}"
+
+    def test_a_mid_cycle_outage_stops_after_two_failed_years(self, tmp_path: Path) -> None:
+        """Once dates are seen, two dead years still mean a blind descent."""
+        import datetime
+
+        current_year = datetime.datetime.now(tz=datetime.UTC).year
+        calls, logs = self._run(
+            tmp_path=tmp_path,
+            max_pages=3,
+            max_date=201501,
+            max_cycle_months=6,
+            fail_years={current_year - 1, current_year - 2, current_year - 3},
+        )
+        years = [call["year"] for call in calls]
+        assert years == [current_year, current_year - 1, current_year - 2], (
+            f"a mid-cycle outage must stop the descent: {years}"
+        )
+        assert any("consecutive years failed to browse" in line for line in logs), logs
+
+    def test_a_pace_shortens_the_window_without_crossing_the_floor(self, tmp_path: Path) -> None:
+        """The pace may shorten the window but never opens years below the floor."""
+        calls, _logs = self._run(
+            tmp_path=tmp_path,
+            max_pages=3,
+            max_date=202001,
+            max_cycle_months=24,
+            games_for_year=lambda year: [{"title": "G", "slug": "g", "release_date": f"{year}-12-01"}],
+        )
+        years = [call["year"] for call in calls]
+        assert years, "expected at least one probe"
+        assert min(years) >= 2020, f"the floor year is the bottom of the window: {years}"
+        assert len(years) < 5, f"the 24-month pace must shorten the window: {years}"
+
+    def test_the_year_bound_is_the_floor_not_a_derived_bound(self, tmp_path: Path) -> None:
+        """A stale anchor must not be truncated by a bound derived from today."""
+
+        # A floor far below the pace window: only the floor may set the bound.
+        def games(year: int) -> list[dict[str, Any]]:
+            # Listings are empty until the floor year, so the pace anchor lags today.
+            if year <= 2020:
+                return [{"title": "G", "slug": "g", "release_date": f"{year}-12-01"}]
+            return []
+
+        calls, _logs = self._run(
+            tmp_path=tmp_path,
+            max_pages=3,
+            max_date=202001,
+            max_cycle_months=12,
+            games_for_year=games,
+        )
+        years = [call["year"] for call in calls]
+        assert 2020 in years, f"the loop must descend to the floor year to reach a stale anchor: {years}"
+        assert min(years) == 2020, f"the floor year is the bottom of the window: {years}"
+
+    def test_a_floorless_pace_reaches_below_empty_recent_listings(self, tmp_path: Path) -> None:
+        """Recent years with no dated game must not truncate the pace window."""
+        import datetime
+
+        current_year = datetime.datetime.now(tz=datetime.UTC).year
+        first_dated_year = current_year - 3
+
+        def games(year: int) -> list[dict[str, Any]]:
+            if year <= first_dated_year:
+                return [{"title": "G", "slug": "g", "release_date": f"{year}-12-01"}]
+            return []
+
+        calls, _logs = self._run(
+            tmp_path=tmp_path,
+            max_pages=3,
+            max_cycle_months=12,
+            games_for_year=games,
+        )
+        years = [call["year"] for call in calls]
+        assert first_dated_year in years, f"the loop must descend past the empty listings to the anchor: {years}"
+        assert min(years) >= 1958, f"a floorless cycle must never probe below the catalogue's first year: {years}"
+
+    def test_a_floorless_pace_stops_at_the_slack_bound(self, tmp_path: Path) -> None:
+        """A normal pace stops at the slack bound; the 1958 clamp is the 1200 test."""
+        calls, _logs = self._run(
+            tmp_path=tmp_path,
+            max_pages=3,
+            max_cycle_months=1,
+            games_for_year=lambda _year: [],
+        )
+        years = [call["year"] for call in calls]
+        assert years, "expected at least one probe"
+        assert min(years) >= 1958, years
+        assert len(years) <= 6, f"a floorless deadline must bound the descent, got {len(years)} probes: {years}"
+
+    def test_a_drained_year_with_dates_keeps_the_descent(self, tmp_path: Path) -> None:
+        """A drained but dated listing is not evidence of an undated site."""
+        import datetime
+
+        current_year = datetime.datetime.now(tz=datetime.UTC).year
+        floor_month = (current_year - 2) * 100 + 1
+        calls, logs = self._run(tmp_path=tmp_path, max_pages=3, max_date=floor_month, exhausted=True)
+        years = [call["year"] for call in calls]
+        assert years == [current_year, current_year - 1, current_year - 2], (
+            f"the descent must continue to the floor year: {years}"
+        )
+        assert not any("a whole listing carried no release dates" in line for line in logs), logs
+
+    def test_the_client_cutoff_stop_ends_the_descent(self, tmp_path: Path) -> None:
+        """A client-reported cutoff must end the latest descent, not be ignored."""
+        import datetime
+
+        current_year = datetime.datetime.now(tz=datetime.UTC).year
+        calls, _logs = self._run(tmp_path=tmp_path, max_pages=3, max_date=200001, cutoff_years={current_year})
+        years = [call["year"] for call in calls]
+        assert years == [current_year], f"the cutoff stop must end the descent: {years}"
+
+    def test_a_catalogue_wide_pace_skips_the_pace_cutoff(self, tmp_path: Path) -> None:
+        """A pace older than the catalogue must not send a cutoff to the client."""
+        calls, _logs = self._run(tmp_path=tmp_path, max_pages=3, max_cycle_months=1200)
+        assert len(calls) > 1, "the cycle must make a later call to exercise the guard"
+        assert calls[1]["cutoff_date"] is None, f"a pre-catalogue pace must be dropped: {calls[1]['cutoff_date']}"
+
+    def test_a_fetch_outage_stops_the_descent_before_the_anchor(self, tmp_path: Path) -> None:
+        """Two consecutive failures mean a blind descent; one broken year does not."""
+        calls, logs = self._run(tmp_path=tmp_path, max_pages=3, max_cycle_months=12, fail_all_years=True)
+        assert len(calls) == 2, f"one broken year must not abandon the cycle: {[c['year'] for c in calls]}"
+        assert any("consecutive years failed to browse" in line for line in logs), logs
+        assert not any("no listing was found" in line for line in logs), logs
+
+    def test_a_coerced_score_sort_still_uses_the_date_window(self, tmp_path: Path) -> None:
+        """latest coerces the sort to 'new' first, so its date keys must apply."""
+        calls, logs = self._run(
+            tmp_path=tmp_path, max_pages=0, max_date=202401, max_cycle_months=2, sort_order="criticscore"
+        )
+        assert calls
+        assert calls[0]["max_pages"] == 0, "the page cap must be dropped even after a coerced sort"
+        assert calls[0]["max_month_span"] == 2
+        assert calls[0]["cutoff_date"] == "2024-01-01"
+        assert any("latest mode requires sort_order 'new'" in line.lower() for line in logs), logs
+        # The coercion runs before the depth normaliser, so 0 must not be clamped.
+        assert not any("clamping" in line.lower() for line in logs), logs
+
+    def test_undated_pages_are_reported_and_stop_the_descent(self, tmp_path: Path) -> None:
+        """A listing that drops release dates must stop the descent, not crawl it."""
+        calls, logs = self._run(
+            tmp_path=tmp_path,
+            max_pages=3,
+            max_cycle_months=2,
+            games_for_year=lambda _year: [{"title": "G", "slug": "g", "release_date": None}],
+            exhausted=True,
+        )
+        years = [call["year"] for call in calls]
+        assert len(years) == 1, f"one drained undated listing is enough evidence: {years}"
+        assert any("a whole listing carried no release dates" in line for line in logs), logs
+        assert any("carried no usable release dates" in line for line in logs), logs
+
+    def test_a_huge_pace_bounds_at_the_catalogue_floor(self, tmp_path: Path) -> None:
+        """A 1200-month pace must clamp at EARLIEST_BROWSE_YEAR, not walk forever."""
+        calls, logs = self._run(tmp_path=tmp_path, max_pages=3, max_cycle_months=1200, games_for_year=lambda _y: [])
+        years = [call["year"] for call in calls]
+        assert years, "expected at least one probe"
+        assert min(years) == 1958, f"the descent must clamp at the catalogue floor: {min(years)}"
+        assert any("effectively unpaced" in line and "1958" in line for line in logs), logs
+
+    def test_an_all_empty_floorless_descent_names_the_bound(self, tmp_path: Path) -> None:
+        """Nothing found down to a synthetic bound must be reported, not silent."""
+        calls, logs = self._run(tmp_path=tmp_path, max_pages=3, max_cycle_months=2, games_for_year=lambda _y: [])
+        assert calls
+        assert any("no listing was found" in line for line in logs), logs
+        assert not any("carried no usable release dates" in line for line in logs), logs
+
+    def test_an_unpaced_date_window_is_reported_as_uncapped(self, tmp_path: Path) -> None:
+        """An unpaced window re-reads everything each cycle; that must be visible."""
+        calls, logs = self._run(tmp_path=tmp_path, max_pages=3, max_date=202401)
+        assert calls
+        assert any("effectively unpaced" in line for line in logs), logs
+        assert any("never reaches its floor" in line for line in logs), logs
+        assert any("effectively unpaced" in line and "202401" in line for line in logs), logs
+        assert any("Discovery mode: latest (date window" in line for line in logs), logs
+        assert any("Latest scan:" in line and "floor 202401" in line and "unpaced" in line for line in logs), logs
+
+    def test_a_floor_covering_pace_is_not_called_unpaced(self, tmp_path: Path) -> None:
+        """A pace that covers the whole floored window is full coverage, not unpaced."""
+
+        from gamarr.utils import current_year_month, subtract_months
+
+        # Derive the floor from the clock so the pace always covers it.
+        floor_month = subtract_months(current_year_month(), 200)
+        calls, logs = self._run(tmp_path=tmp_path, max_pages=3, max_date=floor_month, max_cycle_months=240)
+        assert calls
+        assert not any("effectively unpaced" in line for line in logs), logs
+        assert not any("is the floor, not a sweep target" in line for line in logs), logs
+
+    def test_a_narrow_pace_states_its_scope(self, tmp_path: Path) -> None:
+        """A pace narrower than the window must say the older months are not read."""
+        calls, logs = self._run(tmp_path=tmp_path, max_pages=3, max_date=202001, max_cycle_months=2)
+        assert calls
+        assert any("is the floor, not a sweep target" in line for line in logs), logs
+
+    def test_a_backlog_date_cycle_reports_undated_pages_too(self, tmp_path: Path) -> None:
+        """The shared no-dates warning must name the mode that hit it."""
+        calls, logs = self._run(
+            tmp_path=tmp_path,
+            mode="backlog",
+            max_pages=3,
+            max_date=202401,
+            games_for_year=lambda _year: [{"title": "G", "slug": "g", "release_date": None}],
+        )
+        assert calls
+        assert any("cannot bound this backlog cycle" in line for line in logs), logs
+
+    def test_a_date_driven_cycle_does_not_persist_cursors(self, tmp_path: Path) -> None:
+        """The no-cursor invariant must hold on the date-driven path too."""
+        from gamarr.database import Database
+
+        path = str(tmp_path / "latest-date.db")
+        seed = Database(path)
+        seed.set_last_sort_order("pc", "new")
+        seed.set_last_scanned_page("pc", 2025, 7)
+        seed.close()
+
+        self._run(tmp_path=tmp_path, max_pages=3, max_date=202401, max_cycle_months=2, db_path=path)
+
+        db = Database(path)
+        assert db.get_last_scanned_page("pc", 2025) == 7, "a date-driven latest cycle must not move backlog cursors"
+        db.close()
+
+    def test_a_date_driven_cycle_does_not_clamp_the_depth(self, tmp_path: Path) -> None:
+        """max_pages: 0 means nothing in a date-driven cycle, so do not clamp it to 10."""
+        calls, logs = self._run(tmp_path=tmp_path, max_pages=0, max_cycle_months=2)
+        assert calls
+        assert calls[0]["max_pages"] == 0
+        assert not any("clamping" in line.lower() for line in logs), logs
 
     def test_score_sort_is_coerced_with_a_warning(self, tmp_path: Path) -> None:
         orders: list[str] = []
@@ -10415,6 +10718,47 @@ class TestNegativePageBudget:
 
         assert _normalise_latest_depth(0, "latest") == 10
         assert _normalise_latest_depth(None, "backlog") is None
+
+    def test_a_date_driven_cycle_leaves_the_depth_alone(self) -> None:
+        """The depth is unused when date keys bound the cycle, so nothing is clamped."""
+        from gamarr.pipeline import _DEFAULT_MAX_PAGES, _normalise_latest_depth
+
+        assert _normalise_latest_depth(0, "latest", date_driven=True) == 0
+        assert _normalise_latest_depth(None, "latest", date_driven=True) is None
+        # A negative value is a typo whichever mode reads it.
+        assert _normalise_latest_depth(-5, "latest", date_driven=True) == _DEFAULT_MAX_PAGES
+
+    def test_backlog_date_mode_keeps_the_negative_guard(self) -> None:
+        """Backlog replaces the budget with a floor but must still sanitise a typo."""
+        from gamarr.pipeline import _DEFAULT_MAX_PAGES, _normalise_latest_depth
+
+        assert _normalise_latest_depth(-5, "backlog", date_driven=True) == _DEFAULT_MAX_PAGES
+
+
+class TestDateDrivenResolution:
+    """Which key governs the scan: a date window or a page count."""
+
+    def test_latest_accepts_either_date_key(self) -> None:
+        from gamarr.pipeline import _date_driven
+
+        assert _date_driven("new", True, 202401, 0) is True
+        assert _date_driven("new", True, 0, 3) is True
+        assert _date_driven("new", True, 202401, 3) is True
+        assert _date_driven("new", True, 0, 0) is False
+
+    def test_backlog_still_needs_a_floor(self) -> None:
+        from gamarr.pipeline import _date_driven
+
+        assert _date_driven("new", False, 202401, 0) is True
+        assert _date_driven("new", False, 0, 3) is False
+
+    def test_a_score_sort_has_no_date_dimension(self) -> None:
+        from gamarr.pipeline import _date_driven
+
+        assert _date_driven("criticscore", False, 202401, 3) is False
+        # latest coerces the browse order to "new" before this predicate runs, so
+        # this combination cannot occur in production; it pins the predicate only.
+        assert _date_driven("userscore", True, 202401, 3) is False
 
 
 class TestCancelWhileQueueing:
