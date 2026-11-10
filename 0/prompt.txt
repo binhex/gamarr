@@ -1,0 +1,2018 @@
+i am a little confused by this: Discovery mode. "latest" reads up to max_pages pages of the window every cycle (no cursors, no pacing) so new releases are always seen, spending the depth newest year first and keeping one page for the immediately lower year; "backlog" sweeps back through the window with per-year cursors and pacing. Latest requires sort_order: "new" — a score sort is warned about and coerced to "new" for that cycle. - so why couldnt 'latest' mode be set to use max_date? why does it have to use max_pages? (a difficult non human friendly value)
+
+---
+
+i am seeing the following in the gamarr log, why are both of these being ignored?:- 2026-11-09 17:20:48 | INFO     | Discovery mode: latest (depth 1000 pages, window floor 202601)
+2026-11-09 17:20:48 | INFO     | Config: max_cycle_months ignored in latest mode (1)
+2026-11-09 17:20:48 | INFO     | Config: max_cycle_pages ignored in latest mode (16)
+
+---
+
+So it's working as written — the message isn't a misconfiguration report, it's "these two knobs would compete with max_pages, and max_pages wins".   - i dont want this!, in latest mode if         max_date: 202601
+        max_cycle_months: 1 are configured then they should win when in latest mode, max_pages sohuld be a fallback only when those two are not set OR the mode is not latest, make sense?.
+
+---
+
+<skill name="code-review" location="/data/plugins/ai/copilot/binhex/skills/build/pi/code-review/SKILL.md">
+References are relative to /data/plugins/ai/copilot/binhex/skills/build/pi/code-review.
+
+# Code Review
+
+## Overview
+
+The dual-model code review should happen as sub-agents, the main agent is responsible for orchestrating the loop,
+narrating progress, and applying fixes — the main agent should NEVER delegate the orchestration of itself to a
+sub-agent.
+
+Two independent reviewer sub-agents are dispatched for each round. You gather
+their findings, de-duplicate, normalise each finding's severity, apply the Scope
+Gate, fix every in-scope finding, narrate progress throughout, then repeat —
+until **no reviewer reports an in-scope gating finding in the same round**.
+Non-gating findings are fixed but never force another round.
+
+**Core principle:** Get Diff → Run loop with sub agents → Continue while any
+in-scope gating finding remains, fixing and re-reviewing until a round is clean
+of in-scope gating findings.
+
+## Prerequisite: Harness and Project Context
+
+Before beginning, ensure both prerequisites are loaded:
+
+1. If `Harness status: loaded.` is not already present as an emitted status line, load and run `harness`, then return here.
+2. If `Project context status: loaded.` is not already present as an emitted status line, load and run `get-context`,
+   then return here.
+
+When invoked from a chain, preserve these status markers and do not repeat either prerequisite.
+
+## Configuration
+
+```text
+CIRCUIT_BREAKER_ROUNDS = 10               # maximum review rounds — the loop's only hard limit
+LOOP_GATE_SEVERITIES   = [HIGH, MEDIUM]   # severities that force another round
+```
+
+Both settings are defined here and nowhere else — change them here, never in a
+rule that uses them. `LOOP_GATE_SEVERITIES` must list at least one severity from
+the severity rubric; an empty list would end the loop after round 1.
+
+A **gating finding** is a finding whose severity is in `LOOP_GATE_SEVERITIES`;
+every other finding is **non-gating**.
+
+## What Counts as a Code Change?
+
+**REQUIRES code review (all code logic changes):**
+
+- Bug fixes
+- Refactors
+- New features
+- Performance changes
+- Security patches
+- Configuration logic changes
+
+**EXEMPT (skip the review):**
+
+- Test-only changes (`test_*.py`, `*_test.*`, `*.test.*`, `tests/`, `spec/`)
+- Documentation-only changes (`.md`, `.rst`, `.txt`)
+- Comment-only changes
+- Docstring-only changes
+- Plan files (`docs/agent/plans/`)
+- Temporary files (`/tmp/`, `*.tmp`)
+- Non-code related tasks
+
+**If in doubt: it's a code change. Run the review.**
+
+## Step 0: Determine Harness and Review Setup
+
+### Step 0a: Harness
+
+Load the `harness` skill to detect your harness and determine the correct dispatch syntax and model values.
+
+After detection, set reviewer models from harness values:
+
+```text
+REVIEWER_A_MODEL = harness.model.reviewer_a
+REVIEWER_B_MODEL = harness.model.reviewer_b
+```
+
+(See `harness` "Models by Role" for the full per-platform mapping.)
+
+Announce: `"🖥️ Harness: [pi]. Using [REVIEWER_A_MODEL] and [REVIEWER_B_MODEL] for code review."`
+
+Immediately emit this standalone line before dispatching reviewers:
+
+`REVIEW_GATE_STATUS: RUNNING`
+
+This step MUST NOT end while that marker is current. Before ending, emit exactly
+one terminal marker — `CLEAN`, `UNRESOLVED`, or `BLOCKED`. Never leave downstream
+steps to resolve this review's findings.
+
+### Terminal Markers
+
+| Marker | When to emit it | Downstream steps |
+| -------- | ---------------- | ------------------ |
+| `REVIEW_GATE_STATUS: CLEAN` | Normal loop exit — no in-scope gating finding remained, every required phase passed, was recorded NOT APPLICABLE, or (for a pre-commit gate) was waived by the user under `qa-gate`'s Pre-commit Tool Flow and named in the report, and every deferred finding is in the deferred ledger | Proceed normally |
+| `REVIEW_GATE_STATUS: UNRESOLVED` | The cap round (`CIRCUIT_BREAKER_ROUNDS`) reported findings of some severity and the residual ledger was written first | **Proceed.** Completion with residuals — not clean. QA runs; finalising may present its menu and must surface the residuals |
+| `REVIEW_GATE_STATUS: BLOCKED` | No usable review result — the reviewer workflow failed, was cancelled, returned nothing, or a required phase failed or was interrupted (see "Required-Phase Failure" below) | **Stop.** Nothing usable was recorded, so nothing can be carried forward |
+
+`UNRESOLVED` and `BLOCKED` are not interchangeable. `UNRESOLVED` means findings
+were found, fixed and recorded. `BLOCKED` means no review result exists at all.
+
+## Required-Phase Failure
+
+A **required phase** is any gate or phase this skill must run: the reviewer
+rounds, plus every further phase this skill defines below.
+
+| What happened | Action |
+| -------------- | -------- |
+| A required gate or phase **ran and failed**, and the failure cannot be fixed | Emit `REVIEW_GATE_STATUS: BLOCKED`. Do not claim the review is complete or the code safe to integrate |
+| A required gate or phase could not run because the project has no configured tool | Record it as NOT APPLICABLE with the reason, following `qa-gate`'s Missing-Tool Policy. This does not block `CLEAN` |
+| A configured required gate could not run — missing configured tool or unparsable config | Emit `REVIEW_GATE_STATUS: BLOCKED`. Do not claim the review is complete or the code safe to integrate |
+| A configured required gate could not run, and the user waived it under `qa-gate`'s Pre-commit Tool Flow | Name the waiver in the report; this does not block `CLEAN` |
+| A phase was **interrupted** or returned nothing usable | Emit `REVIEW_GATE_STATUS: BLOCKED` |
+
+`BLOCKED` means no usable review result exists. Never emit `CLEAN` over a phase
+that failed or never finished. Exactly one terminal marker is emitted per run:
+ending with `REVIEW_GATE_STATUS: RUNNING` still current is a violation.
+
+### Step 0b: Confirm the Diff Contains Reviewable Code
+
+Get the diff and check whether it contains any reviewable code change (see the
+exemption list above). Do not count lines — the loop is driven by issue severity,
+not change size.
+
+**Procedure:**
+
+1. **Detect state and get the diff.** Set `BASE_REF` — the commit the change is measured from — then diff against
+   that ref:
+
+     ```bash
+     BRANCH=$(git rev-parse --abbrev-ref HEAD)
+     # Priority 1: upstream tracking (origin/BRANCH) with commits ahead of it
+     UPSTREAM=$(git rev-parse --abbrev-ref HEAD@{upstream} 2>/dev/null)
+     if [ -n "$UPSTREAM" ] && ! git diff "$UPSTREAM..HEAD" --quiet 2>/dev/null; then
+       BASE_REF="$UPSTREAM"
+     # Priority 2: merge-base with main
+     elif MERGE_BASE=$(git merge-base main HEAD 2>/dev/null) && ! git diff "$MERGE_BASE..HEAD" --quiet; then
+       BASE_REF="$MERGE_BASE"
+     # Priority 3: merge-base with master
+     elif MERGE_BASE=$(git merge-base master HEAD 2>/dev/null) && ! git diff "$MERGE_BASE..HEAD" --quiet; then
+       BASE_REF="$MERGE_BASE"
+     # Priority 4: uncommitted change only
+     elif [ -n "$(git diff HEAD --name-only)" ]; then
+       BASE_REF="HEAD"
+     # Priority 5: full branch diff from root
+     else
+       BASE_REF="$(git rev-list --max-parents=0 HEAD)"
+     fi
+     git diff "$BASE_REF"
+     ```
+
+   Use a ref, never an `A..B` range: review fixes are uncommitted, and a range hides them from the next round.
+
+2. **Record the scope set and the original size** (the Growth Budget in Step 0d measures against these):
+
+     ```bash
+     REVIEW_SET_FILE="/tmp/code-review-scope-$(git rev-parse --abbrev-ref HEAD | tr '/ ' '__').txt"
+     ORIGINAL_DIFF_LINES=$(git diff "$BASE_REF" | wc -l)
+     {
+       echo "# BASE_REF=$BASE_REF"
+       echo "# ORIGINAL_DIFF_LINES=$ORIGINAL_DIFF_LINES"
+       git diff --name-only "$BASE_REF"
+     } > "$REVIEW_SET_FILE"
+     ```
+
+3. **Filter to code files only** — exclude test files, docs, config, plans, temp files.
+
+4. **Check for reviewable code.** If every changed hunk is exempt (tests, docs,
+   comments, docstrings, plans, temp files, non-code), emit standalone
+   `REVIEW_GATE_STATUS: CLEAN`, announce:
+
+   ```text
+   ⏭️ Code review skipped — no reviewable code changes detected (comments, plans, temp files, tests, docs, or non-code only).
+   ```
+
+   and return immediately.
+
+**Announce:**
+
+`"🔍 Reviewable code changes detected — starting code review."`
+
+`"🎯 Review scope set: [N] files ([list]). Original diff: [N] lines."`
+
+## Step 0c: Severity Rubric
+
+Both reviewers tag every finding HIGH, MEDIUM, or LOW. You normalise the tags
+after de-duplication; disagreement or uncertainty takes the higher severity.
+
+| Severity | Definition |
+| -------- | ---------- |
+| **HIGH** | Correctness bugs that produce wrong results or crashes; security vulnerabilities (injection, path traversal, auth bypass, secret exposure); data loss or corruption; race conditions and deadlocks; API contract breaks; unhandled failure on a critical path. |
+| **MEDIUM** | Logic errors with limited blast radius; missing edge-case or error handling; resource leaks; performance regressions on realistic input; missing tests for new behaviour; incorrect docs for changed behaviour; fragile assumptions. |
+| **LOW** | Style, naming, formatting, comment/docstring wording, and preference-level refactors with no behavioural impact. |
+
+Only in-scope gating findings gate the loop. Non-gating findings are fixed
+before exit but never force another review round.
+
+## Step 0d: Scope Set and Growth Budget
+
+The review fixes **the change under review**, not the repository. Both gates
+below fire before an edit, not after it.
+
+### Scope Set
+
+Step 0b recorded `BASE_REF`, `ORIGINAL_DIFF_LINES`, and the changed-file list in
+`REVIEW_SET_FILE`. That list is the **scope set**: the files the change had
+already touched when the review started.
+
+A finding is **in scope** when the file a fix would change is in the scope set.
+Everything else is **out of scope** — an unchanged file, a file the change only
+imports, a file the reviewer wandered into. The import graph is not the scope set.
+
+**Out-of-scope findings are never fixed automatically.** They go to the Scope
+Gate.
+
+### The Scope Gate
+
+Before editing for an out-of-scope finding, or when the Growth Budget trips, use
+the harness user-prompt tool (`harness.tool.user_prompt`; `ask_user_question` on
+pi). A question written in prose is not a gate — it does not stop the loop.
+
+```text
+header:   "Review scope"
+question: "Reviewer reported <SEVERITY> outside this change: <file:line> - <issue>.
+           Fixing it widens the diff beyond the files this change already touched.
+           What should I do?"
+options:
+  - "Fix it here"      -> add the file to the scope set, fix it, re-review
+  - "Defer to ledger"  -> write it to the deferred ledger, do not fix, continue
+  - "Reject"           -> record it in the deferred ledger as rejected, do not fix, continue
+```
+
+`Fix it here` makes the finding in scope from that point on. `Defer` and `Reject`
+take it out of the loop: they do not gate `CLEAN`, and they are recorded.
+
+**No prompt tool (autopilot/non-interactive):** apply `Defer`. Never widen the
+change because nobody was available to answer. A prompt tool that exists but
+errors counts as absent.
+
+### Growth Budget
+
+A diff must not grow without bound. After applying a round's fixes:
+
+```bash
+CURRENT_LINES=$(git diff "$BASE_REF" | wc -l)
+```
+
+If `CURRENT_LINES - ORIGINAL_DIFF_LINES` is greater than `ORIGINAL_DIFF_LINES` —
+the review fixes added more lines than the change itself — or the changed-file
+list now contains files outside the scope set, **stop before the next round** and
+put it to the Scope Gate, offering "continue at the current size" alongside the
+defer and reject options.
+
+**No prompt tool:** fix HIGH findings only, defer MEDIUM and LOW to the deferred
+ledger, and continue. A HIGH defect is never deferred on a size argument.
+
+## Step 1: Get the Diff (for Review)
+
+The diff was already obtained in Step 0b. Reuse the same diff content for the
+review sub-agents; if you need to re-obtain it, re-run the state-detection and
+diff commands from Step 0b. That preserves the unpushed-branch handling which
+catches all new files (e.g. a fresh codebase), not only the last N commits.
+
+**Pass the FULL diff — never a prose summary.** Both reviewers MUST receive the actual changed code: the full `git diff`
+output and/or explicit `read` instructions for the complete changed files/regions. Do NOT replace the diff with a
+summary of "what changed" — a summary review is not a code review; reviewers only catch what you wrote down, not what is
+actually in the code. If the diff is large, pass it in full anyway (the task prompt holds it) and/or tell reviewers to
+read the full files. Diff size is NEVER a reason to summarize. The thought "this is too long to pass, I'll summarize" is
+exactly the rationalization this rule forbids.
+
+## Step 1b: Fast Static Gates
+
+Run the changed languages' linter and type-checker **before round 1** and again
+**after the final round's fixes**. The last run is the one that matters:
+`qa-gate` runs these once at the end, and the chain forbids it from fixing code,
+so any type or lint error left here dead-ends the chain instead of getting fixed.
+
+| Language | Commands |
+| -------- | -------- |
+| Python | `ruff check --fix .`, `ruff format .`, `mypy .` |
+| Other | the project's configured linter and type-checker for the changed files |
+
+Fix everything they report, then re-run until clean. A gate the project has never
+configured is recorded NOT APPLICABLE with the reason and stated in the report —
+never silently skipped or claimed as passing. A configured gate that could not run
+(missing configured tool, unparsable config), or that RAN and FAILED and cannot be
+fixed, is a required-phase failure: emit `REVIEW_GATE_STATUS: BLOCKED` (see
+"Required-Phase Failure" above).
+
+## The Loop
+
+At each step, narrate what you are doing so the user can follow progress.
+
+```text
+# CIRCUIT_BREAKER_ROUNDS and LOOP_GATE_SEVERITIES are defined under "Configuration" above.
+current_round = 0
+gating = 1                    # initialise > 0 to force at least one round
+
+WHILE gating > 0:
+
+  current_round += 1
+  Announce: "🔍 Code review — round {current_round} starting. Dispatching Reviewer A ([REVIEWER_A_MODEL]) and Reviewer B ([REVIEWER_B_MODEL])..."
+
+  1. Dispatch **BOTH** reviewer sub-agents in **parallel** using the harness workflow
+     form below (fan out one entry per reviewer). Do NOT dispatch them one at a time.
+
+     **Pi harness — COPY-PASTE this EXACT template. Change ONLY the two `task` strings.**
+
+     A dispatch needs **two separate acts** in one reply. (1) Write the block
+     below as the **one** `js workflow` block, opening the fence at the start of
+     a line (no indentation). (2) Invoke the `subagent` tool with
+     `workflow: true` and `async: true` as a **real tool call**.
+
+     Writing `subagent(...)` in a code fence, an inline span, or prose produces
+     documentation only: it starts nothing and returns no workflow ID, while the
+     review step still looks complete. Reproducing the shape of an example is
+     not dispatching.
+
+     ```js workflow
+     const results = await runs.all([
+       { key: "reviewer-a", agent: "reviewer", task: "REVIEW_PROMPT_HERE", model: "${REVIEWER_A_MODEL}" },
+       { key: "reviewer-b", agent: "reviewer", task: "REVIEW_PROMPT_HERE", model: "${REVIEWER_B_MODEL}" }
+     ]);
+     return results;
+     ```
+
+     #### No workflow ID means the dispatch did NOT happen
+
+     The tool returns a workflow ID. Inside this chain step, make `bg_wait` on
+     that exact ID with `stopOnAttention: false` the last action before the turn
+     ends.
+
+     No workflow ID in your turn means nothing launched. Re-invoke the
+     `subagent` tool; never `bg_wait` a placeholder or guessed ID. If repeated
+     invocations return no ID, stop and tell the user the launch failed — never
+     emit `REVIEW_GATE_STATUS: CLEAN` or take the skip path over a review that
+     never ran.
+
+     `runs.all` still starts both reviewers in parallel. `async: true` follows
+     the Pi protocol; exact-run `bg_wait` before the turn ends keeps this chain
+     step from ending before both results arrive. **Because this review chain
+     needs the results now, ordinary native-notification waiting does not
+     apply.** Do the independent work that does not need the results, but do not
+     send a progress-only response, invoke another skill, or let the step end
+     between launch and wait.
+
+     **Do NOT use nested `async function`** — use top-level `await` only.
+
+
+
+     **Reviewer task prompt (identical for both):**
+     "Review ALL changed code provided below (full diff / full files). Do NOT rely on any summary — read the actual code, not a description of it. Review for bugs, logic errors, security issues, and correctness problems. Be adversarial — assume the code is wrong until proven otherwise. Tag every issue HIGH, MEDIUM, or LOW using the severity rubric in Step 0c; when unsure between two levels, choose the higher. List every issue with its severity, its file:line references, and the file a fix would need to change."
+
+     **Pre-dispatch verification — MANDATORY output before dispatching:**
+
+     Write this EXACT line in your response before calling subagent():
+
+     `🔢 Dispatch check: 2 reviewer entries. Models: [REVIEWER_A_MODEL], [REVIEWER_B_MODEL].`
+
+     If you cannot write "2 entries" because you only have 1: STOP. Fix the call.
+     Do NOT dispatch until you have written and verified this line.
+
+     **Post-dispatch verification — check BEFORE reading any output:**
+
+     - After exact-run `bg_wait`, inspect terminal workflow status. Do not
+       de-duplicate, fix, verify, or start dependent work first.
+     - The subagent result MUST show **2/2 done** (not 1/1, not 1/2).
+     - If it shows 1/1: STOP. Re-dispatch the missing reviewer NOW with the same diff prompt.
+     - Only proceed to de-duplication AFTER you have both reviewers' results.
+
+     **Key rules:**
+     - Both reviewers use `agent: "reviewer"`.
+     - The two `model` values must be DIFFERENT.
+     - Re-dispatch on `failed`/`cancelled` before de-dup.
+     - NEVER dispatch reviewers one at a time. Independent entries run in parallel.
+     - Use `async: true`, then make exact-run `bg_wait` with
+       `stopOnAttention: false` the last action before the turn ends.
+     - Do not end this step or allow QA/finalising to start before every finding
+       is fixed and this loop emits a terminal `REVIEW_GATE_STATUS` marker.
+     - Do NOT use nested `async function` — use top-level `await` only.
+
+  2. Announce findings once both results are collected (findings may be announced across separate turns):
+     "Reviewer A ([REVIEWER_A_MODEL]) found N issues: [brief list]"
+     "Reviewer B ([REVIEWER_B_MODEL]) found M issues: [brief list]"
+
+  3. De-duplicate (only after both agents are read), then normalise every
+     finding's severity against the Step 0c rubric. Disagreement or uncertainty
+     takes the higher severity. Apply the Scope Gate (Step 0d) to any finding
+     whose fix would touch a file outside the scope set, then set gating = the
+     count of unique IN-SCOPE findings whose severity is in
+     LOOP_GATE_SEVERITIES this round; keep the per-severity counts for the
+     announcement below.
+     Announce: "📋 De-duplicated: H high, M medium, L low — [list]"
+     ⚠️ gating is set here by the reviewer output — applying fixes in
+     step 4 does NOT reset it. Only the NEXT round's reviewers can do that.
+
+  4. Fix every in-scope finding this round, in severity order — HIGH, then
+     MEDIUM, then LOW. Announce each fix: "🔧 Fixing: [issue description]"
+     After the fixes, run the Growth Budget check (Step 0d).
+     This review step retains ownership; never hand its findings to QA,
+     finalising, or another chain step.
+  5. IF current_round >= CIRCUIT_BREAKER_ROUNDS:
+       # The cap round is the last round, whatever it reports.
+       IF this round reported any finding, at any severity:
+         Announce: "⛔ Round cap reached: round {current_round} of {CIRCUIT_BREAKER_ROUNDS}."
+         Announce: "Findings from the cap round: [list]. All were addressed but could not be verified by reviewers."
+         # Write the ledger FIRST — the marker itself carries no detail.
+         Write the residual ledger (see "Residual Ledger" below).
+         Announce: "📋 Residuals recorded in <ledger path>. Emitting REVIEW_GATE_STATUS: UNRESOLVED — downstream steps may proceed."
+         Emit standalone: `REVIEW_GATE_STATUS: UNRESOLVED`
+       ELSE:
+         Announce: "✅ Code review complete — the cap round reported no findings."
+         Emit standalone: `REVIEW_GATE_STATUS: CLEAN`
+       STOP the loop — the cap is reached. Do NOT start another round.
+     ELSE IF gating > 0:
+       Announce: "✅ Round current_round complete — fixes applied, re-running reviewers..."
+       # ⚠️ Re-evaluate the WHILE condition before starting any next round.
+       # Do NOT start the next round automatically — the WHILE condition controls this.
+     ELSE:
+       Announce: "✅ Code review complete — no gating findings remain."
+       Emit standalone: `REVIEW_GATE_STATUS: CLEAN`
+```
+
+## Stopping Condition
+
+The loop continues while any in-scope gating finding was reported in the
+current round. It stops in exactly three ways:
+
+**Severity-clean pass (normal exit):** the round reports no in-scope gating
+finding from either reviewer. Non-gating findings from that round are fixed,
+then the loop exits with `REVIEW_GATE_STATUS: CLEAN`.
+
+```text
+Round N:  A = 1 gating,   B = 0                     →  Fix and continue 🔄
+Round N:  A = 1 gating,   B = 0 gating, 2 non-gating →  Fix and continue 🔄
+Round N:  A = 0 gating,   B = 0 gating, 1 non-gating →  Fix it, exit ✅
+Round N:  A = 0,          B = 0                     →  Exit ✅
+```
+
+**Round cap (hard end):** `current_round` reached `CIRCUIT_BREAKER_ROUNDS`.
+The cap round is the last round. What happens next depends only on whether the
+cap round reported findings — see "Round Cap — Hard End" below. The cap escapes
+a non-converging loop by ending the review with documented residuals. It is
+never `CLEAN` when findings exist, but it does not block downstream steps
+either. Only `BLOCKED` stops the chain.
+
+## Round Cap — Hard End
+
+`CIRCUIT_BREAKER_ROUNDS`, defined once under "Configuration", is the cap. The
+cap round is the **last** round, whatever it reports. At the end of the cap
+round:
+
+| Cap round reported | Action |
+| ------------------ | -------- |
+| No findings of any severity | Exit on the skill's normal clean path. **No ledger is written.** |
+| Any finding, any severity — HIGH, MEDIUM or LOW | Write the residual ledger, then emit `REVIEW_GATE_STATUS: UNRESOLVED` |
+
+Then stop. **No extra round:** never start a round past the cap, and do not
+re-review the cap round's fixes — recording them is what the cap is for. LOW
+findings are recorded like every other severity.
+
+Write the ledger **before** the marker: the marker carries no detail, so a cap
+that ends without a ledger is a set of lost findings.
+
+## Residual Ledger
+
+Written only when the cap round ends the loop with findings. **Do not commit it** —
+the finishing step commits it with the branch.
+
+- **Path:** `docs/agent/reviews/YYYY-MM-DD-<topic>-residuals.md`, following the
+  same `docs/agent/` convention as specs and plans
+
+| Section | Content |
+| -------- | --------- |
+| Header | Branch, commit, round reached, the cap, and both reviewer models |
+| Findings | One row per finding from the cap round, every severity: severity, `file:line`, description |
+| Status | `applied, not independently re-reviewed` for a fix made after the last reviewer pass; `not fixed` if it was not applied |
+| Verification gap | State that the cap round's fixes were never re-reviewed |
+
+**Lifecycle:** a later ledger run may take these findings on. `review-triage` names the ledgers
+it accepts in `REVIEW_TRIAGE_STATUS: PLAY <paths>` and stamps each with a `Triage: PLAY`
+line; `finalising` then deletes a named ledger once every finding in it is verified resolved,
+or shrinks it down to the rows still open. A stamp alone is not consent for a later run.
+
+Record every finding. A finding left out of the ledger is a finding lost.
+
+## Deferred Ledger
+
+Written whenever the Scope Gate deferred or rejected a finding. A deferred
+finding is not a residual: it is real, but it does not belong to this change.
+
+- **Path:** `docs/agent/reviews/YYYY-MM-DD-<topic>-deferred.md`, following the
+  same `docs/agent/` convention as specs and plans
+- **Do not commit it** — the finishing step commits it with the branch.
+
+| Section | Content |
+| -------- | --------- |
+| Header | Branch, `BASE_REF`, round reached, both reviewer models, and why the item was deferred |
+| Findings | One row per deferred finding: severity, `file:line`, description, `deferred` |
+| Status | `not fixed — outside this change`, `not fixed — over the growth budget`, or `rejected — <reason>` |
+
+Surface the ledger path in the final summary. `CLEAN` stays available: the
+change under review has no open in-scope finding.
+
+**A non-gating severity is not a looping condition.** Those findings are fixed
+before exit but never force another round. **Any in-scope gating finding is
+always a looping condition** — it forces another round until none remain or the
+round cap is reached. At the cap, non-gating findings are recorded in the ledger
+like every other severity.
+
+**Skip mode:** no reviewable code changes — handled in Step 0b, before the loop.
+
+## The Iron Law
+
+```text
+DO NOT STOP THE LOOP WHILE ANY IN-SCOPE GATING FINDING REMAINS
+```
+
+**No exceptions:**
+
+- Not for "the Iron Law has no pre-existing exemption, so I fix it" (scope is the
+  user's call; an out-of-scope finding goes to the Scope Gate)
+- Not for "it's probably fine now"
+- Not for "we're running behind"
+- Not for "senior engineer already approved it"
+- Not for "I feel like I've done enough rounds" (only a round with no gating finding ends the loop)
+- Not for "the circuit breaker is close, I'll call it done" (the breaker emits UNRESOLVED, never CLEAN)
+
+**The one legitimate exit without a severity-clean round:** the circuit breaker
+at `CIRCUIT_BREAKER_ROUNDS`. It writes the residual ledger and emits
+`REVIEW_GATE_STATUS: UNRESOLVED` — it never claims the review is clean, and it
+never blocks downstream work. Do NOT use it as a target or as a loophole to
+avoid another round.
+
+The loop is not optional. It exists **for** the moments when you are tired and tempted to skip it.
+
+## Red Flags — Stop and Re-read This Skill
+
+- "Other reviews cover it, I do not need to run Code Review"
+- "I ran spec compliance + code quality reviews via sub-agents — that's enough"
+- "The final code reviewer in sub-agents already approved it"
+- "This issue is minor, I'll skip it"
+- "I feel like enough rounds have run" (check: did THIS round report any in-scope
+  gating finding?)
+- "I'll call this MEDIUM a LOW so the loop can exit" (normalise against the
+  Step 0c rubric; uncertainty takes the higher severity)
+- "The Iron Law has no pre-existing exemption, so I fix it" (an out-of-scope
+  finding goes to the Scope Gate; the user decides, not the loop)
+- "It's a one-line fix, asking the user is overkill" (one line now, a widened
+  diff and an unreviewed shared helper next)
+- "The changed code imports that file, so it's in scope" (the scope set is the
+  files the change touched, not its import graph)
+- "I asked in prose and kept working" (a question in the reply does not stop the
+  loop; only the user-prompt tool does)
+- "There's no prompt tool, so I'll just fix it" (no prompt tool means defer)
+- "The reviewer found it, so it must be in scope" (reviewers report on whatever
+  they read; the diff sets scope)
+- "The growth is in the same file, so the file fence allows it" (the file fence
+  and the Growth Budget are separate gates; both must pass)
+- "I'll mention the deferred finding in the summary" (a summary dies with the
+  session; deferred findings go in the deferred ledger)
+- "Only non-gating findings remain, so one more round is safer" (they never
+  force another round — fix them and exit)
+- "The circuit breaker is near, I'll mark it CLEAN" (the breaker emits UNRESOLVED, never CLEAN)
+- "UNRESOLVED is terminal, so I can skip the residual ledger" (write the ledger BEFORE the marker)
+- "UNRESOLVED isn't CLEAN, so a human must re-run the loop before anything
+  proceeds" (it is terminal; continue and surface the residuals)
+- "The cap is close, so I'll emit UNRESOLVED now" (valid only once `current_round >= CIRCUIT_BREAKER_ROUNDS`)
+- "The cap round only reported non-gating findings, so it counts as clean" (at
+  the cap, non-gating findings are recorded like every other severity)
+- "The static-gate tool is missing, so the review is BLOCKED" (a tool the project
+  never configured is NOT APPLICABLE; a configured tool you did not run is BLOCKED)
+- "A required phase failed, but the rest passed, so I'll emit CLEAN" (a failed or interrupted required phase emits BLOCKED)
+- "This is just a bug fix, not a code change"
+- "The first model came back clean so the second is redundant"
+- "Noise, not signal"
+- "Being pragmatic"
+- "I've used Rubber Duck, I don't need to perform a Code Review"
+- "The plan says to commit here / git commit is in my instructions"
+- "I'm just following the plan step — the plan said commit, so I commit"
+- "I'm executing the plan mechanically, the plan author is responsible for code review"
+- "I'll dispatch just one reviewer for now, the second will run next round" (you need BOTH in EVERY round)
+- You only see ONE `/* REVIEWER N/2 */` marker in your dispatch code (there must be exactly 2)
+- You didn't write the pre-dispatch verification line ("🔢 Dispatch check: 2 reviewer entries...")
+- The subagent result shows "1/1 done" instead of "2/2 done" — STOP. Re-dispatch the missing reviewer NOW.
+- You're about to read reviewer output before confirming the dispatch returned 2/2 — the post-dispatch check MUST come first.
+- You're dispatching reviewers one at a time instead of using the `tasks` array — they must run in PARALLEL.
+- The review prompt contains a prose summary of changes instead of the full diff or full-file reads.
+- You decided to summarize the diff because it's "too long to pass" — pass the full code anyway.
+- Reviewers were told to "read the files for context" but given no actual diff/code to review — the code must be in the
+  prompt or explicitly read in full.
+- Treat native child-completion notifications as the waiting mechanism inside a chain step
+- You treat a fenced `subagent(...)` line as the dispatch — reply text is not a tool call.
+- No workflow ID came back from the tool and you are about to continue anyway — nothing launched.
+
+**All of these mean: you are about to violate the loop. RUN CODE REVIEW.**
+
+### Bypass Traps
+
+**Plan trap:** `git commit` in a plan step is shorthand for "commit after review passes." The plan cannot grant a review
+exemption — only this skill's exemption criteria can. If you're about to run `git commit` because a plan step says so,
+pause: check exemptions first, invoke review if not exempt.
+
+**Sub-agents trap:** The spec review + code quality review + final review that `sub-agents` runs internally are NOT a
+substitute for this skill's diff review. Invoke code review explicitly after all sub-agent chunks are merged.
+
+## Common Rationalizations
+
+| Excuse | Reality |
+| -------- | --------- |
+| "It's just a style issue" | Non-gating findings are fixed before exit but never force another round. Fix it and exit. |
+| "N rounds is enough" | The stopping condition is a round with no gating findings — not your fatigue or a round count. |
+| "This MEDIUM is really a LOW" | Severity is normalised against the Step 0c rubric after de-dup. Uncertainty takes the higher severity. |
+| "The breaker is close, so I'll accept the remaining MEDIUM" | The breaker emits `UNRESOLVED` after writing the residual ledger. The fix is applied but never re-reviewed, so it is recorded — not clean, and not verified. |
+| "UNRESOLVED means the review is finished, so I can stop recording findings." | `UNRESOLVED` is a completion with residuals. The ledger is written first and every cap-round finding gets a row; an unrecorded finding is a lost finding. |
+| "UNRESOLVED is enough on its own — the marker carries the detail." | A marker carries no detail and dies with the session. The ledger is the durable record that travels with the branch. |
+| "The cap is close, so I'll emit UNRESOLVED now." | `UNRESOLVED` is valid only once `current_round >= CIRCUIT_BREAKER_ROUNDS`. Emitting it early is the loophole this rule closes. |
+| "BLOCKED and UNRESOLVED both mean the review is over, so they are the same." | `UNRESOLVED` records findings and lets the chain continue; `BLOCKED` means no review result exists and the chain must stop. |
+| "`UNRESOLVED` still needs a human to re-run the loop until `CLEAN` before anything proceeds." | No. `UNRESOLVED` is terminal: the cap ended the loop deliberately and downstream steps accept it. Surface the residuals and continue. |
+| "`UNRESOLVED` is close enough to `CLEAN` for the finalising menu." | The menu may be presented, but only with the ledger path, the open findings by severity, and the unverified-fix gap stated. Never as a clean pass. |
+| "The static-gate tool is missing, so the review is BLOCKED." | A tool the project never configured is NOT APPLICABLE. A configured tool you did not run is `BLOCKED` — never a clean result. |
+| "The gate could not run, so I'll leave it out and emit CLEAN." | Only a tool the project never configured is NOT APPLICABLE. A configured gate that could not run is `BLOCKED` — a silently skipped configured gate is the failure this rule prevents. |
+| "The cap round reported only non-gating findings, so it counts as clean." | At the cap every severity is recorded. A cap-round non-gating finding goes in the ledger like any other finding, so the marker is `UNRESOLVED`, not `CLEAN`. |
+| "The Iron Law has no pre-existing exemption, so I fix it." | The Iron Law gates in-scope findings. An out-of-scope finding goes to the Scope Gate, and the user decides. |
+| "It's a one-line fix, asking the user is overkill." | One line now, a widened diff and an unreviewed shared helper next. The gate costs one question. |
+| "The change imports that file, so it is in scope." | The scope set is the files the change touched, not its import graph. |
+| "I asked in prose, so the loop can continue." | Prose does not stop a chain. Only the user-prompt tool does. |
+| "There is no prompt tool, so I will fix it." | No prompt tool means defer, never widen. |
+| "The reviewer found it, so it must be in scope." | Reviewers report on whatever they read. The diff sets scope. |
+| "The growth is in the same file, so the file fence allows it." | The file fence and the Growth Budget are separate gates. Both must pass. |
+| "I will mention the deferred finding in the summary." | A summary dies with the session. Deferred findings go in the deferred ledger. |
+| "Bug fix isn't a code change" | Bug fixes change logic. Logic changes require review. |
+| "First model was clean" | Two models catch different failure classes. One clean ≠ done. |
+| "Senior engineer approved" | Informal review ≠ structured diff review. Both are needed. |
+| "We're behind schedule" | The loop takes minutes. Shipping unreviewed code costs hours. |
+| "I already manually tested it" | Manual testing and code review catch different things. Both required. |
+| "The plan says to commit" | The plan is an execution shorthand. It does not evaluate exemptions and it cannot override the review requirement. You evaluate exemptions; you invoke review. |
+| "I'm just following instructions" | Following instructions that say `git commit` means pausing to check review requirements first. Mechanical execution of commit commands is the failure mode this rule exists to prevent. |
+| "I'll dispatch the second reviewer after reading this one" | Sequential dispatch doubles wall-clock time. Use the `tasks` array — both reviewers run in PARALLEL. |
+| "The dispatch looks right" without counting | Count the entries you are dispatching. If you don't see both reviewer-a and reviewer-b, you're missing a reviewer. |
+| "I'm sure I wrote both entries" but didn't write the pre-dispatch check line | If you didn't write "🔢 Dispatch check: 2 reviewer entries..." in your response, you didn't verify. Write it before dispatching. |
+| "The diff is 1500+ lines, too long to pass in a prompt" | Pass the full diff or have reviewers read the full files. Size is never a reason to summarize — a summary review misses issues a full read would catch. |
+| "I'll summarize the changes and let reviewers read the files" | If reviewers only get your summary, they review your summary, not the code. Pass the actual diff/code. |
+| "I'll write a concise summary and tell them to read for context" | A summary primes a shallow review. Give them the real lines; do not substitute prose for code. |
+| "The dispatch is written in my reply, so the review is running." | Reply text is not a tool call. Only a returned tool result proves the reviewers launched. |
+</skill>
+
+---
+
+Detect the harness platform using the tables above. Set model variables (REVIEWER_A_MODEL, REVIEWER_B_MODEL, FAST_MODEL, IMPLEMENTER_MODEL) and agent variables (IMPLEMENTER_AGENT, REVIEWER_AGENT). Report which harness is active and the configured values.
+
+This step is ONLY harness detection and setup. Do NOT read any files, do NOT fix any code, do NOT debug any issues, do NOT dispatch any subagents. The chain will handle all subsequent steps automatically.
+
+Context:
+
+---
+
+Check if project context was already loaded by a previous chain step. If yes, report "Context already loaded." and stop. If not, gather context from session history, git log, README, and the agent design docs (newest spec and plan; every review ledger). Synthesise findings into 5-8 bullet points.
+
+This step is ONLY information gathering. Do NOT read files you would change, do NOT debug any issues, do NOT propose changes, do NOT dispatch any subagents. The skill's bounded read of the latest design docs is context gathering and is allowed. The chain will handle all subsequent steps automatically.
+
+Context:
+
+---
+
+Follow the Review Triage skill. If the task names a ledger path, play it;
+otherwise find the review ledgers under docs/agent/reviews, ask the user once
+which of them this run should fix, stamp the ones they accept, and emit the
+marker.
+
+Do NOT fix code and do NOT delete or rewrite a ledger. This step is the decision
+only; the chain's later steps do the fixing and finalising clears what was
+resolved.
+
+When the marker is `NONE` or `DECLINED_BY_USER`, say plainly that there is
+nothing to play and that the remaining steps have no task. Do not invent work.
+
+Context:
+
+---
+
+<skill name="qa-gate" location="/data/plugins/ai/copilot/binhex/skills/build/pi/qa-gate/SKILL.md">
+References are relative to /data/plugins/ai/copilot/binhex/skills/build/pi/qa-gate.
+
+# QA Gate
+
+**Core principle:** No code ships without passing every check. Zero tolerance for skipped gates.
+
+**Violating the letter of these gates is violating the spirit of these gates.**
+
+## Prerequisite: Harness and Project Context
+
+Before beginning, ensure both prerequisites are loaded:
+
+1. If `Harness status: loaded.` is not already present as an emitted status line, load and run `harness`, then return here.
+2. If `Project context status: loaded.` is not already present as an emitted status line, load and run `get-context`,
+   then return here.
+
+When invoked from a chain, preserve these status markers and do not repeat either prerequisite.
+
+## Upstream Workflow Barrier
+
+Before running any gate or classifying changed languages, check for an upstream
+review workflow. Use the read-only subagent fleet/status check; this does not
+dispatch subagents and is allowed even though QA gates run checks directly.
+
+- If an active reviewer workflow is present, call `bg_wait` for its exact run
+  (or all of its children) and stop this skill. Do not run QA commands on a
+  tree that may still change.
+- If the latest emitted `REVIEW_GATE_STATUS` is `RUNNING`, stop and let the
+  originating review loop emit its terminal status.
+- `CLEAN` permits QA.
+- `UNRESOLVED` also permits QA. The review hit its round cap and recorded its open
+  findings in a residual ledger — a completion with residuals, not a failure. Run
+  every gate normally, then report the ledger path and the open findings in the QA
+  report. Do not fix them here.
+- `BLOCKED` blocks QA: the review produced no usable result, so nothing was
+  recorded and there is nothing to carry forward. Report the marker, run no gates,
+  and emit `QA_GATE_STATUS: FAILED` stating that a required gate could not run.
+- If no review step or review marker exists for standalone QA, continue.
+
+## Gate Status Marker
+
+Emit exactly one standalone status line when the gate finishes:
+
+- `QA_GATE_STATUS: CLEAN` — every applicable gate ran and passed, or the user
+  explicitly waived it and the report names the waiver.
+- `QA_GATE_STATUS: FAILED` — any gate failed, or a required gate could not run
+  and was not waived. The pre-commit prompt is asked and answered before the
+  marker is emitted, so an unrun pre-commit gate reaches this marker only when
+  the user stops without a waiver.
+
+`CLEAN` may follow in-chain remediation, but only from the final tree's fresh
+run and with the `QA remediation:` line in the report.
+
+A waiver requires an answer from the user in this session: option 3 of the
+pre-commit prompt, or a continuing answer to the post-failure follow-up. A
+dismissed prompt, a general "carry on", or "just commit" is not a waiver.
+Deciding on the user's behalf that a gate is optional is not a waiver either.
+
+**Only an explicit user instruction to proceed anyway overrides a `FAILED` gate.**
+State the failing gates and their evidence in the summary when that happens.
+Nothing else overrides it — not a passing test suite, not an integration choice
+already selected, not an `UNRESOLVED` review marker, and not your own judgement
+that the failure is pre-existing or out of scope. `finalising` reads this marker,
+so a gate that fails silently is invisible to the chain.
+
+`finalising` requires the latest marker to be `CLEAN` before it presents
+integration options, unless the user explicitly overrides a `FAILED` gate.
+Never emit `CLEAN` when an applicable gate was skipped, could not run, or
+reported findings. A gate recorded NOT APPLICABLE under the Missing-Tool Policy
+was not skipped — state the reason in the report. A gate the user waived under
+the Pre-commit Tool Flow is the only exception: it stays named in the report,
+never recorded as NOT APPLICABLE.
+
+## When to Use
+
+**Mandatory after all code changes and before committing or creating a PR.**
+
+Use when:
+
+- Implementation is complete and about to commit
+- About to merge to main
+- About to create a PR
+- Any code change is finalised
+
+Do NOT use for:
+
+- Mid-implementation checkpoints (use `verify` step for those)
+- Design/planning phases (no code to check)
+- Review-only workflows (no code changed)
+
+## Step 0: Detect Changed Languages
+
+Before running any gate, identify which languages were modified:
+
+```bash
+git diff --name-only HEAD
+```
+
+Classify files by language. Run ALL applicable gates for EVERY detected language.
+
+## Language Gates
+
+Run in order within each detected language. Report results after each gate.
+Then run the Coverage Gate and Security Gate for every detected language, and
+the pre-commit fallback last.
+
+**In a chain, remediate and re-gate.** A failing gate is a to-do, not a
+hand-back. Fix what the In-Chain Remediation rule allows, re-run every
+applicable gate on the mutated tree, and repeat. Stop only when the gates pass,
+the fix needs a product decision, or the round cap is reached.
+
+Gate *configuration* problems (missing tool, unparsable config) are yours to
+resolve in either mode — see Auto-Generated Configs below.
+
+**Detect existing frameworks before enforcing new ones.** For each language, first check what the project already uses —
+config files, test directories, `package.json` scripts, build tool plugins. Use the detected framework. Only fall back
+to the recommended tool from the gate table below when no existing test framework is found. Do NOT force a new test
+runner onto a project that already has one configured.
+
+**Auto-generate missing tool configs.** Before running each gate, check if the tool's config file exists. If not,
+generate an opinionated default from the templates below. Never overwrite an existing config. Announce each generated
+config: `"⚙️ Generated default <tool> config: <filename>"`
+
+| Tool | Config file to check | Default source |
+| ------ | --------------------- | --------------- |
+| ESLint (JS/TS) | `.eslintrc.*` or `eslint.config.*` | ESLint Default (below) |
+| Prettier (JS/TS) | `.prettierrc*` or `prettier.config.*` | Prettier Default (below) |
+| Biome (JS/TS) | `biome.json` | Biome Default (below) |
+| ruff (Python) | `[tool.ruff]` in `pyproject.toml` | ruff Default (below) |
+| mypy (Python) | `[tool.mypy]` in `pyproject.toml` | mypy Default (below) |
+| pre-commit (all) | `.pre-commit-config.yaml` | pre-commit Default (below) |
+
+When appending to `pyproject.toml`, add the section only if the table header is not already present. Do NOT duplicate
+existing sections.
+
+#### ESLint Default
+
+```json
+{
+  "env": { "browser": true, "es2021": true, "node": true },
+  "extends": ["eslint:recommended"],
+  "parserOptions": { "ecmaVersion": "latest", "sourceType": "module" },
+  "rules": {
+    "no-unused-vars": ["warn", { "argsIgnorePattern": "^_" }],
+    "no-console": "warn",
+    "eqeqeq": ["error", "always"],
+    "curly": "error"
+  }
+}
+```
+
+#### Prettier Default
+
+```json
+{
+  "semi": true,
+  "trailingComma": "all",
+  "singleQuote": true,
+  "printWidth": 120,
+  "tabWidth": 2
+}
+```
+
+#### Biome Default
+
+```json
+{
+  "$schema": "https://biomejs.dev/schemas/1.9.4/schema.json",
+  "organizeImports": { "enabled": true },
+  "linter": { "enabled": true, "rules": { "recommended": true } },
+  "formatter": { "enabled": true, "indentStyle": "space", "indentWidth": 2, "lineWidth": 120 },
+  "javascript": { "formatter": { "quoteStyle": "single", "semicolons": "always" } }
+}
+```
+
+#### ruff Default
+
+```toml
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.ruff.format]
+quote-style = "double"
+```
+
+#### mypy Default
+
+```toml
+[tool.mypy]
+python_version = "3.11"
+warn_unused_configs = true
+strict_optional = true
+```
+
+#### pre-commit Default
+
+```yaml
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
+```
+
+### Bash / Shell
+
+Files matching: `*.sh`, `*.bash`, shebang `#!/bin/bash`, `#!/usr/bin/env bash`
+
+| Gate | Command |
+| ------ | --------- |
+| Lint | `shellcheck $(git diff --name-only HEAD -- '*.sh' '*.bash')` |
+| Format | `shfmt -d .` (diff mode — check only, do not modify) |
+| Tests | Detect: if `.bats` files exist anywhere → `bats -r .`; else skip and note "No bats test files found" |
+
+If `.bats` files exist but `bats` is not installed, skip and note it. `shellcheck` is mandatory — install it if missing.
+
+### Python
+
+Files matching: `*.py`
+
+| Gate | Command |
+| ------ | --------- |
+| Lint + Format | `ruff check --fix . && ruff format .` |
+| Type check | `mypy .` |
+| Tests | Detect framework: if `pytest` is configured (`pyproject.toml` `[tool.pytest]`, `pytest.ini`, `conftest.py`) → `pytest -v`; if `tox.ini` exists → `tox`; else `python -m unittest discover` |
+
+Pytest is the default when no framework is detected. If a different framework is already configured, respect it.
+
+### JavaScript / TypeScript
+
+Files matching: `*.js`, `*.ts`, `*.jsx`, `*.tsx`, `*.mjs`, `*.cjs`
+
+| Gate | Command |
+| ------ | --------- |
+| Lint | `npx eslint .` (preferred); or `npx biome check .` (if `biome.json` preferred). Config is auto-generated if missing. |
+| Format | `npx prettier --check .` (preferred); Biome users: format is included in `biome check`. Config is auto-generated if missing. |
+| Tests | Detect framework: check `package.json` `scripts.test` first; then look for config files — `vitest.config.*` → `npx vitest run`, `jest.config.*` → `npx jest`, `.mocharc.*` → `npx mocha`. If none found, try `npx vitest run` as default. |
+
+Configs for ESLint, Prettier, and Biome are auto-generated if missing (see Auto-Generated Configs above). Vitest is the
+preferred test runner for new projects (10x faster than Jest, native ESM). If no test framework is configured, report:
+"No JS/TS test framework detected — add tests before merging."
+
+### Go
+
+Files matching: `*.go`
+
+| Gate | Command |
+| ------ | --------- |
+| Lint | `golangci-lint run ./...` |
+| Format | `gofmt -d .` (diff mode — check only) |
+| Tests | `go test ./...` |
+
+If `golangci-lint` is not installed, fall back to `go vet ./...`. `golangci-lint` bundles 100+ linters (vet,
+staticcheck, errcheck, etc.) and is the industry standard for Go.
+
+### Rust
+
+Files matching: `*.rs`
+
+| Gate | Command |
+| ------ | --------- |
+| Lint | `cargo clippy -- -D warnings` |
+| Format | `cargo fmt --check` |
+| Tests | `cargo test` |
+
+### Coverage Gate (all detected languages)
+
+Measure coverage fresh on the full suite with the project's detected tool; never
+reuse a number from an earlier step, because code changed since then. Use the
+project's configured args and tooling; these defaults apply only when no
+coverage tooling exists:
+
+| Ecosystem | Default command |
+| ----------- | ----------------- |
+| Python | `pytest --cov` |
+| JS/TS | `npx vitest run --coverage` (Vitest) or `npx jest --coverage` (Jest) |
+| Go | `go test -cover ./...` |
+| Rust | `cargo llvm-cov` |
+| Other | the project's standard coverage tool, with its configured threshold |
+
+**Threshold:** the project's configured threshold (coverage config,
+`--cov-fail-under`, `coverageThreshold`, and equivalents); otherwise **95%**, the
+same default as the `tech-debt` skill. Enforce with the tool's own threshold
+option where available (`pytest --cov --cov-fail-under=<N>`,
+`coverage report --fail-under=<N>`, Vitest/Jest `coverageThreshold`). A
+`--coverage <N>` override passed in `$@` replaces the default.
+
+If the detected test command already enforces the threshold, that run satisfies
+this gate; do not measure coverage twice.
+
+**This gate fails when** reported coverage is below the threshold, or the project
+configures coverage tooling that cannot run (see Missing-Tool Policy).
+
+### Security Gate (all detected languages)
+
+Two fast scans. The deep OWASP/IaC/cloud review is a separate, optional audit and
+is not required for this gate.
+
+**1. Dependency audit. Bind the scan to the project's resolved dependencies.**
+A scanner with no project input audits whatever environment it is installed in -
+under `uvx`/`npx`, its own throwaway environment - and reports "no vulnerabilities
+found" for a project it never read. Give every run an artifact the project ships:
+
+| Ecosystem | Project artifact | Command |
+| ----------- | ----------------- | --------- |
+| Python (uv) | `uv.lock` | `uv audit` |
+| Python (pylock) | `pylock.toml` | `uvx pip-audit --locked .` |
+| Python (requirements) | `requirements*.txt` | `uvx pip-audit -r requirements.txt`, repeat per file |
+| Python (poetry/pdm/pipenv) | lock file | export to requirements, then `uvx pip-audit -r <export>` |
+| Python (installed env) | project venv | `uv pip list --format freeze` to an export, then `uvx pip-audit -r <export>` |
+| JS/TS | package lock | `npm audit`, `pnpm audit`, or `yarn npm audit` |
+| Go | `go.mod` | `govulncheck ./...`, or `go run golang.org/x/vuln/cmd/govulncheck@latest ./...` |
+| Rust | `Cargo.lock` | `cargo audit` |
+| Other | project's configured scanner | per ecosystem |
+
+If `uv audit` is unavailable, export the lock first:
+`uv export --frozen --format requirements-txt --no-hashes`, then
+`uvx pip-audit -r <export>`.
+
+**State coverage in the report.** One line per ecosystem:
+
+```text
+<ecosystem>: <command> - audited <N> of <T> locked packages - <C> critical, <H> high,
+<M> medium, <L> low, <U> unclassified - severity from <source>
+```
+
+A result without that count is not evidence. `audited 0 packages`, or an audited
+set missing any direct dependency from the manifest, means the scan read the
+wrong environment: the gate **FAILS**. A zero-advisory result still states the
+count. `T` is the lock's package count; the project's own entry is not a
+dependency, and `uv audit --output-format json` reports `N` as
+`summary.audited_packages`. Count unique advisories, not raw scanner rows -
+scanners repeat an advisory per alias or affected range.
+
+**Severity.** Some scanners (`pip-audit`, `uv audit`, `govulncheck`) emit no
+severity class. Do not read silence as low: classify every advisory from OSV
+(`https://api.osv.dev/v1/vulns/<ID>`), GHSA, or Dependabot, and record the
+source. An advisory still unclassified is a gate finding.
+
+**Dependabot reconciliation (GitHub repos).** When the repo has a GitHub remote
+and `gh auth status` succeeds, also run
+`gh api repos/{owner}/{repo}/dependabot/alerts --paginate` and reconcile: a
+CRITICAL/HIGH alert the local scan did not find means the local scan is
+incomplete, so **FAIL**. If Dependabot is disabled or unreachable, record
+`Dependabot: not consulted` - never cite it as clean.
+
+**This gate fails when** the audit reports a CRITICAL or HIGH advisory, an
+advisory that stays unclassified after the severity lookup, or coverage that
+does not match the locked dependency set. MEDIUM and LOW advisories are
+informational records, not gate findings: list them in the report.
+
+**2. Secret scan of changed files.** Run the project's configured scanner if it
+has one (`gitleaks detect --source . --no-git`, `trufflehog filesystem .`, or
+`detect-secrets scan`). With no scanner configured, review every changed file
+against this checklist:
+
+- Credential-named variables/constants (`key`, `secret`, `password`, `token`,
+  `credential`, `auth`, `api_key`)
+- Config files (`.env`, `*.yml`, `*.json`, `*.conf`, `*.ini`, `*.toml`,
+  `*.properties`) and comments, where secrets survive refactors and review
+- Connection strings and DSNs
+- Base64-encoded blobs
+- CI/CD pipelines, Dockerfiles, and IaC files (`.github/workflows/*.yml`,
+  `.circleci/config.yml`, `*.tf`, CloudFormation, CDK)
+
+**This gate fails on any confirmed secret** in the changed files. Verify
+placeholders and sanitized examples before reporting, and record what was
+checked.
+
+### Missing-Tool Policy (All Gates)
+
+Run the tool ephemerally where the ecosystem supports it, always bound to the
+project's artifact (see Security Gate). Never install a dependency to run a
+gate: record `not run - tool absent` and mark that gate **NOT APPLICABLE**,
+unless a rule below makes the tool required. The pre-commit tool is the one
+exception — it may be installed with the user's consent, as an isolated user
+tool, under the Pre-commit Tool Flow below.
+
+Exception: a tool the project already configures (config file, script, CI job,
+pre-commit hook) is required: failing to run it is a **FAILED** gate, unless the
+user waived it under the Pre-commit Tool Flow below. A dependency audit is the
+same case - it covers dependencies the project ships, not a tool it configured.
+If the project has a dependency manifest and no project-bound audit can run, the
+Security Gate is **FAILED** with the reason; NOT APPLICABLE applies only when the
+project has no dependency manifest at all.
+
+Never emit `FAILED` only because the project has never used coverage
+tooling; never emit `CLEAN` over a configured tool you did not run.
+
+### Fallback: Pre-commit (All Languages)
+
+Always run last, regardless of detected languages.
+
+#### Pre-commit Tool Flow
+
+Check the tool before the config, on every run:
+
+```bash
+command -v pre-commit
+```
+
+**Installed** → run the gate below.
+
+**Absent** → ask the user once with the harness prompt tool (see `harness`, User
+Prompts), offering exactly these three options:
+
+1. **Run ephemerally** — this session's runner becomes `uvx pre-commit`, falling
+   back to `pipx run pre-commit`. Nothing is installed and `pre-commit` does not
+   appear on `PATH`. The first run downloads the hook environments into the
+   pre-commit cache.
+2. **Install pre-commit** — `uv tool install pre-commit`, falling back to
+   `pipx install pre-commit`. If neither exists, print the command for the
+   user's platform and wait (`brew install pre-commit`,
+   `python3 -m pip install --user pre-commit`, or the zipapp from the pre-commit
+   releases page). Re-check `command -v pre-commit`; once it resolves, the runner
+   is bare `pre-commit`.
+3. **Skip this gate** — record the waiver and carry on with the remaining work.
+
+Never use `sudo`, a system package manager, or the project's own environment
+yourself — the printed fallback is the user's to run. Never run
+`pre-commit install`: wiring git hooks is the user's call, not this gate's. If
+the chosen route fails (no uv, no network, install error), say what failed and
+ask once more: continue without the gate, or stop. Only an answer to that
+follow-up waives the gate.
+
+Run the prompt before you emit the gate marker — it blocks. Record the outcome
+as one line in the QA report and reuse it for the rest of the session; never ask
+twice.
+
+**Waiver wording:** `SKIPPED - user waiver (pre-commit not installed)`. Name it
+in the gate table and in the QA summary; `CLEAN` remains available because the
+user authorised the skip.
+
+Once a runner is selected and `.pre-commit-config.yaml` does not exist,
+auto-generate the default config (see Auto-Generated Configs above) before any
+hook runs. Never write a config that nothing on this machine can run.
+
+Then run the gate with the selected runner:
+
+```bash
+<runner> run --all-files      # e.g. uvx pre-commit run --all-files
+```
+
+Use the same runner for every re-run this session.
+
+**Do NOT commit** — this is verification and remediation only. In a chain, fix
+failures within the In-Chain Remediation scope (pre-commit hooks often autofix)
+and re-run; report findings outside that scope and stop. Standalone runs repeat
+until clean, within the same round cap.
+
+### Auto-Detection (Languages Without Explicit Gates)
+
+For files in languages not listed above, detect the project type from config files and run appropriate checks. Do NOT
+skip to a manual review — this is an automated gate.
+
+**Detection table — scan for these project files and run the corresponding commands:**
+
+| Config file | Language | Test command | Lint/check command |
+| ------------- | ---------- | ------------- | ------------------- |
+| `package.json` | JS/TS | `npm test` | `npx eslint .` (if configured) |
+| `go.mod` | Go | `go test ./...` | `golangci-lint run ./...` (fall back to `go vet ./...`) |
+| `Cargo.toml` | Rust | `cargo test` | `cargo clippy` |
+| `Gemfile` | Ruby | Detect: `bundle exec rspec` (if `spec/` or `.rspec` exists), else `bundle exec rake test` (minitest) | `bundle exec rubocop` |
+| `pom.xml` | Java | `mvn test` | `mvn checkstyle:check` (if plugin configured) |
+| `build.gradle*` | Java/Kotlin | `gradle test` | `gradle check` (if checkstyle/spotless configured) |
+| `CMakeLists.txt` | C/C++ | `ctest` | `cppcheck .` (or `clang-tidy` if `compile_commands.json` exists) |
+| `Makefile` | C/C++ | `make test` (if target exists) | `cppcheck .` (or `clang-tidy` if `compile_commands.json` exists) |
+
+**Procedure:**
+
+1. Run
+   `find . -maxdepth 2 \( -name 'package.json' -o -name 'go.mod' -o -name 'Cargo.toml' -o -name 'Gemfile' -o -name 'pom.xml' -o -name 'build.gradle*' -o -name 'CMakeLists.txt' \) 2>/dev/null`
+   to find project configs.
+2. For each match, run the corresponding test and lint commands from the table.
+3. If a tool is not installed, skip it and note the skip — but tests must still pass via whatever runner IS available.
+4. If NO config file is detected at all, ask the user: "No test framework detected for changed files. Which test/lint
+   commands should I run?" and wait for input. Do NOT skip to a manual review without user input.
+
+## In-Chain Remediation
+
+A failing gate is a to-do, not a hand-back. Fix the finding, re-run, and
+continue - up to **3 rounds**.
+
+**Allowed without asking** (mechanical, verifiable):
+
+- Dependency pins, lockfile refresh, and security remediations the advisory
+  names a fixed version for
+- Gate configuration and tooling (generated configs, missing scripts, tool
+  versions)
+- Generated files, and the project's own formatter or lint autofix output
+- Type errors and lint findings where the fix is mechanical (annotation, unused
+  import, renamed symbol) - not a behaviour change
+
+**Not allowed in QA - emit `FAILED` with a remediation brief instead:**
+
+- Logic or design changes, ambiguous behaviour, or anything needing a product
+  decision
+- New dependencies, removed or skipped tests, relaxed thresholds, or new
+  `--ignore-vuln` entries added to silence a finding
+- Any fix that changes the public interface without the user's decision
+
+**Snapshot before the first edit**, so the diff is exact and reviewable:
+
+```bash
+BASE=$(git stash create)   # commit object for the dirty tree; no stash is saved
+[ -n "$BASE" ] || BASE=HEAD
+```
+
+**Each round:**
+
+1. Fix the allowed findings.
+2. Re-run **every applicable gate** on the mutated tree - not just the failed
+   one. A pin bump breaks tests; a type fix breaks lint.
+3. If product source changed, dispatch **one read-only reviewer** for
+   `git diff "$BASE"` (see `harness`, reviewer role): the finding, the fix, and
+   the re-run evidence. HIGH or MEDIUM findings are fixed next round or end the
+   loop; LOW findings are recorded. Dependency, lockfile, config, and
+   generated-file changes need no reviewer.
+4. A round with no file change, or one that leaves the same failing set, ends
+   the loop - stop rather than repeat it.
+
+**After the loop**, either every gate passes on the current tree, or emit
+`FAILED` and write a remediation ledger to
+`docs/agent/qa/<YYYY-MM-DD>-<slug>-remediation.md`: each round, what changed,
+review findings raised, and every remaining failure with its evidence. Name the
+ledger in the QA report.
+
+**Report exactly what QA changed.** Every QA summary carries one remediation
+line - `QA remediation: NONE` when QA changed nothing:
+
+```text
+QA remediation: <N> round(s); files: <paths>; source review: <clean|findings|n/a>
+```
+
+`CLEAN` reached through remediation never hides it: `finalising` presents the
+remediated files as part of the change.
+
+**No dispatch tool at this step?** Do not hand-edit product source. Fix only the
+non-source artifacts above, emit `FAILED`, and name the source fix that needs a
+review.
+
+## The Iron Law
+
+```text
+ALL GATES FOR ALL DETECTED LANGUAGES MUST PASS BEFORE PROCEEDING
+```
+
+No skipping. No "it's just a warning." No "I already ran that." Run every gate, report every result.
+
+## Common Mistakes
+
+| Mistake | Fix |
+| --------- | ----- |
+| Skipping shellcheck because "it's just a script" | Shell scripts run in production. Lint them. |
+| Skipping bats because "I tested manually" | Manual testing is not repeatable. Run bats. |
+| Skipping ruff because "formatting is cosmetic" | Ruff catches bugs too. Run it. |
+| Accepting mypy `# type: ignore` without investigation | Every ignore is a potential runtime error. Fix the type. |
+| Skipping a "flaky" test | Flaky tests hide real bugs. Investigate and fix. |
+| Skipping lint/format because "no config exists" | Auto-generate a default config. No gate should skip for missing config — the templates are provided in this skill. |
+| Treating auto-detection as optional — "it's not in the explicit gates list" | The auto-detection table IS a gate. Run it for every detected config file. |
+| Running pre-commit after committing | Run it BEFORE committing. Verification gate, not cleanup. |
+| Generating `.pre-commit-config.yaml` before checking the tool | Check the tool first. A config nothing can run is a broken gate in the repo. |
+| Installing software without asking, or with `sudo` / a system package manager | Offer the three options, then install only with `uv` or `pipx` on consent. |
+| Only running gates for one language in a multi-language change | Every changed language gets every gate. |
+| Re-using cached results from earlier | Run fresh. Cached results hide regressions. |
+| Fixing a design or logic finding during an in-chain QA run | Outside the remediation scope. Emit FAILED with a brief; QA fixes mechanical findings only. |
+| Forcing a new test framework onto an existing project | If the project already has configured tests (config files, scripts.test, test directories), use them. Only pick a default when nothing exists. |
+| Reusing the coverage number from an earlier step | Code changed since then. Measure coverage fresh on the final tree. |
+| Running `uvx pip-audit` with no project input | It audits its own tool venv and reports clean for a project it never read. Bind it to the lock (`uv audit`, `pip-audit -r <export>`) and state the audited package count. |
+| Emitting FAILED because the project never had coverage tooling | NOT APPLICABLE under the Missing-Tool Policy, not a gate failure (dependency audits have their own rule above). |
+
+## Common Rationalizations
+
+| Excuse | Reality |
+| -------- | --------- |
+| "shellcheck shows style warnings — that's fine" | ShellCheck warnings catch real bugs. Fix them. |
+| "the bash script is too simple to need bats" | Simple scripts break. Test takes 30 seconds. |
+| "ruff shows warnings but no errors — that's fine" | Warnings become errors in CI. Fix them now. |
+| "mypy only has one error, I'll skip it" | One type error = one guaranteed runtime crash path. |
+| "that test is flaky, not my fault" | Your code is in the repo. Flaky tests are your problem. |
+| "pre-commit would pass if I committed" | The gate is verification. Run it without committing. |
+| "`uvx pre-commit` is quicker than asking" | The ephemeral route is option 1 of the prompt, not a shortcut around it. Ask first. |
+| "I'll install it quietly with pip" | Install only on consent, only with `uv` or `pipx` — never `sudo`, a system package manager, or the project environment. |
+| "The user is in a hurry, so I'll skip the question" | One prompt costs seconds; a silently unrun gate costs the report its credibility. |
+| "`pre-commit install` is the responsible thing to do" | It writes `.git/hooks`. Wiring hooks is the user's call, not this gate's. |
+| "I'll emit FAILED now and re-emit CLEAN after the user answers" | Ask first: the prompt blocks, so the marker reflects the answer. A gate waiting on a prompt you never sent is unrun, not pending. |
+| "Never install a dependency to run a gate, so pre-commit must FAIL" | That rule protects the project environment. A consented `uv`/`pipx` user-tool install is the flow's option 2. |
+| "A waived gate is really NOT APPLICABLE" | NOT APPLICABLE is for a tool the project never configured. A waiver is named as a waiver. |
+| "I ran these in a previous step" | Code changed since then. Run them again fresh. |
+| "the CI will catch this" | CI is not your personal QA gate. Run it locally. |
+| "only Python files changed, I'll skip the bash gates" | You changed bash files. Run the bash gates. |
+| "no config exists for X, so I'll skip that gate" | Auto-generate the default from this skill's templates. A missing config is never a valid reason to skip a gate. |
+| "I'll just fix this one type error myself" | Allowed when the fix is mechanical (annotation, unused import, renamed symbol). Behaviour changes are not. |
+| "The fix worked, so I can skip re-running the other gates" | A pin bump breaks tests; a type fix breaks lint. Re-run every applicable gate on the mutated tree. |
+| "The reviewer will find nothing, so I'll skip it" | A source fix is unreviewed until the reviewer returns. No review, no CLEAN. |
+| "One more round will get it green" | Three rounds. After that, FAILED plus a remediation ledger - not round four. |
+| "I'll silence the advisory with `--ignore-vuln`" | Suppressing a finding is not remediation. Unclassified or ignored findings still fail. |
+| "Coverage is tech-debt's problem" | tech-debt fixes coverage earlier in the chain; QA verifies the final tree still meets the threshold. |
+| "The dependency audit isn't one of this skill's gates" | It is now: CRITICAL/HIGH advisories fail the Security Gate. |
+| "I'll route the advisory to a later step instead of failing" | Findings that meet a gate's fail conditions ARE the gate failure. Emit FAILED. |
+| "The CVE can be fixed after release" | Known HIGH/CRITICAL advisories block QA. That is the point of the gate. |
+| "`uvx pip-audit` said no vulnerabilities" | It audited its own tool venv, not your project. Check the audited package names against the lock. |
+| "The audit found nothing, so the dependency gate is clear" | Only if the audited set contains every direct dependency and the count matches the lock. Otherwise nothing was scanned. |
+| "The scanner doesn't report severity, so I can't classify it" | Query OSV, GHSA, or Dependabot. An advisory that stays unclassified after that lookup is a gate finding, not a pass. |
+| "Dependabot is a separate system, not this gate" | When `gh` is authenticated it is the cross-check. A CRITICAL/HIGH alert the local scan missed means the local scan is incomplete. |
+| "The advisories are pre-existing, so they don't block this change" | The gate audits the shipping tree, not the diff. Pre-existing is not an exemption. |
+
+## Red Flags — STOP
+
+Cues with no matching row in Common Rationalizations:
+
+- "cargo clippy warnings are just style — they're fine"
+- "go vet warnings are informational — I'll skip them"
+- "no config exists for X — I'll skip that gate" (auto-generate it instead)
+- "this language isn't in the explicit gates list — I'll just do a manual review" (use auto-detection instead)
+- "the project uses Jest but Vitest is faster — I'll switch it" (respect existing framework configuration)
+- "no scanner is installed, so there is nothing to check"
+- you are about to accept a dependency audit without a package count
+- the audit output names the scanner's own dependencies (`pip-audit`, `rich`, `cyclonedx-python-lib`)
+- the severity column is empty and you are about to call the advisories informational
+- the scanner exited non-zero and you are about to emit FAILED without checking the severities
+- you are about to emit FAILED without trying an allowed fix
+- you edited product source and did not dispatch the reviewer
+- you are starting a fourth remediation round
+- you silenced a finding with `--ignore-vuln`, a removed test, or a lowered threshold
+
+**All of these mean: run the gate you're trying to skip. Every language, every gate, every time.**
+</skill>
+
+---
+
+<skill name="finalising" location="/data/plugins/ai/copilot/binhex/skills/build/pi/finalising/SKILL.md">
+References are relative to /data/plugins/ai/copilot/binhex/skills/build/pi/finalising.
+
+# Finishing a Development Branch
+
+## Overview
+
+Guide completion of development work by presenting clear options and handling chosen workflow.
+
+**Core principle:** Verify tests → Detect environment → Show summary → Present options → Execute choice → Clean up.
+
+**Announce at start:** "I'm using the finishing-a-development-branch skill to complete this work."
+
+## Prerequisite: Harness and Project Context
+
+Before beginning, ensure both prerequisites are loaded:
+
+1. If `Harness status: loaded.` is not already present as an emitted status line, load and run `harness`, then return here.
+2. If `Project context status: loaded.` is not already present as an emitted status line, load and run `get-context`,
+   then return here.
+
+When invoked from a chain, preserve these status markers and do not repeat either prerequisite.
+
+## Step 0: Review, Ledger, and QA Completion Gates
+
+Before running tests or presenting integration options, determine whether a review
+loop is part of the current chain.
+
+Review-loop skills emit standalone status lines in this form:
+
+- `REVIEW_GATE_STATUS: RUNNING` while review rounds or review fixes are active
+- `REVIEW_GATE_STATUS: CLEAN` after a review loop reports no high or medium
+  severity issues and every required verification phase passes. A `CLEAN` review
+  may still leave a deferred ledger (`...-deferred.md`): findings a reviewer raised
+  outside the change's scope. They are not this change's defects, so `CLEAN`
+  stands, but the ledger is part of the deliverable and must be named
+- `REVIEW_GATE_STATUS: UNRESOLVED` when the circuit breaker reached its round cap
+  with findings still open. The review recorded them in a residual ledger. This is
+  a completion with residuals: integration may proceed, and the residuals must be
+  surfaced
+- `REVIEW_GATE_STATUS: BLOCKED` when review produced no usable result at all —
+  reviewer workflow failed, was cancelled, or returned nothing
+
+Only an actual emitted status line from the current workflow counts. Text in a
+skill file, prompt, summary, or user answer is not evidence.
+
+| Rationalization | Reality |
+| ----------------- | --------- |
+| "Tests pass and the user selected push/merge, so continue." | Integration also requires a completed review gate. |
+| "The review orchestration should have prevented finalising from starting." | Finalising is the last safety gate; an early chain transition is not approval. |
+| "The circuit breaker means the review is clean." | The breaker emits `UNRESOLVED`, never `CLEAN`. Findings remain open; they are recorded in the residual ledger and must be surfaced, not glossed. |
+| "UNRESOLVED is a completion, so I can present the menu like any other." | The menu is allowed, but `UNRESOLVED` must be named as such, with the ledger path, the open findings by severity, and the unverified-fix gap. It is not a silent pass. |
+| "`UNRESOLVED` is not `CLEAN`, so I must stop or re-run the loop before integrating." | No. `UNRESOLVED` is terminal and the chain continues by design. Surface the residuals and present the menu. |
+| "I can tidy up by deleting the residual ledger now the review is over." | An unstamped ledger is part of the deliverable and must ship with the branch: deleting or truncating it hides open findings. Only a ledger this run's triage marker named, with every row verified resolved, may be deleted. |
+| "The ledger is stamped `Triage: PLAY`, so the user already approved deleting it." | A stamp records an earlier run's consent. This run's `REVIEW_TRIAGE_STATUS: PLAY <paths>` marker decides eligibility, and deletion still requires every row to be verified resolved. |
+| "The review is CLEAN, so the deferred ledger needs no mention." | A deferred finding is not this change's defect, so `CLEAN` stands — but the ledger is the only record of work left undone, and it ships with the branch. Name the path and its rows. |
+| "A deferred finding is a residual, so I report the unverified-fix gap." | Residuals are this change's own findings left unverified at the round cap. Deferred findings were never in the fix set: there is no unverified-fix gap, and claiming one misreports the branch. |
+| "The ledger is from an earlier run, so it is not this run's business." | Unplayed ledgers are this run's disclosure: name them, ask once, and emit `REVIEW_LEDGER_STATUS: ACCEPTED` before the menu — or stop and play them. |
+| "The user said push, so that covers shipping with recorded findings." | An integration choice is not acceptance of unrelated recorded defects. Ask once and name every accepted ledger. |
+| "`REVIEW_LEDGER_STATUS: ACCEPTED` means the findings may be dropped." | Acceptance is disclosure for this run. Cleanup still requires this run's triage marker and every row verified resolved. |
+| "`BLOCKED` is fatal, so the user has no say." | `BLOCKED` stops the chain by default, but an explicit user instruction to proceed anyway overrides it — exactly as for a `FAILED` QA gate. State the marker and any recorded residuals in the summary. |
+| "The failing tests are pre-existing, so proceeding is fine." | Provenance is not yours to judge. Failing tests stop the run; only an explicit user instruction to proceed anyway overrides it. |
+| "The user already chose push/merge, so that covers the failing tests." | An already-selected integration choice never overrides this gate. The instruction must be explicit and given after the failures are known. |
+
+If the current chain includes a review step:
+
+1. Require the latest status to be `REVIEW_GATE_STATUS: CLEAN` or
+   `REVIEW_GATE_STATUS: UNRESOLVED`.
+2. If the latest status is `RUNNING`, `BLOCKED`, missing, or ambiguous, stop.
+3. On `UNRESOLVED`, proceed — but first state the residual ledger path, the open
+   findings by severity, and the fact that the final round's fixes were never
+   independently re-reviewed. Repeat all of it in the summary and in the menu
+   context. Never describe `UNRESOLVED` work as review-clean, reviewed, or
+   approved.
+4. Do not present the integration menu or run version bumps, commits, pushes,
+   PR creation, merges, or releases on `RUNNING` or `BLOCKED`.
+5. If an active reviewer workflow is visible, wait for it to finish, then stop
+   and let the review loop collect findings and emit its final status.
+6. Only an explicit user instruction to proceed anyway overrides a `BLOCKED`
+   review marker; if that happens, state the marker and any recorded residuals in
+   the summary. This mirrors the QA gate's override and is the only escape from
+   `BLOCKED`.
+7. A passing test suite or an integration choice already selected by the user
+   never overrides this gate.
+8. An unstamped review ledger — residual or deferred — is part of the
+   deliverable: include it in any commit or PR you create, and never delete or
+   truncate it to make the change look clean.
+9. Only ledgers named in this run's emitted `REVIEW_TRIAGE_STATUS: PLAY <paths>`
+   marker are eligible for cleanup. A stamp on its own is an earlier run's
+   consent: leave every other ledger untouched, including stamped ledgers on the
+   current branch. If the marker is `NONE`, `DECLINED_BY_USER`, or absent, clean
+   up nothing. For each eligible ledger:
+   - every finding row is resolved and this run's fix summary accounts for each
+     one -> delete the ledger file
+   - some rows are still unresolved -> rewrite the ledger to those rows alone and
+     drop the stamp line, so a later run can play it again
+   - you cannot confirm a row's resolution -> keep that row and report it
+10. `PLAY` is consent to fix, not proof of a fix: a `CLEAN` review alone never
+    authorises deletion. Never delete a ledger with no stamp. Name every ledger
+    you deleted, rewrote, or kept in the summary.
+11. `CLEAN` may still leave a deferred ledger
+    (`docs/agent/reviews/YYYY-MM-DD-<topic>-deferred.md`): findings a reviewer
+    raised outside the change's scope and the user deferred or rejected. They are
+    not this change's defects, so `CLEAN` stands and there is no unverified-fix
+    gap to report. The ledger is still part of the deliverable: name its path and
+    its rows by severity in the summary and in the menu context, state each row as
+    `not fixed`, and treat it as cleanup-ineligible unless this run's triage marker
+    named it. Never describe such a branch as carrying open findings from this
+    change.
+
+Standalone finalising may continue without a review marker only when no review
+step was invoked for the current work.
+
+### Unplayed review ledgers
+
+`docs/agent/reviews/*.md` is the repository's record of known defects. Before
+presenting integration options, account for every ledger this run did not play.
+
+- **Played by this run:** the ledger is named in this run's emitted
+  `REVIEW_TRIAGE_STATUS: PLAY <paths>` marker. A `Triage: PLAY` stamp is an
+  earlier run's consent and does not count.
+- **This run's deliverable:** a residual ledger this run's review wrote on
+  `UNRESOLVED`, or a deferred ledger its Scope Gate wrote. The rules above already
+  surface these; they are not unplayed.
+- **Unplayed:** every other ledger in the directory.
+
+When at least one unplayed ledger exists:
+
+1. Name each ledger path and its open findings by severity, then ask once with the
+   harness user-prompt tool: "Review findings recorded by earlier runs are not
+   part of this run. Ship with them recorded, or stop and play them first?"
+2. On "ship with them recorded", emit standalone
+   `REVIEW_LEDGER_STATUS: ACCEPTED <path>[, <path>...]` naming exactly those
+   ledgers, then present the menu. Repeat every path and its open rows in the
+   summary and in the menu context.
+3. On "stop and play them first", present no menu and integrate nothing. State the
+   paths and that `review-triage` plays them. Emit no `REVIEW_LEDGER_STATUS`.
+
+When no unplayed ledger exists, emit standalone `REVIEW_LEDGER_STATUS: NONE`.
+If `docs/agent/reviews/` is absent, there are no ledgers: emit `NONE` and ask
+nothing.
+
+Acceptance is this run's disclosure only: it never authorises cleanup and is not a
+`Triage: PLAY`. Only this run's triage marker authorises cleanup under rule 9.
+
+### QA gate
+
+The `qa-gate` step emits standalone status lines in this form:
+
+- `QA_GATE_STATUS: CLEAN` — every applicable gate ran and passed.
+- `QA_GATE_STATUS: FAILED` — any gate failed, or a required gate could not run.
+
+If the current chain includes a QA step:
+
+1. Require the latest status to be `QA_GATE_STATUS: CLEAN`.
+2. If the latest status is `FAILED`, missing, or ambiguous, stop: do not present
+   the integration menu and do not run version bumps, commits, pushes, PR
+   creation, merges, or releases.
+3. Report the failing gates and hand back for a fix pass.
+4. Only an explicit user instruction to proceed anyway overrides this gate; if
+   that happens, state the failing gates in the summary.
+5. A passing test suite or an integration choice already selected by the user
+   never overrides this gate.
+6. If the QA report records remediation, name the files QA changed in the
+   integration summary. A remediated branch is not a reviewed-only branch.
+
+Standalone finalising may continue without a QA marker only when no QA step was
+invoked for the current work.
+
+## Non-Git Mode (e.g. scratch files in /tmp)
+
+If `git rev-parse --git-dir` fails, the repo is not a git repository. Follow this simplified flow instead of Steps 2-7:
+
+1. **Verify tests** (same as Step 1)
+2. **Show summary** — list files with line counts and show final contents via `wc -l` and `cat`
+3. **Present options:**
+
+   ```text
+   Implementation complete. What would you like to do?
+
+   1. Keep the files as-is
+   2. Discard this work (delete the files)
+   ```
+
+4. **Execute choice** — wait for user input
+
+Do NOT run any git commands. Do NOT present git-based options (PR, merge, branch). Do NOT skip the summary.
+
+## The Process
+
+### Step 1: Verify Tests
+
+**Before presenting options, verify tests pass:**
+
+```bash
+# Run project's test suite
+npm test / cargo test / pytest / go test ./...
+```
+
+**If tests fail:**
+
+```text
+Tests failing (<N> failures). Must fix before completing:
+
+[Show failures]
+
+Cannot proceed with merge/PR until tests pass.
+```
+
+Stop. Don't proceed to Step 2.
+
+Only an explicit user instruction to proceed anyway overrides this gate; if that
+happens, list every failing test in the summary and never describe the run as
+test-verified or test-clean. This mirrors the review and QA gate overrides.
+
+The provenance of a failure is not yours to judge: pre-existing, legacy, or
+seemingly unrelated failures still stop the run unless the user says otherwise.
+
+**If tests pass:** Continue to Step 2.
+
+### Step 2: Detect Environment
+
+**Determine workspace state before presenting options:**
+
+```bash
+GIT_DIR=$(cd "$(git rev-parse --git-dir)" 2>/dev/null && pwd -P)
+GIT_COMMON=$(cd "$(git rev-parse --git-common-dir)" 2>/dev/null && pwd -P)
+```
+
+**If `GIT_DIR` is empty (not a git repo):** fall back to Non-Git Mode above. Do NOT proceed with Steps 3-7.
+
+**If git repo:** this table determines which menu to show and how cleanup works:
+
+| State | Menu | Cleanup |
+| ------- | ------ | --------- |
+| `GIT_DIR == GIT_COMMON` (normal repo) | Standard 5 options | No worktree to clean up |
+| `GIT_DIR != GIT_COMMON`, named branch | Standard 5 options | Provenance-based (see Step 7) |
+| `GIT_DIR != GIT_COMMON`, detached HEAD | Reduced 3 options (no merge) | No cleanup (externally managed) |
+
+### Step 2b: Detect Harness Commit Mode
+
+**REQUIRED REFERENCE:** Load the `harness` skill and read `harness.commit.mode`.
+
+This determines which option menu to present and how each option is executed:
+
+| `harness.commit.mode` | Options | Behaviour |
+|------------------------|---------|-----------|
+| `automated` (home/pi) | Full menu (see Step 5) | Auto-version-bump, auto-PR-merge, auto-release |
+
+Announce: `"🖥️ Commit mode: [automated|review-required]."`
+
+### Step 3: Show Summary
+
+**Show summary BEFORE presenting options — the user needs to see what changed before deciding what to do.**
+
+Read the diff, then write a **human-friendly summary** in natural language. Do NOT dump raw git output — explain what
+changed and why in prose.
+
+**In a git repo:** read `git diff` to understand the changes, then present:
+
+```text
+## Summary of changes on branch <name>
+
+<3-5 bullet points in plain English explaining what was modified and why>
+
+Examples:
+- Fixed a config migration crash: added isinstance guards to 4 migration functions
+  that called .get() on list values (regression from download_sites format change)
+- Updated tests: added regression test, fixed credentials to placeholder
+  (no public API changes)
+```
+
+**If NOT in a git repo (e.g. /tmp scratch files):** list files with line counts and show final contents via `wc -l` and
+`cat`, then summarise in prose.
+
+Always show the summary — do NOT skip it when git is unavailable.
+
+---
+
+### Step 4: Determine Base Branch
+
+```bash
+# Try common base branches
+git merge-base HEAD main 2>/dev/null || git merge-base HEAD master 2>/dev/null
+```
+
+Or ask: "This branch split from main - is that correct?"
+
+### Step 5: Present Options
+
+Options are generated dynamically based on `harness.commit.mode` (from Step 2b) and whether the current branch is the
+default branch (main/master).
+
+**Count authored options only.** The user-prompt harness appends its own
+escape-hatch row (for example `Type something.`) automatically — it is not one
+of the options and does not change the counts below. If a step instruction lists
+a different menu, the menu for the detected commit mode and branch wins.
+
+**Common checks before presenting options:**
+
+```bash
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+IS_DEFAULT=false
+[ "$BRANCH" = "main" ] || [ "$BRANCH" = "master" ] && IS_DEFAULT=true
+```
+
+
+#### automated (home/pi) — on default branch
+
+Present exactly these options — no PR needed (already on default):
+
+```text
+Implementation complete (on default branch). What would you like to do?
+
+1. Bump version, commit, push, and create a release
+2. Keep changes as-is (I'll handle it later)
+3. Discard this work
+
+Which option?
+```
+
+#### automated (home/pi) — on feature branch
+
+Present exactly these 5 options:
+
+```text
+Implementation complete. What would you like to do?
+
+1. Create a new release (bump version → create PR → merge → create GitHub release)
+2. Push and create a Pull Request then merge the PR to <base-branch>
+3. Push and create a Pull Request
+4. Keep the branch as-is (I'll handle it later)
+5. Discard this work
+
+Which option?
+```
+
+**Detached HEAD — 3 options (both modes):**
+
+```text
+Implementation complete. You're on a detached HEAD (externally managed workspace).
+
+1. Push as new branch and create a Pull Request
+2. Keep as-is (I'll handle it later)
+3. Discard this work
+
+Which option?
+```
+
+**Don't add explanation** — keep options concise.
+
+### Version Bump Helper (shared by Options 1 and 2)
+
+If `pyproject.toml` exists, bump the version before pushing. **Determine the bump type automatically from the changes**
+using semver rules:
+
+| Bump | Rule | Look for |
+| ------ | ------ | ---------- |
+| **MAJOR** | Incompatible API changes | Removed/renamed public functions/classes, changed function signatures, removed config keys, breaking CLI flag changes |
+| **MINOR** | New functionality (backward compatible) | New public functions/classes, new config options, new CLI flags, new features — none of which break existing usage |
+| **PATCH** | Backward compatible bug fixes | Bug fixes, refactors, internal changes, test improvements, documentation — no new functionality, no API changes |
+
+1. Read `git log --oneline` and `git diff --stat` to analyse the changes
+2. Use `git diff` to check for public API changes (function signatures, class names, config schema)
+3. Determine MAJOR, MINOR or PATCH based on the table above
+
+**When in doubt, choose the safest conservative default:** prefer PATCH over MINOR, MINOR over MAJOR. Adding optional
+parameters with defaults to existing functions is PATCH (backward compatible), not MINOR. Only choose MINOR if there is
+genuinely new public functionality visible to consumers.
+
+Then apply the bump:
+
+```bash
+CURRENT=$(grep -m1 '^version' pyproject.toml | sed 's/.*= "\(.*\)"/\1/')
+case "$BUMP" in
+  major) NEW=$(echo "$CURRENT" | awk -F. '{$1+=1; $2=0; $3=0; print}' | sed 's/ /./g') ;;
+  minor) NEW=$(echo "$CURRENT" | awk -F. '{$2+=1; $3=0; print}' | sed 's/ /./g') ;;
+  patch) NEW=$(echo "$CURRENT" | awk -F. '{$3+=1; print}' | sed 's/ /./g') ;;
+esac
+sed -i "s/version = \"$CURRENT\"/version = \"$NEW\"/" pyproject.toml
+git add pyproject.toml
+git commit -m "chore: bump version to $NEW"
+```
+
+If `pyproject.toml` does not exist, skip this step.
+
+### Step 6: Execute Choice
+
+Execution depends on `harness.commit.mode` (from Step 2b).
+
+
+#### automated Mode (home/pi)
+
+These options apply when `harness.commit.mode = automated`. Full automation: version bump, PR merge, release creation.
+
+#### Option 1: Create a New Release
+
+1. Run the **Version Bump Helper** above.
+
+2. Push and create/merge PR if not on the default branch:
+
+```bash
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+git push -u origin "$BRANCH"
+
+# Detect default branch for --base (fallback to main)
+DEFAULT_BRANCH=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')
+DEFAULT_BRANCH=${DEFAULT_BRANCH:-main}
+
+if [ "$BRANCH" != "main" ] && [ "$BRANCH" != "master" ]; then
+  gh pr create --title "release: v$NEW" --base "$DEFAULT_BRANCH" --head "$BRANCH" --body "Release v$NEW"
+  gh pr merge --squash
+fi
+```
+
+1. **Create GitHub Release (MANDATORY — do NOT skip this step. The release IS the deliverable of Option 1):**
+
+```bash
+# After squash-merge, the release tag belongs on the default branch, not the feature branch
+DEFAULT_BRANCH=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')
+DEFAULT_BRANCH=${DEFAULT_BRANCH:-main}
+
+# gh creates release tags on the remote, so fetch before using one locally
+git fetch --tags --quiet
+# Anchor on the LATEST existing release (list is newest-first); empty = first release
+PREVIOUS=$(gh release list --limit 1 --json tagName --jq '.[0].tagName // empty' 2>/dev/null || echo "")
+
+if [ -n "$PREVIOUS" ]; then
+  gh release create "v$NEW" --title "v$NEW" --target "$DEFAULT_BRANCH" \
+    --generate-notes --notes-start-tag "$PREVIOUS"
+else
+  gh release create "v$NEW" --title "v$NEW" --target "$DEFAULT_BRANCH" --generate-notes
+fi
+
+# Verify: the release exists AND its tag points at the default branch tip
+gh release view "v$NEW" --json url --jq .url
+git fetch --tags --quiet
+TAG_SHA=$(git rev-parse "v$NEW^{commit}" 2>/dev/null || echo "")
+BASE_SHA=$(git rev-parse "origin/$DEFAULT_BRANCH" 2>/dev/null || echo "")
+if [ -n "$TAG_SHA" ] && [ "$TAG_SHA" = "$BASE_SHA" ]; then
+  echo "✅ v$NEW → origin/$DEFAULT_BRANCH ($TAG_SHA)"
+else
+  echo "⚠️ tag check failed or inconclusive — do NOT announce success"
+  echo "   tag=${TAG_SHA:-unknown}  origin/$DEFAULT_BRANCH=${BASE_SHA:-unknown}"
+fi
+```
+
+**Error handling:** If `gh release create` fails, report the exact error and retry once. Do NOT skip this step — the
+release is mandatory for Option 1. If it fails after retry, report the blocker and do not announce success.
+
+**Branch preservation:** The current branch is preserved both locally and remotely after the release. Do NOT delete the
+branch — long-lived development branches (e.g. `dev`) must survive the release process. Do NOT pass `--delete-branch` to
+`gh pr merge`.
+
+**Announce:** `"✅ Release v$NEW created"` — include the URL from the `gh release view`
+output, and only after the tag check in the snippet passes.
+
+#### Option 2: Push, Create PR, and Merge
+
+1. Run the **Version Bump Helper** above.
+2. Push, create PR, and merge:
+
+```bash
+# Push branch
+git push -u origin <feature-branch>
+
+# Create PR
+gh pr create --title "<title>" --body "$(cat <<'EOF'
+## Summary
+<2-3 bullets of what changed>
+
+## Test Plan
+- [ ] <verification steps>
+EOF
+)"
+
+# Merge the PR (squash merge into <base-branch>, keep remote branch alive)
+gh pr merge --squash
+```
+
+**Do NOT clean up worktree** — user continues working on the same branch after merge.
+
+#### Option 3: Push and Create PR
+
+```bash
+# Push branch
+git push -u origin <feature-branch>
+
+# Create PR
+gh pr create --title "<title>" --body "$(cat <<'EOF'
+## Summary
+<2-3 bullets of what changed>
+
+## Test Plan
+- [ ] <verification steps>
+EOF
+)"
+```
+
+**Do NOT clean up worktree** — user needs it alive to iterate on PR feedback.
+
+#### Option 4: Keep As-Is
+
+Report: "Keeping branch <name>. Worktree preserved at <path>."
+
+**Don't cleanup worktree.**
+
+#### Option 5: Discard
+
+**Confirm first:**
+
+```text
+This will permanently delete:
+- Branch <name>
+- All commits: <commit-list>
+- Worktree at <path>
+
+Type 'discard' to confirm.
+```
+
+Wait for exact confirmation.
+
+If confirmed:
+
+```bash
+MAIN_ROOT=$(git -C "$(git rev-parse --git-common-dir)/.." rev-parse --show-toplevel)
+cd "$MAIN_ROOT"
+```
+
+Then: Cleanup worktree (Step 7), then force-delete branch:
+
+```bash
+git branch -D <feature-branch>
+```
+
+### Step 7: Cleanup Workspace
+
+**Only runs for Option 5.** Options 1, 2, 3, and 4 always preserve the worktree.
+
+```bash
+GIT_DIR=$(cd "$(git rev-parse --git-dir)" 2>/dev/null && pwd -P)
+GIT_COMMON=$(cd "$(git rev-parse --git-common-dir)" 2>/dev/null && pwd -P)
+WORKTREE_PATH=$(git rev-parse --show-toplevel)
+```
+
+**If `GIT_DIR == GIT_COMMON`:** Normal repo, no worktree to clean up. Done.
+
+**If worktree path is under `.worktrees/` or `worktrees/`:** Worktree was created for this session — we own cleanup.
+
+```bash
+MAIN_ROOT=$(git -C "$(git rev-parse --git-common-dir)/.." rev-parse --show-toplevel)
+cd "$MAIN_ROOT"
+git worktree remove "$WORKTREE_PATH"
+git worktree prune  # Self-healing: clean up any stale registrations
+```
+
+**Otherwise:** The host environment (harness) owns this workspace. Do NOT remove it. If your platform provides a
+workspace-exit tool, use it. Otherwise, leave the workspace in place.
+
+## Quick Reference
+
+### automated Mode (home/pi)
+
+| Option | Push | Create PR | Merge PR | Create Release | Keep Worktree | Cleanup Branch |
+| -------- | ------ | ----------- | ---------- | --------------- | --------------- | ---------------- |
+| 1. Create a New Release | yes | yes | yes | yes | yes | no (preserve branch) |
+| 2. Push, PR, and Merge | yes | yes | yes | - | yes | - |
+| 3. Create PR only | - | yes | - | - | yes | - |
+| 4. Keep as-is | - | - | - | - | yes | - |
+| 5. Discard | - | - | - | - | - | yes (force) |
+
+
+## Common Mistakes
+
+**Skipping test verification**
+
+- **Problem:** Merge broken code, create failing PR
+- **Fix:** Always verify tests before offering options
+
+**Skipping review completion verification**
+
+- **Problem:** Commit, push, merge, or release while reviewer rounds are active, or while a
+  capped review's residuals are undisclosed
+- **Fix:** Require the latest emitted `REVIEW_GATE_STATUS` to be `CLEAN` or `UNRESOLVED` before
+  showing options; on `UNRESOLVED`, surface the residual ledger as Step 0 requires, and on
+  `CLEAN` with a deferred ledger, name that ledger and its rows
+
+**Open-ended questions**
+
+- **Problem:** "What should I do next?" is ambiguous
+- **Fix:** Present the correct number of options for the mode and branch (see Step 5). For detached HEAD: 3 options.
+
+**Cleaning up worktree unnecessarily**
+
+- **Problem:** Remove worktree the user needs to continue working
+- **Fix:** Only cleanup for Option 5 (discard)
+
+**Skipping GitHub release creation after version bump and PR merge**
+
+- **Problem:** Option 1 completes the version bump and PR merge but stops without creating the GitHub release — the
+  release IS the deliverable
+- **Fix:** The release creation step within Option 1 is mandatory. If `gh release create` fails,
+  report the error and retry. Verify with `gh release view` before announcing success, and
+  confirm the new tag matches `origin/$DEFAULT_BRANCH` after `git fetch --tags` — release tags
+  are created on the remote, so an unfetched clone cannot verify them.
+
+**Deleting branches after release or PR merge**
+
+- **Problem:** `dev` or other long-lived branches get deleted after creating a release or merging a PR
+- **Fix:** Branches are never deleted except for Option 5 (discard). Do NOT pass `--delete-branch` to `gh pr merge`.
+  Long-lived development branches must survive the entire workflow.
+
+**Deleting branch before removing worktree**
+
+- **Problem:** `git branch -d` fails because worktree still references the branch
+- **Fix:** Merge first, remove worktree, then delete branch
+
+**Running git worktree remove from inside the worktree**
+
+- **Problem:** Command fails silently when CWD is inside the worktree being removed
+- **Fix:** Always `cd` to main repo root before `git worktree remove`
+
+**Cleaning up harness-owned worktrees**
+
+- **Problem:** Removing a worktree the harness created causes phantom state
+- **Fix:** Only clean up worktrees under `.worktrees/` or `worktrees/`
+
+**No confirmation for discard**
+
+- **Problem:** Accidentally delete work
+- **Fix:** Require typed "discard" confirmation
+
+## Red Flags
+
+**Never:**
+
+- Proceed with failing tests on your own initiative (only an explicit user instruction overrides, and then list the failures)
+- Present integration options while `REVIEW_GATE_STATUS` is `RUNNING`, `BLOCKED`, or missing in a review chain
+- Present integration options on `UNRESOLVED` without stating the ledger path,
+  the open findings by severity, and the unverified-fix gap
+- Present integration options on `CLEAN` without naming a deferred ledger that ships with the branch
+- Describe a deferred finding as a residual, or claim an unverified-fix gap for one
+- Describe a `CLEAN` branch with a deferred ledger as carrying open findings from this change
+- Describe `UNRESOLVED` work as review-clean, reviewed, or approved
+- Delete, truncate, or withhold an unstamped review ledger (residual or deferred) to make the change look clean
+- Delete a ledger this run's triage marker did not name, or a ledger that carries no stamp
+- Delete a named ledger on a `CLEAN` review without accounting for every finding row
+- Present integration options while an unplayed review ledger exists without an explicit
+  `REVIEW_LEDGER_STATUS: ACCEPTED` marker, or `NONE` when none remain
+- Treat an unplayed ledger as this run's deliverable, or as already accepted
+- Treat `REVIEW_LEDGER_STATUS: ACCEPTED` as consent to delete or rewrite a ledger
+- Treat `UNRESOLVED` as blocking and stop instead of proceeding with the residuals surfaced
+- Treat "tests pass and the user selected push/merge" as permission to bypass the review gate
+- Treat an un-emitted status as `CLEAN`
+- Treat `BLOCKED` or `RUNNING` as permission to integrate on your own initiative (only an explicit user instruction overrides)
+- Refuse to proceed when the user has explicitly instructed you past a `BLOCKED`
+  or `FAILED` gate, or past failing tests, without stating the marker and the
+  failures
+- Merge without verifying tests on result
+- Delete work without confirmation
+- Force-push without explicit request
+- Remove a worktree before confirming merge success
+- Clean up worktrees you didn't create (provenance check)
+- Run `git worktree remove` from inside the worktree
+- Delete a branch locally or remotely after creating a release or merging a PR (except Option 5 discard)
+- Announce Option 1 complete without creating the GitHub release (release creation is mandatory)
+- Announce success because `gh release view` printed a URL (existence ≠ alignment — fetch the
+  tag and compare it to `origin/$DEFAULT_BRANCH`)
+
+**Always:**
+
+- Verify tests before offering options
+- Detect environment before presenting menu
+- Present the correct option count for the mode and branch (3-5, see Step 5)
+- For version bump: analyse the diff to determine semver type (major/minor/patch) automatically — do NOT ask the user
+- Get typed confirmation for Option 5
+- Clean up worktree for Option 5 only
+- `cd` to main repo root before worktree removal
+- Run `git worktree prune` after removal
+</skill>
