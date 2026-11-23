@@ -1180,7 +1180,7 @@ def _log_batch_progress(page_number: int, game_count: int, show_progress: bool) 
     """Log periodic scan progress when *show_progress* is True."""
     if page_number % 100 == 0 and show_progress:
         logger.info(
-            "Backlog scan: page {} ({} games)",
+            "Scan: page {} ({} games)",
             page_number,
             game_count,
         )

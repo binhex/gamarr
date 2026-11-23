@@ -176,7 +176,9 @@ class BacklogNewConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     oldest_month: int = 0
-    months_per_cycle: int = Field(default=0, ge=0, le=_MAX_MONTHS_PER_CYCLE)
+    # One month by default, matching ``latest``: with no floor and no pace a sweep
+    # would read the whole catalogue in a single cycle (bug 2026-11-23).
+    months_per_cycle: int = Field(default=1, ge=0, le=_MAX_MONTHS_PER_CYCLE)
 
     @field_validator("oldest_month")
     @classmethod
@@ -1418,6 +1420,30 @@ def _pop_legacy_bounds(plat: dict[str, Any], platform_key: str) -> dict[str, Any
     }
 
 
+def _migrate_add_discovery_blocks(raw: dict[str, Any]) -> bool:
+    """Give every platform override the discovery block when it has none.
+
+    ``_default_config_dict`` dumps the model, whose overrides are ``{"pc"}`` only, so
+    a second platform (``ps5``) would never gain the keys from the merge.  Adding them
+    here makes the rewrite write the block for every configured platform.
+
+    Args:
+        raw: The raw config, mutated in place.
+
+    Returns:
+        True when any block was added.
+    """
+    overrides, _ = _discovery_overrides(raw)
+    added = False
+    for platform_key, plat in overrides.items():
+        if not isinstance(plat, dict) or ("discovery" in plat and plat["discovery"] != {}):
+            continue
+        plat["discovery"] = DiscoveryConfig().model_dump()
+        logger.info("Config: added the discovery block to platform '{}'", platform_key)
+        added = True
+    return added
+
+
 def _migrate_pending_order(metacritic: dict[str, Any], sort_order: str, platform_key: str) -> None:
     """Carry a legacy ``sort_order`` into the shared pending order."""
     existing = metacritic.get("pending_order")
@@ -1467,8 +1493,12 @@ def _migrate_backlog_target(discovery: dict[str, Any], values: dict[str, Any], p
         report=values["sort_present"],
     )
     new_block = _ensure_block(backlog, "new")
+    floor_present = "oldest_month" in new_block
     _place_dates(new_block, values["max_date"], values["months"], platform_key)
     if target_sort != "new":
+        # Page keys convert into the score block on this path, so no pace can land in
+        # `new` after this point.
+        _keep_migrated_floor_unpaced(new_block, platform_key, floor_present)
         score = _ensure_block(backlog, "score")
         _migrate_backlog_score_block(score, values["pages"], values["cycle_pages"], platform_key)
         return
@@ -1478,18 +1508,43 @@ def _migrate_backlog_target(discovery: dict[str, Any], values: dict[str, Any], p
         values["cycle_pages"] or None,
         platform_key,
     )
-    if values["max_date"] or "oldest_month" in new_block:
+    # Guard last, after the page conversion had its chance to write the legacy pace.
+    if not values["max_date"] and "oldest_month" not in new_block:
+        # No floor was expressed.  An absent default (or an explicit 0, which the old
+        # runtime read as an uncapped ten-year window) keeps the documented default
+        # reach, instead of leaving the floor unset (a catalogue-wide sweep).
+        floor = _default_floor()
+        new_block["oldest_month"] = floor
+        logger.info(
+            "Config: no legacy floor on platform '{}' - kept the old default reach (oldest_month {})",
+            platform_key,
+            floor,
+        )
+    _keep_migrated_floor_unpaced(new_block, platform_key, floor_present)
+
+
+def _keep_migrated_floor_unpaced(
+    new_block: dict[str, Any],
+    platform_key: str,
+    floor_present: bool,
+) -> None:
+    """Write ``months_per_cycle: 0`` when the migration landed a floor but no pace.
+
+    The legacy bounds came from a cycle that read to its floor in one sweep, so the key
+    is written explicitly: leaving it absent would inherit the 1-month model default and
+    narrow the reach the migration promises to keep.  A floor the operator already set
+    is left alone - it keeps the documented 1-month default.
+
+    Args:
+        new_block: The ``discovery.backlog.new`` block, mutated in place.
+        platform_key: The platform name, for log lines.
+        floor_present: Whether the block already carried ``oldest_month`` before the
+            migration ran.
+    """
+    if floor_present or "oldest_month" not in new_block or "months_per_cycle" in new_block:
         return
-    # No floor was expressed.  An absent default (or an explicit 0, which the old
-    # runtime read as an uncapped ten-year window) keeps the documented default
-    # reach, instead of leaving the floor unset (a catalogue-wide sweep).
-    floor = _default_floor()
-    new_block["oldest_month"] = floor
-    logger.info(
-        "Config: no legacy floor on platform '{}' - kept the old default reach (oldest_month {})",
-        platform_key,
-        floor,
-    )
+    new_block["months_per_cycle"] = 0
+    logger.info("Config: kept platform '{}' unpaced to its floor (months_per_cycle 0)", platform_key)
 
 
 def _migrate_platform_discovery(
@@ -1864,6 +1919,7 @@ def _migrate_config(raw: dict[str, Any]) -> bool:
             _migrate_sort_order_critic_names,
             _migrate_discovery_blocks,
             _migrate_source_matching_days,
+            _migrate_add_discovery_blocks,
         ]
         for fn in _migrations:
             if fn(raw):
@@ -1945,11 +2001,6 @@ def _default_config_dict() -> dict[str, Any]:
     d["download_sites"] = [
         {entry.name: entry.model_dump(exclude={"name"}, exclude_none=True)} for entry in cfg.download_sites
     ]
-    # The discovery blocks are omitted on purpose: their defaults are applied by the
-    # model, and writing them into the file would make every default key look
-    # operator-configured, turning the inert-key report into permanent noise.
-    for override in d["review_sites"]["metacritic"]["platform_overrides"].values():
-        override.pop("discovery", None)
     return d
 
 
@@ -2107,24 +2158,12 @@ def _rewrite_config_if_needed(
         )
 
 
-def _leaf_paths(block: Any, prefix: str) -> list[str]:
-    """Return the leaf key paths of a raw block, prefixed."""
-    if not isinstance(block, dict):
-        return []
-    names: list[str] = []
-    for key, value in sorted(block.items()):
-        if isinstance(value, dict):
-            names.extend(_leaf_paths(value, f"{prefix}.{key}"))
-        else:
-            names.append(f"{prefix}.{key}")
-    return names
-
-
 def _inert_discovery_keys(raw: dict[str, Any]) -> list[str]:
-    """Return the configured discovery keys the selected blocks do not read.
+    """Return the unread discovery keys that are not at their model default.
 
-    Computed from the raw file rather than the merged model, so a key the model
-    merely defaults never counts as operator intent.
+    Computed from the raw file rather than the merged model, then compared with the
+    model defaults: the generated file carries every default, so a key still holding
+    one is not operator intent and is not reported.
 
     Args:
         raw: The raw config, after migration.
@@ -2146,18 +2185,49 @@ def _unread_backlog_block(backlog: Any) -> tuple[str, Any]:
     return block, backlog.get(block) if isinstance(backlog, dict) else None
 
 
+def _discovery_defaults() -> dict[str, Any]:
+    """Return the model defaults of one discovery block, flattened by dotted path."""
+    return dict(_leaf_items(DiscoveryConfig().model_dump(), ""))
+
+
+def _unread_items(discovery: dict[str, Any]) -> list[tuple[str, Any]]:
+    """Return the ``(path, value)`` leaves of the blocks the selected mode ignores."""
+    if discovery.get("mode", "latest") == "latest":
+        return _leaf_items(discovery.get("backlog"), "backlog")
+    items = _leaf_items(discovery.get("latest"), "latest")
+    block, unused = _unread_backlog_block(discovery.get("backlog"))
+    items.extend(_leaf_items(unused, f"backlog.{block}"))
+    return items
+
+
+def _leaf_items(block: Any, prefix: str) -> list[tuple[str, Any]]:
+    """Return the leaf ``(path, value)`` pairs of a raw block."""
+    if not isinstance(block, dict):
+        return []
+    items: list[tuple[str, Any]] = []
+    for key, value in sorted(block.items()):
+        path = f"{prefix}.{key}" if prefix else key
+        if isinstance(value, dict):
+            items.extend(_leaf_items(value, path))
+        else:
+            items.append((path, value))
+    return items
+
+
 def _inert_keys_for_platform(platform_key: str, plat: Any) -> list[str]:
-    """Return one platform's unread discovery keys, platform-qualified."""
+    """Return one platform's unread discovery keys that differ from the defaults.
+
+    A key still holding its model default is not operator intent: the generated file
+    carries every default so there is something to edit, and reporting those would
+    make the warning permanent noise.
+    """
     discovery = plat.get("discovery") if isinstance(plat, dict) else None
     if not isinstance(discovery, dict):
         return []
-    if discovery.get("mode", "latest") == "latest":
-        paths = _leaf_paths(discovery.get("backlog"), "backlog")
-        return [f"{platform_key}: discovery.{path}" for path in paths]
-    names = [f"{platform_key}: discovery.{path}" for path in _leaf_paths(discovery.get("latest"), "latest")]
-    block, unused = _unread_backlog_block(discovery.get("backlog"))
-    names.extend(f"{platform_key}: discovery.{path}" for path in _leaf_paths(unused, f"backlog.{block}"))
-    return names
+    defaults = _discovery_defaults()
+    return [
+        f"{platform_key}: discovery.{path}" for path, value in _unread_items(discovery) if value != defaults.get(path)
+    ]
 
 
 def _stray_discovery_keys(raw: dict[str, Any]) -> list[str]:
@@ -2194,7 +2264,7 @@ def _stray_keys_for_platform(platform_key: str, plat: Any) -> list[str]:
 
 
 def _report_inert_discovery_keys(raw: dict[str, Any]) -> None:
-    """Log one line per configured discovery key the active blocks ignore."""
+    """Log one line per unread discovery key that differs from its model default."""
     for name in _inert_discovery_keys(raw):
         logger.info("Config: {} is not read by the selected mode - ignored", name)
     for name in _stray_discovery_keys(raw):

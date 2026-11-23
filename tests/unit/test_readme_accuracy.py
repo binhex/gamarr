@@ -252,6 +252,14 @@ class TestReadmeDiscoveryRows:
         assert '"criticscore"' in row and '"userscore"' in row, row
         assert row.rstrip().endswith('`"new"` |'), row
 
+    def test_backlog_new_pace_default_row(self) -> None:
+        from gamarr.config import DiscoveryConfig
+
+        discovery = DiscoveryConfig()
+        assert self._readme_defaults().get("discovery.backlog.new.months_per_cycle") == str(
+            discovery.backlog.new.months_per_cycle
+        )
+
     def test_backlog_page_depth_default_row(self) -> None:
         from gamarr.config import DiscoveryConfig
 

@@ -42,7 +42,8 @@ discovery read them.
 _Avoid_: sort_order, queue order
 
 **Inert key**:
-A configured key the active mode never reads. It is ignored, and one INFO line names it.
+A configured key the active mode never reads. It is ignored, and one INFO line names it when
+its value differs from the model default; a generated default stays silent.
 
 ## Queue
 

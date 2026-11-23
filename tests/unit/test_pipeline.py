@@ -817,12 +817,13 @@ class TestCycleAllowance:
 
             run_acquisition(
                 db_path=":memory:",
-                discovery=_discovery(months_per_cycle=0),
+                discovery=_discovery(oldest_month=202001, months_per_cycle=0),
             )
 
             _, kwargs = mock_mc.scan_recent_games.call_args
-            assert kwargs["max_month_span"] == 0
+            assert kwargs["max_month_span"] == 0, "0 pace means unpaced, once a floor bounds the sweep"
             assert kwargs["max_pages"] == 0
+            assert kwargs["cutoff_date"] is not None, "the floor is the bound"
 
 
 class TestRunAcquisition:

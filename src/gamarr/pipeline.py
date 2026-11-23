@@ -426,6 +426,8 @@ def run_acquisition(
                     else "lower months_per_cycle to pace it",
                 )
             elif not latest_mode and date_mode and not floor_month and not cfg.plan.pace_months:
+                # Defensive: build_scan_plan coerces a floorless, unpaced backlog plan
+                # to one month, so only a hand-built plan reaches this branch.
                 logger.warning(
                     "Backlog mode has no floor and no month pace — one cycle walks the whole catalogue; "
                     "set discovery.backlog.new.oldest_month to bound it"

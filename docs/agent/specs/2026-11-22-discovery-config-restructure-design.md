@@ -48,7 +48,7 @@ review_sites:
           latest:                 # month-paced; no page keys exist here
             oldest_month: 202601
             months_per_cycle: 1
-          backlog:                # ignored, with one INFO line, when mode is latest
+          backlog:                # ignored when mode is latest (INFO line per non-default key)
             sort_order: criticscore  # selects one of the two blocks below
             new:
               oldest_month: 202001
@@ -65,8 +65,9 @@ migration with an INFO line because they were already inert.
 What the shape guarantees:
 
 - Every key in the selected block is read. An inert key cannot exist inside a selected block, so the
-  only inert keys in a file sit in a block kept for a later switch, and each is reported once per
-  load.
+  only inert keys in a file sit in a block kept for a later switch. Each is reported once per load,
+  and only when its value differs from the model default, so an untouched generated block stays
+  silent.
 - An absent or empty selected block is filled from the model defaults, so `mode: latest` alone is a
   valid config.
 - The block for the non-selected mode, and the non-selected sort block inside `backlog`, may stay in
@@ -95,7 +96,7 @@ What the shape guarantees:
 | `latest.months_per_cycle` | `1` | read to the floor (whole window), warned once per cycle |
 | `backlog.sort_order` | `new` | n/a |
 | `backlog.new.oldest_month` | `0` | no floor: sweep as far back as the listing goes (1958 clamp) |
-| `backlog.new.months_per_cycle` | `0` | no pacing: one cycle covers the whole sweep |
+| `backlog.new.months_per_cycle` | `1` | `0` = no pacing, one cycle covers the whole sweep, but only while `oldest_month` bounds it; with no floor at all `0` is coerced to `1` so a cycle cannot read the whole catalogue |
 | `backlog.score.page_depth` | `500` | no page budget: sweep to the earliest year |
 | `backlog.score.pages_per_cycle` | `0` | unlimited pages per cycle |
 | `pending_order` | `new` | n/a |
@@ -112,16 +113,20 @@ What the shape guarantees:
 - `mode` is `latest | backlog`; `backlog.sort_order` is `new | criticscore | userscore` and selects
   `backlog.new` or `backlog.score`. `criticscore` and `userscore` share `score`.
 - `months_per_cycle: 0` is legal in `latest` and means "read to the floor", matching today's
-  behaviour; a floorless unpaced cycle warns as it does now.
+  behaviour; a floorless unpaced `latest` cycle warns as it does now. A floorless unpaced
+  `backlog` plan is paced at `1` month instead, so the warning cannot fire for it.
 
 ## Migration
 
 A new `_migrate_discovery_blocks(raw)` step is appended to the `_migrate_config` list, after
 `_migrate_platform_overrides`, after the `download_sites` consolidation steps, and after
 `_migrate_sort_order_critic_names` so a legacy `metascore` value is already `criticscore`. A second
-step, `_migrate_source_matching_days`, performs the two `max_queue_days` renames. Both follow the
-existing contract: mutate `raw` in place, return whether anything changed, log every action, and rely
-on `_migrate_config`'s deepcopy rollback if a step raises.
+step, `_migrate_source_matching_days`, performs the two `max_queue_days` renames. A third,
+`_migrate_add_discovery_blocks`, fills in the block for every platform override that has none, because
+the merge only supplies the `pc` defaults; it must stay last, after `_migrate_discovery_blocks` has had
+its pick of the legacy flat keys. All follow the existing contract: mutate `raw` in place, return
+whether anything changed, log every action, and rely on `_migrate_config`'s deepcopy rollback if a step
+raises.
 
 Rules, in order, for each platform override that still holds flat discovery keys:
 
@@ -151,6 +156,12 @@ Rules, in order, for each platform override that still holds flat discovery keys
 9. Date keys migrate into `backlog.new` even when the configured sort is a score sort, so a later
    switch to `new` finds them. They were ignored under the score sort before and are reported as
    inert, like any other key in a block the active sort does not read.
+10. A migrated `backlog.new` that lands a floor writes `months_per_cycle: 0` explicitly, so the
+    1-month model default never narrows the reach an upgrade keeps. That holds on both sort paths:
+    date keys land in `backlog.new` even under a score sort, so a later switch to `new` finds the
+    floor unpaced. A new-shape config that selects `backlog` with a floor but no explicit pace does
+    get the 1-month default; `months_per_cycle: 0` is the opt-out. A new-shape config with no floor
+    and no pace is paced at `1` month instead of sweeping the catalogue.
 
 `pages_to_months(pages)` is one helper in `utils.py`: `max(1, ceil(pages / 24))`, with 24 as a named
 module constant used by both the migrations and the year-window derivation. Rounding up never
@@ -183,8 +194,9 @@ Consequences:
 - The year-window derivation at `pipeline.py:670` used `max_pages / 52` on a branch that this change
   makes unreachable, so it is deleted with the branch rather than converted; `pages_to_months` is
   used by the migrations only.
-- The inert-key reporting is one helper: any key present in the non-selected block is named once per
-  load, replacing the six per-branch messages.
+- The inert-key reporting is one helper: a key in the non-selected block is named once per load when
+  its value differs from the model default, replacing the six per-branch messages. Generated
+  defaults stay silent.
 - `AcquisitionConfig` and `run_acquisition` keyword arguments take the new names, and the dead
   `max_queue_days` and `age_recheck_weeks` parameters are removed.
 - `pending_order` is read where the pending queue is ordered, not from `sort_order`.

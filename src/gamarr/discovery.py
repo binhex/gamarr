@@ -62,12 +62,19 @@ def build_scan_plan(discovery: DiscoveryConfig) -> ScanPlan:
         )
     backlog = discovery.backlog
     if backlog.sort_order == "new":
+        floor_month = backlog.new.oldest_month
+        pace_months = backlog.new.months_per_cycle
+        if pace_months == 0 and floor_month == 0:
+            # No floor and no pace is the whole catalogue in one cycle.  The model
+            # default paces a sweep, so this only catches an explicit 0; bound it
+            # the same way rather than trusting the file (bug 2026-11-23).
+            pace_months = 1
         return ScanPlan(
             mode="backlog",
             scan_order="new",
             date_mode=True,
-            floor_month=backlog.new.oldest_month,
-            pace_months=backlog.new.months_per_cycle,
+            floor_month=floor_month,
+            pace_months=pace_months,
             page_depth=0,
             pages_per_cycle=0,
         )

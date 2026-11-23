@@ -48,6 +48,28 @@ class TestBuildScanPlan:
         assert plan.pace_months == 0
         assert plan.page_depth == 40
 
+    def test_a_floorless_unpaced_backlog_gets_a_pace(self) -> None:
+        """No floor and no pace means the catalogue; pace it instead (bug 2026-11-23)."""
+        plan = build_scan_plan(
+            DiscoveryConfig.model_validate(
+                {"mode": "backlog", "backlog": {"sort_order": "new", "new": {"oldest_month": 0, "months_per_cycle": 0}}}
+            )
+        )
+        assert plan.pace_months == 1, "an unbounded backlog must not read the whole catalogue"
+
+    def test_an_unpaced_sweep_to_a_stated_floor_stays_unpaced(self) -> None:
+        """A floor is a real bound, so 0 keeps meaning 'sweep to it'."""
+        plan = build_scan_plan(
+            DiscoveryConfig.model_validate(
+                {
+                    "mode": "backlog",
+                    "backlog": {"sort_order": "new", "new": {"oldest_month": 202001, "months_per_cycle": 0}},
+                }
+            )
+        )
+        assert plan.floor_month == 202001
+        assert plan.pace_months == 0
+
     def test_userscore_shares_the_score_block(self) -> None:
         discovery = DiscoveryConfig.model_validate(
             {"mode": "backlog", "backlog": {"sort_order": "userscore", "score": {"pages_per_cycle": 7}}}

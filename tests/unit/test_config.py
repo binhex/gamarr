@@ -1998,7 +1998,7 @@ class TestDiscoveryConfig:
         backlog = self._defaults().backlog
         assert backlog.sort_order == "new"
         assert backlog.new.oldest_month == 0
-        assert backlog.new.months_per_cycle == 0
+        assert backlog.new.months_per_cycle == 1, "default pace bounds an otherwise unbounded sweep"
         assert backlog.score.page_depth == 500
         assert backlog.score.pages_per_cycle == 0
 
@@ -2257,7 +2257,7 @@ class TestDiscoveryMigrationBranches:
             }
         )
         new_block = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["discovery"]["backlog"]["new"]
-        assert new_block == {"oldest_month": 202001}
+        assert new_block == {"oldest_month": 202001, "months_per_cycle": 0}, "an unpaced floor stays unpaced"
 
     def test_a_backlog_page_pace_is_dropped_when_a_month_pace_is_set(self) -> None:
         raw = self._migrate(
@@ -2305,6 +2305,35 @@ class TestLegacyValueConversion:
         _migrate_config(raw)
         discovery: dict[str, Any] = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["discovery"]
         return discovery
+
+    def test_a_floor_the_operator_already_set_keeps_its_default_pace(self) -> None:
+        """Only a floor the migration lands is unpaced; an existing one keeps 1 month."""
+        discovery = self._migrate({"mode": "backlog", "discovery": {"backlog": {"new": {"oldest_month": 202001}}}})
+        assert discovery["backlog"]["new"] == {"oldest_month": 202001}
+
+    def test_a_converted_page_pace_survives_the_unpaced_guard(self) -> None:
+        """The guard runs last, so a legacy page pace is not overwritten by its 0."""
+        discovery = self._migrate({"mode": "backlog", "sort_order": "new", "max_date": 202001, "max_cycle_pages": 48})
+        assert discovery["backlog"]["new"] == {"oldest_month": 202001, "months_per_cycle": 2}
+
+    def test_a_score_sorted_floor_stays_unpaced_when_switched_to_new(self) -> None:
+        """Date keys land in `new` under a score sort; the floor there stays unpaced."""
+        discovery = self._migrate({"mode": "backlog", "sort_order": "criticscore", "max_date": 202001})
+        assert discovery["backlog"]["new"] == {"oldest_month": 202001, "months_per_cycle": 0}
+
+    def test_a_converted_page_budget_stays_unpaced_to_its_floor(self) -> None:
+        """A legacy page budget that becomes a floor keeps reading to it in one sweep."""
+        discovery = self._migrate({"mode": "backlog", "max_pages": 48, "sort_order": "new"})
+        new_block = discovery["backlog"]["new"]
+        assert new_block["oldest_month"], "the page budget becomes a floor"
+        assert new_block["months_per_cycle"] == 0, "and the old sweep stays unpaced"
+
+    def test_a_default_floor_stays_unpaced(self) -> None:
+        """The invented default floor preserves the old one-cycle reach too."""
+        discovery = self._migrate({"mode": "backlog"})
+        new_block = discovery["backlog"]["new"]
+        assert new_block["oldest_month"], "a default floor is written"
+        assert new_block["months_per_cycle"] == 0, "without narrowing the old sweep"
 
     def test_a_huge_page_budget_is_clamped_to_a_usable_floor(self) -> None:
         from gamarr.config import DiscoveryConfig
@@ -2528,7 +2557,7 @@ class TestLegacyValueConversion:
 
 
 class TestInertDiscoveryKeys:
-    """Inert keys come from the file, never from model defaults."""
+    """Inert keys are file keys whose value differs from the model default."""
 
     def test_every_stray_placement_is_reported(self) -> None:
         from gamarr.config import _stray_discovery_keys
@@ -2564,8 +2593,9 @@ class TestInertDiscoveryKeys:
         from gamarr.config import _default_config_dict, _inert_discovery_keys
 
         raw = _default_config_dict()
-        assert "discovery" not in raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
-        assert _inert_discovery_keys(raw) == []
+        pc = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
+        assert "discovery" in pc, "the block is written so the operator has keys to edit"
+        assert _inert_discovery_keys(raw) == [], "but its defaults are not operator intent"
 
     def test_a_stale_key_in_the_unread_block_is_reported(self) -> None:
         from gamarr.config import _inert_discovery_keys
@@ -2634,3 +2664,70 @@ class TestInertDiscoveryKeys:
         create_default_config(tmp_path)
         load_config(tmp_path)
         assert _inert_discovery_keys(_load_raw_config(tmp_path / "gamarr.yml")) == []
+
+
+class TestGeneratedConfigCarriesDiscovery:
+    """A generated or rewritten config must offer the discovery keys (bug 2026-11-23)."""
+
+    def test_a_generated_config_contains_the_discovery_block(self, tmp_path: Path) -> None:
+        import yaml
+
+        from gamarr.config import create_default_config
+
+        create_default_config(tmp_path)
+        raw = yaml.safe_load((tmp_path / "gamarr.yml").read_text(encoding="utf-8"))
+        discovery = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["discovery"]
+        assert discovery["mode"] == "latest"
+        assert set(discovery["latest"]) == {"oldest_month", "months_per_cycle"}
+        assert discovery["backlog"]["sort_order"] == "new"
+        assert set(discovery["backlog"]["new"]) == {"oldest_month", "months_per_cycle"}
+        assert set(discovery["backlog"]["score"]) == {"page_depth", "pages_per_cycle"}
+
+    def test_an_empty_discovery_block_is_filled_in(self, tmp_path: Path) -> None:
+        """`ps5: {discovery: {}}` is an empty block, not an opinion to respect."""
+        import yaml
+
+        from gamarr.config import create_default_config
+
+        create_default_config(tmp_path)
+        path = tmp_path / "gamarr.yml"
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        raw["review_sites"]["metacritic"]["platform_overrides"]["ps5"] = {"discovery": {}}
+        path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+        load_config(path)
+        written = yaml.safe_load(path.read_text(encoding="utf-8"))
+        ps5 = written["review_sites"]["metacritic"]["platform_overrides"]["ps5"]
+        assert ps5["discovery"]["backlog"]["new"]["months_per_cycle"] == 1
+
+    def test_a_non_mapping_discovery_value_is_left_to_validation(self) -> None:
+        """A non-mapping `discovery:` value is the operator's data, not ours to overwrite."""
+        from gamarr.config import _migrate_config
+
+        raw: dict[str, Any] = {"review_sites": {"metacritic": {"platform_overrides": {"pc": {"discovery": "backlog"}}}}}
+        _migrate_config(raw)
+        assert raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["discovery"] == "backlog"
+
+    def test_a_second_platform_gains_the_discovery_block(self, tmp_path: Path) -> None:
+        """`pc` gets the block from the defaults; any other platform needs the migration."""
+        import yaml
+
+        from gamarr.config import create_default_config
+
+        create_default_config(tmp_path)
+        path = tmp_path / "gamarr.yml"
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        raw["review_sites"]["metacritic"]["platform_overrides"]["ps5"] = {"min_criticscore": 80}
+        path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+        load_config(path)
+        written = yaml.safe_load(path.read_text(encoding="utf-8"))
+        ps5 = written["review_sites"]["metacritic"]["platform_overrides"]["ps5"]
+        assert "discovery" in ps5, "the second platform must gain editable discovery keys"
+
+    def test_loading_a_file_without_discovery_adds_the_block(self, tmp_path: Path) -> None:
+        path = tmp_path / "gamarr.yml"
+        path.write_text(
+            "review_sites:\n  metacritic:\n    platform_overrides:\n      pc:\n        min_criticscore: 80\n",
+            encoding="utf-8",
+        )
+        load_config(path)
+        assert "discovery:" in path.read_text(encoding="utf-8"), "the rewrite must add the block"

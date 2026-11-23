@@ -122,7 +122,9 @@ gamarr
 
 All behaviour is controlled by a YAML file inside the config directory
 (`configs/gamarr.yml` by default). A default config is created automatically
-on first run. The file is divided into the sections below.
+on first run, including the `discovery` block for every platform, so the keys
+are there to edit (an existing file gains them on its next load). The file is
+divided into the sections below.
 
 ### Top-level settings
 
@@ -237,12 +239,12 @@ review_sites:
 | `min_criticscore_reviews` | Minimum number of critic reviews required. | `10` |
 | `min_user_score` | Minimum Metacritic user score (0–10). | `7.5` |
 | `min_user_reviews` | Minimum number of user reviews required. | `10` |
-| `discovery.mode` | How a cycle walks the release list. `"latest"` reads the newest end every cycle and is always newest-first; `"backlog"` sweeps backwards with per-year cursors. The block for the other mode is ignored, with one INFO line per key. | `"latest"` |
+| `discovery.mode` | How a cycle walks the release list. `"latest"` reads the newest end every cycle and is always newest-first; `"backlog"` sweeps backwards with per-year cursors. The block for the other mode is ignored; any key in it that differs from the default is named once per load. | `"latest"` |
 | `discovery.latest.oldest_month` | Oldest month a `latest` cycle may read, as `YYYYMM` (month `01`-`12`, year `1958` or later). `0` = no floor, so the cycle reads back `months_per_cycle` months from the newest release. A later month is clamped to the current one. | `0` |
 | `discovery.latest.months_per_cycle` | How many months of releases one `latest` cycle reads back from its newest page. `0` = read all the way to the floor. Maximum `1200`. | `1` |
 | `discovery.backlog.sort_order` | Which backlog block runs: `"new"` reads `backlog.new`, `"criticscore"` and `"userscore"` read `backlog.score`. | `"new"` |
 | `discovery.backlog.new.oldest_month` | Oldest month a `backlog` sweep may read. `0` = no floor, so the sweep runs as far back as the listing goes. | `0` |
-| `discovery.backlog.new.months_per_cycle` | How many months one `backlog` sweep cycle covers. `0` = the whole sweep in one cycle. Maximum `1200`. | `0` |
+| `discovery.backlog.new.months_per_cycle` | How many months one `backlog` sweep cycle covers. `0` = the whole sweep in one cycle when `oldest_month` bounds it; with no floor at all `0` is treated as `1` so a cycle cannot read the whole catalogue. Maximum `1200`. | `1` |
 | `discovery.backlog.score.page_depth` | Total browse-page budget for a score-sorted sweep. `0` = no budget: the sweep reaches the earliest listing. A page is about a day of PC releases, so 24 pages is about one month. | `500` |
 | `discovery.backlog.score.pages_per_cycle` | Pages per cycle for a score-sorted sweep. `0` = unlimited. | `0` |
 | `enabled` | Enable or disable the Metacritic browse step. Disabling skips game discovery entirely. | `true` |
@@ -370,7 +372,8 @@ flowchart TD
    back instead: `discovery.backlog.sort_order` picks the walk — `new` follows
    release dates with per-year cursors, `criticscore`/`userscore` walk the
    score-ordered list page by page. The block for the mode and sort that are
-   not in use is ignored, with one INFO line per key.
+   not in use is ignored, and any key in it whose value differs from the default
+   is named once per load, so an untouched generated block stays silent.
    `review_sites.metacritic.pending_order` separately orders the pending queue
    (`new`, `criticscore`, `userscore`), independent of how discovery reads.
    **Important:** browse pages show *internal browse-only metrics*, not
