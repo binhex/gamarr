@@ -519,6 +519,91 @@ class TestLoadConfig:
 
         assert config_file.read_text() == original
 
+    def test_a_config_that_cannot_validate_is_not_written(self, tmp_path: Path) -> None:
+        """A start that dies in validation must leave the operator's file alone.
+
+        The file is missing most defaults, so a rewrite would normally fire; the
+        invalid floor must stop the write instead of persisting it.
+        """
+        config_file = tmp_path / "gamarr.yml"
+        config_file.write_text(
+            "review_sites:\n  metacritic:\n    platform_overrides:\n      pc:\n"
+            "        discovery:\n          mode: backlog\n          backlog:\n            new:\n"
+            "              oldest_month: 120\n"
+        )
+        original = config_file.read_text()
+
+        with pytest.raises(ValidationError):
+            load_config(config_file)
+
+        assert config_file.read_text() == original
+
+    def test_a_legacy_junk_floor_does_not_stop_startup(self, tmp_path: Path) -> None:
+        """The migration repairs a legacy value instead of producing an unloadable file."""
+        from gamarr.config import _default_floor
+
+        config_file = tmp_path / "gamarr.yml"
+        config_file.write_text(
+            "review_sites:\n  metacritic:\n    platform_overrides:\n      pc:\n"
+            "        mode: backlog\n        max_date: 120\n        max_cycle_months: 1\n"
+        )
+
+        cfg = load_config(config_file)
+
+        new_block = cfg.review_sites.metacritic.platform_overrides["pc"].discovery.backlog.new
+        assert new_block.oldest_month == _default_floor(), "the floor is a real month, not 120"
+        assert new_block.months_per_cycle == 1, "the legacy pace is preserved"
+
+    def test_the_rewrite_does_not_persist_the_injected_name(self, tmp_path: Path) -> None:
+        """Validation injects `name` into keyed source entries; the file must keep its shape."""
+        config_file = tmp_path / "gamarr.yml"
+        config_file.write_text('general: {config_version: "1.58.0"}\ndownload_sites:\n  fitgirl:\n    enabled: true\n')
+
+        load_config(config_file)
+
+        written = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+        assert written["download_sites"][0] == {"fitgirl": {"enabled": True}}, "no injected `name` key on disk"
+
+    def test_the_returned_config_carries_the_version_it_wrote(self, tmp_path: Path) -> None:
+        """The model must agree with the file the same load just wrote."""
+        config_file = tmp_path / "gamarr.yml"
+        config_file.write_text('general: {config_version: "1.58.0"}\n')
+
+        cfg = load_config(config_file)
+
+        written = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+        assert cfg.general.config_version == str(written["general"]["config_version"])
+
+    def test_a_validation_error_with_no_details_falls_back_to_its_text(self) -> None:
+        """The summary helper must not crash on an error object with no entries."""
+        from gamarr.config import _first_validation_error
+
+        empty = ValidationError.from_exception_data("Config", [])
+        assert "validation error" in _first_validation_error(empty)
+
+    def test_an_invalid_floor_names_the_file_key_and_value(self, tmp_path: Path) -> None:
+        """The operator must see which file and key to fix, not just a pydantic path."""
+        from loguru import logger
+
+        config_file = tmp_path / "gamarr.yml"
+        config_file.write_text(
+            "review_sites:\n  metacritic:\n    platform_overrides:\n      pc:\n"
+            "        discovery:\n          mode: backlog\n          backlog:\n            new:\n"
+            "              oldest_month: 120\n"
+        )
+        captured: list[str] = []
+        sink_id = logger.add(lambda msg: captured.append(str(msg)), level="ERROR", format="{message}")
+        try:
+            with pytest.raises(ValidationError):
+                load_config(config_file)
+        finally:
+            logger.remove(sink_id)
+
+        message = "\n".join(captured)
+        assert str(config_file) in message, f"the file must be named: {message!r}"
+        assert "backlog.new.oldest_month" in message, f"the key must be named: {message!r}"
+        assert "120" in message, f"the offending value must be named: {message!r}"
+
     def test_migrate_config_returns_true_on_change(self) -> None:
         """_migrate_config should return True when it makes changes."""
 
@@ -2320,6 +2405,15 @@ class TestLegacyValueConversion:
         """Date keys land in `new` under a score sort; the floor there stays unpaced."""
         discovery = self._migrate({"mode": "backlog", "sort_order": "criticscore", "max_date": 202001})
         assert discovery["backlog"]["new"] == {"oldest_month": 202001, "months_per_cycle": 0}
+
+    def test_a_legacy_max_date_that_is_not_a_month_is_ignored(self) -> None:
+        """A page-shaped number in max_date must not become an unloadable floor."""
+        from gamarr.config import _default_floor
+
+        discovery = self._migrate({"mode": "backlog", "max_date": 120})
+        new_block = discovery["backlog"]["new"]
+        assert new_block["oldest_month"] == _default_floor(), "a junk floor falls back to the default reach"
+        assert new_block["months_per_cycle"] == 0, "and keeps the old one-sweep reach"
 
     def test_a_converted_page_budget_stays_unpaced_to_its_floor(self) -> None:
         """A legacy page budget that becomes a floor keeps reading to it in one sweep."""

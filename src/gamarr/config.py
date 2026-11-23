@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import yaml
 from loguru import logger
-from pydantic import BaseModel, ConfigDict, Field, RootModel, field_validator
+from pydantic import BaseModel, ConfigDict, Field, RootModel, ValidationError, field_validator
 
 from gamarr.utils import (
     EARLIEST_BROWSE_YEAR,
@@ -1173,6 +1173,36 @@ def _pop_count(
     return value
 
 
+def _pop_floor(mapping: dict[str, Any], key: str, platform_key: str) -> int:
+    """Pop a legacy month key, ignoring a value that is not a ``YYYYMM`` month.
+
+    The date keys replaced page counters, so a config can carry a page-shaped
+    number here.  Copying it through would build a floor the model rejects and
+    abort the load, so the value is treated as unset instead.
+
+    Args:
+        mapping: The raw platform override, mutated in place.
+        key: The legacy key to pop.
+        platform_key: The platform name, for log lines.
+
+    Returns:
+        The month, or ``0`` when the key is absent or holds a non-month value.
+    """
+    value = _pop_count(mapping, key, platform_key)
+    if value is None:
+        return 0
+    if not is_valid_year_month(value):
+        logger.warning(
+            "Config: '{}' on platform '{}' is {} - not a usable YYYYMM month ({} or later), ignored",
+            key,
+            platform_key,
+            value,
+            EARLIEST_BROWSE_YEAR,
+        )
+        return 0
+    return value
+
+
 def _clamp_pace(pace: int, platform_key: str) -> int:
     """Cap a converted month pace at the model's maximum."""
     if pace <= _MAX_MONTHS_PER_CYCLE:
@@ -1413,7 +1443,7 @@ def _pop_legacy_bounds(plat: dict[str, Any], platform_key: str) -> dict[str, Any
         "sort_present": "sort_order" in plat,
         "mode": plat.pop("mode", "latest" if existing_block else "backlog"),
         "sort_order": plat.pop("sort_order", "new"),
-        "max_date": _pop_count(plat, "max_date", platform_key) or 0,
+        "max_date": _pop_floor(plat, "max_date", platform_key),
         "months": _pop_count(plat, "max_cycle_months", platform_key) or 0,
         "pages": _pop_count(plat, "max_pages", platform_key, keep_zero=True),
         "cycle_pages": _pop_count(plat, "max_cycle_pages", platform_key, keep_zero=True),
@@ -2128,16 +2158,26 @@ def _rewrite_config_if_needed(
     raw: dict[str, Any],
     merged: dict[str, Any],
     migrated: bool,
-) -> None:
-    """Persist *merged* when migration or missing default keys require an update."""
+) -> str | None:
+    """Persist *merged* when migration or missing default keys require an update.
+
+    Args:
+        path: The config file to rewrite.
+        raw: The file exactly as it was read, used to decide whether anything changed.
+        merged: The validated config to write back.
+        migrated: Whether a migration step changed *raw*.
+
+    Returns:
+        The config version written to the file, or ``None`` when nothing was written.
+    """
     if not migrated and not _needs_config_update(raw):
-        return
+        return None
     if not _config_shape_is_rewritable(raw):
-        return
+        return None
 
     merged_general = merged.get("general")
     if not isinstance(merged_general, dict):
-        return
+        return None
     raw_general = raw.get("general")
     old_version = (
         raw_general.get("config_version", _CONFIG_VERSION) if isinstance(raw_general, dict) else _CONFIG_VERSION
@@ -2150,12 +2190,13 @@ def _rewrite_config_if_needed(
         # continue with the migrated in-memory config; the rewrite is
         # retried on the next load.
         logger.warning("Could not rewrite config file '{}': {} — continuing with migrated in-memory config", path, exc)
-    else:
-        logger.info(
-            "Config updated to version {} — added {} new fields",
-            merged_general["config_version"],
-            len(_config_keys(merged) - _config_keys(raw)),
-        )
+        return None
+    logger.info(
+        "Config updated to version {} — added {} new fields",
+        merged_general["config_version"],
+        len(_config_keys(merged) - _config_keys(raw)),
+    )
+    return str(merged_general["config_version"])
 
 
 def _inert_discovery_keys(raw: dict[str, Any]) -> list[str]:
@@ -2274,6 +2315,24 @@ def _report_inert_discovery_keys(raw: dict[str, Any]) -> None:
             logger.warning("Config: '{}' is outside the discovery block - ignored", name)
 
 
+def _first_validation_error(exc: ValidationError) -> str:
+    """Return one readable line naming the offending key, its value and the reason.
+
+    Args:
+        exc: The validation failure raised by ``Config.model_validate``.
+
+    Returns:
+        A single line naming the dotted key, the input value and the error text,
+        or ``str(exc)`` when the error carries no entries.
+    """
+    errors = exc.errors()
+    if not errors:
+        return str(exc)
+    first = errors[0]
+    key = ".".join(str(part) for part in first.get("loc", ()))
+    return f"{key} = {first.get('input')!r} ({first.get('msg')})"
+
+
 def load_config(config_path: str | Path) -> Config:
     """Load a YAML config file and merge with defaults.
 
@@ -2301,13 +2360,25 @@ def load_config(config_path: str | Path) -> Config:
 
     merged = _deep_merge(_default_config_dict(), raw)
 
+    # Convert any datetime.date objects back to ISO strings
+    # (PyYAML parses ``2025-01-01`` as a date, but the model expects str)
+    merged = _normalize_date_values(merged)
+
+    # Validate first: a start that dies here must leave the operator's file exactly
+    # as it was, so the failure is visible and fixable instead of silently persisted.
+    try:
+        # Validate a copy: keyed-list parsing injects ``name`` into the nested source
+        # dicts, and the rewrite below must persist the operator's own shape.
+        config = Config.model_validate(copy.deepcopy(merged))
+    except ValidationError as exc:
+        logger.error("Config file '{}' is invalid: {}", path, _first_validation_error(exc))
+        raise
+
     # If migration made changes or the config is missing keys that the
     # current model defines, write the merged config back to the file
     # and bump the config version.  This keeps existing configs up-to-date
     # automatically when fields are renamed or added.
-    _rewrite_config_if_needed(path, raw, merged, migrated)
-
-    # Convert any datetime.date objects back to ISO strings
-    # (PyYAML parses ``2025-01-01`` as a date, but the model expects str)
-    merged = _normalize_date_values(merged)
-    return Config.model_validate(merged)
+    written_version = _rewrite_config_if_needed(path, raw, merged, migrated)
+    if written_version is not None:
+        config.general.config_version = written_version
+    return config

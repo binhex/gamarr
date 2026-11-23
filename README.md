@@ -243,7 +243,7 @@ review_sites:
 | `discovery.latest.oldest_month` | Oldest month a `latest` cycle may read, as `YYYYMM` (month `01`-`12`, year `1958` or later). `0` = no floor, so the cycle reads back `months_per_cycle` months from the newest release. A later month is clamped to the current one. | `0` |
 | `discovery.latest.months_per_cycle` | How many months of releases one `latest` cycle reads back from its newest page. `0` = read all the way to the floor. Maximum `1200`. | `1` |
 | `discovery.backlog.sort_order` | Which backlog block runs: `"new"` reads `backlog.new`, `"criticscore"` and `"userscore"` read `backlog.score`. | `"new"` |
-| `discovery.backlog.new.oldest_month` | Oldest month a `backlog` sweep may read. `0` = no floor, so the sweep runs as far back as the listing goes. | `0` |
+| `discovery.backlog.new.oldest_month` | Oldest month a `backlog` sweep may read, as `YYYYMM` (month `01`-`12`, year `1958` or later) — not a page count. `0` = no floor, so the sweep runs as far back as the listing goes. A later month is clamped to the current one. | `0` |
 | `discovery.backlog.new.months_per_cycle` | How many months one `backlog` sweep cycle covers. `0` = the whole sweep in one cycle when `oldest_month` bounds it; with no floor at all `0` is treated as `1` so a cycle cannot read the whole catalogue. Maximum `1200`. | `1` |
 | `discovery.backlog.score.page_depth` | Total browse-page budget for a score-sorted sweep. `0` = no budget: the sweep reaches the earliest listing. A page is about a day of PC releases, so 24 pages is about one month. | `500` |
 | `discovery.backlog.score.pages_per_cycle` | Pages per cycle for a score-sorted sweep. `0` = unlimited. | `0` |
@@ -528,6 +528,15 @@ If you find the queue growing indefinitely:
 - Games that fail score thresholds are not queued at all — they are re-checked when
   the next browse pass reaches their pages again
 - The message `0 new + X from previous cycles` means browsing found nothing new
+
+**Q: Why does gamarr exit at startup with `oldest_month must be 0 (no floor) or YYYYMM`?**
+
+**A:** The floor is a calendar month, not a page count. Set
+`discovery.backlog.new.oldest_month` to `0` (no floor) or a real `YYYYMM` such as
+`202401`. A start that fails validation leaves the config file untouched — nothing is
+rewritten or reformatted — so the value you set is the value you fix. On upgrade, a legacy date
+bound is converted, and a value that is not a month is dropped with a warning rather
+than carried into the new key.
 
 **Q: Why is there one `source_matching_days` and a per-source override?**
 
