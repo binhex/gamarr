@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import copy
 import datetime
+import math
 import os
 import stat
 import tempfile
@@ -13,16 +14,31 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import yaml
 from loguru import logger
-from pydantic import BaseModel, Field, RootModel, field_validator
+from pydantic import BaseModel, ConfigDict, Field, RootModel, field_validator
 
-from gamarr.utils import EARLIEST_BROWSE_YEAR, current_year_month, is_valid_year_month
+from gamarr.utils import (
+    EARLIEST_BROWSE_YEAR,
+    current_year_month,
+    is_valid_year_month,
+    pages_to_months,
+    subtract_months,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
 
-_CONFIG_VERSION = "1.58.0"
+_CONFIG_VERSION = "1.59.0"
 _CONFIG_FILENAME = "gamarr.yml"
+
+# Month bounds the migration may produce.  The pace mirrors the model's field cap so
+# a converted value can always be validated; the floor is the catalogue's first month.
+_MAX_MONTHS_PER_CYCLE = 1200
+# The documented page budget a legacy key falls back to when its value is unusable.
+_DEFAULT_PAGE_BUDGET = 500
+_EARLIEST_MONTH = EARLIEST_BROWSE_YEAR * 100 + 1
+# New-style keys an operator can plausibly write one level too high.
+_STRAY_DISCOVERY_KEYS = ("latest", "backlog", "oldest_month", "months_per_cycle", "pages_per_cycle", "page_depth")
 
 
 class GeneralConfig(BaseModel):
@@ -58,7 +74,8 @@ class SourceConfigEntry(BaseModel):
     platform: str = "pc"
     cache_hours: int = Field(default=6, gt=0, le=168)
     reject_keywords: list[str] = Field(default_factory=list)
-    max_queue_days: int = Field(default=60, ge=0)
+    # ``None`` inherits the top-level window; a value here overrides it.
+    source_matching_days: int | None = Field(default=None, ge=0)
 
 
 class DownloadSitesConfig(RootModel[list[SourceConfigEntry]]):
@@ -109,6 +126,93 @@ class DownloadSitesConfig(RootModel[list[SourceConfigEntry]]):
         return len(self.root)
 
 
+def validate_oldest_month(value: int) -> int:
+    """Validate an ``oldest_month`` value and clamp a future month.
+
+    ``0`` means "no floor".  A floor later than the current calendar month would
+    read nothing, so it is clamped rather than rejected.
+
+    Args:
+        value: The configured ``YYYYMM`` floor, or 0.
+
+    Returns:
+        ``0`` when there is no floor, otherwise the validated (possibly clamped)
+        month.
+
+    Raises:
+        ValueError: When *value* is neither 0 nor a valid ``YYYYMM`` month.
+    """
+    if not is_valid_year_month(value):
+        raise ValueError(
+            "oldest_month must be 0 (no floor) or YYYYMM with month 01-12 and year >= "
+            f"{EARLIEST_BROWSE_YEAR}, e.g. 202401",
+        )
+    if value == 0:
+        return 0
+    current_month = current_year_month()
+    if value > current_month:
+        logger.warning("Config: oldest_month {} is in the future — clamping to {}", value, current_month)
+        return current_month
+    return value
+
+
+class LatestDiscoveryConfig(BaseModel):
+    """Month-paced settings for ``mode: latest`` (ADR 0003)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    oldest_month: int = 0
+    months_per_cycle: int = Field(default=1, ge=0, le=_MAX_MONTHS_PER_CYCLE)
+
+    @field_validator("oldest_month")
+    @classmethod
+    def _check_oldest_month(cls, value: int) -> int:
+        return validate_oldest_month(value)
+
+
+class BacklogNewConfig(BaseModel):
+    """Date-paced settings for ``backlog`` with ``sort_order: new``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    oldest_month: int = 0
+    months_per_cycle: int = Field(default=0, ge=0, le=_MAX_MONTHS_PER_CYCLE)
+
+    @field_validator("oldest_month")
+    @classmethod
+    def _check_oldest_month(cls, value: int) -> int:
+        return validate_oldest_month(value)
+
+
+class BacklogScoreConfig(BaseModel):
+    """Page-paced settings for ``backlog`` with a score sort (ADR 0005)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    page_depth: int = Field(default=500, ge=0)
+    pages_per_cycle: int = Field(default=0, ge=0)
+
+
+class BacklogDiscoveryConfig(BaseModel):
+    """Backlog blocks, selected by ``sort_order`` (ADR 0005)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sort_order: Literal["new", "criticscore", "userscore"] = "new"
+    new: BacklogNewConfig = Field(default_factory=BacklogNewConfig)
+    score: BacklogScoreConfig = Field(default_factory=BacklogScoreConfig)
+
+
+class DiscoveryConfig(BaseModel):
+    """How one cycle walks the release list (ADR 0001)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["latest", "backlog"] = "latest"
+    latest: LatestDiscoveryConfig = Field(default_factory=LatestDiscoveryConfig)
+    backlog: BacklogDiscoveryConfig = Field(default_factory=BacklogDiscoveryConfig)
+
+
 class MetacriticPlatformConfig(BaseModel):
     """Metacritic scoring, caching, and browse options for a single platform."""
 
@@ -118,59 +222,16 @@ class MetacriticPlatformConfig(BaseModel):
     min_user_reviews: int = 10
     cache_details_days: int = 7
     cache_hours: int = 6
-    mode: Literal["latest", "backlog"] = "backlog"
-    max_queue_days: int = 30
     enabled: bool = True
-    max_pages: int = Field(default=500, ge=0)
-    max_cycle_pages: int | None = Field(default=0, ge=0)
-    max_date: int = 0
-    max_cycle_months: int = Field(default=0, ge=0, le=1200)
-    sort_order: Literal["new", "criticscore", "userscore"] = "new"
+    discovery: DiscoveryConfig = Field(default_factory=DiscoveryConfig)
     reject_genre: list[str] = Field(default_factory=list)
     reject_title: list[str] = Field(default_factory=list)  # case-insensitive substrings
-
-    @field_validator("max_date")
-    @classmethod
-    def _validate_max_date(cls, value: int) -> int:
-        """Validate ``YYYYMM`` and clamp a future floor to the current month.
-
-        ``0`` disables date mode. A floor later than the current calendar
-        month would sweep nothing, so it is clamped rather than rejected. Years
-        before ``EARLIEST_BROWSE_YEAR`` are rejected because the browse API has no
-        data there and a year-by-year sweep would fetch empty listings for
-        centuries.
-
-        Args:
-            value: The configured ``max_date``.
-
-        Returns:
-            ``0`` when disabled, otherwise the validated (possibly clamped)
-            ``YYYYMM`` month.
-
-        Raises:
-            ValueError: When *value* is neither 0 nor a valid ``YYYYMM`` month.
-        """
-        if not is_valid_year_month(value):
-            raise ValueError(
-                "max_date must be 0 (disabled) or YYYYMM with month 01-12 and year >= "
-                f"{EARLIEST_BROWSE_YEAR}, e.g. 202401",
-            )
-        if value == 0:
-            return 0
-        current_month = current_year_month()
-        if value > current_month:
-            logger.warning(
-                "Config: max_date {} is in the future — clamping to {}",
-                value,
-                current_month,
-            )
-            return current_month
-        return value
 
 
 class MetacriticConfig(BaseModel):
     """Metacritic integration options."""
 
+    pending_order: Literal["new", "criticscore", "userscore"] = "new"
     platform_overrides: dict[str, MetacriticPlatformConfig] = Field(
         default_factory=lambda: {"pc": MetacriticPlatformConfig()}
     )
@@ -256,6 +317,7 @@ class Config(BaseModel):
             ]
         )
     )
+    source_matching_days: int = Field(default=60, ge=0)
     review_sites: ReviewSitesConfig = Field(default_factory=ReviewSitesConfig)
     torrent_client: TorrentClientConfig = Field(default_factory=TorrentClientConfig)
     notification: NotificationConfig = Field(default_factory=NotificationConfig)
@@ -352,7 +414,7 @@ def _drop_metacritic_max_games(mc_pc: dict[str, Any], platform_key: str) -> bool
     if "metacritic_max_games" not in mc_pc:
         return False
     logger.info(
-        "Config: removing deprecated 'metacritic_max_games' for platform '{}' — use max_pages instead",
+        "Config: removing deprecated 'metacritic_max_games' for platform '{}' — use discovery instead",
         platform_key,
     )
     del mc_pc["metacritic_max_games"]
@@ -366,7 +428,7 @@ def _drop_migrated_deprecated_keys(mc_pc: dict[str, Any], platform_key: str) -> 
         if old_key in mc_pc:
             logger.warning(
                 "Config: '{}' is deprecated for platform '{}'; "
-                "set 'max_pages' to control the browse page limit (count-based throttling removed). Ignoring value.",
+                "set the discovery blocks to control the scan window. Ignoring value.",
                 old_key,
                 platform_key,
             )
@@ -376,7 +438,7 @@ def _drop_migrated_deprecated_keys(mc_pc: dict[str, Any], platform_key: str) -> 
         if old_key in mc_pc:
             logger.warning(
                 "Config: '{}' is deprecated for platform '{}'; "
-                "set 'max_pages' instead (e.g. max_pages: 500 for ~1 year). Ignoring value.",
+                "set 'discovery.backlog.new.oldest_month' or 'discovery.backlog.score.page_depth' instead. Ignoring value.",
                 old_key,
                 platform_key,
             )
@@ -385,7 +447,7 @@ def _drop_migrated_deprecated_keys(mc_pc: dict[str, Any], platform_key: str) -> 
     for old_key in ("age_recheck_weeks", "max_verify_attempts"):
         if old_key in mc_pc:
             logger.info(
-                "Config: removing deprecated '{}' from platform '{}' — handled by max_queue_days",
+                "Config: removing deprecated '{}' from platform '{}' — handled by source_matching_days",
                 old_key,
                 platform_key,
             )
@@ -502,9 +564,13 @@ def _migrate_fitgirl_exclude_keywords(raw: dict[str, Any]) -> bool:
 
 
 def _migrate_days_since_release(raw: dict[str, Any]) -> bool:
-    """Convert deprecated days_since_release to max_pages in metacritic.platform_overrides.
+    """Convert deprecated days_since_release to a floor month.
 
-    max_pages replaces this field (same purpose, weeks not days).
+    The field meant "only review games released within N days", which is a window
+    floor, so it becomes ``max_date`` (moved into a discovery block by the later
+    step).  Converting it to a page count would have been re-converted a second
+    time by that step, at a different days-per-page assumption.
+
     Returns True if a migration was applied.
     """
     changed = False
@@ -512,12 +578,13 @@ def _migrate_days_since_release(raw: dict[str, Any]) -> bool:
     for platform_key, mc_pc in overrides.items():
         if isinstance(mc_pc, dict) and "days_since_release" in mc_pc:
             days = mc_pc.pop("days_since_release")
-            if isinstance(days, (int, float)) and days > 0 and "max_pages" not in mc_pc:
-                mc_pc["max_pages"] = max(1, round(days / 7))
+            if isinstance(days, (int, float)) and days > 0 and "max_date" not in mc_pc and "max_pages" not in mc_pc:
+                months_back = max(1, math.ceil(days / 30))
+                mc_pc["max_date"] = _clamp_floor(subtract_months(current_year_month(), months_back), platform_key)
                 logger.info(
-                    "Config: converted days_since_release={} to max_pages={} for platform '{}'",
+                    "Config: converted days_since_release={} to max_date={} for platform '{}'",
                     days,
-                    mc_pc["max_pages"],
+                    mc_pc["max_date"],
                     platform_key,
                 )
             else:
@@ -621,7 +688,7 @@ def _migrate_cutoff_weeks_to_max_pages(raw: dict[str, Any]) -> bool:
             )
         else:
             logger.info(
-                "Config: removed obsolete 'cutoff_weeks' for platform '{}' because max_pages already exists",
+                "Config: removed obsolete 'cutoff_weeks' for platform '{}' because max_date/max_pages already exist",
                 platform_key,
             )
         changed = True
@@ -640,7 +707,7 @@ def _migrate_remove_max_games(raw: dict[str, Any]) -> bool:
         if isinstance(mc_pc, dict) and "max_games" in mc_pc:
             del mc_pc["max_games"]
             logger.info(
-                "Config: removed 'max_games' for platform '{}' — use max_pages to control game count",
+                "Config: removed 'max_games' for platform '{}' — use discovery to control the scan window",
                 platform_key,
             )
             changed = True
@@ -873,12 +940,13 @@ def _migrate_add_freegog_to_download_sites(raw: dict[str, Any]) -> bool:
     if not isinstance(ds, list):
         return False
 
+    # No source_matching_days here: an unset per-source window inherits the
+    # top-level default, so injecting one would override the operator's value.
     _freegog_defaults = {
         "enabled": True,
         "platform": "pc",
         "cache_hours": 6,
         "reject_keywords": [],
-        "max_queue_days": 60,
     }
 
     for entry in ds:
@@ -1029,6 +1097,664 @@ def _migrate_cache_pages_hours_to_cache_hours(raw: dict[str, Any]) -> bool:
     return changed
 
 
+_DISCOVERY_LEGACY_KEYS = ("mode", "max_pages", "max_cycle_pages", "max_date", "max_cycle_months", "sort_order")
+
+
+def _coerce_count(value: Any) -> int | None:
+    """Return *value* as a non-negative int, or ``None`` when it is not usable.
+
+    Mirrors the coercion the old pydantic fields applied: an integral float or a
+    numeric string was accepted before this change, so it is accepted here too.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float):
+        return int(value) if value >= 0 and value.is_integer() else None
+    if isinstance(value, str):
+        text = value.strip()
+        negative = text.startswith("-")
+        digits = text[1:] if negative else text
+        if digits.isdecimal():
+            number = int(digits)
+            return None if negative else number
+    return None
+
+
+def _pop_count(
+    mapping: dict[str, Any],
+    key: str,
+    platform_key: str,
+    *,
+    keep_zero: bool = False,
+) -> int | None:
+    """Pop a legacy numeric key, reporting a discarded or disabled value.
+
+    ``0`` means "unset" for the date keys, so it is dropped unless *keep_zero* is
+    set.  The page keys keep it because ``0`` is a real budget there.
+
+    Args:
+        mapping: The raw platform override, mutated in place.
+        key: The legacy key to pop.
+        platform_key: The platform name, for log lines.
+        keep_zero: True when ``0`` is a real value (the score page budget).
+
+    Returns:
+        The value when it is a usable count, otherwise ``None``.
+    """
+    if key not in mapping:
+        return None
+    value = _coerce_count(mapping.pop(key))
+    if value is None:
+        logger.warning("Config: '{}' on platform '{}' is not a usable count - ignored", key, platform_key)
+        return None
+    if value == 0 and not keep_zero:
+        logger.info("Config: '{}' on platform '{}' is 0 (unset) - dropped", key, platform_key)
+        return None
+    return value
+
+
+def _clamp_pace(pace: int, platform_key: str) -> int:
+    """Cap a converted month pace at the model's maximum."""
+    if pace <= _MAX_MONTHS_PER_CYCLE:
+        return pace
+    logger.warning(
+        "Config: converted pace {} exceeds the {} month cap for platform '{}' - clamped",
+        pace,
+        _MAX_MONTHS_PER_CYCLE,
+        platform_key,
+    )
+    return _MAX_MONTHS_PER_CYCLE
+
+
+def _clamp_floor(floor: int, platform_key: str) -> int:
+    """Raise a converted floor to the earliest month the catalogue carries."""
+    if floor >= _EARLIEST_MONTH:
+        return floor
+    logger.warning(
+        "Config: converted floor {} is before the catalogue for platform '{}' - clamped to {}",
+        floor,
+        platform_key,
+        _EARLIEST_MONTH,
+    )
+    return _EARLIEST_MONTH
+
+
+def _place(
+    dest: dict[str, Any],
+    key: str,
+    value: Any,
+    legacy: str,
+    platform_key: str,
+) -> bool:
+    """Set *dest[key]* unless the file already holds it, reporting the loser.
+
+    Presence is what counts: the destination is the raw file, so a ``0`` there was
+    written by the operator and means "no floor" / "no pace", not "unset".
+
+    Args:
+        dest: The block to fill.
+        key: The destination key.
+        value: The converted value.
+        legacy: The legacy key name, for the report.
+        platform_key: The platform name, for log lines.
+
+    Returns:
+        True when the value was written.
+    """
+    if key in dest:
+        logger.info("Config: legacy '{}' ignored for platform '{}' - '{}' is already set", legacy, platform_key, key)
+        return False
+    dest[key] = value
+    return True
+
+
+def _resolve_selector(
+    block: dict[str, Any],
+    key: str,
+    legacy: str,
+    platform_key: str,
+    *,
+    report: bool = True,
+) -> str:
+    """Return the block's selector, writing the legacy one only when the block is unset.
+
+    Args:
+        block: The block that holds the selector.
+        key: ``mode`` or ``sort_order``.
+        legacy: The legacy value.
+        platform_key: The platform name, for log lines.
+        report: False when the legacy key was absent, so nothing was discarded.
+
+    Returns:
+        The selector the cycle will actually run.
+    """
+    existing = block.get(key)
+    if existing is None:
+        block[key] = legacy
+        return legacy
+    if existing != legacy and report:
+        logger.info(
+            "Config: legacy '{}' value '{}' ignored for platform '{}' - '{}' is already '{}'",
+            key,
+            legacy,
+            platform_key,
+            key,
+            existing,
+        )
+    return str(existing)
+
+
+def _place_dates(dest: dict[str, Any], max_date: int, months: int, platform_key: str) -> bool:
+    """Write the two date keys into *dest*, skipping the disabled values.
+
+    Args:
+        dest: The block to fill.
+        max_date: The legacy floor month, ``0`` when disabled.
+        months: The legacy month pace, ``0`` when disabled.
+        platform_key: The platform name, for log lines.
+
+    Returns:
+        True when a legacy floor was written.
+    """
+    landed = False
+    if max_date:
+        landed = _place(dest, "oldest_month", max_date, "max_date", platform_key)
+    if months:
+        _place(dest, "months_per_cycle", months, "max_cycle_months", platform_key)
+    return landed
+
+
+def _depth_driven_bounds(max_date: int, months: int) -> bool:
+    """Return True when a legacy latest cycle had no date bound at all."""
+    return not max_date and not months
+
+
+def _migrate_latest_block(
+    latest: dict[str, Any],
+    max_date: int,
+    months: int,
+    pages: int | None,
+    cycle_pages: int | None,
+    platform_key: str,
+) -> None:
+    """Move a legacy latest cycle's bounds into the latest block (ADR 0003).
+
+    A page depth converts to a month pace only when it was the cycle's only bound;
+    with a floor or a pace set it was inert and is dropped.
+
+    Args:
+        latest: The ``discovery.latest`` block, mutated in place.
+        max_date: The legacy floor month, ``0`` when disabled.
+        months: The legacy month pace, ``0`` when disabled.
+        pages: The legacy page depth, or ``None``.
+        cycle_pages: The legacy per-cycle page pace, or ``None``.
+        platform_key: The platform name, for log lines.
+    """
+    floor_landed = _place_dates(latest, max_date, months, platform_key)
+    if floor_landed and not months and "months_per_cycle" not in latest:
+        # The old floored latest cycle read its whole window; keep that meaning
+        # rather than letting the 1-month model default silently shorten it.
+        latest["months_per_cycle"] = 0
+    if pages is not None:
+        if _depth_driven_bounds(max_date, months):
+            pace = _clamp_pace(pages_to_months(pages), platform_key)
+            if _place(latest, "months_per_cycle", pace, "max_pages", platform_key):
+                logger.info(
+                    "Config: converted max_pages {} to months_per_cycle {} for platform '{}' (approximate)",
+                    pages,
+                    pace,
+                    platform_key,
+                )
+        else:
+            logger.info("Config: max_pages {} is not read in latest mode for platform '{}'", pages, platform_key)
+    if cycle_pages is not None:
+        logger.info(
+            "Config: max_cycle_pages {} is not read in latest mode for platform '{}'",
+            cycle_pages,
+            platform_key,
+        )
+
+
+def _migrate_backlog_new_pages(
+    new_block: dict[str, Any],
+    pages: int | None,
+    cycle_pages: int | None,
+    platform_key: str,
+) -> None:
+    """Convert a legacy page budget and pace into dated bounds (ADR 0007).
+
+    Args:
+        new_block: The ``discovery.backlog.new`` block, mutated in place.
+        pages: The legacy total page budget, or ``None``.
+        cycle_pages: The legacy per-cycle page pace, or ``None``.
+        platform_key: The platform name, for log lines.
+    """
+    if pages is not None:
+        floor = _clamp_floor(subtract_months(current_year_month(), pages_to_months(pages)), platform_key)
+        if _place(new_block, "oldest_month", floor, "max_pages", platform_key):
+            logger.info(
+                "Config: converted max_pages {} to oldest_month {} for platform '{}' (approximate)",
+                pages,
+                floor,
+                platform_key,
+            )
+    if cycle_pages is not None:
+        pace = _clamp_pace(pages_to_months(cycle_pages), platform_key)
+        if _place(new_block, "months_per_cycle", pace, "max_cycle_pages", platform_key):
+            logger.info(
+                "Config: converted max_cycle_pages {} to months_per_cycle {} for platform '{}' (approximate)",
+                cycle_pages,
+                pace,
+                platform_key,
+            )
+
+
+def _migrate_backlog_score_block(
+    score: dict[str, Any],
+    pages: int | None,
+    cycle_pages: int | None,
+    platform_key: str,
+) -> None:
+    """Copy the legacy page keys into the score block unchanged (ADR 0005).
+
+    ``0`` is a real value here ("no budget"), so it crosses unchanged.
+
+    Args:
+        score: The ``discovery.backlog.score`` block, mutated in place.
+        pages: The legacy total page budget, or ``None``.
+        cycle_pages: The legacy per-cycle page pace, or ``None``.
+        platform_key: The platform name, for log lines.
+    """
+    if pages is not None:
+        _place(score, "page_depth", pages, "max_pages", platform_key)
+    if cycle_pages is not None:
+        _place(score, "pages_per_cycle", cycle_pages, "max_cycle_pages", platform_key)
+
+
+def _migrate_platform_discovery(
+    plat: dict[str, Any],
+    metacritic: dict[str, Any],
+    platform_key: str,
+) -> None:
+    """Move one platform override's flat discovery keys into blocks.
+
+    ``0`` means "disabled" for the date keys, but it is a real value for the score
+    page budget, so the page keys are carried through and each target decides.
+
+    Args:
+        plat: The raw platform override, mutated in place.
+        metacritic: The raw ``review_sites.metacritic`` mapping.
+        platform_key: The platform name, for log lines.
+    """
+    # A block that already exists means the new shape was written: the selector then
+    # falls back to the model default rather than to the legacy one, so a leftover
+    # flat key cannot flip the mode the block shows.
+    existing_block = isinstance(plat.get("discovery"), dict)
+    mode_present = "mode" in plat
+    sort_present = "sort_order" in plat
+    mode = plat.pop("mode", "latest" if existing_block else "backlog")
+    sort_order = plat.pop("sort_order", "new")
+    max_date = _pop_count(plat, "max_date", platform_key) or 0
+    months = _pop_count(plat, "max_cycle_months", platform_key) or 0
+    pages = _pop_count(plat, "max_pages", platform_key, keep_zero=True)
+    cycle_pages = _pop_count(plat, "max_cycle_pages", platform_key, keep_zero=True)
+
+    discovery = plat.get("discovery")
+    if not isinstance(discovery, dict):
+        discovery = {}
+        plat["discovery"] = discovery
+    target_mode = _resolve_selector(discovery, "mode", mode, platform_key, report=mode_present)
+    logger.info(
+        "Config: platform '{}' migrated to discovery (mode '{}', floor {}, pace {}, page budget {})",
+        platform_key,
+        target_mode,
+        max_date or "none",
+        months or "none",
+        pages if pages is not None else "none",
+    )
+    existing_order = metacritic.get("pending_order")
+    if existing_order is None:
+        metacritic["pending_order"] = sort_order
+    elif existing_order != sort_order:
+        logger.info(
+            "Config: platform '{}' sort_order '{}' ignored - pending_order is '{}'",
+            platform_key,
+            sort_order,
+            existing_order,
+        )
+
+    if target_mode == "latest":
+        latest = discovery.get("latest")
+        if not isinstance(latest, dict):
+            latest = {}
+            discovery["latest"] = latest
+        _migrate_latest_block(latest, max_date, months, pages, cycle_pages or None, platform_key)
+        if "oldest_month" not in latest and "months_per_cycle" not in latest:
+            # The legacy cycle was bounded by the old default page depth, so keep
+            # that reach instead of letting the 1-month model default shrink it.
+            reach = pages_to_months(_DEFAULT_PAGE_BUDGET)
+            _place(latest, "months_per_cycle", reach, "max_pages", platform_key)
+            logger.info(
+                "Config: no legacy bound on platform '{}' - kept the old default reach of {} month(s)",
+                platform_key,
+                reach,
+            )
+        _prune_empty_blocks(discovery)
+        return
+
+    backlog = discovery.get("backlog")
+    if not isinstance(backlog, dict):
+        backlog = {}
+        discovery["backlog"] = backlog
+    target_sort = _resolve_selector(backlog, "sort_order", sort_order, platform_key, report=sort_present)
+    new_block = backlog.get("new")
+    if not isinstance(new_block, dict):
+        new_block = {}
+        backlog["new"] = new_block
+    _place_dates(new_block, max_date, months, platform_key)
+    if target_sort != "new":
+        score = backlog.get("score")
+        if not isinstance(score, dict):
+            score = {}
+            backlog["score"] = score
+        _migrate_backlog_score_block(score, pages, cycle_pages, platform_key)
+        _prune_empty_blocks(discovery)
+        return
+    _migrate_backlog_new_pages(new_block, pages or None, cycle_pages or None, platform_key)
+    if not max_date and "oldest_month" not in new_block:
+        # No floor was expressed.  An absent default (or an explicit 0, which the old
+        # runtime read as an uncapped ten-year window) keeps the documented default
+        # reach, instead of leaving the floor unset (a catalogue-wide sweep).
+        floor = _default_floor()
+        new_block["oldest_month"] = floor
+        logger.info(
+            "Config: no legacy floor on platform '{}' - kept the old default reach (oldest_month {})",
+            platform_key,
+            floor,
+        )
+    _prune_empty_blocks(discovery)
+
+
+def _prune_empty_blocks(discovery: dict[str, Any]) -> None:
+    """Drop the sub-blocks a migration created but never filled."""
+    for key in ("latest", "backlog"):
+        block = discovery.get(key)
+        if not isinstance(block, dict):
+            continue
+        for sub in ("new", "score"):
+            if block.get(sub) == {}:
+                del block[sub]
+        if not block:
+            del discovery[key]
+
+
+def _discovery_overrides(raw: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return the raw ``(platform_overrides, metacritic)``, or empty mappings.
+
+    Args:
+        raw: The raw config.
+
+    Returns:
+        The overrides table and the metacritic mapping; both empty when the shape
+        is absent, so callers need no further guards.
+    """
+    review_sites = raw.get("review_sites")
+    metacritic = review_sites.get("metacritic") if isinstance(review_sites, dict) else None
+    if not isinstance(metacritic, dict):
+        return {}, {}
+    overrides = metacritic.get("platform_overrides")
+    if not isinstance(overrides, dict):
+        return {}, metacritic
+    return overrides, metacritic
+
+
+def _has_legacy_discovery_keys(plat: Any) -> bool:
+    """Return True when *plat* still carries a flat discovery key."""
+    if not isinstance(plat, dict):
+        return False
+    return any(key in plat for key in _DISCOVERY_LEGACY_KEYS)
+
+
+def _migrate_discovery_blocks(raw: dict[str, Any]) -> bool:
+    """Move the flat discovery keys into per-mode blocks.
+
+    Every key is migrated per key: a key whose destination already holds a value is
+    reported and dropped, and the rest still land.  A platform that already has a
+    block therefore keeps it while its leftover legacy keys are consumed.
+
+    Args:
+        raw: The raw config, mutated in place.
+
+    Returns:
+        True when at least one platform was migrated.
+    """
+    overrides, metacritic = _discovery_overrides(raw)
+    preferred = _fitgirl_platform(raw)
+    ordered = sorted(overrides.items(), key=lambda item: str(item[0]).casefold() != preferred.casefold())
+    changed = False
+    for platform_key, plat in ordered:
+        if not _has_legacy_discovery_keys(plat):
+            continue
+        _migrate_platform_discovery(plat, metacritic, platform_key)
+        changed = True
+    return changed
+
+
+def _default_floor() -> int:
+    """Return the floor month the documented default page budget covers."""
+    return _clamp_floor(subtract_months(current_year_month(), pages_to_months(_DEFAULT_PAGE_BUDGET)), "default")
+
+
+_LEGACY_SOURCE_WINDOW_DEFAULT = 60
+
+
+def _rename_source_window(settings: dict[str, Any], label: str) -> bool:
+    """Rename one source entry's ``max_queue_days`` in place."""
+    if "max_queue_days" not in settings:
+        return False
+    if _is_negative_count(settings["max_queue_days"]) and "source_matching_days" not in settings:
+        settings.pop("max_queue_days")
+        settings["source_matching_days"] = 0
+        logger.info("Config: '{}' max_queue_days is negative - migrated to 0 (never expire)", label)
+        return True
+    if settings["max_queue_days"] == _LEGACY_SOURCE_WINDOW_DEFAULT and "source_matching_days" not in settings:
+        settings.pop("max_queue_days")
+        logger.info(
+            "Config: '{}' max_queue_days was the old default {} - dropped, so it inherits the top-level window",
+            label,
+            _LEGACY_SOURCE_WINDOW_DEFAULT,
+        )
+        return True
+    if "source_matching_days" in settings:
+        settings.pop("max_queue_days")
+        logger.info("Config: '{}' max_queue_days ignored — source_matching_days already set", label)
+    else:
+        settings["source_matching_days"] = settings.pop("max_queue_days")
+        logger.info("Config: renamed '{}' max_queue_days to source_matching_days", label)
+    return True
+
+
+def _migrate_source_entry(entry: Any) -> bool:
+    """Rename the window key on one ``download_sites`` entry.
+
+    Args:
+        entry: One raw list element, in keyed or flat legacy form.
+
+    Returns:
+        True when a legacy key was found.
+    """
+    if not isinstance(entry, dict):
+        return False
+    changed = False
+    for name, settings in entry.items():
+        if isinstance(settings, dict):
+            changed |= _rename_source_window(settings, str(name))
+    return changed
+
+
+def _migrate_source_entries(raw: dict[str, Any]) -> bool:
+    """Rename the window key on every ``download_sites`` entry.
+
+    Args:
+        raw: The raw config, mutated in place.
+
+    Returns:
+        True when any entry carried a legacy key.
+    """
+    entries = raw.get("download_sites")
+    if not isinstance(entries, list):
+        return False
+    changed = False
+    for entry in entries:
+        changed |= _migrate_source_entry(entry)
+    return changed
+
+
+def _fitgirl_platform(raw: dict[str, Any]) -> str:
+    """Return the platform the FitGirl source targets, defaulting to ``pc``."""
+    entries = raw.get("download_sites")
+    if not isinstance(entries, list):
+        return "pc"
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        for name, settings in entry.items():
+            if str(name).casefold() == "fitgirl" and isinstance(settings, dict):
+                return str(settings.get("platform", "pc"))
+    return "pc"
+
+
+_LEGACY_PLATFORM_WINDOW_DEFAULT = 30
+
+
+def _is_negative_count(value: Any) -> bool:
+    """Return True when *value* is a negative number in any accepted spelling."""
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)):
+        return value < 0
+    if isinstance(value, str):
+        text = value.strip()
+        return text.startswith("-") and text[1:].isdecimal()
+    return False
+
+
+def _window_from(value: Any, platform_key: str) -> int | None:
+    """Coerce a legacy queue window, mapping a negative to "never expire" (0)."""
+    coerced = _coerce_count(value)
+    if coerced is None and _is_negative_count(value):
+        logger.info("Config: platform '{}' max_queue_days {} means never expire - migrated to 0", platform_key, value)
+        return 0
+    if coerced is None:
+        logger.warning("Config: platform '{}' max_queue_days is not a usable count - ignored", platform_key)
+        return None
+    if coerced == _LEGACY_PLATFORM_WINDOW_DEFAULT:
+        logger.info(
+            "Config: platform '{}' max_queue_days {} was the old default - dropped, so the top-level window applies",
+            platform_key,
+            value,
+        )
+        return None
+    return coerced
+
+
+def _source_states_a_window(raw: dict[str, Any]) -> bool:
+    """Return True when any download source sets its own queue window."""
+    entries = raw.get("download_sites")
+    if not isinstance(entries, list):
+        return False
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        settings_list = [entry] if "name" in entry else list(entry.values())
+        for settings in settings_list:
+            if isinstance(settings, dict) and ("max_queue_days" in settings or "source_matching_days" in settings):
+                return True
+    return False
+
+
+def _migrate_platform_windows(raw: dict[str, Any], source_has_window: bool) -> bool:
+    """Hoist a platform-level ``max_queue_days`` to the top level (ADR 0004).
+
+    The old model declared the window on every platform override, so that is where
+    an operator's value really lived; the metacritic-level branch below is kept for
+    the shape the spec named.
+
+    Args:
+        raw: The raw config, mutated in place.
+
+    Returns:
+        True when any platform carried the legacy key.
+    """
+    overrides, _ = _discovery_overrides(raw)
+    preferred = _fitgirl_platform(raw)
+    ordered = sorted(overrides.items(), key=lambda item: str(item[0]).casefold() != preferred.casefold())
+    changed = False
+    for platform_key, plat in ordered:
+        if not isinstance(plat, dict) or "max_queue_days" not in plat:
+            continue
+        value = _window_from(plat.pop("max_queue_days"), platform_key)
+        if value is None:
+            changed = True
+            continue
+        if source_has_window:
+            logger.info("Config: platform '{}' max_queue_days ignored - a source sets its own window", platform_key)
+            changed = True
+            continue
+        if "source_matching_days" in raw:
+            logger.info("Config: platform '{}' max_queue_days ignored - source_matching_days already set", platform_key)
+        else:
+            raw["source_matching_days"] = value
+            logger.info("Config: hoisted platform '{}' max_queue_days to top-level source_matching_days", platform_key)
+        changed = True
+    return changed
+
+
+def _migrate_metacritic_window(raw: dict[str, Any], source_has_window: bool) -> bool:
+    """Hoist the metacritic-side window to the top level (ADR 0004).
+
+    Args:
+        raw: The raw config, mutated in place.
+
+    Returns:
+        True when the legacy key was found.
+    """
+    review_sites = raw.get("review_sites")
+    metacritic = review_sites.get("metacritic") if isinstance(review_sites, dict) else None
+    if not isinstance(metacritic, dict) or "max_queue_days" not in metacritic:
+        return False
+    fallback = _window_from(metacritic.pop("max_queue_days"), "metacritic")
+    if fallback is None:
+        return True
+    if source_has_window:
+        logger.info("Config: metacritic max_queue_days ignored - a source sets its own window")
+        return True
+    if "source_matching_days" in raw:
+        logger.info("Config: legacy metacritic max_queue_days ignored — source_matching_days already set")
+        return True
+    raw["source_matching_days"] = fallback
+    logger.info("Config: hoisted metacritic max_queue_days to top-level source_matching_days")
+    return True
+
+
+def _migrate_source_matching_days(raw: dict[str, Any]) -> bool:
+    """Collapse the three queue-window keys into one (ADR 0004).
+
+    Args:
+        raw: The raw config, mutated in place.
+
+    Returns:
+        True when any legacy key was found.
+    """
+    source_has_window = _source_states_a_window(raw)
+    sources_changed = _migrate_source_entries(raw)
+    platforms_changed = _migrate_platform_windows(raw, source_has_window)
+    metacritic_changed = _migrate_metacritic_window(raw, source_has_window)
+    return sources_changed or platforms_changed or metacritic_changed
+
+
 def _migrate_config(raw: dict[str, Any]) -> bool:
     """Migrate renamed config keys in-place for all platforms.
 
@@ -1072,6 +1798,8 @@ def _migrate_config(raw: dict[str, Any]) -> bool:
             _migrate_add_freegog_to_download_sites,
             _migrate_remove_search_mode,
             _migrate_sort_order_critic_names,
+            _migrate_discovery_blocks,
+            _migrate_source_matching_days,
         ]
         for fn in _migrations:
             if fn(raw):
@@ -1149,8 +1877,15 @@ def _default_config_dict() -> dict[str, Any]:
     """Return the default configuration as a plain nested dict."""
     cfg = Config()
     d = cfg.model_dump()
-    # Re-include name in download_sites entries (excluded by Field(exclude=True))
-    d["download_sites"] = [{entry.name: entry.model_dump(exclude={"name"})} for entry in cfg.download_sites]
+    # Re-include name in download_sites entries (excluded by Field(exclude=True)).
+    d["download_sites"] = [
+        {entry.name: entry.model_dump(exclude={"name"}, exclude_none=True)} for entry in cfg.download_sites
+    ]
+    # The discovery blocks are omitted on purpose: their defaults are applied by the
+    # model, and writing them into the file would make every default key look
+    # operator-configured, turning the inert-key report into permanent noise.
+    for override in d["review_sites"]["metacritic"]["platform_overrides"].values():
+        override.pop("discovery", None)
     return d
 
 
@@ -1308,6 +2043,83 @@ def _rewrite_config_if_needed(
         )
 
 
+def _leaf_paths(block: Any, prefix: str) -> list[str]:
+    """Return the leaf key paths of a raw block, prefixed."""
+    if not isinstance(block, dict):
+        return []
+    names: list[str] = []
+    for key, value in sorted(block.items()):
+        if isinstance(value, dict):
+            names.extend(_leaf_paths(value, f"{prefix}.{key}"))
+        else:
+            names.append(f"{prefix}.{key}")
+    return names
+
+
+def _inert_discovery_keys(raw: dict[str, Any]) -> list[str]:
+    """Return the configured discovery keys the selected blocks do not read.
+
+    Computed from the raw file rather than the merged model, so a key the model
+    merely defaults never counts as operator intent.
+
+    Args:
+        raw: The raw config, after migration.
+
+    Returns:
+        Dotted key paths, in a stable order.
+    """
+    overrides, _ = _discovery_overrides(raw)
+    names: list[str] = []
+    for platform_key, plat in overrides.items():
+        discovery = plat.get("discovery") if isinstance(plat, dict) else None
+        if not isinstance(discovery, dict):
+            continue
+        if discovery.get("mode", "latest") == "latest":
+            names.extend(
+                f"{platform_key}: discovery.{path}" for path in _leaf_paths(discovery.get("backlog"), "backlog")
+            )
+            continue
+        names.extend(f"{platform_key}: discovery.{path}" for path in _leaf_paths(discovery.get("latest"), "latest"))
+        backlog = discovery.get("backlog")
+        sort_order = backlog.get("sort_order", "new") if isinstance(backlog, dict) else "new"
+        block = "score" if sort_order == "new" else "new"
+        names.extend(
+            f"{platform_key}: discovery.{path}"
+            for path in _leaf_paths(backlog.get(block) if isinstance(backlog, dict) else None, f"backlog.{block}")
+        )
+    return names
+
+
+def _stray_discovery_keys(raw: dict[str, Any]) -> list[str]:
+    """Return new-style discovery keys written outside the ``discovery`` block."""
+    overrides, metacritic = _discovery_overrides(raw)
+    names: list[str] = []
+    for parent, label in ((raw, "top-level"), (raw.get("review_sites"), "review_sites")):
+        if isinstance(parent, dict) and "discovery" in parent:
+            names.append(f"{label}: discovery")
+    if "discovery" in metacritic:
+        names.append("metacritic: discovery")
+    for platform_key, plat in overrides.items():
+        if not isinstance(plat, dict):
+            continue
+        names.extend(f"{platform_key}: {key}" for key in _STRAY_DISCOVERY_KEYS if key in plat)
+        if "pending_order" in plat:
+            names.append(f"{platform_key}: pending_order")
+        names.extend(f"{platform_key}: {key}" for key in plat if str(key).startswith("discovery."))
+    return names
+
+
+def _report_inert_discovery_keys(raw: dict[str, Any]) -> None:
+    """Log one line per configured discovery key the active blocks ignore."""
+    for name in _inert_discovery_keys(raw):
+        logger.info("Config: {} is not read by the selected mode - ignored", name)
+    for name in _stray_discovery_keys(raw):
+        if name.endswith("pending_order"):
+            logger.warning("Config: '{}' belongs at review_sites.metacritic.pending_order - ignored", name)
+        else:
+            logger.warning("Config: '{}' is outside the discovery block - ignored", name)
+
+
 def load_config(config_path: str | Path) -> Config:
     """Load a YAML config file and merge with defaults.
 
@@ -1331,6 +2143,7 @@ def load_config(config_path: str | Path) -> Config:
     # legacy "metascore" value would hard-fail validation), so re-apply it
     # here even if an earlier migration step swallowed an exception.
     migrated = _migrate_sort_order_critic_names(raw) or migrated
+    _report_inert_discovery_keys(raw)
 
     merged = _deep_merge(_default_config_dict(), raw)
 

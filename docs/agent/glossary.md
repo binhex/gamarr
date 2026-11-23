@@ -23,8 +23,9 @@ How much of the window one cycle reads, counted in months (`months_per_cycle`) o
 _Avoid_: max_cycle_months, max_cycle_pages, throttle, cycle limit
 
 **Page depth**:
-How many browse pages a cycle reads from the top of the window when no pace applies,
-configured as `page_depth`. Only `backlog.score` uses it.
+The total browse-page budget a score-sorted sweep may consume across cycles, configured as
+`page_depth`; the sweep advances through it and restarts when it is exhausted. Only
+`backlog.score` uses it.
 
 _Avoid_: max_pages, page budget, depth limit
 

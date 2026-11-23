@@ -142,7 +142,6 @@ class TestSchedulerForeground:
                 config.review_sites.metacritic.platform_overrides["pc"].min_criticscore_reviews = 5
                 config.review_sites.metacritic.platform_overrides["pc"].min_user_score = 7.5
                 config.review_sites.metacritic.platform_overrides["pc"].min_user_reviews = 10
-                config.review_sites.metacritic.platform_overrides["pc"].max_pages = 12
                 config.review_sites.metacritic.platform_overrides["pc"].cache_details_days = 7
                 config.review_sites.metacritic.platform_overrides["pc"].cache_hours = 4
                 config.download_sites.fitgirl.platform = "pc"
@@ -299,18 +298,6 @@ class TestShutdownEvent:
 class TestBuildKwargs:
     """_build_kwargs config extraction."""
 
-    def test_build_kwargs_includes_max_pages_and_max_cycle_pages(self) -> None:
-        """_build_kwargs should include max_pages and max_cycle_pages from config."""
-        from gamarr.config import Config
-        from gamarr.scheduler import _build_kwargs
-
-        config = Config()
-        kwargs = _build_kwargs(config)
-        assert "max_pages" in kwargs
-        assert kwargs["max_pages"] == 500
-        assert "max_cycle_pages" in kwargs
-        assert kwargs["max_cycle_pages"] == 0
-
     def test_build_kwargs_includes_fitgirl_reject_keywords(self) -> None:
         """_build_kwargs should include fitgirl_reject_keywords, not fitgirl_exclude_keywords."""
         from gamarr.scheduler import _build_kwargs
@@ -383,7 +370,6 @@ class TestDaemonMode:
                 config.review_sites.metacritic.platform_overrides["pc"].min_criticscore_reviews = 5
                 config.review_sites.metacritic.platform_overrides["pc"].min_user_score = 7.5
                 config.review_sites.metacritic.platform_overrides["pc"].min_user_reviews = 10
-                config.review_sites.metacritic.platform_overrides["pc"].max_pages = 12
                 config.review_sites.metacritic.platform_overrides["pc"].cache_details_days = 7
                 config.review_sites.metacritic.platform_overrides["pc"].cache_hours = 4
                 config.download_sites.fitgirl.platform = "pc"
@@ -438,7 +424,6 @@ class TestDaemonMode:
             config.review_sites.metacritic.platform_overrides["pc"].min_criticscore_reviews = 5
             config.review_sites.metacritic.platform_overrides["pc"].min_user_score = 7.5
             config.review_sites.metacritic.platform_overrides["pc"].min_user_reviews = 10
-            config.review_sites.metacritic.platform_overrides["pc"].max_pages = 12
             config.review_sites.metacritic.platform_overrides["pc"].cache_details_days = 7
             config.review_sites.metacritic.platform_overrides["pc"].cache_hours = 4
             config.download_sites.fitgirl.platform = "pc"
@@ -825,20 +810,8 @@ class TestAcquisitionWatchdog:
         assert seen_cancelled == [True], "a set shutdown event must cancel the new cycle"
 
 
-class TestBuildKwargsDateKeys:
-    """_build_kwargs must forward the date keys and the renamed cache keys."""
-
-    def test_forwards_max_date_and_max_cycle_months(self) -> None:
-        from gamarr.scheduler import _build_kwargs
-
-        config = _make_config()
-        pc = config.review_sites.metacritic.platform_overrides["pc"]
-        pc.max_date = 202401
-        pc.max_cycle_months = 3
-
-        kwargs = _build_kwargs(config)
-        assert kwargs["max_date"] == 202401
-        assert kwargs["max_cycle_months"] == 3
+class TestBuildKwargsCacheKeys:
+    """_build_kwargs must forward the renamed cache keys."""
 
     def test_forwards_renamed_cache_keys(self) -> None:
         from gamarr.scheduler import _build_kwargs
@@ -853,17 +826,6 @@ class TestBuildKwargsDateKeys:
         assert kwargs["fitgirl_cache_hours"] == 5
         assert "cache_pages_hours" not in kwargs
         assert "fitgirl_cache_pages_hours" not in kwargs
-
-
-class TestBuildKwargsDiscoveryMode:
-    """_build_kwargs must forward the discovery mode."""
-
-    def test_forwards_mode(self) -> None:
-        from gamarr.scheduler import _build_kwargs
-
-        config = _make_config()
-        config.review_sites.metacritic.platform_overrides["pc"].mode = "latest"
-        assert _build_kwargs(config)["mode"] == "latest"
 
 
 class TestSchedulerErrorBranches:
@@ -920,61 +882,84 @@ class TestSchedulerErrorBranches:
         _reschedule_post_processing(scheduler, event, interval_mins=5)  # must not propagate
 
 
-class TestMatchingWindowDays:
-    """The queue window must come from a source the operator actually configured."""
+class TestMatchingWindowResolution:
+    """One window, resolved from sources then the top-level default (ADR 0004)."""
 
-    def _config(self, sites: list[dict], metacritic_days: int = 30) -> Any:
+    def _config(self, **kwargs: Any) -> Any:
         from gamarr.config import Config
 
-        return Config.model_validate(
+        return Config.model_validate(kwargs)
+
+    def test_the_fitgirl_entry_wins(self) -> None:
+        from gamarr.scheduler import _build_kwargs, _matching_window_days
+
+        cfg = self._config(
+            source_matching_days=10,
+            download_sites=[{"fitgirl": {"source_matching_days": 90}}, {"freegog": {"source_matching_days": 20}}],
+        )
+        assert _matching_window_days(cfg) == 90
+        assert _build_kwargs(cfg)["source_matching_days"] == 90
+
+    def test_a_disabled_fitgirl_falls_through_to_the_next_source(self) -> None:
+        from gamarr.scheduler import _matching_window_days
+
+        cfg = self._config(
+            source_matching_days=10,
+            download_sites=[{"fitgirl": {"enabled": False, "source_matching_days": 90}}, {"freegog": {}}],
+        )
+        assert _matching_window_days(cfg) == 10
+
+    def test_a_single_source_window_applies_without_fitgirl(self) -> None:
+        from gamarr.scheduler import _matching_window_days
+
+        cfg = self._config(
+            source_matching_days=90,
+            download_sites=[{"freegog": {"source_matching_days": 20}}],
+        )
+        assert _matching_window_days(cfg) == 20
+
+    def test_a_stock_legacy_config_keeps_a_sixty_day_window(self, tmp_path: Path) -> None:
+        from gamarr.config import load_config
+        from gamarr.scheduler import _matching_window_days
+
+        path = tmp_path / "gamarr.yml"
+        path.write_text(
+            "review_sites:\n"
+            "  metacritic:\n"
+            "    platform_overrides:\n"
+            "      pc:\n"
+            "        max_queue_days: 30\n"
+            "download_sites:\n"
+            "  - fitgirl:\n"
+            "      max_queue_days: 60\n"
+            "  - freegog:\n"
+            "      max_queue_days: 60\n",
+            encoding="utf-8",
+        )
+        assert _matching_window_days(load_config(path)) == 60
+
+    def test_no_sources_falls_back_to_the_top_level_default(self) -> None:
+        from gamarr.scheduler import _matching_window_days
+
+        cfg = self._config(source_matching_days=10, download_sites=[])
+        assert _matching_window_days(cfg) == 10
+
+    def test_build_kwargs_forwards_the_plan_and_pending_order(self) -> None:
+        from gamarr.config import Config
+        from gamarr.scheduler import _build_kwargs
+
+        cfg = Config.model_validate(
             {
-                "download_sites": sites,
                 "review_sites": {
-                    "metacritic": {"platform_overrides": {"pc": {"max_queue_days": metacritic_days}}},
-                },
-            },
+                    "metacritic": {
+                        "pending_order": "userscore",
+                        "platform_overrides": {"pc": {"discovery": {"mode": "latest"}}},
+                    }
+                }
+            }
         )
-
-    @staticmethod
-    def _mc(config: Any) -> Any:
-        return config.review_sites.metacritic.platform_overrides["pc"]
-
-    def test_fitgirl_entry_wins(self) -> None:
-        from gamarr.scheduler import _matching_window_days
-
-        config = self._config([{"name": "fitgirl", "max_queue_days": 45}])
-        assert _matching_window_days(config, self._mc(config)) == 45
-
-    def test_another_source_window_is_used_without_fitgirl(self) -> None:
-        from gamarr.scheduler import _matching_window_days
-
-        config = self._config([{"name": "freegog", "max_queue_days": 10}], metacritic_days=30)
-        assert _matching_window_days(config, self._mc(config)) == 10, (
-            "a configured source window must not be replaced by the metacritic fallback"
-        )
-
-    def test_metacritic_value_is_the_last_resort(self) -> None:
-        from gamarr.scheduler import _matching_window_days
-
-        config = self._config([], metacritic_days=12)
-        assert _matching_window_days(config, self._mc(config)) == 12
-
-
-class TestMatchingWindowDisabledFitgirl:
-    """A disabled FitGirl entry must not govern the window it no longer matches."""
-
-    def test_disabled_fitgirl_falls_through_to_the_enabled_source(self) -> None:
-        from gamarr.config import Config
-        from gamarr.scheduler import _matching_window_days
-
-        config = Config.model_validate(
-            {
-                "download_sites": [
-                    {"name": "fitgirl", "enabled": False, "max_queue_days": 60},
-                    {"name": "freegog", "max_queue_days": 10},
-                ],
-                "review_sites": {"metacritic": {"platform_overrides": {"pc": {"max_queue_days": 30}}}},
-            },
-        )
-        mc_cfg = config.review_sites.metacritic.platform_overrides["pc"]
-        assert _matching_window_days(config, mc_cfg) == 10
+        kwargs = _build_kwargs(cfg)
+        assert kwargs["pending_order"] == "userscore"
+        assert kwargs["discovery"].mode == "latest"
+        assert "max_pages" not in kwargs
+        assert "sort_order" not in kwargs

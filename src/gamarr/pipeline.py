@@ -7,7 +7,7 @@ import math
 import re
 import types
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from html import unescape
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlparse
@@ -15,7 +15,9 @@ from urllib.parse import urlparse
 import requests
 from loguru import logger
 
+from gamarr.config import DiscoveryConfig
 from gamarr.database import _EXPIRED_RESULT, _INDEFINITE_DAYS, Database
+from gamarr.discovery import PENDING_ORDER, ScanPlan, build_scan_plan
 from gamarr.metacritic import MetacriticClient
 from gamarr.metacritic_cache import MetacriticCache
 from gamarr.models import SOURCE_DISPLAY
@@ -31,7 +33,6 @@ from gamarr.utils import (
     CancelSignal,
     current_year_month,
     is_cancelled,
-    is_valid_year_month,
     month_of,
     normalise_for_compare,
     numeral_runs_into_a_digit,
@@ -96,109 +97,27 @@ def _log_game_details(mc_result: Any) -> None:
     )
 
 
-def _is_older_than(release_date: str | None, days: int) -> bool:
-    """Check if a release date string is older than *days* from today.
-
-    Returns ``False`` when *release_date* is ``None`` (unknown age
-    — assume recent), *days* is zero or negative (no filter), or the
-    date string is malformed.
-    """
-    if release_date is None or days <= 0:
-        return False
-    try:
-        released = datetime.datetime.strptime(release_date.strip(), "%Y-%m-%d").date()
-        cutoff = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=days)).date()
-        return released < cutoff
-    except (ValueError, TypeError):
-        return False
-
-
-def _normalise_mode(mode: str) -> Literal["latest", "backlog"]:
-    """Validate the discovery mode passed through the API.
-
-    Args:
-        mode: The caller's mode.
-
-    Returns:
-        ``"latest"`` or ``"backlog"``; an unknown value falls back to backlog
-        with a warning.
-    """
-    normalised = mode.casefold() if isinstance(mode, str) else ""
-    if normalised == "latest":
-        return "latest"
-    if normalised != "backlog":
-        logger.warning("mode {!r} is not 'latest' or 'backlog' — using backlog", mode)
-    return "backlog"
-
-
-def _normalise_max_date(max_date: int) -> int:
-    """Validate a ``max_date`` passed through the API and clamp a future month.
-
-    The config layer rejects invalid values; this guard keeps a direct caller
-    from turning a typo into a century-long scan.
-
-    Args:
-        max_date: The caller's floor, ``0`` for none.
-
-    Returns:
-        A valid ``YYYYMM`` month, or ``0`` when the value was unusable.
-    """
-    if not is_valid_year_month(max_date):
-        logger.warning("max_date {!r} is not a valid YYYYMM month — ignoring it", max_date)
-        return 0
-    current = current_year_month()
-    if max_date > current:
-        logger.warning("max_date {} is in the future — clamping to {}", max_date, current)
-        return current
-    return max_date
-
-
-def _normalise_cycle_months(max_cycle_months: int) -> int:
-    """Validate the month pace passed through the API.
-
-    Args:
-        max_cycle_months: The caller's pace, ``0`` for no pacing.
-
-    Returns:
-        A pace between 0 and 1200 months.
-    """
-    if isinstance(max_cycle_months, bool) or not isinstance(max_cycle_months, int):
-        logger.warning("max_cycle_months {!r} is not an integer — ignoring it", max_cycle_months)
-        return 0
-    if max_cycle_months < 0:
-        logger.warning("max_cycle_months {} is negative — ignoring it", max_cycle_months)
-        return 0
-    if max_cycle_months > 1200:
-        logger.warning("max_cycle_months {} is implausibly large — clamping to 1200", max_cycle_months)
-        return 1200
-    return max_cycle_months
-
-
-_DEFAULT_MAX_PAGES = 500
 # Years of extra descent allowed below a floorless latest cycle's pace window, to
 # absorb a newest release that lags today because the recent listings are empty.
 _FLOORLESS_LATEST_SLACK_YEARS = 3
 
 
-def _latest_call_depth(allowance: int, reserve: int) -> int:
-    """Return the page depth for one year in latest mode.
+def _pace_text(plan: ScanPlan, date_mode: bool) -> str:
+    """Render the cycle's pace for the discovery log line.
 
     Args:
-        allowance: Pages left of this cycle's depth budget.
-        reserve: Pages to keep for the years below.
+        plan: The resolved scan plan.
+        date_mode: True when the cycle is bounded by months.
 
     Returns:
-        The depth for this call.  ``0`` when the allowance is spent; when the
-        allowance is at or below the reserve the reserve is dropped, since
-        scanning nothing would be strictly worse.  A depth that small cannot
-        honour the previous-year guarantee, so ``max_pages`` should be >= 2.
+        A human-readable pace, naming the unit that actually applies.
     """
-    if allowance <= 0:
-        return 0
-    return max(allowance - reserve, 0) or allowance
+    if date_mode:
+        return f"{plan.pace_months} month(s)" if plan.pace_months else "unpaced"
+    return f"{plan.pages_per_cycle} page(s) per cycle" if plan.pages_per_cycle else "unpaced"
 
 
-def _floorless_latest_bound(max_cycle_months: int, current_year: int) -> int:
+def _floorless_latest_bound(pace_months: int, current_year: int) -> int:
     """Return the oldest year a floorless latest cycle may probe.
 
     A floorless latest config only promises "read back N months from the newest
@@ -211,78 +130,20 @@ def _floorless_latest_bound(max_cycle_months: int, current_year: int) -> int:
     decades every cycle.
 
     Args:
-        max_cycle_months: The configured month pace; always positive here.
+        pace_months: The configured month pace; ``0`` when the cycle is unpaced.
         current_year: The cycle's current year.
 
     Returns:
         The oldest year to probe.
     """
-    pace_years = math.ceil(max_cycle_months / 12)
+    pace_years = math.ceil(pace_months / 12)
     return max(EARLIEST_BROWSE_YEAR, current_year - (2 * pace_years + _FLOORLESS_LATEST_SLACK_YEARS))
-
-
-def _date_driven(scan_order: str, latest_mode: bool, max_date: int, max_cycle_months: int) -> bool:
-    """Return True when date keys bound the scan instead of a page count.
-
-    Both date keys only have meaning in the ``new`` browse order, whose pages
-    carry a release-date dimension.  Backlog needs ``max_date`` because there
-    the floor replaces the sweep budget; latest accepts either key, since it has
-    no cursor to pace and a date floor alone would re-read the whole window on
-    every cycle.
-
-    Args:
-        scan_order: The resolved browse order.
-        latest_mode: True when this cycle runs in latest mode.
-        max_date: The configured floor month, ``0`` when disabled.
-        max_cycle_months: The configured month pace, ``0`` when disabled.
-
-    Returns:
-        True when the date window governs this cycle.
-    """
-    if scan_order != "new":
-        return False
-    if max_date:
-        return True
-    return latest_mode and bool(max_cycle_months)
-
-
-def _normalise_latest_depth(max_pages: int | None, mode: str, *, date_driven: bool = False) -> int | None:
-    """Clamp the latest-mode page depth.
-
-    ``None`` and ``0`` both mean "unbounded", which in latest mode would scan the
-    whole window — that is what backlog mode is for.  A latest cycle bounded by
-    either date key has no page depth at all, so the zero clamp does not apply
-    there; a negative value is still sanitised, because it is a typo either way.
-
-    Args:
-        max_pages: The caller's page budget or depth.
-        mode: The resolved discovery mode.
-        date_driven: True when date keys bound this cycle.  A latest cycle then
-            has no depth, so the zero clamp does not apply; backlog behaviour is
-            unaffected by this flag (its zero clamp was always latest-only).
-
-    Returns:
-        ``10`` when latest depth mode was given no depth, otherwise *max_pages*
-        unchanged.
-    """
-    if max_pages is not None and max_pages < 0:
-        # Not "unset": in backlog an unset budget means no page cap at all, so a
-        # negative typo would silently enlarge the scan.  Use the documented
-        # default (mirrors MetacriticConfig.max_pages) instead.
-        logger.warning("max_pages {} is negative — using the default budget of {}", max_pages, _DEFAULT_MAX_PAGES)
-        max_pages = _DEFAULT_MAX_PAGES
-    if mode == "latest" and not max_pages and not date_driven:
-        # Only depth-driven latest treats 0/None as "unbounded".  A date-driven
-        # cycle has no depth, so those values are meaningless there, not unsafe.
-        logger.warning("mode: latest with no max_pages is unbounded — clamping depth to 10 pages")
-        return 10
-    return max_pages
 
 
 def _games_at_or_after_floor(games: list[dict[str, Any]], floor_month: int) -> list[dict[str, Any]]:
     """Return the games whose release month is unknown or at/after *floor_month*.
 
-    ``max_date`` is the oldest month to review.  The browse stop works at page
+    ``oldest_month`` is the oldest month to review.  The browse stop works at page
     granularity, so a kept page can mix in-floor and below-floor games; this
     filter keeps the queue honest.  Undated games on a *kept* page are retained
     because their age is unknown — but the page that trips the cutoff is
@@ -329,18 +190,12 @@ class AcquisitionConfig:
     cache_details_days: int = 7
     cache_hours: int = 6
     enabled: bool = True
-    max_queue_days: int = 30
-    max_pages: int | None = None
-    max_cycle_pages: int | None = None
-    max_date: int = 0
-    max_cycle_months: int = 0
-    mode: Literal["latest", "backlog"] = "backlog"
     reject_genre: list[str] | None = None
     reject_title: list[str] | None = None
-    fitgirl_max_queue_days: int = 60
     notify_on_scrape_failure: bool = True
-    sort_order: Literal["new", "criticscore", "userscore"] = "new"
-    age_recheck_weeks: int | None = None
+    plan: ScanPlan = field(default_factory=lambda: build_scan_plan(DiscoveryConfig()))
+    pending_order: PENDING_ORDER = "new"
+    source_matching_days: int = 60
 
 
 def run_acquisition(
@@ -360,13 +215,9 @@ def run_acquisition(
     cache_details_days: int = 7,
     cache_hours: int = 6,
     enabled: bool = True,
-    max_queue_days: int = 30,
-    max_pages: int | None = None,
-    max_cycle_pages: int | None = None,
-    max_date: int = 0,
-    max_cycle_months: int = 0,
-    mode: Literal["latest", "backlog"] = "backlog",
-    fitgirl_max_queue_days: int = 60,
+    discovery: DiscoveryConfig | None = None,
+    pending_order: PENDING_ORDER = "new",
+    source_matching_days: int = 60,
     notify_on_scrape_failure: bool = True,
     reject_genre: list[str] | None = None,
     reject_title: list[str] | None = None,
@@ -379,28 +230,20 @@ def run_acquisition(
     fitgirl_reject_keywords: list[str] | None = None,
     cancel_event: CancelSignal | None = None,
     download_sites: list | None = None,
-    sort_order: Literal["new", "criticscore", "userscore"] = "new",
-    age_recheck_weeks: int | None = None,
 ) -> list[dict[str, Any]]:
     """Execute one scan cycle.
 
-    Discovers games by browsing Metacritic in *mode*: ``"latest"`` re-reads the
-    newest end of the window every cycle without persisting or resetting the
-    scan cursors, and always browses in ``"new"`` order whatever ``sort_order``
-    says.  A latest cycle is date-driven when *max_date* or *max_cycle_months* is
-    set — *max_date* is the floor and *max_cycle_months* the per-cycle pace, so
-    *max_pages* is unused — and otherwise falls back to a page depth of
-    *max_pages* (clamped to 10 when unset).  ``"backlog"`` sweeps the window with
-    durable cursors and month pacing in the configured ``sort_order``.  Each
-    game's real Metacritic detail-page scores are verified against the configured
-    thresholds, then survivors are matched against each configured source's
-    sitemap and delivered to qBittorrent.
+    *discovery* is resolved into a ``ScanPlan`` that decides what this cycle
+    reads: a ``"latest"`` plan re-reads its month window from the newest end
+    without persisting or resetting the scan cursors, while a ``"backlog"`` plan
+    sweeps with durable cursors.  Every queued game is inserted already verified
+    and waits *source_matching_days* for a matching repack (``0`` pends
+    indefinitely).  Each game's real Metacritic detail-page scores are verified
+    against the configured thresholds, then survivors are matched against each
+    configured source's sitemap and delivered to qBittorrent.
     """
-    mode = _normalise_mode(mode)
-    max_date = _normalise_max_date(max_date)
-    max_cycle_months = _normalise_cycle_months(max_cycle_months)
-    date_driven = _date_driven("new" if mode == "latest" else sort_order, mode == "latest", max_date, max_cycle_months)
-    max_pages = _normalise_latest_depth(max_pages, mode, date_driven=date_driven)
+    discovery = discovery or DiscoveryConfig()
+    plan = build_scan_plan(discovery)
 
     cfg = AcquisitionConfig(
         min_criticscore=min_criticscore,
@@ -410,18 +253,12 @@ def run_acquisition(
         cache_details_days=cache_details_days,
         cache_hours=cache_hours,
         enabled=enabled,
-        max_queue_days=max_queue_days,
-        max_pages=max_pages,
-        max_cycle_pages=max_cycle_pages,
-        max_date=max_date,
-        max_cycle_months=max_cycle_months,
-        mode=mode,
-        fitgirl_max_queue_days=fitgirl_max_queue_days,
         notify_on_scrape_failure=notify_on_scrape_failure,
         reject_genre=reject_genre,
         reject_title=reject_title,
-        sort_order=sort_order,
-        age_recheck_weeks=age_recheck_weeks,
+        plan=plan,
+        pending_order=pending_order,
+        source_matching_days=source_matching_days,
     )
 
     logger.info("Fetching Metacritic pages for platform '{}', please wait...", platform)
@@ -454,14 +291,13 @@ def run_acquisition(
         return []
 
     def _make_fitgirl_entry() -> Any:
-        """Build a fallback source entry from legacy parameters."""
+        """Build a fallback FitGirl entry when no download sites are configured."""
         entry = types.SimpleNamespace()
         entry.name = "fitgirl"
         entry.enabled = True
         entry.platform = platform
         entry.cache_hours = fitgirl_cache_hours
         entry.reject_keywords = fitgirl_reject_keywords or []
-        entry.max_queue_days = fitgirl_max_queue_days
         return entry
 
     def _run_discovery_phases(
@@ -496,34 +332,25 @@ def run_acquisition(
         new_pending: int = 0
         scan_year_anchor = datetime.datetime.now(tz=datetime.UTC).year
 
-        # Mode resolution.  "latest" reads the top of the window every cycle and
-        # never persists cursors; "backlog" sweeps with cursors and pacing.  A
-        # date bound needs the per-year browse dimension, which only sort_order
-        # "new" has.
-        latest_mode = cfg.mode == "latest"
-        scan_order: Literal["new", "criticscore", "userscore"] = "new" if latest_mode else cfg.sort_order
-        if latest_mode and cfg.sort_order != "new":
-            logger.warning(
-                "Latest mode requires sort_order 'new' — scanning in 'new' order for this cycle (configured '{}')",
-                cfg.sort_order,
-            )
-        # Date keys govern the scan when present: max_date is the floor, and in
-        # latest mode max_cycle_months paces how much of that window one cycle
-        # reads.  Either key makes a page depth pointless, so max_pages is only
-        # the fallback for a latest cycle that sets neither.
-        date_mode = _date_driven(scan_order, latest_mode, cfg.max_date, cfg.max_cycle_months)
-        floor_month = cfg.max_date if date_mode else 0
+        # The plan is the single answer to what this cycle reads.
+        latest_mode = cfg.plan.mode == "latest"
+        scan_order: Literal["new", "criticscore", "userscore"] = cfg.plan.scan_order
+        date_mode = cfg.plan.date_mode
+        floor_month = cfg.plan.floor_month
         floor_cutoff = year_month_to_date(floor_month) if floor_month else None
-        if latest_mode and date_mode:
+        if latest_mode:
             logger.info(
-                "Discovery mode: latest (date window: floor {}, pace {})",
+                "Discovery mode: latest (floor {}, pace {})",
                 floor_month or "none",
-                f"{cfg.max_cycle_months} month(s)" if cfg.max_cycle_months else "unpaced",
+                f"{cfg.plan.pace_months} month(s)" if cfg.plan.pace_months else "unpaced",
             )
-        elif latest_mode:
-            logger.info("Discovery mode: latest (depth {} pages, window floor none)", cfg.max_pages)
         else:
-            logger.info("Discovery mode: backlog")
+            logger.info(
+                "Discovery mode: backlog (sort {}, floor {}, pace {})",
+                scan_order,
+                floor_month or "none",
+                _pace_text(cfg.plan, date_mode),
+            )
 
         pages_this_cycle = 0
         min_month_seen: int | None = None
@@ -568,41 +395,6 @@ def run_acquisition(
 
             mc.sort_order = scan_order
 
-            if not latest_mode and cfg.max_date and not date_mode:
-                logger.info(
-                    "Config: max_date/max_cycle_months ignored because sort_order is '{}'",
-                    scan_order,
-                )
-            if not latest_mode and cfg.max_cycle_months and not date_mode:
-                logger.info(
-                    "Config: max_cycle_months ignored because date mode is off (max_date={}, sort_order='{}')",
-                    cfg.max_date,
-                    scan_order,
-                )
-            if date_mode and not latest_mode and cfg.max_pages:
-                logger.info(
-                    "Config: max_pages ({}) is unused in date mode (max_date={})",
-                    cfg.max_pages,
-                    floor_month,
-                )
-            if date_mode and not latest_mode and cfg.max_cycle_pages:
-                logger.info(
-                    "Config: max_cycle_pages ignored in date mode (max_cycle_pages={}, max_cycle_months={})",
-                    cfg.max_cycle_pages,
-                    cfg.max_cycle_months,
-                )
-            if date_mode and latest_mode and cfg.max_pages:
-                logger.info(
-                    "Config: max_pages ({}) is unused in latest date mode (max_date={}, max_cycle_months={})",
-                    cfg.max_pages,
-                    floor_month or "none",
-                    cfg.max_cycle_months or "none",
-                )
-            if latest_mode and cfg.max_cycle_pages:
-                logger.info(
-                    "Config: max_cycle_pages ({}) ignored in latest mode — the whole cycle is one pass",
-                    cfg.max_cycle_pages,
-                )
             # An unpaced window repeats on every cycle and nothing caps it, so name
             # the cost.  A pace that covers the whole window is NOT unpaced in that
             # sense: it means full coverage, which is the healthy case.  What is
@@ -611,41 +403,44 @@ def run_acquisition(
             # (no cursors), so the older months are never read there at all.
             floor_span = _month_span(current_year_month(), floor_month) if floor_month else 0
             floorless_catalogue_wide = (
-                bool(cfg.max_cycle_months)
+                bool(cfg.plan.pace_months)
                 and not floor_month
-                and (_floorless_latest_bound(cfg.max_cycle_months, scan_year_anchor) <= EARLIEST_BROWSE_YEAR)
+                and (_floorless_latest_bound(cfg.plan.pace_months, scan_year_anchor) <= EARLIEST_BROWSE_YEAR)
             )
             # A one-month window costs nothing to re-read, so it warrants no warning;
             # the floorless shape has no month span to measure.
             if (
                 latest_mode
                 and date_mode
-                and (not cfg.max_cycle_months or floorless_catalogue_wide)
+                and (not cfg.plan.pace_months or floorless_catalogue_wide)
                 and (not floor_month or floor_span > 0)
             ):
                 logger.warning(
-                    "Latest mode's date window is effectively unpaced (max_cycle_months={}) — every cycle "
-                    "re-reads the whole window back to {} with no page cap (max_pages is unused), and a window "
+                    "Latest mode's date window is effectively unpaced (months_per_cycle={}) — every cycle "
+                    "re-reads the whole window back to {} with no page cap, and a window "
                     "deeper than the run timeout never reaches its floor; {}",
-                    cfg.max_cycle_months or "none",
-                    floor_month or _floorless_latest_bound(cfg.max_cycle_months, scan_year_anchor),
-                    "set max_cycle_months to pace it"
-                    if not cfg.max_cycle_months
-                    else "lower max_cycle_months to pace it",
+                    cfg.plan.pace_months or "none",
+                    floor_month or _floorless_latest_bound(cfg.plan.pace_months, scan_year_anchor),
+                    "set months_per_cycle to pace it"
+                    if not cfg.plan.pace_months
+                    else "lower months_per_cycle to pace it",
                 )
-            elif latest_mode and date_mode and floor_span > 0 and cfg.max_cycle_months < floor_span:
+            elif not latest_mode and date_mode and not floor_month and not cfg.plan.pace_months:
+                logger.warning(
+                    "Backlog mode has no floor and no month pace — one cycle walks the whole catalogue; "
+                    "set discovery.backlog.new.oldest_month to bound it"
+                )
+            elif latest_mode and date_mode and floor_span > 0 and cfg.plan.pace_months < floor_span:
                 logger.info(
-                    "Latest mode is paced at {} month(s) — max_date={} is the floor, not a sweep target; "
+                    "Latest mode is paced at {} month(s) — the floor (oldest_month={}) is not a sweep target; "
                     "anything older than that pace is covered only in backlog mode",
-                    cfg.max_cycle_months,
+                    cfg.plan.pace_months,
                     floor_month,
                 )
 
             # Calculate year range
             if scan_order == "new":
-                if date_mode and not latest_mode:
-                    cutoff_year = min(scan_year_anchor, floor_month // 100)
-                elif latest_mode and date_mode:
+                if latest_mode:
                     # The date stops end the loop; this bound is only a safety net
                     # beneath them.  The floored branch must be absolute: the pace
                     # anchors on the newest release the listings actually carry,
@@ -659,25 +454,21 @@ def run_acquisition(
                     cutoff_year = (
                         floor_month // 100
                         if floor_month
-                        else _floorless_latest_bound(cfg.max_cycle_months, scan_year_anchor)
+                        else _floorless_latest_bound(cfg.plan.pace_months, scan_year_anchor)
                     )
-                elif latest_mode:
-                    # No date keys configured: also include the previous year, so
-                    # a game released in December whose scores publish in January
-                    # is still discoverable at the turn of the year.
-                    cutoff_year = scan_year_anchor - 1
                 else:
-                    years_back = max(0, math.ceil((cfg.max_pages if cfg.max_pages else 500) / 52))
-                    cutoff_year = scan_year_anchor - years_back
+                    # A floor is validated at or after the catalogue's first year;
+                    # no floor means the whole catalogue, never year zero.
+                    cutoff_year = floor_month // 100 if floor_month else EARLIEST_BROWSE_YEAR
                 current_year = scan_year_anchor
             else:
                 # sort_order != "new" (criticscore/userscore): no year dimension, use year=0 sentinel
                 cutoff_year = 0
                 current_year = 0
 
-            max_pages_cfg = cfg.max_pages if cfg.max_pages else 0
+            max_pages_cfg = cfg.plan.page_depth
             if latest_mode:
-                # Latest depth is per cycle: no durable budget, no reset.
+                # Latest is date-paced: no durable budget, no reset.
                 remaining_pages = 0
                 cycle_allowance = 0
             elif date_mode:
@@ -701,8 +492,8 @@ def run_acquisition(
                 remaining_pages = max_pages_cfg - total_scanned if max_pages_cfg > 0 else 0
                 # Page allowance shared by the whole cycle (0 = unlimited).  It is
                 # spent on one year at a time, so a cycle drains the newest year
-                # instead of taking max_cycle_pages from every year in the range.
-                cycle_allowance = cfg.max_cycle_pages if cfg.max_cycle_pages and cfg.max_cycle_pages > 0 else 0
+                # instead of taking the per-cycle allowance from every year in the range.
+                cycle_allowance = cfg.plan.pages_per_cycle
 
             fetch_failed = False
             drained_probes = 0
@@ -725,11 +516,8 @@ def run_acquisition(
             for scan_year in range(current_year, cutoff_year - 1, -1):
                 if is_cancelled(cancel_event):
                     break
-                if latest_mode and not date_mode:
-                    if pages_this_cycle >= max_pages_cfg:
-                        break
-                elif date_mode:
-                    if cfg.max_cycle_months and _month_span(max_month_seen, min_month_seen) >= cfg.max_cycle_months:
+                if date_mode:
+                    if cfg.plan.pace_months and _month_span(max_month_seen, min_month_seen) >= cfg.plan.pace_months:
                         break
                     if latest_mode and failed_years_in_a_row >= 2:
                         logger.warning(
@@ -758,12 +546,12 @@ def run_acquisition(
                         per_call_max = 0
                         month_span_left = 0
                         cutoff_date = floor_cutoff
-                        if max_month_seen is not None and cfg.max_cycle_months:
+                        if max_month_seen is not None and cfg.plan.pace_months:
                             # Later calls: derive the pace cutoff from the cycle's
                             # own anchor so a new year's listing cannot re-anchor it
                             # and overshoot the allowance by up to a month.  With
                             # pacing off (0) the floor is the only bound.
-                            pace_month = subtract_months(max_month_seen, cfg.max_cycle_months)
+                            pace_month = subtract_months(max_month_seen, cfg.plan.pace_months)
                             # A pace older than the catalogue can only be a config
                             # extreme; leaving the cutoff unset keeps the floor (or
                             # no bound) in charge instead of sending a date no page
@@ -774,17 +562,7 @@ def run_acquisition(
                         elif max_month_seen is None:
                             # First call of the cycle: the client anchors the month
                             # span on this call's newest page.
-                            month_span_left = cfg.max_cycle_months
-                    elif latest_mode:
-                        # Depth-driven fallback: leave a page for the years below
-                        # when one is still in the window.  A newest year deeper
-                        # than the depth budget would otherwise consume it all,
-                        # and the previous year is the only listing a December
-                        # release with January scores appears in.
-                        reserve = 1 if scan_year > cutoff_year else 0
-                        per_call_max = _latest_call_depth(max_pages_cfg - pages_this_cycle, reserve)
-                        cutoff_date = None
-                        month_span_left = 0
+                            month_span_left = cfg.plan.pace_months
                     else:
                         # Allowance for this call: the smaller of the remaining
                         # budget and what is left of the cycle allowance (0 = no
@@ -868,7 +646,7 @@ def run_acquisition(
                         if cutoff_reached:
                             cutoff_stopped = True
                         # Only a stop at the ABSOLUTE floor means the sweep reached
-                        # max_date.  The client reports the effective cutoff that
+                        # oldest_month.  The client reports the effective cutoff that
                         # fired, so a pace (month-span) stop inside the floor year
                         # is not mistaken for completion — that would reset every
                         # cursor and re-sweep forever without ever reaching the
@@ -893,7 +671,7 @@ def run_acquisition(
                         # skipped, so report it rather than losing it silently.
                         if floor_stop and scan_year != cutoff_year:
                             logger.warning(
-                                "Browse year {}: its pages all look older than max_date — that "
+                                "Browse year {}: its pages all look older than oldest_month — that "
                                 "listing looks mis-indexed, so no games are queued for it this cycle",
                                 scan_year,
                             )
@@ -930,7 +708,7 @@ def run_acquisition(
                 # below it — say which year the descent gave up at.
                 logger.warning(
                     "Latest date scan: no listing was found from {} down to {} — the paced window may lie "
-                    "below it; set max_date or use backlog mode",
+                    "below it; set discovery.latest.oldest_month or use backlog mode",
                     scan_year_anchor,
                     cutoff_year,
                 )
@@ -948,7 +726,7 @@ def run_acquisition(
                     logger.info(
                         "Backlog complete — reached {} (floor {}), restarting from the newest year",
                         reached,
-                        year_month_to_date(floor_month)[:7],
+                        year_month_to_date(floor_month)[:7] if floor_month else "none",
                     )
                     db.reset_progress(platform, scan_order)
             elif not latest_mode:
@@ -977,7 +755,7 @@ def run_acquisition(
                     thresholds,
                     # A row is inserted already verified, so it sits in the
                     # source-matching phase from the start and needs that window.
-                    max_queue_days=cfg.fitgirl_max_queue_days,
+                    source_matching_days=cfg.source_matching_days,
                     reject_title=cfg.reject_title,
                     mc=mc,
                     cache_details_days=cfg.cache_details_days,
@@ -1031,7 +809,7 @@ def run_acquisition(
         # \u2014 the \"score\" fields are internal browse-only metrics.
         # Games whose detail-page scores fail the configured thresholds
         # are removed from pending.
-        pending_games = db.get_pending(platform=platform, sort_order=cfg.sort_order)
+        pending_games = db.get_pending(platform=platform, sort_order=cfg.pending_order)
         if browse_games:
             logger.info(
                 "Pending queue: {} total (including previous cycles)",
@@ -1067,10 +845,10 @@ def run_acquisition(
                 max_verify=len(pending_games),
                 reject_genre=cfg.reject_genre,
                 reject_title=cfg.reject_title,
-                fitgirl_max_queue_days=cfg.fitgirl_max_queue_days,
+                source_matching_days=cfg.source_matching_days,
                 notifier=notifier,
                 cancel_event=cancel_event,
-                sort_order=cfg.sort_order,
+                sort_order=cfg.pending_order,
             )
             if removed:
                 logger.info(
@@ -1114,7 +892,7 @@ def run_acquisition(
                 "min_user_reviews": cfg.min_user_reviews,
             }
             # If no download_sites provided, fall back to a default FitGirl entry
-            # using the legacy parameters for backward compatibility.
+            # built from the dedicated FitGirl parameters.
             sites = download_sites if download_sites else [_make_fitgirl_entry()]
             # Per-source: index, then immediately match, so a slow or failing
             # source doesn't block matching from faster sources.
@@ -1145,7 +923,7 @@ def run_acquisition(
                     reject_keywords=source_entry.reject_keywords or None,
                     source_name=source_entry.name,
                     platform=platform,
-                    sort_order=cfg.sort_order,
+                    sort_order=cfg.pending_order,
                 )
                 if source_matched:
                     matched.extend(source_matched)
@@ -1175,30 +953,14 @@ def run_acquisition(
             expired_count,
         )
 
-        # Process old verified games AFTER the matching phase.
-        # Games that passed score verification must get a chance to
-        # match against a sitemap before being aged out.  Previously
-        # this ran before matching, silently removing every old game
-        # from pending before it could be delivered.
-        _process_aged_games(db, cfg, platform, cancel_event=cancel_event)
-
-        # Log scan progress: latest reports the window it read (a date window or a
-        # depth), date mode reports the deepest month reached, page mode keeps the
-        # page-budget percentage.
-        if cfg.enabled and latest_mode and date_mode:
+        # Log scan progress: latest reports the window it read, date mode reports
+        # the deepest month reached, page mode keeps the page-budget percentage.
+        if cfg.enabled and latest_mode:
             logger.info(
                 "Latest scan: {} page(s) read, floor {}, pace {} ({} collected, {} queued)",
                 pages_this_cycle,
                 floor_month or "none",
-                f"{cfg.max_cycle_months} month(s)" if cfg.max_cycle_months else "unpaced",
-                len(browse_games),
-                new_pending,
-            )
-        elif cfg.enabled and latest_mode:
-            logger.info(
-                "Latest scan: {} page(s) read of a {} page budget, window current year and previous ({} collected, {} queued)",
-                pages_this_cycle,
-                max_pages_cfg,
+                f"{cfg.plan.pace_months} month(s)" if cfg.plan.pace_months else "unpaced",
                 len(browse_games),
                 new_pending,
             )
@@ -1206,17 +968,17 @@ def run_acquisition(
             logger.info(
                 "Backlog: reached {} (floor {}, {} page(s) this cycle)",
                 year_month_to_date(min_month_seen)[:7] if min_month_seen else "unknown",
-                year_month_to_date(floor_month)[:7],
+                year_month_to_date(floor_month)[:7] if floor_month else "none",
                 pages_this_cycle,
             )
-        elif cfg.enabled and cfg.max_pages and cfg.max_pages > 0:
+        elif cfg.enabled and max_pages_cfg > 0:
             total_scanned = db.sum_scanned_pages(platform, cutoff_year, current_year)
             if total_scanned > 0:
-                pct = min(100, round(total_scanned / cfg.max_pages * 100))
+                pct = min(100, round(total_scanned / max_pages_cfg * 100))
                 logger.info(
                     "Progress: {} of {} pages scanned ({}%)",
                     total_scanned,
-                    cfg.max_pages,
+                    max_pages_cfg,
                     pct,
                 )
 
@@ -1529,16 +1291,16 @@ def _is_game_eligible(
     return _game_passes_thresholds(game, thresholds)
 
 
-def _calculate_pending_expiry(max_queue_days: int) -> str:
+def _calculate_pending_expiry(source_matching_days: int) -> str:
     """Return an ISO-format expiry timestamp for a pending game.
 
-    When *max_queue_days* is 0 or negative, uses an indefinite
+    When *source_matching_days* is 0 or negative, uses an indefinite
     (far-future) expiry.
     """
     now = datetime.datetime.now(tz=datetime.UTC)
-    if max_queue_days <= 0:
+    if source_matching_days <= 0:
         return (now + datetime.timedelta(days=_INDEFINITE_DAYS)).isoformat()
-    return (now + datetime.timedelta(days=max_queue_days)).isoformat()
+    return (now + datetime.timedelta(days=source_matching_days)).isoformat()
 
 
 def _process_browse_games(
@@ -1547,7 +1309,7 @@ def _process_browse_games(
     db: Database,
     thresholds: dict[str, Any],
     *,
-    max_queue_days: int = 30,
+    source_matching_days: int = 60,
     reject_title: list[str] | None = None,
     mc: Any = None,
     cache_details_days: int = 7,
@@ -1571,7 +1333,7 @@ def _process_browse_games(
         platform: Target platform name.
         db: Database instance.
         thresholds: Dict with ``min_criticscore`` keys.
-        max_queue_days: How many days to keep the game pending before expiry.
+        source_matching_days: How many days to keep the game pending before expiry.
         reject_title: Titles matching any of these are skipped.
         mc: Metacritic client used for the detail-page verification.
         cache_details_days: TTL in days for the detail-page cache.
@@ -1624,7 +1386,7 @@ def _process_browse_games(
         details,
         platform,
         thresholds,
-        max_queue_days,
+        source_matching_days,
         cancel_event,
     )
 
@@ -1635,7 +1397,7 @@ def _queue_verified_candidates(
     details: list[Any],
     platform: str,
     thresholds: dict[str, Any],
-    max_queue_days: int,
+    source_matching_days: int,
     cancel_event: CancelSignal | None,
 ) -> int:
     """Insert verified candidates, stopping early when the cycle is cancelled.
@@ -1646,7 +1408,7 @@ def _queue_verified_candidates(
         details: One ``ScoreResult`` (or ``None``) per candidate, in order.
         platform: Platform key for the pending rows.
         thresholds: Score thresholds used to verify each detail result.
-        max_queue_days: Expiry window for newly queued rows.
+        source_matching_days: Expiry window for newly queued rows.
         cancel_event: Cancellation signal checked before each insert.
 
     Returns:
@@ -1657,7 +1419,7 @@ def _queue_verified_candidates(
         if is_cancelled(cancel_event):
             logger.info("Cancelled while queueing verified games — dropping the remaining candidates")
             return new_count
-        if _queue_verified_game(db, game, detail, platform, thresholds, max_queue_days):
+        if _queue_verified_game(db, game, detail, platform, thresholds, source_matching_days):
             new_count += 1
     return new_count
 
@@ -1668,7 +1430,7 @@ def _queue_verified_game(
     detail: Any,
     platform: str,
     thresholds: dict[str, Any],
-    max_queue_days: int,
+    source_matching_days: int,
 ) -> bool:
     """Queue one candidate when its detail scores pass, else skip it.
 
@@ -1678,7 +1440,7 @@ def _queue_verified_game(
         detail: The candidate's ``ScoreResult``, or ``None`` when lookup failed.
         platform: Platform identifier.
         thresholds: The configured score thresholds.
-        max_queue_days: Expiry window for the queued row.
+        source_matching_days: Expiry window for the queued row.
 
     Returns:
         True when a row was inserted.
@@ -1692,7 +1454,7 @@ def _queue_verified_game(
         logger.debug("Skipping '{}' — detail scores do not pass the thresholds yet", g_title)
         return False
 
-    expires_at = _calculate_pending_expiry(max_queue_days)
+    expires_at = _calculate_pending_expiry(source_matching_days)
     inserted = db.record_pending(
         slug=g_slug,
         game_title=g_title,
@@ -2001,80 +1763,6 @@ def _scores_fail_check(result: Any, thresholds: dict[str, Any]) -> bool:
     return not _scores_present(result) or not _real_scores_pass_thresholds(result, thresholds)
 
 
-def _should_age_game(game: Any, age_recheck_weeks: int) -> bool:
-    """Return True if *game* meets all criteria for age-based removal.
-
-    A game must have been checked at least once, have a release date older
-    than *age_recheck_weeks*, AND have passed score verification.
-    """
-    return (
-        game.last_checked_at is not None
-        and game.release_date is not None
-        and game.score_checks_passed is True
-        and _is_older_than(game.release_date, days=age_recheck_weeks * 7)
-    )
-
-
-def _process_aged_games(
-    db: Database,
-    cfg: AcquisitionConfig,
-    platform: str,
-    cancel_event: CancelSignal | None = None,
-) -> int:
-    """Mark old verified pending games as processed.
-
-    Queries all non-expired pending games that have been checked at
-    least once (``last_checked_at IS NOT NULL``), passed score
-    verification (``score_checks_passed IS TRUE``), and whose
-    ``release_date`` is older than ``cfg.age_recheck_weeks``.
-
-    These games are permanently recorded with ``result="Processed"``
-    and removed from the pending queue — they are skipped on the next run
-    on future cycles.
-
-    Args:
-
-    Returns the count of games processed.
-    """
-    if not cfg.age_recheck_weeks:
-        return 0
-
-    pending = db.get_pending(platform=platform, sort_order=cfg.sort_order)
-    processed = 0
-    for game in pending:
-        if is_cancelled(cancel_event):
-            break
-        if not _should_age_game(game, cfg.age_recheck_weeks):
-            continue
-
-        db.record_processed(
-            source="metacritic",
-            source_title=str(game.game_title),
-            source_url=f"mc:{game.slug}",
-            game_title=str(game.game_title),
-            platform=str(game.platform),
-            metascore=game.metascore,
-            user_score=game.user_score,
-            result="Processed",
-            result_details=f"Game older than {cfg.age_recheck_weeks}-week threshold, not re-checked",
-        )
-        db.remove_pending(str(game.slug))
-        logger.debug(
-            "Processed '{}' \u2014 release date older than {} weeks",
-            game.game_title,
-            cfg.age_recheck_weeks,
-        )
-        processed += 1
-
-    if processed:
-        logger.info(
-            "Processed {} game(s) older than {} weeks \u2014 skipping on next run",
-            processed,
-            cfg.age_recheck_weeks,
-        )
-    return processed
-
-
 def _process_verify_result(
     db: Database,
     game: Any,
@@ -2083,7 +1771,7 @@ def _process_verify_result(
     *,
     reject_genre: list[str] | None = None,
     reject_title: list[str] | None = None,
-    fitgirl_max_queue_days: int = 60,
+    source_matching_days: int = 60,
 ) -> int:
     """Process one score-check result.
 
@@ -2161,7 +1849,7 @@ def _process_verify_result(
         user_reviews=result.user_review_count,
     )
     if not was_verified:
-        db.update_pending_expiry(str(game.slug), fitgirl_max_queue_days)
+        db.update_pending_expiry(str(game.slug), source_matching_days)
     logger.debug(
         "'{}' passed score check \u2014 ({}, {}) with ({} reviews, {} reviews)",
         game.game_title,
@@ -2226,7 +1914,7 @@ def _process_verify_batch(
     cache_details_days: int = 7,
     reject_genre: list[str] | None = None,
     reject_title: list[str] | None = None,
-    fitgirl_max_queue_days: int = 60,
+    source_matching_days: int = 60,
     cancel_event: CancelSignal | None = None,
 ) -> tuple[int, bool]:
     """Process a batch of pending game lookups concurrently.
@@ -2242,7 +1930,7 @@ def _process_verify_batch(
         cache_details_days: TTL for the detail-page cache.
         reject_genre: Genre substrings to reject.
         reject_title: Title substrings to reject.
-        fitgirl_max_queue_days: Days to extend pending expiry when scores pass.
+        source_matching_days: Days to extend pending expiry when scores pass.
 
     Returns:
         Tuple of ``(removed_count, any_success)`` where *any_success* is True
@@ -2298,7 +1986,7 @@ def _process_verify_batch(
                 thresholds,
                 reject_genre=reject_genre,
                 reject_title=reject_title,
-                fitgirl_max_queue_days=fitgirl_max_queue_days,
+                source_matching_days=source_matching_days,
             )
             if verdict == -2:
                 removed += 1
@@ -2327,7 +2015,7 @@ def _verify_pending_scores(
     max_verify: int = 50,
     reject_genre: list[str] | None = None,
     reject_title: list[str] | None = None,
-    fitgirl_max_queue_days: int = 60,
+    source_matching_days: int = 60,
     notifier: Any = None,
     cancel_event: CancelSignal | None = None,
     sort_order: Literal["new", "criticscore", "userscore"] | None = None,
@@ -2353,7 +2041,7 @@ def _verify_pending_scores(
         mc: MetacriticClient instance.
         platform: Platform identifier (e.g. ``"pc"``).
         thresholds: Dict with score threshold keys.
-        sort_order: Active browse sort order used to order the pending queue
+        sort_order: Pending-queue sort order, independent of the browse order
             (see :meth:`Database.get_pending`).  ``None`` keeps the default
             database order.
         cache_details_days: TTL for the detail-page cache.
@@ -2364,7 +2052,7 @@ def _verify_pending_scores(
             E.g. ``["RPG"]`` matches ``"Action RPG"``, ``"JRPG"``, etc.
         reject_title: List of title substrings to reject (case-insensitive).
             Games whose title contains any entry are removed immediately.
-        fitgirl_max_queue_days: Passed through to _process_verify_result for
+        source_matching_days: Passed through to _process_verify_result for
             expiry recalculation when scores pass.
         notifier: Optional Notifier instance. When provided and every lookup
             in the batch returns None, a scrape notification is sent.
@@ -2395,7 +2083,7 @@ def _verify_pending_scores(
         cache_details_days=cache_details_days,
         reject_genre=reject_genre,
         reject_title=reject_title,
-        fitgirl_max_queue_days=fitgirl_max_queue_days,
+        source_matching_days=source_matching_days,
         cancel_event=cancel_event,
     )
 
@@ -2589,7 +2277,7 @@ def _match_pending_games(
         source_name: Name of the source to match against ("fitgirl").
         platform: Optional platform filter. When provided, only pending games
             matching this platform are processed.
-        sort_order: Active browse sort order used to order the pending queue
+        sort_order: Pending-queue sort order, independent of the browse order
             (see :meth:`Database.get_pending`).  ``None`` keeps the default
             database order.
 

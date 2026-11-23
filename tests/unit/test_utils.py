@@ -224,3 +224,29 @@ class TestYearMonthToDate:
 
         assert year_month_to_date(202511) == "2025-11-01"
         assert year_month_to_date(202401) == "2024-01-01"
+
+
+class TestPagesToMonths:
+    """One page is about one day of PC releases: 24 pages per month."""
+
+    def test_a_month_of_pages_is_one_month(self) -> None:
+        from gamarr.utils import pages_to_months
+
+        assert pages_to_months(24) == 1
+
+    def test_rounding_is_up_and_never_zero(self) -> None:
+        from gamarr.utils import pages_to_months
+
+        assert pages_to_months(1) == 1
+        assert pages_to_months(16) == 1
+        assert pages_to_months(25) == 2
+
+    def test_a_large_budget_matches_the_measured_figure(self) -> None:
+        from gamarr.utils import pages_to_months
+
+        assert pages_to_months(500) == 21
+
+    def test_the_constant_is_named_once(self) -> None:
+        from gamarr.utils import PAGES_PER_MONTH
+
+        assert PAGES_PER_MONTH == 24

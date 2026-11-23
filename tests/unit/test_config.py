@@ -46,8 +46,12 @@ class TestConfigModels:
         assert cfg.name == "fitgirl"
         assert cfg.enabled is True
         assert cfg.platform == "pc"
-        assert cfg.max_queue_days == 60
+        assert cfg.source_matching_days is None, "unset means inherit the top-level window"
         assert cfg.reject_keywords == []
+
+    def test_source_config_entry_has_no_legacy_window(self) -> None:
+        """The queue window is ``source_matching_days``; the legacy key is gone."""
+        assert not hasattr(SourceConfigEntry(name="fitgirl"), "max_queue_days")
 
     def test_source_config_entry_reject_keywords(self) -> None:
         """SourceConfigEntry should have reject_keywords, not exclude_keywords."""
@@ -65,12 +69,12 @@ class TestConfigModels:
         cfg = MetacriticPlatformConfig()
         assert not hasattr(cfg, "max_verify_attempts")
 
-    def test_source_config_entry_max_queue_days_ge_zero(self) -> None:
-        """max_queue_days must be >= 0 (0 disables expiry extension)."""
+    def test_source_config_entry_source_matching_days_ge_zero(self) -> None:
+        """source_matching_days must be >= 0 (0 disables expiry extension)."""
         with pytest.raises(ValidationError):
-            SourceConfigEntry(name="fitgirl", max_queue_days=-1)
-        SourceConfigEntry(name="fitgirl", max_queue_days=0)
-        SourceConfigEntry(name="fitgirl", max_queue_days=1)
+            SourceConfigEntry(name="fitgirl", source_matching_days=-1)
+        SourceConfigEntry(name="fitgirl", source_matching_days=0)
+        SourceConfigEntry(name="fitgirl", source_matching_days=1)
 
     def test_metacritic_platform_config_defaults(self) -> None:
         cfg = MetacriticPlatformConfig()
@@ -79,10 +83,24 @@ class TestConfigModels:
         assert not hasattr(cfg, "days_since_release"), "Field was removed"
         assert not hasattr(cfg, "pending_days"), "Field was renamed to max_queue_days"
         assert not hasattr(cfg, "recheck_days"), "Field was renamed to max_queue_days"
-        assert cfg.max_queue_days == 30
-        assert cfg.max_pages == 500, "Default max_pages should be ~90 days (13 weeks)"
+        assert cfg.discovery.backlog.score.page_depth == 500, "the documented 500-page budget (~21 months)"
         assert not hasattr(cfg, "cutoff_weeks"), "Field was renamed to max_pages"
         assert not hasattr(cfg, "max_games"), "Field was removed — max_pages controls game count"
+
+    def test_flat_discovery_keys_were_removed(self) -> None:
+        """Browsing keys live in ``discovery``; no flat copies remain on the platform config."""
+        cfg = MetacriticPlatformConfig()
+        legacy = (
+            "mode",
+            "max_queue_days",
+            "max_pages",
+            "max_cycle_pages",
+            "max_date",
+            "max_cycle_months",
+            "sort_order",
+        )
+        for name in legacy:
+            assert not hasattr(cfg, name), f"{name} must live in discovery or a per-source window"
 
     def test_cache_details_days_replaces_cache_ttl_days(self) -> None:
         """MetacriticPlatformConfig should use cache_details_days, not cache_ttl_days."""
@@ -207,7 +225,7 @@ class TestConfigModels:
         assert fg_entry["platform"] == "pc"
         assert fg_entry["cache_hours"] == 6
         assert fg_entry["reject_keywords"] == []
-        assert fg_entry["max_queue_days"] == 60
+        assert "source_matching_days" not in fg_entry, "an unset window inherits the top-level default"
 
     def test_migrate_config_upgrades_sparse_freegog_entry(self) -> None:
         """_migrate_config should populate missing fields in an existing sparse freegog entry."""
@@ -228,7 +246,7 @@ class TestConfigModels:
         assert fg_entry["platform"] == "pc", "platform should be populated"
         assert fg_entry["cache_hours"] == 6, "cache_hours should be populated"
         assert fg_entry["reject_keywords"] == [], "reject_keywords should be populated"
-        assert fg_entry["max_queue_days"] == 60, "max_queue_days should be populated"
+        assert "source_matching_days" not in fg_entry, "an unset window inherits the top-level default"
 
     def test_malformed_freegog_entry_does_not_abort_later_migrations(self) -> None:
         from gamarr.config import _migrate_config
@@ -253,7 +271,7 @@ class TestConfigModels:
                         "platform": "pc",
                         "cache_hours": 6,
                         "reject_keywords": [],
-                        "max_queue_days": 60,
+                        "source_matching_days": 60,
                     }
                 },
                 {
@@ -262,7 +280,7 @@ class TestConfigModels:
                         "platform": "pc",
                         "cache_hours": 6,
                         "reject_keywords": [],
-                        "max_queue_days": 60,
+                        "source_matching_days": 60,
                     }
                 },
             ],
@@ -395,24 +413,22 @@ class TestConfigModels:
         assert cfg.review_sites.metacritic.platform_overrides["pc"].min_criticscore == 75
         assert cfg.torrent_client.selected == "qbittorrent"
 
-    def test_max_cycle_pages_default(self) -> None:
-        """MetacriticPlatformConfig.max_cycle_pages defaults to 0."""
-        from gamarr.config import MetacriticPlatformConfig
+    def test_pages_per_cycle_default(self) -> None:
+        """discovery.backlog.score.pages_per_cycle defaults to 0."""
+        from gamarr.config import BacklogScoreConfig
 
-        cfg = MetacriticPlatformConfig()
-        assert cfg.max_cycle_pages == 0
+        assert BacklogScoreConfig().pages_per_cycle == 0
 
-    def test_max_cycle_pages_ge_zero(self) -> None:
-        """max_cycle_pages must be >= 0 (0 or None = unlimited)."""
+    def test_pages_per_cycle_ge_zero(self) -> None:
+        """pages_per_cycle must be >= 0 (0 = unlimited)."""
         from pydantic import ValidationError
 
-        from gamarr.config import MetacriticPlatformConfig
+        from gamarr.config import BacklogScoreConfig
 
-        MetacriticPlatformConfig(max_cycle_pages=0)
-        MetacriticPlatformConfig(max_cycle_pages=None)
-        MetacriticPlatformConfig(max_cycle_pages=4)
+        BacklogScoreConfig(pages_per_cycle=0)
+        BacklogScoreConfig(pages_per_cycle=4)
         with pytest.raises(ValidationError):
-            MetacriticPlatformConfig(max_cycle_pages=-1)
+            BacklogScoreConfig(pages_per_cycle=-1)
 
 
 class TestLoadConfig:
@@ -541,16 +557,20 @@ class TestLoadConfig:
 
     def test_migrate_metacritic_preserves_new_section_values(self) -> None:
         from gamarr.config import _migrate_config
+        from gamarr.utils import current_year_month, subtract_months
 
         raw: dict[str, Any] = {
-            "metacritic": {"platform_overrides": {"pc": {"max_pages": 10}}},
+            "metacritic": {"platform_overrides": {"pc": {"max_pages": 100}}},
             "review_sites": {
-                "metacritic": {"platform_overrides": {"pc": {"max_pages": 20}}},
+                "metacritic": {"platform_overrides": {"pc": {"max_pages": 240}}},
             },
         }
 
         assert _migrate_config(raw) is True
-        assert raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["max_pages"] == 20
+        # The new section's 240 pages (10 months) win over the legacy 100 pages (5 months).
+        pc = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
+        assert pc["discovery"]["backlog"]["new"]["oldest_month"] == subtract_months(current_year_month(), 10)
+        assert "max_pages" not in pc
 
     def test_migrate_sources_to_download_sites(self) -> None:
         """Old sources key is migrated to download_sites."""
@@ -632,7 +652,7 @@ class TestLoadConfig:
         fitgirl = raw["download_sites"][0]["fitgirl"]
         assert fitgirl["reject_keywords"] == ["DLC"]
         assert fitgirl["cache_hours"] == 12
-        assert fitgirl["max_queue_days"] == 30
+        assert fitgirl["source_matching_days"] == 30
         assert "exclude_keywords" not in fitgirl
         assert "cache_ttl_hours" not in fitgirl
         assert "pending_days" not in fitgirl
@@ -646,18 +666,19 @@ class TestLoadConfig:
 
         assert _migrate_config(raw) is True
         fitgirl = raw["download_sites"][0]["fitgirl"]
-        assert fitgirl["max_queue_days"] == 45
+        assert fitgirl["source_matching_days"] == 45
         assert "recheck_days" not in fitgirl
 
     def test_migrate_days_since_release_removes_field(self) -> None:
         """Old days_since_release in metacritic.platform_overrides is removed."""
 
         from gamarr.config import _migrate_config
+        from gamarr.utils import current_year_month, subtract_months
 
         raw: dict[str, Any] = {
             "metacritic": {
                 "platform_overrides": {
-                    "pc": {"days_since_release": 90, "cutoff_weeks": 12},
+                    "pc": {"days_since_release": 90, "cutoff_weeks": 240},
                 },
             },
         }
@@ -666,7 +687,8 @@ class TestLoadConfig:
         pc = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
         assert "days_since_release" not in pc
         assert "cutoff_weeks" not in pc, "cutoff_weeks was renamed to max_pages"
-        assert pc["max_pages"] == 12
+        # cutoff_weeks (240 pages, 10 months) wins over days_since_release (90 days, 1 month).
+        assert pc["discovery"]["backlog"]["new"]["oldest_month"] == subtract_months(current_year_month(), 10)
 
     def test_cutoff_weeks_does_not_overwrite_existing_max_pages(self) -> None:
         from gamarr.config import _migrate_cutoff_weeks_to_max_pages
@@ -684,10 +706,11 @@ class TestLoadConfig:
         assert pc["max_pages"] == 99
         assert "cutoff_weeks" not in pc
 
-    def test_migrate_days_since_release_converts_to_max_pages(self) -> None:
+    def test_migrate_days_since_release_converts_to_a_month_floor(self) -> None:
         """days_since_release without max_pages should be converted."""
 
         from gamarr.config import _migrate_config
+        from gamarr.utils import current_year_month, subtract_months
 
         raw: dict[str, Any] = {
             "metacritic": {
@@ -701,7 +724,8 @@ class TestLoadConfig:
         pc = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
         assert "days_since_release" not in pc
         assert "cutoff_weeks" not in pc, "cutoff_weeks was renamed to max_pages"
-        assert pc["max_pages"] == 17  # 120 / 7 ≈ 17
+        # 120 days -> 4 months of floor, converted directly (no page intermediate)
+        assert pc["discovery"]["backlog"]["new"]["oldest_month"] == subtract_months(current_year_month(), 4)
 
     def test_migrate_pending_days_to_max_queue_days(self) -> None:
         """Old pending_days key is renamed to max_queue_days in metacritic and fitgirl sections."""
@@ -711,7 +735,7 @@ class TestLoadConfig:
         raw: dict[str, Any] = {
             "metacritic": {
                 "platform_overrides": {
-                    "pc": {"pending_days": 30, "cutoff_weeks": 12},
+                    "pc": {"pending_days": 45, "cutoff_weeks": 12},
                 },
             },
             "download_sites": {
@@ -723,13 +747,14 @@ class TestLoadConfig:
         pc = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
         assert "pending_days" not in pc
         assert "recheck_days" not in pc, "recheck_days was renamed to max_queue_days"
-        assert pc["max_queue_days"] == 30
+        assert "max_queue_days" not in pc, "the platform fallback is consumed"
+        assert "source_matching_days" not in raw, "a source sets its own window, so the fallback is unreachable"
         # After migration, entries are in keyed format: {key: {...}}
         fg_entry = next(e for e in raw["download_sites"] if isinstance(e, dict) and "fitgirl" in e)
         fg = fg_entry["fitgirl"]
         assert "pending_days" not in fg
         assert "recheck_days" not in fg, "recheck_days was renamed to max_queue_days"
-        assert fg["max_queue_days"] == 60
+        assert "source_matching_days" not in fg, "the old default 60 is dropped so it inherits the top level"
 
     def test_migrate_pending_days_under_sources_key(self) -> None:
         """Old pending_days under the legacy sources key is also renamed."""
@@ -750,12 +775,13 @@ class TestLoadConfig:
         assert result is True
         assert "sources" not in raw
         assert "recheck_days" not in raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
-        assert raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["max_queue_days"] == 45
+        assert "max_queue_days" not in raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
+        assert "source_matching_days" not in raw, "a source sets its own window, so the fallback is unreachable"
         # After migration, entries are in keyed format: {key: {...}}
         fg_entry = next(e for e in raw["download_sites"] if isinstance(e, dict) and "fitgirl" in e)
         fg = fg_entry["fitgirl"]
         assert "recheck_days" not in fg
-        assert fg["max_queue_days"] == 90
+        assert fg["source_matching_days"] == 90, "a non-default legacy value is kept"
 
     def test_migrate_recheck_days_to_max_queue_days(self) -> None:
         """Old recheck_days keys are renamed to max_queue_days."""
@@ -765,7 +791,7 @@ class TestLoadConfig:
         raw: dict[str, Any] = {
             "metacritic": {
                 "platform_overrides": {
-                    "pc": {"recheck_days": 30, "max_pages": 12},
+                    "pc": {"recheck_days": 45, "max_pages": 12},
                 },
             },
             "download_sites": {
@@ -776,12 +802,13 @@ class TestLoadConfig:
         assert result is True
         pc = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
         assert "recheck_days" not in pc, "recheck_days was renamed to max_queue_days"
-        assert pc["max_queue_days"] == 30
+        assert "max_queue_days" not in pc, "the platform fallback is consumed"
+        assert "source_matching_days" not in raw, "a source sets its own window, so the fallback is unreachable"
         # After migration, entries are in keyed format: {key: {...}}
         fg_entry = next(e for e in raw["download_sites"] if isinstance(e, dict) and "fitgirl" in e)
         fg = fg_entry["fitgirl"]
         assert "recheck_days" not in fg, "recheck_days was renamed to max_queue_days"
-        assert fg["max_queue_days"] == 60
+        assert "source_matching_days" not in fg, "the old default 60 is dropped so it inherits the top level"
 
     def test_migrate_metacritic_exclude_keywords_returns_true(self) -> None:
         """_migrate_metacritic_exclude_keywords should return True when it deletes a key."""
@@ -1406,34 +1433,33 @@ def test_migrate_remove_fitgirl_feed_url_strips_rss_url() -> None:
 
 
 class TestSortOrder:
-    """sort_order config key for year-specific Metacritic browsing."""
+    """discovery.backlog.sort_order selects score-based Metacritic browsing."""
 
     def test_sort_order_defaults_to_new(self) -> None:
-        """Default sort_order must be "new" (newest-first) for valid
+        """The backlog block must default to "new" (newest-first) for valid
         Metacritic browse URLs. Score-based sorts (criticscore/userscore)
-        browse all-time and are filtered by cutoff."""
-        from gamarr.config import MetacriticPlatformConfig
+        browse all-time and are filtered by the discovery window."""
+        from gamarr.config import BacklogDiscoveryConfig
 
-        cfg = MetacriticPlatformConfig()
-        assert cfg.sort_order == "new"
+        assert BacklogDiscoveryConfig().sort_order == "new"
 
     def test_sort_order_accepts_three_values(self) -> None:
-        from gamarr.config import MetacriticPlatformConfig
+        from gamarr.config import BacklogDiscoveryConfig
 
-        assert MetacriticPlatformConfig(sort_order="new").sort_order == "new"
-        assert MetacriticPlatformConfig(sort_order="criticscore").sort_order == "criticscore"
-        assert MetacriticPlatformConfig(sort_order="userscore").sort_order == "userscore"
+        assert BacklogDiscoveryConfig(sort_order="new").sort_order == "new"
+        assert BacklogDiscoveryConfig(sort_order="criticscore").sort_order == "criticscore"
+        assert BacklogDiscoveryConfig(sort_order="userscore").sort_order == "userscore"
 
     def test_sort_order_rejects_metascore_and_unknown(self) -> None:
         import pydantic
         import pytest
 
-        from gamarr.config import MetacriticPlatformConfig
+        from gamarr.config import BacklogDiscoveryConfig
 
         with pytest.raises(pydantic.ValidationError):
-            MetacriticPlatformConfig(sort_order="metascore")  # type: ignore[arg-type]
+            BacklogDiscoveryConfig(sort_order="metascore")  # type: ignore[arg-type]
         with pytest.raises(pydantic.ValidationError):
-            MetacriticPlatformConfig(sort_order="bogus")  # type: ignore[arg-type]
+            BacklogDiscoveryConfig(sort_order="bogus")  # type: ignore[arg-type]
 
 
 def test_drop_migrated_deprecated_keys_no_deprecated() -> None:
@@ -1604,7 +1630,7 @@ class TestSortOrderCriticMigration:
         )
         cfg = load_config(path)
         mc = cfg.review_sites.metacritic.platform_overrides["pc"]
-        assert mc.sort_order == "criticscore"
+        assert mc.discovery.backlog.sort_order == "criticscore"
         assert mc.min_criticscore == 80
         assert mc.min_criticscore_reviews == 15
 
@@ -1644,7 +1670,7 @@ class TestSortOrderCriticMigration:
             "review_sites:\n  metacritic:\n    platform_overrides:\n      pc:\n        sort_order: userscore\n",
         )
         cfg = load_config(path)
-        assert cfg.review_sites.metacritic.platform_overrides["pc"].sort_order == "userscore"
+        assert cfg.review_sites.metacritic.platform_overrides["pc"].discovery.backlog.sort_order == "userscore"
 
     def test_legacy_top_level_metacritic_layout_migrates(self, tmp_path: Path) -> None:
         """A legacy top-level metacritic: block must still migrate the rename."""
@@ -1656,7 +1682,7 @@ class TestSortOrderCriticMigration:
         )
         cfg = load_config(path)
         mc = cfg.review_sites.metacritic.platform_overrides["pc"]
-        assert mc.sort_order == "criticscore"
+        assert mc.discovery.backlog.sort_order == "criticscore"
         assert mc.min_criticscore == 80
 
     def test_read_only_config_does_not_abort_startup(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1694,7 +1720,9 @@ class TestSortOrderCriticMigration:
             logger.remove(sink_id)
 
         mc = cfg.review_sites.metacritic.platform_overrides["pc"]
-        assert mc.sort_order == "criticscore", "migrated in-memory config must load despite read-only file"
+        assert mc.discovery.backlog.sort_order == "criticscore", (
+            "migrated in-memory config must load despite read-only file"
+        )
         assert path.read_text() == original, "a failed rewrite must leave the file untouched"
         assert any("Could not rewrite config file" in m for m in captured), captured
 
@@ -1710,9 +1738,9 @@ class TestSortOrderCriticMigration:
         cfg = load_config(path)
         pc = cfg.review_sites.metacritic.platform_overrides["pc"]
         ps5 = cfg.review_sites.metacritic.platform_overrides["ps5"]
-        assert pc.sort_order == "criticscore"
+        assert pc.discovery.backlog.sort_order == "criticscore"
         assert pc.min_criticscore == 80
-        assert ps5.sort_order == "userscore", "userscore must pass through untouched"
+        assert ps5.discovery.backlog.sort_order == "userscore", "userscore must pass through untouched"
         assert ps5.min_criticscore_reviews == 15
 
     def test_rewrite_retries_on_next_startup(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1741,88 +1769,88 @@ class TestSortOrderCriticMigration:
 
         monkeypatch.undo()  # filesystem becomes writable again
         cfg = load_config(path)
-        assert cfg.review_sites.metacritic.platform_overrides["pc"].sort_order == "criticscore"
+        assert cfg.review_sites.metacritic.platform_overrides["pc"].discovery.backlog.sort_order == "criticscore"
         rewritten = path.read_text()
         assert "min_metascore" not in rewritten
         assert "sort_order: criticscore" in rewritten, "the second load must persist the migration"
 
 
-class TestMaxDateConfig:
-    """Tests for the max_date / max_cycle_months config keys."""
+class TestDiscoveryWindowConfig:
+    """The discovery floor and pace keys (oldest_month / months_per_cycle)."""
 
-    def test_defaults_are_zero(self) -> None:
-        """Both date keys default to 0 (disabled / no pacing)."""
-        from gamarr.config import MetacriticPlatformConfig
+    def test_defaults_are_no_floor_and_one_month_of_pace(self) -> None:
+        """The latest block defaults to no floor and one month of pace."""
+        from gamarr.config import LatestDiscoveryConfig
 
-        cfg = MetacriticPlatformConfig()
-        assert cfg.max_date == 0
-        assert cfg.max_cycle_months == 0
+        latest = LatestDiscoveryConfig()
+        assert latest.oldest_month == 0
+        assert latest.months_per_cycle == 1
 
     @pytest.mark.parametrize("value", [0, 195801, 202401])
     def test_accepts_zero_and_valid_year_month(self, value: int) -> None:
-        """0 disables date mode; a real YYYYMM month is accepted."""
-        from gamarr.config import MetacriticPlatformConfig
+        """0 disables the floor; a real YYYYMM month is accepted."""
+        from gamarr.config import LatestDiscoveryConfig
 
-        assert MetacriticPlatformConfig(max_date=value).max_date == value
+        assert LatestDiscoveryConfig(oldest_month=value).oldest_month == value
 
     @pytest.mark.parametrize("value", [2024, 202413, 202400, -202401, 999, 100801, 195701])
     def test_rejects_invalid_values(self, value: int) -> None:
         """Anything that is not 0 or a valid YYYYMM month is a config error."""
-        from gamarr.config import MetacriticPlatformConfig
+        from gamarr.config import LatestDiscoveryConfig
 
         with pytest.raises(ValidationError) as excinfo:
-            MetacriticPlatformConfig(max_date=value)
-        assert "max_date must be 0 (disabled) or YYYYMM with month 01-12" in str(excinfo.value)
+            LatestDiscoveryConfig(oldest_month=value)
+        assert "oldest_month must be 0 (no floor) or YYYYMM with month 01-12" in str(excinfo.value)
 
     def test_rejects_dashed_string(self) -> None:
         """A dashed date string is not an integer and must fail validation."""
-        from gamarr.config import MetacriticPlatformConfig
+        from gamarr.config import LatestDiscoveryConfig
 
         with pytest.raises(ValidationError):
-            MetacriticPlatformConfig(max_date="2024-01")  # type: ignore[arg-type]
+            LatestDiscoveryConfig(oldest_month="2024-01")  # type: ignore[arg-type]
 
-    def test_future_max_date_clamps_to_current_month(self) -> None:
+    def test_future_floor_clamps_to_current_month(self) -> None:
         """A future floor would sweep nothing, so it clamps with a warning."""
         import datetime
 
         from loguru import logger as loguru_logger
 
-        from gamarr.config import MetacriticPlatformConfig
+        from gamarr.config import LatestDiscoveryConfig
 
         now = datetime.datetime.now(tz=datetime.UTC)
         future = (now.year + 2) * 100 + now.month
         captured: list[str] = []
         sink_id = loguru_logger.add(lambda msg: captured.append(str(msg)), level="WARNING", format="{message}")
         try:
-            cfg = MetacriticPlatformConfig(max_date=future)
+            latest = LatestDiscoveryConfig(oldest_month=future)
         finally:
             loguru_logger.remove(sink_id)
-        assert cfg.max_date == now.year * 100 + now.month
+        assert latest.oldest_month == now.year * 100 + now.month
         assert any("clamping to" in line for line in captured), captured
 
-    def test_max_cycle_months_rejects_negative(self) -> None:
-        """max_cycle_months is never negative."""
-        from gamarr.config import MetacriticPlatformConfig
+    def test_months_per_cycle_rejects_negative(self) -> None:
+        """months_per_cycle is never negative."""
+        from gamarr.config import LatestDiscoveryConfig
 
         with pytest.raises(ValidationError):
-            MetacriticPlatformConfig(max_cycle_months=-1)
+            LatestDiscoveryConfig(months_per_cycle=-1)
 
-    def test_platform_override_carries_date_keys(self) -> None:
-        """Both keys work inside review_sites.metacritic.platform_overrides."""
+    def test_platform_override_carries_the_window(self) -> None:
+        """The window works inside review_sites.metacritic.platform_overrides."""
         from gamarr.config import Config
 
         cfg = Config(
             review_sites={
                 "metacritic": {
                     "platform_overrides": {
-                        "pc": {"max_date": 202401, "max_cycle_months": 3},
+                        "pc": {"discovery": {"latest": {"oldest_month": 202401, "months_per_cycle": 3}}},
                     },
                 },
             },  # type: ignore[arg-type]
         )
-        pc = cfg.review_sites.metacritic.platform_overrides["pc"]
-        assert pc.max_date == 202401
-        assert pc.max_cycle_months == 3
+        latest = cfg.review_sites.metacritic.platform_overrides["pc"].discovery.latest
+        assert latest.oldest_month == 202401
+        assert latest.months_per_cycle == 3
 
 
 class TestCacheHoursRename:
@@ -1931,21 +1959,678 @@ class TestCacheHoursRename:
 class TestDiscoveryModeConfig:
     """mode: latest | backlog."""
 
-    def test_default_is_backlog(self) -> None:
+    def test_default_is_latest(self) -> None:
         from gamarr.config import MetacriticPlatformConfig
 
-        assert MetacriticPlatformConfig().mode == "backlog"
+        assert MetacriticPlatformConfig().discovery.mode == "latest"
 
-    def test_accepts_latest(self) -> None:
-        from gamarr.config import MetacriticPlatformConfig
+    def test_accepts_backlog(self) -> None:
+        from gamarr.config import DiscoveryConfig, MetacriticPlatformConfig
 
-        assert MetacriticPlatformConfig(mode="latest").mode == "latest"
+        backlog = DiscoveryConfig(mode="backlog")
+        assert MetacriticPlatformConfig(discovery=backlog).discovery.mode == "backlog"
 
     def test_rejects_unknown_mode(self) -> None:
         import pytest
         from pydantic import ValidationError
 
-        from gamarr.config import MetacriticPlatformConfig
+        from gamarr.config import DiscoveryConfig
 
         with pytest.raises(ValidationError):
-            MetacriticPlatformConfig(mode="newest")  # type: ignore[arg-type]
+            DiscoveryConfig(mode="newest")  # type: ignore[arg-type]
+
+
+class TestDiscoveryConfig:
+    """The per-mode discovery blocks (ADR 0001, 0003, 0005)."""
+
+    def _defaults(self) -> Any:
+        from gamarr.config import MetacriticPlatformConfig
+
+        return MetacriticPlatformConfig().discovery
+
+    def test_default_mode_is_latest_with_one_month_of_pace(self) -> None:
+        discovery = self._defaults()
+        assert discovery.mode == "latest"
+        assert discovery.latest.oldest_month == 0
+        assert discovery.latest.months_per_cycle == 1
+
+    def test_backlog_defaults_keep_todays_shape(self) -> None:
+        backlog = self._defaults().backlog
+        assert backlog.sort_order == "new"
+        assert backlog.new.oldest_month == 0
+        assert backlog.new.months_per_cycle == 0
+        assert backlog.score.page_depth == 500
+        assert backlog.score.pages_per_cycle == 0
+
+    def test_latest_has_no_page_keys(self) -> None:
+        from pydantic import ValidationError
+
+        from gamarr.config import LatestDiscoveryConfig
+
+        with pytest.raises(ValidationError):
+            LatestDiscoveryConfig.model_validate({"page_depth": 500})
+
+    def test_a_legacy_key_inside_a_block_is_an_error(self) -> None:
+        from pydantic import ValidationError
+
+        from gamarr.config import BacklogDiscoveryConfig
+
+        with pytest.raises(ValidationError):
+            BacklogDiscoveryConfig.model_validate({"sort_order": "new", "new": {"max_date": 202001}})
+
+    def test_oldest_month_is_clamped_when_in_the_future(self) -> None:
+        from gamarr.config import LatestDiscoveryConfig
+        from gamarr.utils import current_year_month, subtract_months
+
+        future = current_year_month() + 100
+        assert LatestDiscoveryConfig(oldest_month=future).oldest_month == current_year_month()
+        assert LatestDiscoveryConfig(oldest_month=202001).oldest_month == 202001
+        assert subtract_months(current_year_month(), 1) > 0
+
+    def test_oldest_month_rejects_a_bad_month_and_an_early_year(self) -> None:
+        from pydantic import ValidationError
+
+        from gamarr.config import LatestDiscoveryConfig
+
+        with pytest.raises(ValidationError):
+            LatestDiscoveryConfig(oldest_month=202013)
+        with pytest.raises(ValidationError):
+            LatestDiscoveryConfig(oldest_month=195701)
+
+    def test_page_depth_rejects_a_negative_value(self) -> None:
+        from pydantic import ValidationError
+
+        from gamarr.config import BacklogScoreConfig
+
+        with pytest.raises(ValidationError):
+            BacklogScoreConfig(page_depth=-1)
+
+    def test_months_per_cycle_is_capped(self) -> None:
+        from pydantic import ValidationError
+
+        from gamarr.config import LatestDiscoveryConfig
+
+        assert LatestDiscoveryConfig(months_per_cycle=1200).months_per_cycle == 1200
+        with pytest.raises(ValidationError):
+            LatestDiscoveryConfig(months_per_cycle=1201)
+
+
+class TestQueueConfig:
+    """`pending_order` and `source_matching_days` (ADR 0004, 0006)."""
+
+    def test_pending_order_defaults_to_new_at_metacritic_level(self) -> None:
+        from gamarr.config import MetacriticConfig
+
+        assert MetacriticConfig().pending_order == "new"
+
+    def test_top_level_source_matching_days_defaults_to_60(self) -> None:
+        from gamarr.config import Config
+
+        assert Config().source_matching_days == 60
+
+    def test_a_source_overrides_the_window(self) -> None:
+        from gamarr.config import SourceConfigEntry
+
+        entry = SourceConfigEntry(name="fitgirl", source_matching_days=90)
+        assert entry.source_matching_days == 90
+        assert SourceConfigEntry(name="fitgirl").source_matching_days is None, "unset inherits the top-level window"
+
+    def test_pending_order_rejects_an_unknown_value(self) -> None:
+        from pydantic import ValidationError
+
+        from gamarr.config import MetacriticConfig
+
+        with pytest.raises(ValidationError):
+            MetacriticConfig(pending_order="metascore")  # type: ignore[arg-type]
+
+
+class TestDiscoveryBlockMigration:
+    """Legacy flat keys move into the per-mode blocks (ADR 0001, 0007)."""
+
+    def _migrate(self, platform: dict[str, Any], **metacritic: Any) -> dict[str, Any]:
+        from gamarr.config import _migrate_config
+
+        raw: dict[str, Any] = {"review_sites": {"metacritic": {"platform_overrides": {"pc": platform}, **metacritic}}}
+        _migrate_config(raw)
+        return raw
+
+    def test_latest_floor_and_pace_move_into_the_latest_block(self) -> None:
+        raw = self._migrate({"mode": "latest", "max_date": 202601, "max_cycle_months": 1, "sort_order": "new"})
+        discovery = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["discovery"]
+        assert discovery["mode"] == "latest"
+        assert discovery["latest"] == {"oldest_month": 202601, "months_per_cycle": 1}
+        assert "max_date" not in raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
+
+    def test_latest_page_depth_converts_to_a_month_pace(self) -> None:
+        raw = self._migrate({"mode": "latest", "max_pages": 1000, "sort_order": "new"})
+        latest = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["discovery"]["latest"]
+        assert latest["months_per_cycle"] == 42
+
+    def test_latest_drops_the_page_keys_it_never_read(self) -> None:
+        raw = self._migrate({"mode": "latest", "max_date": 202601, "max_cycle_pages": 16, "max_pages": 1000})
+        latest = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["discovery"]["latest"]
+        assert latest == {"oldest_month": 202601, "months_per_cycle": 0}, "the old cycle read to its floor"
+        assert "max_pages" not in raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
+
+    def test_backlog_new_page_budget_becomes_a_floor(self) -> None:
+        from gamarr.utils import current_year_month, subtract_months
+
+        raw = self._migrate({"mode": "backlog", "max_pages": 48, "sort_order": "new"})
+        new_block = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["discovery"]["backlog"]["new"]
+        assert new_block["oldest_month"] == subtract_months(current_year_month(), 2)
+
+    def test_backlog_score_keeps_the_page_keys(self) -> None:
+        raw = self._migrate({"mode": "backlog", "max_pages": 40, "max_cycle_pages": 5, "sort_order": "criticscore"})
+        backlog = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["discovery"]["backlog"]
+        assert backlog["sort_order"] == "criticscore"
+        assert backlog["score"] == {"page_depth": 40, "pages_per_cycle": 5}
+
+    def test_sort_order_feeds_the_shared_pending_order(self) -> None:
+        raw = self._migrate({"mode": "backlog", "sort_order": "userscore"})
+        metacritic = raw["review_sites"]["metacritic"]
+        assert metacritic["pending_order"] == "userscore"
+
+    def test_a_latest_config_does_not_write_a_backlog_sort_order(self) -> None:
+        raw = self._migrate({"mode": "latest", "sort_order": "new"})
+        backlog = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["discovery"].get("backlog", {})
+        assert "sort_order" not in backlog
+
+    def test_an_existing_block_wins_over_the_legacy_key(self) -> None:
+        raw = self._migrate({"max_date": 202001, "discovery": {"latest": {"oldest_month": 202501}}})
+        latest = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["discovery"]["latest"]
+        assert latest["oldest_month"] == 202501
+
+    def test_a_migrated_file_loads_and_reloads_identically(self, tmp_path: Path) -> None:
+        path = tmp_path / "gamarr.yml"
+        path.write_text(
+            "review_sites:\n"
+            "  metacritic:\n"
+            "    platform_overrides:\n"
+            "      pc:\n"
+            "        mode: latest\n"
+            "        max_date: 202601\n"
+            "        max_cycle_months: 1\n"
+            "        max_pages: 1000\n"
+            "        max_cycle_pages: 16\n"
+            "        sort_order: new\n",
+            encoding="utf-8",
+        )
+        first = load_config(path)
+        second = load_config(path)
+        assert first.review_sites.metacritic.platform_overrides["pc"].discovery.model_dump() == (
+            second.review_sites.metacritic.platform_overrides["pc"].discovery.model_dump()
+        )
+        written = path.read_text(encoding="utf-8")
+        assert "max_pages: 1000" not in written, "the migrated page budget must not stay on disk"
+        assert "max_cycle_pages: 16" not in written
+        assert "oldest_month: 202601" in written, "the migrated floor must be written to disk"
+
+
+class TestSourceMatchingDaysMigration:
+    """Three keys collapse into one, overridable per source (ADR 0004)."""
+
+    def _migrate(self, raw: dict[str, Any]) -> dict[str, Any]:
+        from gamarr.config import _migrate_config
+
+        _migrate_config(raw)
+        return raw
+
+    def test_a_source_key_is_renamed(self) -> None:
+        raw = self._migrate({"download_sites": [{"fitgirl": {"max_queue_days": 90}}]})
+        assert raw["download_sites"][0]["fitgirl"]["source_matching_days"] == 90
+        assert "max_queue_days" not in raw["download_sites"][0]["fitgirl"]
+
+    def test_the_metacritic_fallback_is_hoisted(self) -> None:
+        raw = self._migrate(
+            {
+                "review_sites": {"metacritic": {"max_queue_days": 45, "platform_overrides": {"pc": {}}}},
+                "download_sites": [{"fitgirl": {"enabled": True}}],
+            }
+        )
+        assert raw["source_matching_days"] == 45
+        assert "max_queue_days" not in raw["review_sites"]["metacritic"]
+
+    def test_the_existing_top_level_value_wins(self) -> None:
+        raw = self._migrate(
+            {
+                "source_matching_days": 12,
+                "review_sites": {"metacritic": {"max_queue_days": 45, "platform_overrides": {"pc": {}}}},
+            }
+        )
+        assert raw["source_matching_days"] == 12
+        assert "max_queue_days" not in raw["review_sites"]["metacritic"]
+
+    def test_a_negative_source_window_means_never_expire(self) -> None:
+        raw = self._migrate({"download_sites": [{"fitgirl": {"max_queue_days": -1}}]})
+        assert raw["download_sites"][0]["fitgirl"]["source_matching_days"] == 0
+        assert "max_queue_days" not in raw["download_sites"][0]["fitgirl"]
+
+    def test_a_renamed_source_key_wins(self) -> None:
+        raw = self._migrate({"download_sites": [{"fitgirl": {"max_queue_days": 90, "source_matching_days": 15}}]})
+        assert raw["download_sites"][0]["fitgirl"]["source_matching_days"] == 15
+        assert "max_queue_days" not in raw["download_sites"][0]["fitgirl"]
+
+    def test_a_sparse_freegog_keeps_its_legacy_window(self) -> None:
+        raw = self._migrate({"download_sites": [{"freegog": {"max_queue_days": 10}}]})
+        assert raw["download_sites"][0]["freegog"]["source_matching_days"] == 10
+
+
+class TestDiscoveryMigrationBranches:
+    """Each migration branch is deterministic: convert, ignore, or skip."""
+
+    def _migrate(self, raw: dict[str, Any]) -> dict[str, Any]:
+        from gamarr.config import _migrate_config
+
+        _migrate_config(raw)
+        return raw
+
+    def test_a_latest_page_depth_is_dropped_when_a_floor_is_set(self) -> None:
+        raw = self._migrate(
+            {
+                "review_sites": {
+                    "metacritic": {
+                        "platform_overrides": {"pc": {"mode": "latest", "max_date": 202601, "max_pages": 900}}
+                    }
+                }
+            }
+        )
+        latest = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["discovery"]["latest"]
+        assert latest == {"oldest_month": 202601, "months_per_cycle": 0}, "the old cycle read to its floor"
+
+    def test_a_latest_cycle_pace_is_dropped(self) -> None:
+        raw = self._migrate(
+            {"review_sites": {"metacritic": {"platform_overrides": {"pc": {"mode": "latest", "max_cycle_pages": 5}}}}}
+        )
+        discovery = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["discovery"]
+        assert discovery["latest"]["months_per_cycle"] == 21, "the old default page reach is kept"
+
+    def test_a_backlog_page_budget_is_dropped_when_a_floor_is_set(self) -> None:
+        raw = self._migrate(
+            {
+                "review_sites": {
+                    "metacritic": {
+                        "platform_overrides": {
+                            "pc": {"mode": "backlog", "max_date": 202001, "max_pages": 900, "sort_order": "new"}
+                        }
+                    }
+                }
+            }
+        )
+        new_block = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["discovery"]["backlog"]["new"]
+        assert new_block == {"oldest_month": 202001}
+
+    def test_a_backlog_page_pace_is_dropped_when_a_month_pace_is_set(self) -> None:
+        raw = self._migrate(
+            {
+                "review_sites": {
+                    "metacritic": {
+                        "platform_overrides": {
+                            "pc": {
+                                "mode": "backlog",
+                                "max_cycle_months": 3,
+                                "max_cycle_pages": 900,
+                                "sort_order": "new",
+                            }
+                        }
+                    }
+                }
+            }
+        )
+        new_block = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["discovery"]["backlog"]["new"]
+        assert new_block["months_per_cycle"] == 3, "the legacy pace is kept"
+        assert new_block["oldest_month"], "a pace-only legacy config still gets the default floor"
+
+    def test_a_non_mapping_source_entry_is_skipped(self) -> None:
+        from gamarr.config import _migrate_source_matching_days
+
+        assert _migrate_source_matching_days({"download_sites": ["broken"]}) is False
+        assert _migrate_source_matching_days({"download_sites": "not-a-list"}) is False
+
+    def test_a_missing_discovery_shape_is_skipped(self) -> None:
+        from gamarr.config import _migrate_discovery_blocks, _migrate_metacritic_window
+
+        assert _migrate_discovery_blocks({"download_sites": []}) is False
+        assert _migrate_discovery_blocks({"review_sites": {"metacritic": {}}}) is False
+        assert _migrate_metacritic_window({"review_sites": []}, False) is False
+        assert _migrate_metacritic_window({"review_sites": {"metacritic": {}}}, False) is False
+
+
+class TestLegacyValueConversion:
+    """Legacy values convert to usable bounds, or are dropped as unset (ADR 0007)."""
+
+    def _migrate(self, platform: dict[str, Any]) -> dict[str, Any]:
+        from gamarr.config import _migrate_config
+
+        raw: dict[str, Any] = {"review_sites": {"metacritic": {"platform_overrides": {"pc": platform}}}}
+        _migrate_config(raw)
+        discovery: dict[str, Any] = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["discovery"]
+        return discovery
+
+    def test_a_huge_page_budget_is_clamped_to_a_usable_floor(self) -> None:
+        from gamarr.config import DiscoveryConfig
+        from gamarr.utils import EARLIEST_BROWSE_YEAR
+
+        discovery = self._migrate({"mode": "backlog", "max_pages": 20000, "sort_order": "new"})
+        assert discovery["backlog"]["new"]["oldest_month"] == EARLIEST_BROWSE_YEAR * 100 + 1
+        DiscoveryConfig.model_validate(discovery)
+
+    def test_a_huge_latest_budget_is_clamped_to_the_pace_cap(self) -> None:
+        from gamarr.config import DiscoveryConfig
+
+        discovery = self._migrate({"mode": "latest", "max_pages": 30000})
+        assert discovery["latest"]["months_per_cycle"] == 1200
+        DiscoveryConfig.model_validate(discovery)
+
+    def test_zero_page_keys_are_not_converted_into_bounds(self) -> None:
+        from gamarr.utils import current_year_month, pages_to_months, subtract_months
+
+        discovery = self._migrate({"mode": "backlog", "max_pages": 0, "max_cycle_pages": 0, "sort_order": "new"})
+        expected = subtract_months(current_year_month(), pages_to_months(500))
+        assert discovery["backlog"]["new"]["oldest_month"] == expected, "0 is unset, so the old default reach applies"
+
+    def test_an_explicit_zero_latest_budget_becomes_one_month(self) -> None:
+        discovery = self._migrate({"mode": "latest", "max_pages": 0, "max_cycle_pages": 0})
+        assert discovery["latest"]["months_per_cycle"] == 1, "ADR 0007 converts every page count to at least one month"
+
+    def test_numeric_strings_and_integral_floats_are_accepted(self) -> None:
+        discovery = self._migrate({"mode": "backlog", "max_date": "202401", "max_pages": 500.0, "sort_order": "new"})
+        assert discovery["backlog"]["new"]["oldest_month"] == 202401
+
+    def test_the_platform_window_is_hoisted(self) -> None:
+        from gamarr.config import _migrate_config
+
+        raw: dict[str, Any] = {"review_sites": {"metacritic": {"platform_overrides": {"pc": {"max_queue_days": 45}}}}}
+        _migrate_config(raw)
+        assert raw["source_matching_days"] == 45
+        assert "max_queue_days" not in raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
+
+    def test_a_huge_legacy_budget_still_loads(self, tmp_path: Path) -> None:
+        from gamarr.utils import EARLIEST_BROWSE_YEAR
+
+        path = tmp_path / "gamarr.yml"
+        path.write_text(
+            "review_sites:\n"
+            "  metacritic:\n"
+            "    platform_overrides:\n"
+            "      pc:\n"
+            "        mode: backlog\n"
+            "        max_pages: 20000\n"
+            "        sort_order: new\n",
+            encoding="utf-8",
+        )
+        cfg = load_config(path)
+        block = cfg.review_sites.metacritic.platform_overrides["pc"].discovery.backlog.new
+        assert block.oldest_month == EARLIEST_BROWSE_YEAR * 100 + 1
+
+    def test_date_keys_migrate_into_the_new_block_under_a_score_sort(self) -> None:
+        discovery = self._migrate(
+            {"mode": "backlog", "max_date": 202001, "max_cycle_months": 3, "sort_order": "criticscore"}
+        )
+        assert discovery["backlog"]["new"] == {"oldest_month": 202001, "months_per_cycle": 3}
+
+    def test_a_page_pace_converts_when_no_month_pace_is_set(self) -> None:
+        discovery = self._migrate({"mode": "backlog", "max_cycle_pages": 48, "sort_order": "new"})
+        assert discovery["backlog"]["new"]["months_per_cycle"] == 2
+
+    def test_a_floored_latest_without_a_pace_reads_to_the_floor(self) -> None:
+        discovery = self._migrate({"mode": "latest", "max_date": 202601})
+        assert discovery["latest"] == {"oldest_month": 202601, "months_per_cycle": 0}
+
+    def test_an_unusable_page_budget_falls_back_to_the_default(self) -> None:
+        from gamarr.utils import current_year_month, pages_to_months, subtract_months
+
+        discovery = self._migrate({"mode": "backlog", "max_pages": "not-a-number", "sort_order": "new"})
+        expected = subtract_months(current_year_month(), pages_to_months(500))
+        assert discovery["backlog"]["new"]["oldest_month"] == expected
+
+    def test_an_unusable_date_value_falls_back_to_the_default_floor(self) -> None:
+        from gamarr.utils import current_year_month, pages_to_months, subtract_months
+
+        discovery = self._migrate({"mode": "backlog", "max_date": "2024-01", "sort_order": "new"})
+        expected = subtract_months(current_year_month(), pages_to_months(500))
+        assert discovery["backlog"]["new"]["oldest_month"] == expected
+
+    def test_a_non_mapping_discovery_value_does_not_abort_the_migration(self) -> None:
+        from gamarr.config import _migrate_config
+
+        raw: dict[str, Any] = {
+            "review_sites": {
+                "metacritic": {"platform_overrides": {"pc": {"mode": "backlog", "discovery": None, "max_date": 202001}}}
+            }
+        }
+        _migrate_config(raw)
+        pc = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
+        assert pc["discovery"]["mode"] == "backlog"
+        assert pc["discovery"]["backlog"]["new"]["oldest_month"] == 202001
+
+    def test_a_quoted_old_default_window_is_dropped(self) -> None:
+        from gamarr.config import _migrate_config
+
+        raw: dict[str, Any] = {"review_sites": {"metacritic": {"platform_overrides": {"pc": {"max_queue_days": "30"}}}}}
+        _migrate_config(raw)
+        assert "source_matching_days" not in raw
+
+    def test_an_exotic_string_window_does_not_abort_the_migration(self) -> None:
+        from gamarr.config import _migrate_config
+
+        raw: dict[str, Any] = {
+            "review_sites": {"metacritic": {"platform_overrides": {"pc": {"max_queue_days": "--5"}}}}
+        }
+        assert _migrate_config(raw) is True
+        assert "max_queue_days" not in raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
+
+    def test_a_score_sort_keeps_an_explicit_zero_page_budget(self) -> None:
+        discovery = self._migrate(
+            {"mode": "backlog", "max_pages": 0, "max_cycle_pages": 0, "sort_order": "criticscore"}
+        )
+        assert discovery["backlog"]["score"] == {"page_depth": 0, "pages_per_cycle": 0}
+
+    def test_an_existing_block_mode_keeps_its_selection(self) -> None:
+        from gamarr.config import _migrate_config
+
+        raw: dict[str, Any] = {
+            "review_sites": {
+                "metacritic": {
+                    "platform_overrides": {
+                        "pc": {
+                            "max_date": 202001,
+                            "discovery": {"mode": "latest", "latest": {"oldest_month": 202501}},
+                        }
+                    }
+                }
+            }
+        }
+        _migrate_config(raw)
+        pc = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
+        assert pc["discovery"]["mode"] == "latest", "the block's own mode wins"
+        assert pc["discovery"]["latest"]["oldest_month"] == 202501, "the block keeps its floor"
+        assert "max_date" not in pc, "the losing legacy key is consumed, not left on disk"
+
+    def test_an_explicit_zero_floor_wins_over_a_legacy_key(self) -> None:
+        from gamarr.config import _migrate_config
+
+        raw: dict[str, Any] = {
+            "review_sites": {
+                "metacritic": {
+                    "platform_overrides": {
+                        "pc": {"max_date": 202001, "discovery": {"mode": "latest", "latest": {"oldest_month": 0}}}
+                    }
+                }
+            }
+        }
+        _migrate_config(raw)
+        pc = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
+        assert pc["discovery"]["latest"]["oldest_month"] == 0, "an explicit no-floor is a real value"
+        assert "max_date" not in pc, "the losing legacy key is consumed"
+
+    def test_migrate_config_preserves_an_unrelated_key(self) -> None:
+        from gamarr.config import _migrate_config
+
+        raw: dict[str, Any] = {
+            "review_sites": {"metacritic": {"platform_overrides": {"pc": {"mode": "latest", "reject_genre": ["RPG"]}}}}
+        }
+        _migrate_config(raw)
+        assert raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["reject_genre"] == ["RPG"]
+
+    def test_a_mixed_file_migrates_the_keys_the_block_does_not_set(self) -> None:
+        from gamarr.config import _migrate_config
+
+        raw: dict[str, Any] = {
+            "review_sites": {
+                "metacritic": {
+                    "platform_overrides": {
+                        "pc": {
+                            "mode": "latest",
+                            "sort_order": "userscore",
+                            "max_date": 202001,
+                            "discovery": {"mode": "latest", "latest": {"oldest_month": 202501}},
+                        }
+                    }
+                }
+            }
+        }
+        _migrate_config(raw)
+        metacritic = raw["review_sites"]["metacritic"]
+        pc = metacritic["platform_overrides"]["pc"]
+        assert pc["discovery"]["latest"]["oldest_month"] == 202501, "the block wins"
+        assert metacritic["pending_order"] == "userscore", "the unset shared key still migrates"
+        assert "sort_order" not in pc and "max_date" not in pc, "consumed keys are dropped from the file"
+
+    def test_a_negative_window_migrates_to_never_expire(self) -> None:
+        from gamarr.config import _migrate_config
+
+        raw: dict[str, Any] = {"review_sites": {"metacritic": {"platform_overrides": {"pc": {"max_queue_days": -1}}}}}
+        _migrate_config(raw)
+        assert raw["source_matching_days"] == 0
+
+    def test_empty_switch_blocks_are_pruned(self) -> None:
+        assert self._migrate({"mode": "latest"}) == {"mode": "latest", "latest": {"months_per_cycle": 21}}
+        assert self._migrate({"mode": "backlog", "sort_order": "criticscore"}) == {
+            "mode": "backlog",
+            "backlog": {"sort_order": "criticscore"},
+        }
+
+    def test_a_second_platform_sort_order_does_not_override_pending_order(self) -> None:
+        from gamarr.config import _migrate_config
+
+        raw: dict[str, Any] = {
+            "review_sites": {
+                "metacritic": {
+                    "platform_overrides": {
+                        "pc": {"mode": "backlog", "sort_order": "criticscore"},
+                        "ps5": {"mode": "backlog", "sort_order": "userscore"},
+                    }
+                }
+            }
+        }
+        _migrate_config(raw)
+        assert raw["review_sites"]["metacritic"]["pending_order"] == "criticscore"
+
+
+class TestInertDiscoveryKeys:
+    """Inert keys come from the file, never from model defaults."""
+
+    def test_every_stray_placement_is_reported(self) -> None:
+        from gamarr.config import _stray_discovery_keys
+
+        assert _stray_discovery_keys({"discovery": {"mode": "latest"}}) == ["top-level: discovery"]
+        assert _stray_discovery_keys({"review_sites": {"discovery": {}}}) == ["review_sites: discovery"]
+        assert _stray_discovery_keys({"review_sites": {"metacritic": {"discovery": {}}}}) == ["metacritic: discovery"]
+        assert _stray_discovery_keys(
+            {"review_sites": {"metacritic": {"platform_overrides": {"pc": {"pending_order": "new"}}}}}
+        ) == ["pc: pending_order"]
+
+    def test_the_top_level_window_rejects_a_negative_value(self) -> None:
+        from pydantic import ValidationError
+
+        from gamarr.config import Config
+
+        with pytest.raises(ValidationError):
+            Config(source_matching_days=-1)
+
+    def test_a_key_outside_the_discovery_block_is_reported(self) -> None:
+        from gamarr.config import _stray_discovery_keys
+
+        raw: dict[str, Any] = {"review_sites": {"metacritic": {"platform_overrides": {"pc": {"oldest_month": 202401}}}}}
+        assert _stray_discovery_keys(raw) == ["pc: oldest_month"]
+
+    def test_a_generated_config_writes_no_null_source_window(self, tmp_path: Path) -> None:
+        from gamarr.config import create_default_config
+
+        create_default_config(tmp_path)
+        assert "source_matching_days: null" not in (tmp_path / "gamarr.yml").read_text(encoding="utf-8")
+
+    def test_defaults_report_nothing(self) -> None:
+        from gamarr.config import _default_config_dict, _inert_discovery_keys
+
+        raw = _default_config_dict()
+        assert "discovery" not in raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
+        assert _inert_discovery_keys(raw) == []
+
+    def test_a_stale_key_in_the_unread_block_is_reported(self) -> None:
+        from gamarr.config import _inert_discovery_keys
+
+        raw: dict[str, Any] = {
+            "review_sites": {
+                "metacritic": {
+                    "platform_overrides": {
+                        "pc": {"discovery": {"mode": "latest", "backlog": {"new": {"oldest_month": 202001}}}}
+                    }
+                }
+            }
+        }
+        assert _inert_discovery_keys(raw) == ["pc: discovery.backlog.new.oldest_month"]
+
+    def test_a_score_backlog_reports_latest_and_the_new_block(self) -> None:
+        from gamarr.config import _inert_discovery_keys
+
+        raw: dict[str, Any] = {
+            "review_sites": {
+                "metacritic": {
+                    "platform_overrides": {
+                        "pc": {
+                            "discovery": {
+                                "mode": "backlog",
+                                "latest": {"months_per_cycle": 2},
+                                "backlog": {"sort_order": "criticscore", "new": {"oldest_month": 202001}},
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert _inert_discovery_keys(raw) == [
+            "pc: discovery.latest.months_per_cycle",
+            "pc: discovery.backlog.new.oldest_month",
+        ]
+
+    def test_loading_a_mixed_file_reports_the_inert_key(self, tmp_path: Path) -> None:
+        from loguru import logger as loguru_logger
+
+        path = tmp_path / "gamarr.yml"
+        path.write_text(
+            "review_sites:\n"
+            "  metacritic:\n"
+            "    platform_overrides:\n"
+            "      pc:\n"
+            "        discovery:\n"
+            "          mode: latest\n"
+            "          backlog:\n"
+            "            new:\n"
+            "              oldest_month: 202001\n",
+            encoding="utf-8",
+        )
+        captured: list[str] = []
+        sink_id = loguru_logger.add(lambda msg: captured.append(str(msg)), level="INFO", format="{message}")
+        try:
+            load_config(path)
+        finally:
+            loguru_logger.remove(sink_id)
+        assert any("discovery.backlog.new.oldest_month" in line and "not read" in line for line in captured), captured
+
+    def test_a_rewritten_default_file_reports_nothing(self, tmp_path: Path) -> None:
+        from gamarr.config import _inert_discovery_keys, _load_raw_config, create_default_config
+
+        create_default_config(tmp_path)
+        load_config(tmp_path)
+        assert _inert_discovery_keys(_load_raw_config(tmp_path / "gamarr.yml")) == []

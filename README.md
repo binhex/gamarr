@@ -21,11 +21,12 @@ stays fresh without lifting a finger.
   substring matching (e.g. `["RPG"]` rejects "Action RPG", "JRPG", etc.).
 - **Keyword-based filtering** — reject games whose titles or FitGirl page
   description contain specific keywords.
-- **Date-based backlog cutoff** — set the oldest month to review with
-  `max_date: 202401` and how much of the backlog one cycle covers with
-  `max_cycle_months: 2`. Pages remain available as `max_pages` /
-  `max_cycle_pages` for `criticscore`/`userscore`, whose browse lists are
-  score-ordered and have no date dimension.
+- **Month-window or backlog sweep** — `discovery.latest` re-reads a month
+  window every cycle: `discovery.latest.months_per_cycle` (default 1) months
+  back from the newest release, optionally floored at
+  `discovery.latest.oldest_month`. `discovery.backlog` sweeps instead, down to
+  `discovery.backlog.new.oldest_month` with per-year cursors. A browse page is
+  about a day of PC releases, so 24 pages is about one month.
 - **Verify before queueing** — a game's real Metacritic detail-page scores are
   checked *before* it enters the pending queue, so the queue only ever holds
   games that already pass the thresholds. Games that fail, or whose scores are
@@ -33,13 +34,13 @@ stays fresh without lifting a finger.
   reaches their pages (every cycle inside the `latest` window, when the
   sweep wraps in `backlog` mode) instead of occupying the queue for days.
 - **Source-matching expiry** — a queued (already verified) game waits
-  `download_sites.fitgirl.max_queue_days` for a matching repack (default 60, or
-  `0` for indefinite; the FitGirl entry supplies the window for every queued
-  game). Every game is queued already verified, so it takes that window at
-  insert, and later re-checks do not push the window forward, so a verified game
-  with no match still leaves the queue when the window lapses. Without a FitGirl
-  source, the source-matching window falls back to the Metacritic-side
-  `max_queue_days`.
+  `source_matching_days` for a matching repack (default 60, or `0` for
+  indefinite). The window is resolved once per cycle: an enabled FitGirl
+  entry's `source_matching_days`, otherwise the first enabled source's value,
+  otherwise the top-level default. Every game is queued already verified, so it
+  takes that window at insert, and later re-checks do not push the window
+  forward, so a verified game with no match still leaves the queue when the
+  window lapses.
 - **Multiple download sources** — supports FreeGOGPCGames (A-Z list-based)
   and FitGirl repacks (sitemap-based). Sources are configured as an ordered
   list — position determines priority, and the first source with a match
@@ -123,6 +124,12 @@ All behaviour is controlled by a YAML file inside the config directory
 (`configs/gamarr.yml` by default). A default config is created automatically
 on first run. The file is divided into the sections below.
 
+### Top-level settings
+
+| Key | Description | Default |
+| --- | ----------- | ------- |
+| `source_matching_days` | How long a queued game waits for a matching repack before it leaves the queue. A download source may override it under the same name. `0` = never expires. | `60` |
+
 ### `general`
 
 | Key | Description | Default |
@@ -159,14 +166,15 @@ download_sites:
       platform: pc
       cache_hours: 6
       reject_keywords: []
-      max_queue_days: 60
   - fitgirl:
       enabled: true
       platform: pc
       cache_hours: 6
       reject_keywords: []
-      max_queue_days: 60
 ```
+
+Each source inherits the top-level `source_matching_days`; add the same key inside a
+source entry only to give that source its own window.
 
 #### Per-source fields
 
@@ -176,9 +184,50 @@ download_sites:
 | `platform` | Target platform for matching. | `pc` |
 | `cache_hours` | How long to cache the source index before re-fetching. | `6` |
 | `reject_keywords` | Reject games whose FitGirl page title or "Repack Features" block contains any of these keywords (case-insensitive). Matching is whole-word and negation-aware against the page title and the "Repack Features" block only, so "non-HV repack" does not match `hv`. | `[]` |
-| `max_queue_days` | How many days a game stays in the pending queue *after* its scores are verified (the source-matching phase). `0` = indefinite pending (no expiry). | `60` |
+| `source_matching_days` | Per-source override of the top-level `source_matching_days`; the queue uses the FitGirl entry's value when that source is enabled, otherwise the first enabled source's. `0` = indefinite pending (no expiry). | *(unset - inherits the top level)* |
 
 ### `review_sites.metacritic`
+
+| Key | Description | Default |
+| --- | ----------- | ------- |
+| `pending_order` | Order the pending queue is processed in: `"new"`, `"criticscore"`, or `"userscore"`. Independent of how discovery reads. | `"new"` |
+
+#### Worked discovery example
+
+A `latest` cycle that reads the newest month of releases:
+
+```yaml
+review_sites:
+  metacritic:
+    pending_order: new
+    platform_overrides:
+      pc:
+        discovery:
+          mode: latest
+          latest:
+            oldest_month: 202601
+            months_per_cycle: 1
+```
+
+A `backlog` sweep that paces itself and keeps a page-budgeted score mode ready to
+switch to:
+
+```yaml
+review_sites:
+  metacritic:
+    platform_overrides:
+      pc:
+        discovery:
+          mode: backlog
+          backlog:
+            sort_order: new
+            new:
+              oldest_month: 202001
+              months_per_cycle: 2
+            score:
+              page_depth: 500
+              pages_per_cycle: 0
+```
 
 #### `review_sites.metacritic.platform_overrides.<platform>`
 
@@ -188,13 +237,14 @@ download_sites:
 | `min_criticscore_reviews` | Minimum number of critic reviews required. | `10` |
 | `min_user_score` | Minimum Metacritic user score (0–10). | `7.5` |
 | `min_user_reviews` | Minimum number of user reviews required. | `10` |
-| `mode` | Discovery mode. `"latest"` re-reads the newest end of the window every cycle with no cursors. In `latest` mode, setting `max_date` or `max_cycle_months` makes the cycle date-driven: `max_date` is the floor and `max_cycle_months` paces how much one cycle reads back, so `max_pages` is unused. With neither date key set it falls back to a page depth: the first `max_pages` pages of the window every cycle, newest year first, keeping one page for the immediately lower year. `"backlog"` sweeps back through the window with per-year cursors and pacing. Latest requires `sort_order: "new"` — a score sort is warned about and coerced to `"new"` for that cycle. | `backlog` |
-| `max_pages` | Page budget. In `backlog` mode: total browse page depth budget; the scanner advances across cycles and resets to page 1 when exhausted. In `latest` mode it is the depth — the first N pages of the window are read every cycle — but only when neither `max_date` nor `max_cycle_months` is set; a date-driven latest cycle logs that `max_pages` is unused. **A `max_date`-only latest config therefore reads its whole window every cycle, even if `max_pages` was bounding it before — set `max_cycle_months` to pace it.** `0` = no page budget in backlog (the sweep is still bounded by the 10-year window) and is clamped to a depth of 10 in latest depth mode. | `500` |
-| `max_cycle_pages` | Maximum pages per cycle (pacing) for `backlog` page mode. Ignored in `latest` (the whole cycle is one pass) and in date mode, where `max_cycle_months` paces the sweep. `0` = unlimited. | `0` |
-| `max_date` | Date floor for the `new` sort order: sweep back to and including this month (`YYYYMM` with month `01`-`12` and year `1958` or later, e.g. `202401`). `0` = disabled. It bounds the window and is ignored for `criticscore`/`userscore`. In `backlog` mode it replaces the `max_pages` budget; in `latest` mode it sets the window floor and makes `max_pages` unused — `max_cycle_months` then decides how much of that window one cycle reads (`0` = read it all). A month later than the current one is clamped to the current month. | `0` |
-| `max_cycle_months` | Pace: how far back one cycle reads, counted in months from the cycle's newest release month (a month is included when a page holds any game at or after its first day, so a cycle can cover N+1 calendar months at a boundary). In `backlog` date mode it paces the sweep; in `latest` mode it is the per-cycle window, on its own or combined with `max_date`, and it applies with or without a floor. In `latest` a pace narrower than the `max_date` window means the older months are never read (there are no cursors to resume from) — use `backlog` to sweep them. The floor set by `max_date` always wins — this value can only shorten a cycle, never extend past it. `0` = no month pacing, so a dated `latest` cycle reads its whole window every cycle (and a window deeper than the run timeout never reaches the floor); the maximum is `1200` (100 years), and a larger value is rejected at config load. | `0` |
-| `sort_order` | Discovery and pending processing order: `"new"` (newest release date first), `"criticscore"` (verified games by highest critic score), or `"userscore"` (verified games by highest user score). Queued games are already verified (see "Verify before queueing"). Changing this value reprioritizes the entire pending queue, including games from previous cycles. | `"new"` |
-| `max_queue_days` | Fallback expiry window for queued games, used only when no FitGirl source is configured (its `max_queue_days` normally governs the source-matching window). `0` = indefinite pending (no expiry). | `30` |
+| `discovery.mode` | How a cycle walks the release list. `"latest"` reads the newest end every cycle and is always newest-first; `"backlog"` sweeps backwards with per-year cursors. The block for the other mode is ignored, with one INFO line per key. | `"latest"` |
+| `discovery.latest.oldest_month` | Oldest month a `latest` cycle may read, as `YYYYMM` (month `01`-`12`, year `1958` or later). `0` = no floor, so the cycle reads back `months_per_cycle` months from the newest release. A later month is clamped to the current one. | `0` |
+| `discovery.latest.months_per_cycle` | How many months of releases one `latest` cycle reads back from its newest page. `0` = read all the way to the floor. Maximum `1200`. | `1` |
+| `discovery.backlog.sort_order` | Which backlog block runs: `"new"` reads `backlog.new`, `"criticscore"` and `"userscore"` read `backlog.score`. | `"new"` |
+| `discovery.backlog.new.oldest_month` | Oldest month a `backlog` sweep may read. `0` = no floor, so the sweep runs as far back as the listing goes. | `0` |
+| `discovery.backlog.new.months_per_cycle` | How many months one `backlog` sweep cycle covers. `0` = the whole sweep in one cycle. Maximum `1200`. | `0` |
+| `discovery.backlog.score.page_depth` | Total browse-page budget for a score-sorted sweep. `0` = no budget: the sweep reaches the earliest listing. A page is about a day of PC releases, so 24 pages is about one month. | `500` |
+| `discovery.backlog.score.pages_per_cycle` | Pages per cycle for a score-sorted sweep. `0` = unlimited. | `0` |
 | `enabled` | Enable or disable the Metacritic browse step. Disabling skips game discovery entirely. | `true` |
 | `cache_details_days` | Days to cache Metacritic detail-page results. | `7` |
 | `cache_hours` | Hours to cache Metacritic browse-page results. | `6` |
@@ -280,14 +330,14 @@ Example: `"/data/library/{site}/{platform}/{genre}/{title}"` produces
 flowchart TD
     A([Start cycle]) --> B{Platform\nenabled?}
     B -- No --> END([End])
-    B -- Yes --> C[Browse Metacritic\nconfigured sort_order]
+    B -- Yes --> C[Browse Metacritic]
     C --> D[Parse browse-page\nscores & titles]
     D --> E[For each game]
     E --> F{Exclude\nkeyword\nin title?}
     F -- Yes --> SKIP1([⛔ Skip])
     F -- No --> G{Meets score\nthresholds on\nbrowse page?}
     G -- No --> SKIP2([⛔ Skip])
-    G -- Yes --> H{Within max_date\nfloor / max_pages\nwindow?}
+    G -- Yes --> H{Within oldest_month\nfloor?}
     H -- No --> SKIP3([⛔ Skip])
     H -- Yes --> K[Look up real scores\non Metacritic\ndetail page]
 
@@ -312,38 +362,33 @@ flowchart TD
 
 ### Detailed phases
 
-1. **Metacritic browse** — Scans Metacritic browse pages using the configured
-   `sort_order`; `new` traverses the newest year first. Source matching and
-   delivery use the same ordering, including games carried over from previous
-   cycles. **Important:** browse pages show *internal browse-only metrics*, not
+1. **Metacritic browse** — `discovery.latest` reads the newest pages every
+   cycle and is always newest-first: it reads back
+   `discovery.latest.months_per_cycle` months from the newest release (default
+   `1`; `0` = read to the floor, warned once per cycle) and never past
+   `discovery.latest.oldest_month` (`0` = no floor). `discovery.backlog` sweeps
+   back instead: `discovery.backlog.sort_order` picks the walk — `new` follows
+   release dates with per-year cursors, `criticscore`/`userscore` walk the
+   score-ordered list page by page. The block for the mode and sort that are
+   not in use is ignored, with one INFO line per key.
+   `review_sites.metacritic.pending_order` separately orders the pending queue
+   (`new`, `criticscore`, `userscore`), independent of how discovery reads.
+   **Important:** browse pages show *internal browse-only metrics*, not
    the real 0–100 critic scores or 0–10 user scores. These rough scores only
    order and pre-filter candidates — the real threshold check happens before a
-   game is queued (phase 3). `mode: latest` re-reads the newest end of the
-   window every cycle; `mode: backlog` sweeps back through it. A latest cycle
-   with `max_date` and/or `max_cycle_months` set is date-driven: it reads back
-   at most `max_cycle_months` months from the newest release (with
-   `max_cycle_months: 0` it reads the whole window), never past the `max_date`
-   floor, and `max_pages` is unused. With neither date key set, latest
-   falls back to a page depth — the first `max_pages` pages every cycle, newest
-   year first with one page held back for the years below. In `backlog` date
-   mode (`max_date` set with `sort_order: new`) the window is a month floor
-   instead: the sweep stops inside the boundary year as soon as a page's games
-   are all older than `max_date`, and `max_cycle_months` limits how many months
-   of backlog a single cycle covers — `max_pages` and `max_cycle_pages` are then
-   unused. In `backlog` mode, `criticscore`/`userscore` ignore the date keys,
-   because those browse lists mix years and no page corresponds to a date; a
-   `latest` cycle coerces the sort to `new` first, so its date keys always apply.
+   game is queued (phase 3).
 2. **Browse-page filtering** — Games whose titles match `reject_title` are
-   skipped. In page mode, games outside the `max_pages` window are skipped,
-   `max_cycle_pages` controls the per-cycle page limit (default `0` =
-   unlimited), and the scanner advances through that window progressively —
-   each cycle resumes where the last one left off, with auto-reset to page 1
-   when the `max_pages` budget is exhausted. In `backlog` date mode the window
-   and the pace come from `max_date` and `max_cycle_months` instead, both page
-   keys are unused, and each cycle resumes from the per-year page cursors,
-   restarting at the newest year once the floor has been swept. A `latest` date
-   window has no cursors: it restarts from the newest page every cycle.
-   **Note:** browse scores are on a different scale and always
+   skipped. A `backlog` sweep with `discovery.backlog.sort_order: new` resumes
+   from its per-year page cursors and restarts at the newest year once the
+   `discovery.backlog.new.oldest_month` floor has been swept, stopping inside
+   the boundary year as soon as a page's games are all older than the floor;
+   `discovery.backlog.new.months_per_cycle` limits how many months one cycle
+   covers. A score-sorted `backlog` sweep has no date dimension:
+   `discovery.backlog.score.page_depth` is the total page budget (the scanner
+   advances across cycles and resets to the first page when it is exhausted) and
+   `discovery.backlog.score.pages_per_cycle` paces one cycle (`0` = unlimited).
+   A `latest` window has no cursors: it restarts from the newest page every
+   cycle. **Note:** browse scores are on a different scale and always
    exceed the configured thresholds — they cannot filter, so the threshold
    check happens on the detail page instead (phase 3).
 3. **Detail verification, then queueing** — Each surviving game's real
@@ -351,20 +396,19 @@ flowchart TD
    score are compared against the configured thresholds. **Only games that pass
    are queued**, and they enter `pending_games` already marked verified with
    their real scores, with the source-matching expiry window
-   (`download_sites.fitgirl.max_queue_days`, default 60, or `0` for indefinite;
-   `review_sites.metacritic.platform_overrides.*.max_queue_days` is used only
-   when no FitGirl source is configured). Games that fail — or whose scores are
-   not published yet — are not queued; they are re-checked on the next browse
-   pass.
+   (`source_matching_days`: the FitGirl entry's value when that source is
+   enabled, otherwise the first enabled source's, otherwise the top-level
+   default; `0` = indefinite). Games that fail — or whose scores are not
+   published yet — are not queued; they are re-checked on the next browse pass.
 4. **Re-verification** — Verified queue entries are re-checked against the
    detail page each cycle. A game whose scores drop is **not** re-queued on the
    old numbers: it stays in the queue only until a match attempt re-verifies it
    and rejects it, or until it expires, and it is never delivered on stale data.
    **When scores first pass**, the game's expiry is set to
-   `now + <source>.max_queue_days` (the FitGirl entry's value, default 60, or
-   `0` for indefinite; another source's own value is used when no FitGirl source
-   is configured). Later passing re-checks do **not** extend it, so a game that
-   keeps passing but never matches still leaves the queue when the window
+   `now + source_matching_days` (the FitGirl entry's value when enabled,
+   otherwise the first enabled source's, otherwise the top-level default;
+   `0` = indefinite). Later passing re-checks do **not** extend it, so a game
+   that keeps passing but never matches still leaves the queue when the window
    lapses.
 5. **Genre rejection** — Before score verification, the game's genres
    (extracted from the detail page) are checked against `reject_genre`.
@@ -468,37 +512,29 @@ See the [genres section](#review_sitesmetacriticplatform_overridesplatform) for 
 **A:** Games leave the pending queue in only two ways:
 
 1. **Downloaded** — scores pass thresholds AND a matching torrent is found on a source
-2. **Expired** — the game has been in the queue longer than `max_queue_days`
+2. **Expired** — the game has been in the queue longer than `source_matching_days`
 
 Games that pass score thresholds but have **no source match** stay in the queue —
 they get re-verified each cycle because a new FitGirl/FreeGOG repack could appear.
 If you find the queue growing indefinitely:
 
-- Increase `max_pages` to catch more recently released games (in `backlog` mode or a
-  `latest` cycle with no date keys — a date-driven `latest` cycle ignores it)
-- Or set `max_date` with `sort_order: new` to state the oldest month you want
-  reviewed, so the cutoff is a date instead of a page count
+- Raise `discovery.latest.months_per_cycle` to read further back each cycle
+- Or switch `discovery.mode` to `backlog` and set
+  `discovery.backlog.new.oldest_month` to state the oldest month you want swept,
+  so the cutoff is a date instead of a per-cycle window
 - Games that fail score thresholds are not queued at all — they are re-checked when
   the next browse pass reaches their pages again
 - The message `0 new + X from previous cycles` means browsing found nothing new
 
-**Q: Why does `max_queue_days` have two separate settings — one for Metacritic and one for FitGirl?**
+**Q: Why is there one `source_matching_days` and a per-source override?**
 
-**A:** There are two waiting rooms. When a game is first discovered, it sits
-in the first waiting room while gamarr checks its Metacritic scores. The
-**review_sites.metacritic `max_queue_days`** is the time limit for this phase — if scores
-can't be verified in time, the game is removed.
-
-Once scores pass, the game moves to a second waiting room where it waits for
-a source match (e.g. FitGirl repack). The **per-source `max_queue_days`**
-(e.g. ``fitgirl.max_queue_days``) starts a
-*fresh countdown* from this point — it doesn't matter how long the game
-spent in the first room. This gives the game a full window to find a match,
-regardless of how long the score-checking took.
-
-So even if both values are the same (say 30 days each), a game that took
-25 days to get scores verified still gets a full 30 days to find a source
-match — not just 5.
+**A:** The top-level `source_matching_days` is the default window for every
+queued game. A source entry may set its own `source_matching_days` under the
+same name. Because one window applies to the whole queue, it is resolved once
+per cycle: an enabled FitGirl entry's value, otherwise the first enabled
+source's value, otherwise the top-level default. A verified game takes that
+window when it is queued, so it always gets the full window to find a match.
+`0` means the game never expires.
 
 ___
 If you appreciate my work, then please consider buying me a beer  :D

@@ -30,6 +30,12 @@ a documented approximation in the two conversions that cross units. The factor i
 release density changes, converted configs drift from what their author meant. A converted value is
 written back to the file only in the same way the existing migrations do, and is always logged.
 
-Because the same constant now derives the score-sorted year window, the effective reach of a
-page-budgeted sweep shrinks for existing configs. That is a behaviour change, and it is the honest
-one: the old ten-year reach was never what 500 pages covered.
+A legacy config that expressed no bound at all (no floor, no pace, no page key) keeps the reach
+the old default page budget gave it, so an upgrade does not silently narrow or widen the sweep: the
+migration writes a 21-month pace for `latest` and a 21-month floor for `backlog.new`. A model default
+therefore never applies to an upgraded config, only to a new one.
+
+The constant governs the migrations only. A page-budgeted score sweep no longer derives a year
+window from its budget at all, so the effective reach of a converted config comes from the floor the
+migration writes, not from a page-to-year calculation. That is a behaviour change, and it is the
+honest one: the old ten-year reach was never what 500 pages covered.

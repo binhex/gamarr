@@ -118,32 +118,6 @@ class TestReadmeScheduleConfig:
         )
 
 
-class TestReadmeMetacriticPlatformConfig:
-    """README `platform_overrides.<platform>` table must match MetacriticPlatformConfig defaults."""
-
-    def _readme_defaults(self) -> dict[str, str]:
-        with open(README_PATH, encoding="utf-8") as f:
-            lines = f.readlines()
-        block = _find_config_block(lines, "review_sites.metacritic.platform_overrides.<platform>")
-        assert block is not None, (
-            "Could not find `review_sites.metacritic.platform_overrides.<platform>` config block in README"
-        )
-        return _parse_readme_defaults(block)
-
-    def test_max_pages_default(self) -> None:
-        """max_pages default is 500, matching README."""
-        from gamarr.config import MetacriticPlatformConfig
-
-        cfg = MetacriticPlatformConfig()
-        assert cfg.max_pages == 500, f"Code default is 500, got {cfg.max_pages}"
-
-        defaults = self._readme_defaults()
-        readme_val = defaults.get("max_pages", "MISSING")
-        assert readme_val == "500", (
-            f"README says max_pages default is '{readme_val}', expected '500' (code default is 500)"
-        )
-
-
 class TestReadmeCriticRenameRows:
     """README config table must reflect the criticscore rename."""
 
@@ -161,18 +135,12 @@ class TestReadmeCriticRenameRows:
         assert defaults.get("min_criticscore_reviews") == str(cfg.min_criticscore_reviews), defaults
         assert "min_metascore" not in defaults, "legacy key must not appear in the README table"
 
-    def test_sort_order_row_documents_three_values(self) -> None:
+    def test_cache_hours_rows_renamed(self) -> None:
+        """Both cache_hours rows exist and no legacy row survives."""
         with open(README_PATH, encoding="utf-8") as f:
-            lines = f.readlines()
-        block = _find_config_block(lines, "review_sites.metacritic.platform_overrides.<platform>")
-        assert block is not None, "platform_overrides table not found in README"
-        defaults = _parse_readme_defaults(block)
-
-        assert defaults.get("sort_order") == '"new"', defaults
-        row = next((ln for ln in block if ln.startswith("| `sort_order`")), "")
-        assert '"criticscore"' in row, "sort_order row must document criticscore"
-        assert '"userscore"' in row, "sort_order row must document userscore"
-        assert '"metascore"' not in row, "sort_order row must not mention the legacy metascore value"
+            readme = f.read()
+        assert "cache_pages_hours" not in readme, "Legacy key must not remain in the README"
+        assert readme.count("| `cache_hours` |") >= 2, "Expected the Metacritic and per-source cache_hours rows"
 
 
 class TestReadmeFeatureDescriptions:
@@ -182,7 +150,7 @@ class TestReadmeFeatureDescriptions:
         """The re-verification feature must not reference max_verify_attempts.
 
         max_verify_attempts was removed; retry is now controlled by
-        max_queue_days (expiry-based).
+        source_matching_days (expiry-based).
         """
         with open(README_PATH, encoding="utf-8") as f:
             content = f.read()
@@ -198,7 +166,7 @@ class TestReadmeFeatureDescriptions:
             assert "maximum number of attempts" not in features, (
                 "Feature section mentions 'maximum number of attempts' "
                 "but max_verify_attempts was removed. Should describe "
-                "max_queue_days-based expiry model instead."
+                "source_matching_days-based expiry model instead."
             )
 
 
@@ -238,8 +206,20 @@ class TestReadmeYamlDefaults:
         assert schedule.get("run_on_start") is True
 
 
-class TestReadmeDateModeRows:
-    """README must document mode / max_date / max_cycle_months and their defaults."""
+class TestReadmeTopLevelDefaults:
+    """The top-level source window row must match the model default."""
+
+    def test_source_matching_days_default_row(self) -> None:
+        from gamarr.config import Config
+
+        readme = README_PATH.read_text(encoding="utf-8")
+        row = next((line for line in readme.splitlines() if line.startswith("| `source_matching_days` |")), "")
+        assert row, "the top-level source_matching_days row must exist"
+        assert row.rstrip().endswith(f"| `{Config().source_matching_days}` |"), row
+
+
+class TestReadmeDiscoveryRows:
+    """README must document the discovery blocks and their defaults."""
 
     def _readme_defaults(self) -> dict[str, str]:
         with open(README_PATH, encoding="utf-8") as f:
@@ -248,30 +228,42 @@ class TestReadmeDateModeRows:
         assert block is not None, "platform_overrides table missing from README"
         return _parse_readme_defaults(block)
 
-    def test_max_date_default_row(self) -> None:
-        from gamarr.config import MetacriticPlatformConfig
-
-        cfg = MetacriticPlatformConfig()
-        defaults = self._readme_defaults()
-        assert defaults.get("max_date", "MISSING") == str(cfg.max_date)
-
-    def test_max_cycle_months_default_row(self) -> None:
-        from gamarr.config import MetacriticPlatformConfig
-
-        cfg = MetacriticPlatformConfig()
-        defaults = self._readme_defaults()
-        assert defaults.get("max_cycle_months", "MISSING") == str(cfg.max_cycle_months)
-
     def test_mode_default_row(self) -> None:
-        from gamarr.config import MetacriticPlatformConfig
+        from gamarr.config import DiscoveryConfig
 
-        cfg = MetacriticPlatformConfig()
-        defaults = self._readme_defaults()
-        assert defaults.get("mode", "MISSING") == cfg.mode
+        discovery = DiscoveryConfig()
+        assert self._readme_defaults().get("discovery.mode") == f'"{discovery.mode}"'
 
-    def test_cache_hours_rows_renamed(self) -> None:
-        """Both cache_hours rows exist and no legacy row survives."""
+    def test_latest_pace_default_row(self) -> None:
+        from gamarr.config import DiscoveryConfig
+
+        discovery = DiscoveryConfig()
+        assert self._readme_defaults().get("discovery.latest.months_per_cycle") == str(
+            discovery.latest.months_per_cycle
+        )
+
+    def test_backlog_sort_order_row_documents_the_three_values(self) -> None:
         with open(README_PATH, encoding="utf-8") as f:
-            readme = f.read()
-        assert "cache_pages_hours" not in readme, "Legacy key must not remain in the README"
-        assert readme.count("| `cache_hours` |") >= 2, "Expected the Metacritic and per-source cache_hours rows"
+            lines = f.readlines()
+        block = _find_config_block(lines, "review_sites.metacritic.platform_overrides.<platform>")
+        assert block is not None
+        row = next((line for line in block if line.startswith("| `discovery.backlog.sort_order`")), "")
+        assert row, "the backlog sort_order row must exist"
+        assert '"criticscore"' in row and '"userscore"' in row, row
+        assert row.rstrip().endswith('`"new"` |'), row
+
+    def test_backlog_page_depth_default_row(self) -> None:
+        from gamarr.config import DiscoveryConfig
+
+        discovery = DiscoveryConfig()
+        assert self._readme_defaults().get("discovery.backlog.score.page_depth") == str(
+            discovery.backlog.score.page_depth
+        )
+
+    def test_no_legacy_discovery_rows_remain(self) -> None:
+        readme = README_PATH.read_text(encoding="utf-8")
+        for legacy in ("`max_date`", "`max_cycle_months`", "`max_cycle_pages`", "`max_queue_days`"):
+            assert legacy not in readme, f"legacy key {legacy} still documented"
+        for line in readme.splitlines():
+            assert not line.startswith("| `max_pages`"), "the max_pages config row must be gone"
+        assert "`source_matching_days`" in readme, "the replacement key must be documented"

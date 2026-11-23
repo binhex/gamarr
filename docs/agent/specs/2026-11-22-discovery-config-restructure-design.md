@@ -49,7 +49,7 @@ review_sites:
             oldest_month: 202601
             months_per_cycle: 1
           backlog:                # ignored, with one INFO line, when mode is latest
-            sort_order: score     # selects one of the two blocks below
+            sort_order: criticscore  # selects one of the two blocks below
             new:
               oldest_month: 202001
               months_per_cycle: 0
@@ -141,7 +141,9 @@ Rules, in order, for each platform override that still holds flat discovery keys
    - `mode: backlog` and `sort_order: new` - becomes `months_per_cycle` when unset, via
      `pages_to_months`; otherwise dropped with INFO.
    - `mode: backlog` and a score sort - becomes `backlog.score.pages_per_cycle` unchanged.
-6. `sort_order` is copied to `backlog.sort_order` and `review_sites.metacritic.pending_order`.
+6. `sort_order` is copied to `review_sites.metacritic.pending_order` always, and to
+   `backlog.sort_order` only when the legacy config runs `backlog` mode (a `latest` config
+   cannot hold a backlog sort, so writing one would only add an inert key).
 7. `metacritic.max_queue_days` becomes the top-level `source_matching_days` when that key is unset;
    otherwise it is dropped with INFO (it was unreachable).
 8. A block that already exists wins: for every key above, if the new location already holds a value,
@@ -178,7 +180,9 @@ Consequences:
   page depth, so the "reserve one page for the lower year" hack and the "`max_pages: 1` scans only
   the current year" residual both disappear.
 - The `sort_order` warn-and-coerce branch is deleted; latest cannot hold a score sort.
-- The year-window derivation at `pipeline.py:670` uses `pages_to_months` instead of `/ 52`.
+- The year-window derivation at `pipeline.py:670` used `max_pages / 52` on a branch that this change
+  makes unreachable, so it is deleted with the branch rather than converted; `pages_to_months` is
+  used by the migrations only.
 - The inert-key reporting is one helper: any key present in the non-selected block is named once per
   load, replacing the six per-branch messages.
 - `AcquisitionConfig` and `run_acquisition` keyword arguments take the new names, and the dead

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal
 from unittest.mock import MagicMock, patch
 
 import pytest  # noqa: TC002 -- needed at runtime for @pytest.mark.xfail decorator
@@ -30,6 +30,38 @@ def _passing_detail_client() -> MagicMock:
         passed=True,
     )
     return mc
+
+
+def _discovery(
+    *,
+    mode: str = "backlog",
+    sort_order: str = "new",
+    oldest_month: int = 0,
+    months_per_cycle: int = 0,
+    page_depth: int = 500,
+    pages_per_cycle: int = 0,
+) -> Any:
+    """Build the discovery config a converted test passes to run_acquisition.
+
+    Only the block the plan reads is included, so no test sees an inert-key line
+    it did not ask for.
+    """
+    from gamarr.config import DiscoveryConfig
+
+    if mode == "latest":
+        payload: dict[str, Any] = {
+            "mode": "latest",
+            "latest": {"oldest_month": oldest_month, "months_per_cycle": months_per_cycle},
+        }
+        if sort_order != "new":
+            payload["backlog"] = {"sort_order": sort_order}
+        return DiscoveryConfig.model_validate(payload)
+    backlog: dict[str, Any] = {"sort_order": sort_order}
+    if sort_order == "new":
+        backlog["new"] = {"oldest_month": oldest_month, "months_per_cycle": months_per_cycle}
+    else:
+        backlog["score"] = {"page_depth": page_depth, "pages_per_cycle": pages_per_cycle}
+    return DiscoveryConfig.model_validate({"mode": "backlog", "backlog": backlog})
 
 
 class TestPageTitleHasDlcKeywords:
@@ -678,16 +710,16 @@ class TestAcquisitionConfig:
             min_criticscore_reviews=5,
             min_user_score=7.5,
             min_user_reviews=10,
-            max_pages=12,  # ~84 days, roughly equivalent to 90 days
         )
         assert cfg.min_criticscore == 75
 
 
-class TestMaxCycleWeeks:
-    """Tests for max_cycle_pages integration."""
+class TestCycleAllowance:
+    """The per-cycle allowance is part of the resolved plan."""
 
-    def test_max_cycle_pages_lower_than_max_pages_uses_cycle_cutoff(self, tmp_path: Path) -> None:
-        """When max_cycle_pages < max_pages, AcquisitionConfig stores both separately."""
+    def test_the_page_depth_and_the_cycle_allowance_are_separate(self) -> None:
+        """A score backlog stores its page depth and its per-cycle allowance independently."""
+        from gamarr.discovery import build_scan_plan
         from gamarr.pipeline import AcquisitionConfig
 
         cfg = AcquisitionConfig(
@@ -695,14 +727,13 @@ class TestMaxCycleWeeks:
             min_criticscore_reviews=5,
             min_user_score=7.5,
             min_user_reviews=10,
-            max_pages=52,
-            max_cycle_pages=100,
+            plan=build_scan_plan(_discovery(sort_order="criticscore", page_depth=52, pages_per_cycle=100)),
         )
-        # The cycle weeks are separate
-        assert cfg.max_cycle_pages == 100
+        assert cfg.plan.page_depth == 52
+        assert cfg.plan.pages_per_cycle == 100
 
-    def test_max_cycle_pages_runs_with_params(self) -> None:
-        """Acquisition runs without error when max_cycle_pages < max_pages."""
+    def test_a_cycle_allowance_runs_with_the_page_depth(self) -> None:
+        """Acquisition runs without error when pages_per_cycle < page_depth."""
         from unittest.mock import MagicMock, patch
 
         from gamarr.pipeline import run_acquisition
@@ -725,13 +756,12 @@ class TestMaxCycleWeeks:
 
             results = run_acquisition(
                 db_path=":memory:",
-                max_pages=52,
-                max_cycle_pages=100,
+                discovery=_discovery(sort_order="criticscore", page_depth=52, pages_per_cycle=100),
             )
             assert isinstance(results, list)
 
-    def test_max_cycle_pages_limits_scan_recent_games(self) -> None:
-        """When max_cycle_pages is set, scan_recent_games receives it as max_pages."""
+    def test_the_month_pace_limits_scan_recent_games(self) -> None:
+        """When months_per_cycle is set, scan_recent_games receives it as max_month_span."""
         from unittest.mock import MagicMock, patch
 
         from gamarr.pipeline import run_acquisition
@@ -754,19 +784,17 @@ class TestMaxCycleWeeks:
 
             run_acquisition(
                 db_path=":memory:",
-                max_pages=280,
-                max_cycle_pages=4,
+                discovery=_discovery(months_per_cycle=4),
             )
 
-            # Verify scan_recent_games was called with max_cycle_pages,
-            # not max_pages.  max_pages=280 should NOT appear as the
-            # per-scan limit — max_cycle_pages=4 should.
-            # Multiple years are scanned now; check the last call's max_pages.
+            # A backlog new cycle is date-paced: the pace reaches the client as
+            # max_month_span, and no page cap is sent at all.
             _, kwargs = mock_mc.scan_recent_games.call_args
-            assert kwargs["max_pages"] == 4
+            assert kwargs["max_month_span"] == 4
+            assert kwargs["max_pages"] == 0
 
-    def test_max_cycle_pages_default_falls_back_to_max_pages(self) -> None:
-        """When max_cycle_pages is 0 (default), max_pages is used as the limit."""
+    def test_an_unpaced_backlog_new_cycle_has_no_page_cap(self) -> None:
+        """months_per_cycle 0 sweeps to the floor with no span and no page limit."""
         from unittest.mock import MagicMock, patch
 
         from gamarr.pipeline import run_acquisition
@@ -789,15 +817,12 @@ class TestMaxCycleWeeks:
 
             run_acquisition(
                 db_path=":memory:",
-                max_pages=500,
-                max_cycle_pages=0,
+                discovery=_discovery(months_per_cycle=0),
             )
 
-            # When max_cycle_pages is 0 (default/unlimited), fall back to
-            # max_pages as the total ceiling.
-            # Multiple years are scanned now; check the last call's max_pages.
             _, kwargs = mock_mc.scan_recent_games.call_args
-            assert kwargs["max_pages"] == 500
+            assert kwargs["max_month_span"] == 0
+            assert kwargs["max_pages"] == 0
 
 
 class TestRunAcquisition:
@@ -1046,7 +1071,7 @@ class TestRunAcquisition:
         fitgirl_entry.platform = "pc"
         fitgirl_entry.cache_hours = 6
         fitgirl_entry.reject_keywords = []
-        fitgirl_entry.max_queue_days = 60
+        fitgirl_entry.source_matching_days = 60
 
         freegog_entry = types.SimpleNamespace()
         freegog_entry.name = "freegog"
@@ -1054,7 +1079,7 @@ class TestRunAcquisition:
         freegog_entry.platform = "pc"
         freegog_entry.cache_hours = 6
         freegog_entry.reject_keywords = []
-        freegog_entry.max_queue_days = 60
+        freegog_entry.source_matching_days = 60
 
         with pytest.raises(Exception, match="FreeGOG scraper failed"):
             run_acquisition(
@@ -2440,7 +2465,7 @@ class TestMetacriticBrowse:
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
-        _process_browse_games(browse_games, "pc", db, thresholds, max_queue_days=30, mc=_passing_detail_client())
+        _process_browse_games(browse_games, "pc", db, thresholds, source_matching_days=30, mc=_passing_detail_client())
         pending = db.get_pending(platform="pc")
         assert len(pending) == 1
         assert pending[0].slug == "elden-ring"
@@ -3690,7 +3715,7 @@ class TestMetacriticBrowse:
             "min_user_score": 7.5,
             "min_user_reviews": 10,
         }
-        new_count = _process_browse_games(games, "pc", db, thresholds, max_queue_days=30)
+        new_count = _process_browse_games(games, "pc", db, thresholds, source_matching_days=30)
         assert new_count == 0
         pending = db.get_pending()
         assert len(pending) == 0
@@ -3723,7 +3748,9 @@ class TestMetacriticBrowse:
             "min_user_score": 0.0,
             "min_user_reviews": 0,
         }
-        new_count = _process_browse_games(games, "pc", db, thresholds, max_queue_days=30, mc=_passing_detail_client())
+        new_count = _process_browse_games(
+            games, "pc", db, thresholds, source_matching_days=30, mc=_passing_detail_client()
+        )
         assert new_count == 2, f"Expected 2 pending games, got {new_count}"
         pending = db.get_pending()
         assert len(pending) == 2
@@ -3772,7 +3799,7 @@ class TestMetacriticBrowse:
             "pc",
             db,
             thresholds,
-            max_queue_days=30,
+            source_matching_days=30,
             reject_title=["DLC", "Soundtrack", "Bundle"],
             mc=_passing_detail_client(),
         )
@@ -4863,11 +4890,11 @@ class TestLogGameDetails:
         assert "No" in msg
 
 
-class TestFitgirlRecheckExpiry:
-    """Tests for fitgirl_max_queue_days expiry recalculation."""
+class TestSourceMatchingExpiry:
+    """Tests for source_matching_days expiry recalculation."""
 
-    def test_fitgirl_max_queue_days_updates_expiry(self, tmp_path: Path) -> None:
-        """Game with passing scores should have expires_at recalculated to now + fitgirl_max_queue_days."""
+    def test_source_matching_days_updates_expiry(self, tmp_path: Path) -> None:
+        """Game with passing scores should have expires_at recalculated to now + source_matching_days."""
         import datetime
         from unittest.mock import MagicMock
 
@@ -4908,7 +4935,7 @@ class TestFitgirlRecheckExpiry:
             "min_user_reviews": 10,
         }
 
-        _verify_pending_scores(db, mock_mc, "pc", thresholds, fitgirl_max_queue_days=60)
+        _verify_pending_scores(db, mock_mc, "pc", thresholds, source_matching_days=60)
 
         # Game should still be pending
         pending = db.get_pending(platform="pc")
@@ -4923,8 +4950,8 @@ class TestFitgirlRecheckExpiry:
         assert row.expires_at != original_expiry, "Expiry should have been updated"
         db.close()
 
-    def test_fitgirl_max_queue_days_zero_indefinite(self, tmp_path: Path) -> None:
-        """fitgirl_max_queue_days=0 should set expiry to far-future (indefinite pending)."""
+    def test_source_matching_days_zero_indefinite(self, tmp_path: Path) -> None:
+        """source_matching_days=0 should set expiry to far-future (indefinite pending)."""
         import datetime
         from unittest.mock import MagicMock
 
@@ -4964,7 +4991,7 @@ class TestFitgirlRecheckExpiry:
             "min_user_reviews": 10,
         }
 
-        _verify_pending_scores(db, mock_mc, "pc", thresholds, fitgirl_max_queue_days=0)
+        _verify_pending_scores(db, mock_mc, "pc", thresholds, source_matching_days=0)
 
         pending = db.get_pending(platform="pc")
         assert len(pending) == 1
@@ -4977,7 +5004,7 @@ class TestFitgirlRecheckExpiry:
         )
         db.close()
 
-    def test_fitgirl_max_queue_days_does_not_affect_failure(self, tmp_path: Path) -> None:
+    def test_source_matching_days_does_not_affect_failure(self, tmp_path: Path) -> None:
         """Game with failing scores should NOT have its expiry updated."""
         import datetime
         from unittest.mock import MagicMock
@@ -5018,7 +5045,7 @@ class TestFitgirlRecheckExpiry:
             "min_user_reviews": 10,
         }
 
-        _verify_pending_scores(db, mock_mc, "pc", thresholds, fitgirl_max_queue_days=60)
+        _verify_pending_scores(db, mock_mc, "pc", thresholds, source_matching_days=60)
 
         # Game should still be pending (re-check)
         pending = db.get_pending(platform="pc")
@@ -5793,7 +5820,7 @@ class TestBrowseReviewCountPrefilter:
             platform="pc",
             db=db,
             thresholds=thresholds,
-            max_queue_days=30,
+            source_matching_days=30,
         )
         assert new_count == 0, "Low-review-count game should not be added to pending"
         pending = db.get_pending(platform="pc")
@@ -5829,7 +5856,7 @@ class TestBrowseReviewCountPrefilter:
             platform="pc",
             db=db,
             thresholds=thresholds,
-            max_queue_days=30,
+            source_matching_days=30,
             mc=_passing_detail_client(),
         )
         assert new_count == 1, "Game with missing review data should enter pending"
@@ -5877,224 +5904,14 @@ class TestLogVerifyProgress:
         mock_logger.debug.assert_called_once()
 
 
-class TestProcessAgedGames:
-    """Tests for _process_aged_games sweep function."""
-
-    def test_process_aged_games_uses_active_sort_order(self) -> None:
-        """Aged processing must request the pending queue in active sort order."""
-        from unittest.mock import MagicMock
-
-        from gamarr.pipeline import AcquisitionConfig, _process_aged_games
-
-        db = MagicMock()
-        db.get_pending.return_value = []
-        cfg = AcquisitionConfig(
-            min_criticscore=75,
-            min_criticscore_reviews=10,
-            min_user_score=7.5,
-            min_user_reviews=10,
-            age_recheck_weeks=4,
-            sort_order="userscore",
-        )
-
-        assert _process_aged_games(db, cfg, platform="pc") == 0
-        db.get_pending.assert_called_once_with(platform="pc", sort_order="userscore")
-
-    def test_should_age_game_returns_false_when_not_checked(self) -> None:
-        """_should_age_game returns False when last_checked_at is None."""
-        from unittest.mock import MagicMock
-
-        from gamarr.pipeline import _should_age_game
-
-        game = MagicMock(last_checked_at=None, release_date="2010-01-01", score_checks_passed=True)
-        assert _should_age_game(game, age_recheck_weeks=52) is False
-
-    def test_should_age_game_returns_false_when_no_release_date(self) -> None:
-        """_should_age_game returns False when release_date is None."""
-        from unittest.mock import MagicMock
-
-        from gamarr.pipeline import _should_age_game
-
-        game = MagicMock(last_checked_at="2024-01-01", release_date=None, score_checks_passed=True)
-        assert _should_age_game(game, age_recheck_weeks=52) is False
-
-    def test_should_age_game_returns_false_when_scores_not_passed(self) -> None:
-        """_should_age_game returns False when score_checks_passed is not True."""
-        from unittest.mock import MagicMock
-
-        from gamarr.pipeline import _should_age_game
-
-        game = MagicMock(last_checked_at="2024-01-01", release_date="2010-01-01", score_checks_passed=False)
-        assert _should_age_game(game, age_recheck_weeks=52) is False
-
-    def test_should_age_game_returns_true_for_old_verified_game(self) -> None:
-        """_should_age_game returns True when all criteria are met."""
-        from unittest.mock import MagicMock
-
-        from gamarr.pipeline import _should_age_game
-
-        game = MagicMock(last_checked_at="2024-01-01", release_date="2010-01-01", score_checks_passed=True)
-        # 2010-01-01 is well over 52 weeks ago — should be True
-        assert _should_age_game(game, age_recheck_weeks=52) is True
-
-    def test_process_aged_games_processes_old_verified_games(self, tmp_path: Path) -> None:
-        """Old games with last_checked_at set should be processed."""
-        import datetime
-
-        from gamarr.database import Database
-        from gamarr.pipeline import AcquisitionConfig, _process_aged_games
-
-        db = Database(str(tmp_path / "test.db"))
-        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        past = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(hours=1)).isoformat()
-        db.record_pending(
-            slug="old-checked",
-            game_title="Old Checked",
-            platform="pc",
-            metascore=80.0,
-            user_score=7.5,
-            release_date="2010-01-01",
-            expires_at=expires,
-        )
-        with db._session() as session:
-            from gamarr.database import PendingGame
-
-            row = session.get(PendingGame, "old-checked")
-            assert row is not None, "old-checked should exist"
-            row.last_checked_at = past
-            row.score_checks_passed = True
-            session.commit()
-
-        db.record_pending(
-            slug="old-unchecked",
-            game_title="Old Unchecked",
-            platform="pc",
-            metascore=80.0,
-            user_score=7.5,
-            release_date="2010-01-01",
-            expires_at=expires,
-        )
-
-        cfg = AcquisitionConfig(
-            min_criticscore=75,
-            min_criticscore_reviews=5,
-            min_user_score=7.5,
-            min_user_reviews=10,
-            age_recheck_weeks=52,
-        )
-        count = _process_aged_games(db, cfg, platform="pc")
-        assert count == 1, f"Expected 1 processed, got {count}"
-        assert not db.is_pending("old-checked"), "Old checked game should be removed"
-        assert db.is_pending("old-unchecked"), "Old unchecked game should remain"
-        stats = db.get_stats()
-        assert stats["total"] == 1, "One history record should exist"
-        db.close()
-
-    def test_process_aged_games_skips_failed_score_check(self, tmp_path: Path) -> None:
-        """Old games that were checked but failed score verification should NOT be aged out."""
-        import datetime
-
-        from gamarr.database import Database
-        from gamarr.pipeline import AcquisitionConfig, _process_aged_games
-
-        db = Database(str(tmp_path / "test.db"))
-        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        past = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(hours=1)).isoformat()
-
-        # Game that was checked but scores failed verification
-        db.record_pending(
-            slug="old-checked-failed",
-            game_title="Old Checked Failed",
-            platform="pc",
-            metascore=60.0,  # below typical threshold
-            user_score=5.0,
-            release_date="2010-01-01",
-            expires_at=expires,
-        )
-        with db._session() as session:
-            from gamarr.database import PendingGame
-
-            row = session.get(PendingGame, "old-checked-failed")
-            assert row is not None
-            row.last_checked_at = past
-            row.score_checks_passed = False
-            session.commit()
-
-        cfg = AcquisitionConfig(
-            min_criticscore=75,
-            min_criticscore_reviews=5,
-            min_user_score=7.5,
-            min_user_reviews=10,
-            age_recheck_weeks=52,
-        )
-        count = _process_aged_games(db, cfg, platform="pc")
-        assert count == 0, f"Expected 0 processed (scores failed), got {count}"
-        assert db.is_pending("old-checked-failed"), "Failed game should remain in queue"
-        db.close()
-
-    def test_process_aged_games_skips_recent_games(self, tmp_path: Path) -> None:
-        """Recent games should NOT be processed by the sweep."""
-        import datetime
-
-        from gamarr.database import Database
-        from gamarr.pipeline import AcquisitionConfig, _process_aged_games
-
-        db = Database(str(tmp_path / "test.db"))
-        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        recent = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
-        past = (datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(hours=1)).isoformat()
-        db.record_pending(
-            slug="recent-game",
-            game_title="Recent Game",
-            platform="pc",
-            metascore=80.0,
-            user_score=7.5,
-            release_date=recent,
-            expires_at=expires,
-        )
-        with db._session() as session:
-            from gamarr.database import PendingGame
-
-            row = session.get(PendingGame, "recent-game")
-            assert row is not None, "recent-game should exist"
-            row.last_checked_at = past
-            session.commit()
-
-        cfg = AcquisitionConfig(
-            min_criticscore=75,
-            min_criticscore_reviews=5,
-            min_user_score=7.5,
-            min_user_reviews=10,
-            age_recheck_weeks=52,
-        )
-        count = _process_aged_games(db, cfg, platform="pc")
-        assert count == 0, "Recent game should not be processed"
-        assert db.is_pending("recent-game"), "Recent game should remain"
-        db.close()
-
-    def test_process_aged_games_disabled_when_none(self, tmp_path: Path) -> None:
-        """When age_recheck_weeks is None, no games should be processed."""
-        from gamarr.database import Database
-        from gamarr.pipeline import AcquisitionConfig, _process_aged_games
-
-        db = Database(str(tmp_path / "test.db"))
-        cfg = AcquisitionConfig(
-            min_criticscore=75,
-            min_criticscore_reviews=5,
-            min_user_score=7.5,
-            min_user_reviews=10,
-            age_recheck_weeks=None,
-        )
-        count = _process_aged_games(db, cfg, platform="pc")
-        assert count == 0
-        db.close()
+class TestVerifyResultTouchesPending:
+    """A failed detail lookup must still stamp the row as checked."""
 
     def test_verify_result_touches_pending_even_when_none(self, tmp_path: Path) -> None:
         """_process_verify_result should set last_checked_at even when result is None.
 
-        Without this, games that fail lookup never get ``last_checked_at`` set,
-        so ``_process_aged_games`` skips them forever and they get re-verified
-        every cycle instead of being aged out.
+        The stamp records that the detail page was consulted, so a row that never
+        gets a page is still distinguishable from one never looked up.
         """
         import datetime
 
@@ -6462,211 +6279,107 @@ class TestFailsReviewCountCheck:
         )
 
 
-class TestAgedGamesMatchOrder:
-    """Old verified games must be matched against FitGirl BEFORE being aged out."""
+class TestScanWindowAdvancing:
+    """The scan window comes from the plan's floor, not from a page budget."""
 
-    def test_old_verified_game_matches_before_aging(self, tmp_path: Path) -> None:
-        """A pending game with an old release date that passes score
-        verification must be matched against FitGirl BEFORE
-        ``_process_aged_games`` removes it from the queue.
-
-        Reproduces the bug where ``_process_aged_games`` runs BEFORE
-        the FitGirl sitemap fetch and matching phase, causing every
-        old verified game to be silently removed before it can match.
-        """
-        import datetime
+    @staticmethod
+    def _run(tmp_path: Path, *, discovery: Any, db_path: str) -> tuple[list[dict[str, Any]], Any]:
+        """Run one cycle against an empty browse listing; return the calls and the client."""
         from unittest.mock import MagicMock, patch
+
+        from gamarr.pipeline import run_acquisition
+
+        calls: list[dict[str, Any]] = []
+        mock_mc = MagicMock()
+
+        def fake_scan(*_args: Any, **kwargs: Any) -> list:
+            calls.append(dict(kwargs))
+            mock_mc._recent_games_last_page = kwargs.get("start_page", 1)
+            mock_mc._recent_games_exhausted = False
+            mock_mc._recent_games_failed = False
+            mock_mc._recent_games_cutoff_reached = False
+            mock_mc._recent_games_stop_cutoff = None
+            return []
+
+        mock_mc._recent_games_last_page = 0
+        mock_mc._recent_games_exhausted = False
+        mock_mc._recent_games_failed = False
+        mock_mc._recent_games_cutoff_reached = False
+        mock_mc._recent_games_stop_cutoff = None
+        mock_mc.scan_recent_games.side_effect = fake_scan
+
+        with (
+            patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
+            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+        ):
+            mock_source_cls.return_value = MagicMock()
+            mock_mc_cls.return_value = mock_mc
+            mock_qbt = MagicMock()
+            mock_qbt.is_torrent_present.return_value = False
+            mock_qbt.adopt_present_torrent.return_value = None
+            mock_qbt.is_connected.return_value = True
+            mock_qbt_cls.return_value = mock_qbt
+
+            run_acquisition(platform="pc", db_path=db_path, discovery=discovery)
+        return calls, mock_mc
+
+    def test_the_window_starts_at_the_configured_floor(self, tmp_path: Path) -> None:
+        """oldest_month is the bottom of the year range the sweep walks."""
+        import datetime
+
+        current_year = datetime.datetime.now(tz=datetime.UTC).year
+        calls, _mc = self._run(
+            tmp_path,
+            discovery=_discovery(oldest_month=202401),
+            db_path=str(tmp_path / "window.db"),
+        )
+        years = [call["year"] for call in calls]
+        assert min(years) == 2024, f"the sweep must start at the floor year, got {years}"
+        assert max(years) == current_year
+
+    def test_a_floorless_backlog_sweep_stops_at_the_catalogue_start(self, tmp_path: Path) -> None:
+        """oldest_month 0 means "no floor", not "probe year zero"."""
+        import datetime
+
+        from gamarr.utils import EARLIEST_BROWSE_YEAR
+
+        current_year = datetime.datetime.now(tz=datetime.UTC).year
+        calls, _mc = self._run(tmp_path, discovery=_discovery(oldest_month=0), db_path=":memory:")
+        years = [call["year"] for call in calls]
+        assert max(years) == current_year
+        assert min(years) == EARLIEST_BROWSE_YEAR, (
+            f"a floorless sweep must stop at {EARLIEST_BROWSE_YEAR}, got {min(years)}"
+        )
+
+    def test_the_floor_bounds_a_second_cycle(self, tmp_path: Path) -> None:
+        """A resumed sweep keeps the same floor instead of widening to a page budget."""
+        import datetime
 
         from gamarr.database import Database
-        from gamarr.pipeline import run_acquisition
 
-        db_path = str(tmp_path / "test.db")
-
-        # Pre-seed the DB with an old verified pending game that has
-        # a matching FitGirl source title.
-        db = Database(db_path)
-        expires = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
-        db.record_pending(
-            slug="old-but-matchable",
-            game_title="Old But Matchable",
-            platform="pc",
-            metascore=85.0,
-            metascore_reviews=20,
-            user_score=8.0,
-            user_reviews=100,
-            release_date="2025-01-01",  # Old — older than age_recheck_weeks=4
-            expires_at=expires,
-        )
-        # Mark as score-checked so _verify_pending_scores touches it
-        db.update_pending_scores(slug="old-but-matchable", metascore=85.0, user_score=8.0)
-        # Pre-populate FitGirl source titles so matching works even
-        # if the mocked fetch_sitemap does nothing
-        db.rebuild_source_titles(
-            "fitgirl",
-            [{"title": "Old But Matchable", "url": "https://example.com/old-but-matchable"}],
-        )
+        current_year = datetime.datetime.now(tz=datetime.UTC).year
+        path = str(tmp_path / "steady.db")
+        db = Database(path)
+        for offset in range(3):
+            db.set_last_scanned_page("pc", current_year - offset, 3)
         db.close()
 
-        with (
-            patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
-            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
-            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
-        ):
-            import types
+        discovery = _discovery(oldest_month=202401)
+        calls, _mc = self._run(tmp_path, discovery=discovery, db_path=path)
+        years = [call["year"] for call in calls]
+        assert min(years) == 2024, f"a resumed sweep must keep its floor, got {years}"
 
-            mock_source = MagicMock()
-            mock_source_cls.return_value = mock_source
-
-            # Metacritic browse returns no new games
-            mock_mc = MagicMock()
-            mock_mc.scan_recent_games.return_value = []
-            # Detail-page lookup returns passing scores so the
-            # game stays in pending during verification
-            mock_mc.lookup_game.return_value = types.SimpleNamespace(
-                metascore=85.0,
-                metascore_review_count=20,
-                user_score=8.0,
-                user_review_count=100,
-                genres=["Action"],
-                must_play=False,
-                release_date="2025-01-01",
-            )
-            mock_mc_cls.return_value = mock_mc
-
-            mock_qbt = MagicMock()
-            mock_qbt.is_torrent_present.return_value = False
-            mock_qbt.is_connected.return_value = True
-            mock_qbt.add_torrent.return_value = "gamarr-tag"
-            mock_qbt_cls.return_value = mock_qbt
-
-            results = run_acquisition(
-                platform="pc",
-                db_path=db_path,
-                qbt_host="localhost",
-                qbt_port=8080,
-                min_criticscore=75,
-                min_criticscore_reviews=5,
-                min_user_score=7.5,
-                min_user_reviews=10,
-                max_pages=52,
-                max_cycle_pages=100,
-                age_recheck_weeks=4,
-            )
-
-            # The old game should be matched and delivered BEFORE
-            # _process_aged_games removes it.  With the bug (aged
-            # before match), results is empty.  After the fix (match
-            # before aged), results contains the match.
-            assert len(results) >= 1, "Old verified game should match FitGirl before being aged out"
-
-
-class TestScanWindowAdvancing:
-    """The scan window must not expand to max_pages when the advancing
-    cutoff reaches the hard limit."""
-
-    def test_window_uses_max_pages(self, tmp_path: Path) -> None:
-        """Acquisition uses max_pages to limit browse scanning."""
-        from unittest.mock import MagicMock, patch
-
-        from gamarr.pipeline import run_acquisition
-
-        with (
-            patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
-            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
-            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
-        ):
-            mock_source = MagicMock()
-            mock_source_cls.return_value = mock_source
-
-            mock_mc = MagicMock()
-            mock_mc.scan_recent_games.return_value = []
-            mock_mc_cls.return_value = mock_mc
-
-            mock_qbt = MagicMock()
-            mock_qbt.is_torrent_present.return_value = False
-            mock_qbt.adopt_present_torrent.return_value = None
-            mock_qbt.is_connected.return_value = True
-            mock_qbt_cls.return_value = mock_qbt
-
-            results = run_acquisition(
-                platform="pc",
-                db_path=":memory:",
-                qbt_host="localhost",
-                qbt_port=8080,
-                max_pages=104,
-                max_cycle_pages=100,
-            )
-            assert isinstance(results, list)
-            assert mock_mc.scan_recent_games.call_count > 0
-
-    def test_max_cycle_pages_steady_state_persists_across_cycles(self, tmp_path: Path) -> None:
-        """Acquisition runs with max_pages and max_cycle_pages."""
-        from unittest.mock import MagicMock, patch
-
-        from gamarr.pipeline import run_acquisition
-
-        with (
-            patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
-            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
-            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
-        ):
-            mock_source = MagicMock()
-            mock_source_cls.return_value = mock_source
-
-            mock_mc = MagicMock()
-            mock_mc.scan_recent_games.return_value = []
-            mock_mc_cls.return_value = mock_mc
-
-            mock_qbt = MagicMock()
-            mock_qbt.is_torrent_present.return_value = False
-            mock_qbt.adopt_present_torrent.return_value = None
-            mock_qbt.is_connected.return_value = True
-            mock_qbt_cls.return_value = mock_qbt
-
-            results = run_acquisition(
-                platform="pc",
-                db_path=":memory:",
-                qbt_host="localhost",
-                qbt_port=8080,
-                max_pages=104,
-                max_cycle_pages=100,
-            )
-            assert isinstance(results, list)
-
-    def test_sort_order_change_detected(self, tmp_path: Path) -> None:
-        """When sort_order changes, the pipeline detects and logs the change."""
-        from unittest.mock import MagicMock, patch
-
-        from gamarr.pipeline import run_acquisition
-
-        with (
-            patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
-            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
-            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
-        ):
-            mock_source = MagicMock()
-            mock_source_cls.return_value = mock_source
-
-            mock_mc = MagicMock()
-            mock_mc.scan_recent_games.return_value = []
-            mock_mc_cls.return_value = mock_mc
-
-            mock_qbt = MagicMock()
-            mock_qbt.is_torrent_present.return_value = False
-            mock_qbt.adopt_present_torrent.return_value = None
-            mock_qbt.is_connected.return_value = True
-            mock_qbt_cls.return_value = mock_qbt
-
-            results = run_acquisition(
-                platform="pc",
-                db_path=":memory:",
-                qbt_host="localhost",
-                qbt_port=8080,
-                max_pages=104,
-                max_cycle_pages=100,
-                sort_order="new",
-            )
-            assert isinstance(results, list)
+    def test_the_plan_sort_order_reaches_the_client(self, tmp_path: Path) -> None:
+        """A score backlog browses in its configured order and has no year dimension."""
+        calls, mc = self._run(
+            tmp_path,
+            discovery=_discovery(sort_order="criticscore", page_depth=40),
+            db_path=":memory:",
+        )
+        assert mc.sort_order == "criticscore"
+        assert calls
+        assert calls[0]["year"] is None
 
 
 class TestBacklogAdvancing:
@@ -6709,12 +6422,10 @@ class TestBacklogAdvancing:
                 db_path=db_path,
                 qbt_host="localhost",
                 qbt_port=8080,
-                max_pages=280,
-                max_cycle_pages=4,
-                sort_order="new",
+                discovery=_discovery(oldest_month=202601),
             )
 
-            # sort_order='new' now walks the newest year first, so the
+            # A floored date sweep walks the newest year first, so the
             # current-year call is the first one.  Select it explicitly —
             # ``call_args`` only ever exposes the most recent call.
             calls_by_year = {c.kwargs["year"]: c.kwargs for c in mock_mc.scan_recent_games.call_args_list}
@@ -6722,68 +6433,15 @@ class TestBacklogAdvancing:
             start_page = calls_by_year[scan_year]["start_page"]
             assert start_page == 5, f"Expected start_page=5 for {scan_year}, got {start_page}"
 
-    def test_backlog_progress_logged_in_phase_5(self, tmp_path: Path) -> None:
-        """Backlog progress line should appear at the end of a cycle."""
-        from io import StringIO
-        from unittest.mock import MagicMock, patch
-
-        from loguru import logger
-
-        from gamarr.database import Database
-        from gamarr.pipeline import run_acquisition
-
-        db_path = str(tmp_path / "test.db")
-        db = Database(db_path)
-        db.set_last_scanned_page("pc", 2026, 12)
-        db.close()
-
-        with (
-            patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
-            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
-            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
-        ):
-            mock_source = MagicMock()
-            mock_source_cls.return_value = mock_source
-            mock_mc = MagicMock()
-            mock_mc.scan_recent_games.return_value = []
-            # Set _recent_games_last_page so DB set_last_scanned_page receives an int
-            mock_mc._recent_games_last_page = 12
-            mock_mc_cls.return_value = mock_mc
-            mock_qbt = MagicMock()
-            mock_qbt.is_torrent_present.return_value = False
-            mock_qbt.adopt_present_torrent.return_value = None
-            mock_qbt.is_connected.return_value = True
-            mock_qbt_cls.return_value = mock_qbt
-
-            log_buffer = StringIO()
-            handler_id = logger.add(log_buffer, level="INFO", format="{message}")
-
-            run_acquisition(
-                platform="pc",
-                db_path=db_path,
-                qbt_host="localhost",
-                qbt_port=8080,
-                max_pages=280,
-                max_cycle_pages=4,
-                sort_order="new",
-                enabled=True,
-            )
-
-            logger.remove(handler_id)
-            log_output = log_buffer.getvalue()
-
-            assert "Progress:" in log_output, f"Expected 'Progress:' in log output, got: {log_output[:500]}"
-
 
 class TestYearDrainOrder:
-    """The per-cycle page allowance is spent on one year at a time, newest first."""
+    """A floored date sweep drains one year at a time, newest first."""
 
     @staticmethod
     def _run_cycle(
         tmp_path: Path,
         *,
-        max_pages: int,
-        max_cycle_pages: int,
+        oldest_month: int,
         available_pages: dict[int, int],
         db_path: str | None = None,
         fetch_fails: bool = False,
@@ -6855,29 +6513,9 @@ class TestYearDrainOrder:
                 db_path=db_path or str(tmp_path / "test.db"),
                 qbt_host="localhost",
                 qbt_port=8080,
-                max_pages=max_pages,
-                max_cycle_pages=max_cycle_pages,
-                sort_order="new",
+                discovery=_discovery(oldest_month=oldest_month),
             )
         return current_year, calls
-
-    def test_cycle_allowance_spent_on_newest_year_only(self, tmp_path: Path) -> None:
-        """max_cycle_pages is a per-cycle total, not a per-year allowance."""
-        import datetime
-
-        current_year = datetime.datetime.now(tz=datetime.UTC).year
-        _current, calls = self._run_cycle(
-            tmp_path,
-            max_pages=1000,
-            max_cycle_pages=4,
-            available_pages={current_year: 500},
-        )
-
-        years = [call["year"] for call in calls]
-        assert years == [current_year], f"Only the newest year should be drained first, got {years}"
-        assert sum(call["pages"] for call in calls) == 4, (
-            f"A cycle must credit at most max_cycle_pages pages, got {[c['pages'] for c in calls]}"
-        )
 
     def test_exhausted_newest_year_descends_within_same_cycle(self, tmp_path: Path) -> None:
         """A drained year moves the scan on to the next newest year, descending."""
@@ -6886,34 +6524,16 @@ class TestYearDrainOrder:
         current_year = datetime.datetime.now(tz=datetime.UTC).year
         _current, calls = self._run_cycle(
             tmp_path,
-            max_pages=1000,
-            max_cycle_pages=4,
+            oldest_month=202401,
             available_pages={current_year - 1: 500},
         )
 
         years = [call["year"] for call in calls]
-        assert years == [current_year, current_year - 1], f"Expected descending drain, got {years}"
-        # The exhausted newest year only costs an empty probe; the real pages
-        # fetched must still fit inside the cycle allowance.
-        assert [call["pages"] for call in calls] == [0, 4], f"Unexpected page counts: {calls}"
-        assert sum(call["pages"] for call in calls) == 4, f"Cycle allowance was exceeded: {calls}"
-
-    def test_partially_drained_year_shares_remaining_allowance_with_next_year(self, tmp_path: Path) -> None:
-        """Pages left in a drained year are spent on the next year down."""
-        import datetime
-
-        current_year = datetime.datetime.now(tz=datetime.UTC).year
-        _current, calls = self._run_cycle(
-            tmp_path,
-            max_pages=1000,
-            max_cycle_pages=4,
-            available_pages={current_year: 2, current_year - 1: 500},
-        )
-
-        assert [(call["year"], call["max_pages"]) for call in calls] == [
-            (current_year, 4),
-            (current_year - 1, 2),
-        ], f"Expected the leftover allowance to be used on the next year, got {calls}"
+        assert years == sorted(years, reverse=True), f"Expected descending drain, got {years}"
+        assert years[0] == current_year, f"Expected the scan to start at {current_year}, got {years}"
+        assert min(years) >= 2024, f"Expected the 2024 floor year to bound the descent, got {years}"
+        # The exhausted newest year only costs an empty probe.
+        assert calls[0]["pages"] == 0, f"Unexpected page counts: {calls}"
 
     def test_exhausted_year_progress_does_not_creep(self, tmp_path: Path) -> None:
         """A year with no pages left must not advance its stored progress row."""
@@ -6929,14 +6549,12 @@ class TestYearDrainOrder:
 
         _current, calls = self._run_cycle(
             tmp_path,
-            max_pages=1000,
-            max_cycle_pages=4,
+            oldest_month=(current_year - 1) * 100 + 1,
             available_pages={current_year: 12, current_year - 1: 500},
             db_path=db_path,
         )
         assert calls[0]["year"] == current_year
         assert calls[0]["start_page"] == 13
-        assert calls[0]["max_pages"] == 4
 
         db = Database(db_path)
         assert db.get_last_scanned_page("pc", current_year) == 12, (
@@ -6959,8 +6577,7 @@ class TestYearDrainOrder:
 
         _current, calls = self._run_cycle(
             tmp_path,
-            max_pages=1000,
-            max_cycle_pages=4,
+            oldest_month=202401,
             available_pages={current_year: 12},
             stalled_years={current_year - 1},
             db_path=db_path,
@@ -6979,11 +6596,13 @@ class TestYearDrainOrder:
 
     def test_fetch_failure_is_still_reported_as_a_scrape_failure(self, tmp_path: Path) -> None:
         """A failed browse fetch must not be silenced by another year being drained."""
+        import datetime
         from unittest.mock import patch
 
         from gamarr.database import Database
         from gamarr.metacritic_cache import MetacriticCache
 
+        current_year = datetime.datetime.now(tz=datetime.UTC).year
         db_path = str(tmp_path / "mixed_health.db")
 
         class _FakeClient:
@@ -7040,9 +6659,7 @@ class TestYearDrainOrder:
                 db_path=db_path,
                 qbt_host="localhost",
                 qbt_port=8080,
-                max_pages=200,
-                max_cycle_pages=4,
-                sort_order="new",
+                discovery=_discovery(oldest_month=current_year * 100 + 1),
                 notify_on_scrape_failure=True,
             )
 
@@ -7111,9 +6728,7 @@ class TestYearDrainOrder:
                 db_path=db_path,
                 qbt_host="localhost",
                 qbt_port=8080,
-                max_pages=200,
-                max_cycle_pages=4,
-                sort_order="new",
+                discovery=_discovery(oldest_month=current_year * 100 + 1),
                 notify_on_scrape_failure=True,
             )
 
@@ -7134,8 +6749,7 @@ class TestYearDrainOrder:
 
         _current, calls = self._run_cycle(
             tmp_path,
-            max_pages=1000,
-            max_cycle_pages=4,
+            oldest_month=202401,
             available_pages={},
             db_path=db_path,
         )
@@ -7162,8 +6776,7 @@ class TestYearDrainOrder:
 
         _current, calls = self._run_cycle(
             tmp_path,
-            max_pages=1000,
-            max_cycle_pages=4,
+            oldest_month=current_year * 100 + 1,
             available_pages={},
             db_path=db_path,
             fetch_fails=True,
@@ -7178,7 +6791,7 @@ class TestYearDrainOrder:
 
 
 class TestBacklogLatestMode:
-    """Tests for unified browse loop budget and auto-reset behaviour."""
+    """A score backlog keeps its page budget, its resets and its browse order."""
 
     def test_budget_exhausted_resets_and_continues(self, mocker: Any, tmp_path: Path) -> None:
         """When budget is exhausted, progress resets to page 1 and scanning continues."""
@@ -7207,8 +6820,7 @@ class TestBacklogLatestMode:
             min_user_score=7.5,
             min_user_reviews=10,
             enabled=True,
-            max_pages=20,
-            max_cycle_pages=4,
+            discovery=_discovery(sort_order="criticscore", page_depth=20, pages_per_cycle=4),
         )
         # Budget exhausted -> reset_progress called, then scanning continues
         mock_db_instance.reset_progress.assert_called()
@@ -7241,8 +6853,7 @@ class TestBacklogLatestMode:
             min_user_score=7.5,
             min_user_reviews=10,
             enabled=True,
-            max_pages=20,
-            max_cycle_pages=4,
+            discovery=_discovery(sort_order="criticscore", page_depth=20, pages_per_cycle=4),
         )
         # Budget exceeded -> reset_progress called, then scanning continues
         mock_db_instance.reset_progress.assert_called()
@@ -7272,9 +6883,7 @@ class TestBacklogLatestMode:
             platform="pc",
             db_path=str(tmp_path / "test.db"),
             enabled=True,
-            sort_order="criticscore",
-            max_pages=20,
-            max_cycle_pages=4,
+            discovery=_discovery(sort_order="criticscore", page_depth=20, pages_per_cycle=4),
         )
 
         mock_db_instance.clear_browse_cache.assert_called_once()
@@ -7307,8 +6916,7 @@ class TestBacklogLatestMode:
             min_user_score=7.5,
             min_user_reviews=10,
             enabled=True,
-            max_pages=500,
-            max_cycle_pages=4,
+            discovery=_discovery(sort_order="criticscore", page_depth=500, pages_per_cycle=4),
         )
         kwargs = mock_mc_instance.scan_recent_games.call_args[1]
         assert kwargs["start_page"] == 1
@@ -7342,9 +6950,7 @@ class TestBacklogLatestMode:
             min_user_score=7.5,
             min_user_reviews=10,
             enabled=True,
-            max_pages=500,
-            max_cycle_pages=4,
-            sort_order="criticscore",
+            discovery=_discovery(sort_order="criticscore", page_depth=500, pages_per_cycle=4),
         )
 
         # The unified loop respects the configured sort_order — no override
@@ -7386,9 +6992,7 @@ class TestBacklogLatestMode:
             min_user_score=7.5,
             min_user_reviews=10,
             enabled=True,
-            max_pages=500,
-            max_cycle_pages=4,
-            sort_order="userscore",
+            discovery=_discovery(sort_order="userscore", page_depth=500, pages_per_cycle=4),
         )
 
         assert mock_mc_instance.sort_order == "userscore", (
@@ -7398,58 +7002,6 @@ class TestBacklogLatestMode:
         assert kwargs.get("year") is None, (
             f"Userscore sort should pass year=None (no year filter). Got year={kwargs.get('year')}."
         )
-
-    def test_backlog_shared_budget_respects_max_pages(self, mocker: Any, tmp_path: Path) -> None:
-        """Backlog mode should cap total pages across all years, not per-year.
-
-        With max_pages=5 on a fresh database (sum_scanned_pages=0), the year
-        loop has 2 years. The old code gave each year an independent max_pages
-        budget of 5 (total potential: 10). The fix shares the budget globally,
-        so after the first year exhausts the 5-page budget with a single
-        10-page scan, no more years are scanned.
-        """
-        from unittest.mock import MagicMock
-
-        from gamarr.pipeline import run_acquisition
-
-        mock_db = mocker.patch("gamarr.pipeline.Database")
-        mock_db_instance = mock_db.return_value
-        mock_db_instance.sum_scanned_pages.return_value = 0
-        mock_db_instance.has_verified_pending.return_value = False
-        mock_db_instance.get_pending.return_value = []
-        mock_db_instance.get_last_scanned_page.return_value = 0
-
-        mock_qbt = mocker.patch("gamarr.pipeline.QBittorrentClient")
-        mock_qbt_instance = mock_qbt.return_value
-        mock_qbt_instance.is_connected.return_value = True
-
-        mock_mc = mocker.patch("gamarr.pipeline.MetacriticClient")
-        mock_mc_instance = mock_mc.return_value
-
-        # Simulate scanning 10 pages per year call
-        def _mock_scan(*args: Any, **kwargs: Any) -> list:
-            mock_mc_instance._recent_games_last_page = 10
-            return []
-
-        scan_mock = MagicMock(side_effect=_mock_scan)
-        mock_mc_instance.scan_recent_games = scan_mock
-
-        # sort_order "new" and max_pages=5 → years_back = ceil(5/52) = 1 → 2 years
-        run_acquisition(
-            platform="pc",
-            db_path=str(tmp_path / "test.db"),
-            min_criticscore=75,
-            min_criticscore_reviews=10,
-            min_user_score=7.5,
-            min_user_reviews=10,
-            enabled=True,
-            max_pages=5,
-            max_cycle_pages=0,
-        )
-        # The shared budget should limit to 1 year (5 pages exhausted after first call)
-        assert scan_mock.call_count == 1
-        # First call should use the full initial budget (5 pages remaining)
-        assert scan_mock.call_args[1]["max_pages"] == 5
 
 
 def test_process_browse_games_backlog_mode(tmp_path: Path) -> None:
@@ -7475,7 +7027,7 @@ def test_process_browse_games_backlog_mode(tmp_path: Path) -> None:
         "pc",
         db,
         thresholds,
-        max_queue_days=30,
+        source_matching_days=30,
         reject_title=None,
         mc=_passing_detail_client(),
     )
@@ -7509,7 +7061,7 @@ def test_process_browse_games_reject_title(tmp_path: Path) -> None:
         "pc",
         db,
         thresholds,
-        max_queue_days=30,
+        source_matching_days=30,
         reject_title=["Remake"],
     )
     assert count == 0
@@ -8097,8 +7649,8 @@ class TestRecordResultGenres:
 # ---------------------------------------------------------------------------
 
 
-def test_process_browse_games_indefinite_max_queue_days(tmp_path: Path) -> None:
-    """_process_browse_games with max_queue_days=0 uses indefinite expiry."""
+def test_process_browse_games_indefinite_source_matching_days(tmp_path: Path) -> None:
+    """_process_browse_games with source_matching_days=0 uses indefinite expiry."""
     from gamarr.database import Database
     from gamarr.pipeline import _process_browse_games
 
@@ -8120,7 +7672,7 @@ def test_process_browse_games_indefinite_max_queue_days(tmp_path: Path) -> None:
         "pc",
         db,
         thresholds,
-        max_queue_days=0,
+        source_matching_days=0,
         reject_title=None,
         mc=_passing_detail_client(),
     )
@@ -8170,7 +7722,7 @@ def test_process_browse_games_handles_duplicate_slugs(tmp_path: Path) -> None:
         "pc",
         db,
         thresholds,
-        max_queue_days=30,
+        source_matching_days=30,
         reject_title=None,
         mc=_passing_detail_client(),
     )
@@ -8219,7 +7771,6 @@ class TestRunAcquisitionNoVerifiedLogging:
             run_acquisition(
                 db_path=db_path,
                 platform="pc",
-                max_pages=0,
                 enabled=True,
             )
 
@@ -8359,8 +7910,8 @@ class TestPendingProcessingOrder:
         ], f"Expected newest-release-first delivery, got: {[m['slug'] for m in matched]}"
         db.close()
 
-    def test_run_acquisition_threads_sort_order_to_processing(self, mocker: Any, tmp_path: Path) -> None:
-        """run_acquisition must pass the configured order to verify and match."""
+    def test_run_acquisition_threads_pending_order_to_processing(self, mocker: Any, tmp_path: Path) -> None:
+        """run_acquisition must pass the configured queue order to verify and match."""
         from gamarr.pipeline import run_acquisition
 
         mock_db = mocker.patch("gamarr.pipeline.Database")
@@ -8384,16 +7935,14 @@ class TestPendingProcessingOrder:
             platform="pc",
             db_path=str(tmp_path / "test.db"),
             enabled=True,
-            sort_order="userscore",
-            max_pages=10,
-            max_cycle_pages=1,
+            pending_order="userscore",
         )
 
         assert verify.call_args.kwargs["sort_order"] == "userscore"
         assert match.call_args.kwargs["sort_order"] == "userscore"
 
-    def test_new_sort_order_scans_newest_year_first(self, mocker: Any, tmp_path: Path) -> None:
-        """The cycle allowance is spent on the newest year before any older year."""
+    def test_a_floored_sweep_starts_at_the_newest_year(self, mocker: Any, tmp_path: Path) -> None:
+        """A floor inside the current year leaves exactly one year to read, newest first."""
         import datetime
 
         from gamarr.pipeline import run_acquisition
@@ -8419,20 +7968,18 @@ class TestPendingProcessingOrder:
 
         mock_mc_instance.scan_recent_games = MagicMock(side_effect=_mock_scan)
 
-        # max_pages=200 -> years_back = ceil(200/52) = 4 -> five year buckets.
+        anchor = datetime.datetime.now(tz=datetime.UTC).year
+        # A floor inside the anchor year bounds the sweep to that one year.
         run_acquisition(
             platform="pc",
             db_path=str(tmp_path / "test.db"),
             enabled=True,
-            sort_order="new",
-            max_pages=200,
-            max_cycle_pages=1,
+            discovery=_discovery(oldest_month=anchor * 100 + 1),
         )
 
-        anchor = datetime.datetime.now(tz=datetime.UTC).year
         years = [c.kwargs["year"] for c in mock_mc_instance.scan_recent_games.call_args_list]
 
-        assert years == [anchor], f"Expected the newest year to be drained first, got: {years}"
+        assert years == [anchor], f"Expected the newest year to be read first, got: {years}"
 
     def test_new_sort_order_descends_through_drained_years(self, mocker: Any, tmp_path: Path) -> None:
         """Drained year buckets are walked from the current year backwards."""
@@ -8461,38 +8008,35 @@ class TestPendingProcessingOrder:
 
         mock_mc_instance.scan_recent_games = MagicMock(side_effect=_mock_scan)
 
+        anchor = datetime.datetime.now(tz=datetime.UTC).year
         run_acquisition(
             platform="pc",
             db_path=str(tmp_path / "test.db"),
             enabled=True,
-            sort_order="new",
-            max_pages=200,
-            max_cycle_pages=1,
+            discovery=_discovery(oldest_month=202401),
         )
 
-        anchor = datetime.datetime.now(tz=datetime.UTC).year
         years = [c.kwargs["year"] for c in mock_mc_instance.scan_recent_games.call_args_list]
 
-        assert years == [anchor - offset for offset in range(5)], (
+        assert years == list(range(anchor, 2023, -1)), (
             f"Expected newest-year-first traversal starting at {anchor}, got: {years}"
         )
 
 
 class TestDateModeResolution:
-    """max_date switches sort_order "new" to date mode; score modes ignore it."""
+    """A backlog new plan is date-paced by oldest_month; a score sort has no dates."""
 
     @staticmethod
     def _run(
         *,
         tmp_path: Path,
-        max_date: int = 0,
-        max_cycle_months: int = 0,
+        oldest_month: int = 0,
+        months_per_cycle: int = 0,
         sort_order: Literal["new", "criticscore", "userscore"] = "new",
-        max_pages: int = 500,
-        max_cycle_pages: int = 0,
+        page_depth: int = 500,
+        pages_per_cycle: int = 0,
         scan_games: list[dict[str, Any]] | None = None,
         cutoff_reached: bool = False,
-        seed_pages: dict[int, int] | None = None,
         db_path: str | None = None,
         cache_hours: int = 6,
     ) -> tuple[list[dict[str, Any]], list[str]]:
@@ -8503,8 +8047,8 @@ class TestDateModeResolution:
         mock_mc = MagicMock()
 
         def fake_scan(*_args: Any, **kwargs: Any) -> list:
-            # Record the client's sort_order too: latest mode sets it as an
-            # attribute, so a bare kwargs capture cannot see the coercion.
+            # Record the client's sort_order too: the pipeline sets it as an
+            # attribute, so a bare kwargs capture cannot see it.
             calls.append(dict(kwargs))
             mock_mc._recent_games_last_page = kwargs.get("start_page", 1)
             mock_mc._recent_games_exhausted = False
@@ -8519,14 +8063,6 @@ class TestDateModeResolution:
         mock_mc.scan_recent_games.side_effect = fake_scan
 
         path = db_path or str(tmp_path / "date-mode.db")
-        if seed_pages:
-            from gamarr.database import Database
-
-            seed_db = Database(path)
-            for year, page in seed_pages.items():
-                seed_db.set_last_scanned_page("pc", year, page)
-            seed_db.close()
-
         logs: list[str] = []
         sink_id = loguru_logger.add(lambda msg: logs.append(str(msg)), level="INFO", format="{message}")
         try:
@@ -8539,17 +8075,18 @@ class TestDateModeResolution:
                 mock_qbt = MagicMock()
                 mock_qbt.is_connected.return_value = True
                 mock_qbt_cls.return_value = mock_qbt
+                discovery = (
+                    _discovery(oldest_month=oldest_month, months_per_cycle=months_per_cycle)
+                    if sort_order == "new"
+                    else _discovery(sort_order=sort_order, page_depth=page_depth, pages_per_cycle=pages_per_cycle)
+                )
                 run_acquisition(
                     platform="pc",
                     db_path=path,
                     qbt_host="localhost",
                     qbt_port=8080,
-                    max_pages=max_pages,
-                    max_cycle_pages=max_cycle_pages,
-                    max_date=max_date,
-                    max_cycle_months=max_cycle_months,
                     cache_hours=cache_hours,
-                    sort_order=sort_order,
+                    discovery=discovery,
                 )
         finally:
             loguru_logger.remove(sink_id)
@@ -8557,7 +8094,7 @@ class TestDateModeResolution:
 
     def test_date_mode_passes_floor_cutoff_and_no_page_limit(self, tmp_path: Path) -> None:
         """Date mode bounds the scan by the floor date, not a page count."""
-        calls, _logs = self._run(tmp_path=tmp_path, max_date=202401, max_pages=500)
+        calls, _logs = self._run(tmp_path=tmp_path, oldest_month=202401)
         assert calls, "Expected at least one browse call"
         for call in calls:
             assert call["cutoff_date"] == "2024-01-01"
@@ -8566,65 +8103,40 @@ class TestDateModeResolution:
 
     def test_date_mode_year_range_starts_at_floor_year(self, tmp_path: Path) -> None:
         """The sweep never walks older than the floor year."""
-        calls, _logs = self._run(tmp_path=tmp_path, max_date=202401)
+        calls, _logs = self._run(tmp_path=tmp_path, oldest_month=202401)
         years = [c["year"] for c in calls]
         assert min(years) == 2024
 
-    def test_score_mode_ignores_max_date(self, tmp_path: Path) -> None:
-        """criticscore has no year dimension, so the date keys are inert."""
-        calls, logs = self._run(tmp_path=tmp_path, max_date=202401, sort_order="criticscore", max_pages=40)
+    def test_score_mode_has_no_date_dimension(self, tmp_path: Path) -> None:
+        """A score backlog reads one page dimension: no year, no cutoff, the page depth."""
+        calls, _logs = self._run(tmp_path=tmp_path, sort_order="criticscore", page_depth=40)
         assert calls
         for call in calls:
             assert call["cutoff_date"] is None
             assert call["year"] is None
             assert call["max_pages"] == 40
-        assert any("max_date/max_cycle_months ignored" in line for line in logs)
-
-    def test_date_mode_logs_ignored_page_keys(self, tmp_path: Path) -> None:
-        """Page keys set alongside max_date are reported as ignored."""
-        _calls, logs = self._run(
-            tmp_path=tmp_path,
-            max_date=202401,
-            max_pages=500,
-            max_cycle_pages=4,
-        )
-        assert any("max_pages (500) is unused in date mode" in line for line in logs), logs
-        assert any("max_cycle_pages ignored in date mode" in line for line in logs)
 
     def test_date_mode_passes_month_span(self, tmp_path: Path) -> None:
         """The month allowance reaches the client as max_month_span."""
-        calls, _logs = self._run(tmp_path=tmp_path, max_date=202401, max_cycle_months=2)
+        calls, _logs = self._run(tmp_path=tmp_path, oldest_month=202401, months_per_cycle=2)
         assert calls[0]["max_month_span"] == 2
 
     def test_no_month_span_when_pacing_disabled(self, tmp_path: Path) -> None:
-        """max_cycle_months 0 sweeps to the floor with no span and no pace cutoff.
+        """months_per_cycle 0 sweeps to the floor with no span and no pace cutoff.
 
         The scan returns a game so the later-call branch is actually exercised:
         with pacing off, every call must still see only the floor cutoff.
         """
         calls, _logs = self._run(
             tmp_path=tmp_path,
-            max_date=202401,
-            max_cycle_months=0,
+            oldest_month=202401,
+            months_per_cycle=0,
             scan_games=[{"title": "G", "slug": "g", "release_date": "2025-11-05"}],
         )
         assert len(calls) >= 2, f"Expected a second year call, got {len(calls)}"
         for call in calls:
             assert call["max_month_span"] == 0
             assert call["cutoff_date"] == "2024-01-01"
-
-    def test_date_mode_skips_budget_reset(self, tmp_path: Path) -> None:
-        """The page budget and its reset branch must not run in date mode."""
-        import datetime
-
-        year = datetime.datetime.now(tz=datetime.UTC).year
-        _calls, logs = self._run(
-            tmp_path=tmp_path,
-            max_date=202401,
-            max_pages=2,
-            seed_pages={year: 500},
-        )
-        assert not any("Budget exhausted" in line for line in logs)
 
     @staticmethod
     def _run_floor_cycle(
@@ -8634,7 +8146,7 @@ class TestDateModeResolution:
         floor_games: list[dict[str, Any]],
         stop_cutoff: str | None = None,
         seed: dict[int, int] | None = None,
-        max_cycle_months: int = 0,
+        months_per_cycle: int = 0,
         drain_newer: bool = False,
     ) -> None:
         """Run one cycle whose newer years are consumed and whose floor year ends it.
@@ -8717,9 +8229,7 @@ class TestDateModeResolution:
                 db_path=path,
                 qbt_host="localhost",
                 qbt_port=8080,
-                max_date=floor_month,
-                max_cycle_months=max_cycle_months,
-                sort_order="new",
+                discovery=_discovery(oldest_month=floor_month, months_per_cycle=months_per_cycle),
             )
 
     def test_date_mode_resets_progress_at_floor(self, tmp_path: Path) -> None:
@@ -8792,9 +8302,7 @@ class TestDateModeResolution:
                 db_path=path,
                 qbt_host="localhost",
                 qbt_port=8080,
-                max_date=202401,
-                max_cycle_months=0,
-                sort_order="new",
+                discovery=_discovery(oldest_month=202401),
             )
 
         db = Database(path)
@@ -8848,9 +8356,7 @@ class TestDateModeResolution:
                 db_path=path,
                 qbt_host="localhost",
                 qbt_port=8080,
-                max_date=202401,
-                max_cycle_months=0,
-                sort_order="new",
+                discovery=_discovery(oldest_month=202401),
             )
 
         db = Database(path)
@@ -8861,7 +8367,7 @@ class TestDateModeResolution:
         """A pace (month-span) stop in the floor year must NOT be read as completion.
 
         The client reports the effective cutoff that stopped the page; if it is
-        not the floor, the sweep has not reached max_date yet, so resetting would
+        not the floor, the sweep has not reached oldest_month yet, so resetting would
         wipe every cursor and re-sweep forever without ever reaching the floor.
         """
         from gamarr.database import Database
@@ -8871,7 +8377,7 @@ class TestDateModeResolution:
             path=path,
             floor_month=202406,
             floor_games=[{"title": "Pace", "slug": "pace", "release_date": "2024-10-20"}],
-            max_cycle_months=2,
+            months_per_cycle=2,
             drain_newer=True,
         )
         db = Database(path)
@@ -8956,9 +8462,7 @@ class TestDateModeResolution:
                 db_path=path,
                 qbt_host="localhost",
                 qbt_port=8080,
-                max_date=202401,
-                max_cycle_months=0,
-                sort_order="new",
+                discovery=_discovery(oldest_month=202401),
             )
 
         db = Database(path)
@@ -9006,20 +8510,20 @@ class TestDateModeRegressions:
 
         from gamarr.metacritic import MetacriticClient
 
-        calls, _logs = TestDateModeResolution._run(tmp_path=tmp_path, max_date=202401, max_cycle_months=2)
+        calls, _logs = TestDateModeResolution._run(tmp_path=tmp_path, oldest_month=202401, months_per_cycle=2)
         assert calls, "Expected at least one browse call"
         allowed = set(inspect.signature(MetacriticClient.scan_recent_games).parameters)
         for call in calls:
             unknown = sorted(set(call) - allowed)
             assert not unknown, f"pipeline sends kwargs the client does not accept: {unknown}"
 
-    def test_page_mode_call_shape_has_no_date_arguments(self, tmp_path: Path) -> None:
-        """max_date 0 must leave the client call byte-identical to page mode."""
+    def test_score_mode_call_shape_has_no_date_arguments(self, tmp_path: Path) -> None:
+        """A score backlog sends no date arguments, only the page allowance."""
         calls, _logs = TestDateModeResolution._run(
             tmp_path=tmp_path,
-            max_date=0,
-            max_pages=104,
-            max_cycle_pages=4,
+            sort_order="criticscore",
+            page_depth=104,
+            pages_per_cycle=4,
         )
         assert calls, "Expected at least one browse call"
         for call in calls:
@@ -9028,28 +8532,12 @@ class TestDateModeRegressions:
             assert call["cache_pages_hours"] == 6
             assert call["max_pages"] > 0
 
-    def test_max_cycle_months_without_max_date_is_inert(self, tmp_path: Path) -> None:
-        """A pace set without a floor must not leak into page mode."""
-        calls, logs = TestDateModeResolution._run(
-            tmp_path=tmp_path,
-            max_date=0,
-            max_cycle_months=3,
-            max_pages=104,
-            max_cycle_pages=4,
-        )
-        assert calls, "Expected at least one browse call"
-        for call in calls:
-            assert call["cutoff_date"] is None
-            assert call["max_month_span"] == 0
-            assert call["max_pages"] > 0
-        assert any("max_cycle_months ignored" in line for line in logs), logs
-
     def test_later_calls_use_the_cycle_anchor_not_a_fresh_span(self, tmp_path: Path) -> None:
         """After the first call the pace must be an absolute cutoff, not a re-anchor."""
         calls, _logs = TestDateModeResolution._run(
             tmp_path=tmp_path,
-            max_date=202401,
-            max_cycle_months=2,
+            oldest_month=202401,
+            months_per_cycle=2,
             scan_games=[{"title": "G", "slug": "g", "release_date": "2025-11-05"}],
         )
         assert len(calls) >= 2, f"Expected a second year call, got {len(calls)}"
@@ -9126,9 +8614,7 @@ class TestDateModeRegressions:
                     db_path=path,
                     qbt_host="localhost",
                     qbt_port=8080,
-                    max_date=202401,
-                    max_cycle_months=0,
-                    sort_order="new",
+                    discovery=_discovery(oldest_month=202401),
                 )
         finally:
             loguru_logger.remove(sink_id)
@@ -9139,7 +8625,7 @@ class TestDateModeRegressions:
         assert any("mis-indexed" in line for line in logs), logs
 
     def test_games_older_than_the_floor_are_not_queued(self) -> None:
-        """A mixed boundary page must not queue games older than max_date."""
+        """A mixed boundary page must not queue games older than oldest_month."""
         from gamarr.pipeline import _games_at_or_after_floor
 
         page: list[dict[str, Any]] = [
@@ -9203,9 +8689,7 @@ class TestDateModeRegressions:
                 db_path=path,
                 qbt_host="localhost",
                 qbt_port=8080,
-                max_date=202406,
-                max_cycle_months=0,
-                sort_order="new",
+                discovery=_discovery(oldest_month=202406),
             )
 
         db = Database(path)
@@ -9214,62 +8698,17 @@ class TestDateModeRegressions:
         assert "in-floor" in pending, f"in-floor game must be queued, got {pending}"
         assert "below-floor" not in pending, f"below-floor game must be filtered out, got {pending}"
 
-    def test_invalid_max_date_from_a_direct_caller_is_ignored(self, tmp_path: Path) -> None:
-        """A direct API caller passing a bad month must fall back to page mode."""
-        calls, logs = TestDateModeResolution._run(tmp_path=tmp_path, max_date=202413, max_pages=104)
-        assert calls
-        for call in calls:
-            assert call["cutoff_date"] is None
-            assert call["max_month_span"] == 0
-        assert any("not a valid YYYYMM" in line for line in logs), logs
-
-    def test_negative_max_cycle_months_is_ignored(self, tmp_path: Path) -> None:
-        """A negative pace must be treated as no pacing, with a warning."""
-        calls, logs = TestDateModeResolution._run(
-            tmp_path=tmp_path,
-            max_date=202401,
-            max_cycle_months=-3,
-        )
-        assert calls
-        for call in calls:
-            assert call["max_month_span"] == 0
-        assert any("is negative" in line for line in logs), logs
-
-    def test_non_integer_max_date_from_a_direct_caller_is_ignored(self, tmp_path: Path) -> None:
-        """A string or bool floor must not be treated as a month."""
-        for bad in ("202401", True):
-            calls, logs = TestDateModeResolution._run(
-                tmp_path=tmp_path,
-                max_date=cast("int", bad),
-                max_pages=104,
-            )
-            assert calls
-            for call in calls:
-                assert call["cutoff_date"] is None, bad
-            assert any("not a valid YYYYMM" in line for line in logs), (bad, logs)
-
-    def test_future_max_date_from_a_direct_caller_is_clamped(self, tmp_path: Path) -> None:
-        """A future floor must be clamped, not swept as-is."""
+    def test_a_future_floor_is_clamped(self, tmp_path: Path) -> None:
+        """DiscoveryConfig clamps a future floor, so the cycle sweeps from this month."""
         import datetime
 
         now = datetime.datetime.now(tz=datetime.UTC)
         future = (now.year + 3) * 100 + now.month
-        calls, logs = TestDateModeResolution._run(tmp_path=tmp_path, max_date=future)
+        calls, logs = TestDateModeResolution._run(tmp_path=tmp_path, oldest_month=future)
         assert calls
         expected = f"{now.year:04d}-{now.month:02d}-01"
         assert all(call["cutoff_date"] == expected for call in calls), calls[:3]
         assert any("in the future" in line for line in logs), logs
-
-    def test_implausible_max_cycle_months_is_clamped(self, tmp_path: Path) -> None:
-        """An absurd pace must be bounded so the month arithmetic cannot underflow."""
-        calls, logs = TestDateModeResolution._run(
-            tmp_path=tmp_path,
-            max_date=202401,
-            max_cycle_months=5000,
-        )
-        assert calls
-        assert calls[0]["max_month_span"] == 1200
-        assert any("implausibly large" in line for line in logs), logs
 
     def test_cancelled_cycle_does_not_reset_date_mode_progress(self, tmp_path: Path) -> None:
         """A shutdown mid-sweep must not wipe the per-year cursors."""
@@ -9322,9 +8761,7 @@ class TestDateModeRegressions:
                 db_path=path,
                 qbt_host="localhost",
                 qbt_port=8080,
-                max_date=202401,
-                max_cycle_months=0,
-                sort_order="new",
+                discovery=_discovery(oldest_month=202401),
                 cancel_event=cancel_event,
             )
 
@@ -9371,24 +8808,22 @@ class TestDateModeRegressions:
                 db_path=str(tmp_path / "empty-cache.db"),
                 qbt_host="localhost",
                 qbt_port=8080,
-                max_date=current_year * 100 + 1,
-                max_cycle_months=0,
-                sort_order="new",
+                discovery=_discovery(oldest_month=current_year * 100 + 1),
             )
         mock_notify.assert_called_once()
 
     def test_cache_hours_is_forwarded_to_the_client(self, tmp_path: Path) -> None:
         """A non-default cache TTL must reach the client, not be hard-coded."""
-        calls, _logs = TestDateModeResolution._run(tmp_path=tmp_path, max_date=202401, cache_hours=7)
+        calls, _logs = TestDateModeResolution._run(tmp_path=tmp_path, oldest_month=202401, cache_hours=7)
         assert calls, "Expected at least one browse call"
         assert all(call["cache_pages_hours"] == 7 for call in calls)
 
     def test_year_loop_stops_when_the_allowance_is_already_spent(self, tmp_path: Path) -> None:
-        """A collected span >= max_cycle_months must skip the next year."""
+        """A collected span >= months_per_cycle must skip the next year."""
         calls, _logs = TestDateModeResolution._run(
             tmp_path=tmp_path,
-            max_date=202401,
-            max_cycle_months=2,
+            oldest_month=202401,
+            months_per_cycle=2,
             scan_games=[
                 {"title": "A", "slug": "a", "release_date": "2025-11-05"},
                 {"title": "B", "slug": "b", "release_date": "2025-08-05"},
@@ -9452,9 +8887,7 @@ class TestDateModeRegressions:
                 db_path=path,
                 qbt_host="localhost",
                 qbt_port=8080,
-                max_date=200001,
-                max_cycle_months=2,
-                sort_order="new",
+                discovery=_discovery(oldest_month=200001, months_per_cycle=2),
             )
 
         db = Database(path)
@@ -9526,9 +8959,7 @@ class TestDateModeRegressions:
                 db_path=path,
                 qbt_host="localhost",
                 qbt_port=8080,
-                max_date=current_year * 100 + 1,
-                max_cycle_months=0,
-                sort_order="new",
+                discovery=_discovery(oldest_month=current_year * 100 + 1),
             )
         return mock_notify
 
@@ -9683,7 +9114,7 @@ class TestVerifyBeforeQueue:
                 "min_user_score": 7.5,
                 "min_user_reviews": 10,
             },
-            max_queue_days=60,
+            source_matching_days=60,
             mc=mc,
             cache_details_days=7,
             cache_pages_hours=6,
@@ -9766,13 +9197,10 @@ class TestLatestMode:
         *,
         tmp_path: Path,
         mode: Literal["latest", "backlog"] = "latest",
-        max_pages: int = 3,
-        max_date: int = 0,
-        max_cycle_months: int = 0,
-        max_cycle_pages: int = 0,
+        oldest_month: int = 0,
+        months_per_cycle: int = 0,
         sort_order: Literal["new", "criticscore", "userscore"] = "new",
         db_path: str | None = None,
-        sort_orders: list[str] | None = None,
         games_for_year: Callable[[int], list[dict[str, Any]]] | None = None,
         fail_all_years: bool = False,
         fail_years: set[int] | None = None,
@@ -9782,8 +9210,6 @@ class TestLatestMode:
     ) -> tuple[list[dict[str, Any]], list[str]]:
         """Run one cycle and return (scan calls, log lines).
 
-        Pass *sort_orders* to collect the client's ``sort_order`` per call: the
-        pipeline sets it as an attribute, so the kwargs capture cannot see it.
         Pass *games_for_year* to shape each year's listing (empty years included).
         """
         from loguru import logger as loguru_logger
@@ -9793,8 +9219,6 @@ class TestLatestMode:
 
         def fake_scan(*_args: Any, **kwargs: Any) -> list:
             calls.append(dict(kwargs))
-            if sort_orders is not None:
-                sort_orders.append(mock_mc.sort_order)
             mock_mc._recent_games_last_page = kwargs.get("start_page", 1)
             mock_mc._recent_games_exhausted = exhausted
             mock_mc._recent_games_failed = fail_all_years
@@ -9844,26 +9268,23 @@ class TestLatestMode:
                     db_path=db_path or str(tmp_path / f"{mode}.db"),
                     qbt_host="localhost",
                     qbt_port=8080,
-                    mode=mode,
-                    max_pages=max_pages,
-                    max_date=max_date,
-                    max_cycle_months=max_cycle_months,
-                    max_cycle_pages=max_cycle_pages,
-                    sort_order=sort_order,
+                    discovery=_discovery(
+                        mode=mode,
+                        sort_order=sort_order,
+                        oldest_month=oldest_month,
+                        months_per_cycle=months_per_cycle,
+                    ),
                 )
         finally:
             loguru_logger.remove(sink)
         return calls, logs
 
-    def test_starts_at_page_one_and_stops_at_depth(self, tmp_path: Path) -> None:
-        calls, _logs = self._run(tmp_path=tmp_path, max_pages=3)
+    def test_starts_at_page_one_with_no_page_cap(self, tmp_path: Path) -> None:
+        """latest re-reads from page 1 and has no page depth (ADR 0003)."""
+        calls, _logs = self._run(tmp_path=tmp_path, months_per_cycle=1)
         assert calls, "expected at least one browse call"
-        assert calls[0]["start_page"] == 1
         assert all(call["start_page"] == 1 for call in calls)
-        assert calls[0]["max_pages"] == 2, "one page of the depth is reserved for the years below"
-        # The fake yields one page per call, so the call count is the pages read.
-        assert len(calls) <= 3, "the cycle may not exceed its depth"
-        assert all(call["max_pages"] <= 3 for call in calls), "no call may exceed the depth"
+        assert all(call["max_pages"] == 0 for call in calls), "a latest cycle must send no page cap"
 
     def test_does_not_persist_cursors(self, tmp_path: Path) -> None:
         import datetime
@@ -9872,13 +9293,13 @@ class TestLatestMode:
 
         current_year = datetime.datetime.now(tz=datetime.UTC).year
         path = str(tmp_path / "latest.db")
-        self._run(tmp_path=tmp_path, max_pages=3)
+        self._run(tmp_path=tmp_path)
         db = Database(path)
         assert db.get_last_scanned_page("pc", current_year) == 0, "latest mode must not write cursors"
         db.close()
 
     def test_logs_the_mode_and_scan_summary(self, tmp_path: Path) -> None:
-        _calls, logs = self._run(tmp_path=tmp_path, max_pages=3)
+        _calls, logs = self._run(tmp_path=tmp_path)
         assert any("Discovery mode: latest" in line for line in logs), logs
         assert any("Latest scan:" in line for line in logs), logs
 
@@ -9889,33 +9310,25 @@ class TestLatestMode:
         current_year = datetime.datetime.now(tz=datetime.UTC).year
         calls, logs = self._run(
             tmp_path=tmp_path,
-            max_pages=3,
-            max_date=201501,
-            max_cycle_months=6,
+            oldest_month=201501,
+            months_per_cycle=6,
             raise_years={current_year, current_year - 1, current_year - 2},
         )
         assert len(calls) == 2, f"two raising years must stop the descent: {[c['year'] for c in calls]}"
         assert any("consecutive years failed to browse" in line for line in logs), logs
 
-    def test_max_cycle_months_wires_the_pace_and_max_pages_is_unused(self, tmp_path: Path) -> None:
-        """A date key wins in latest mode: the pace bounds the cycle, not the depth."""
-        depth = 3
-        calls, logs = self._run(tmp_path=tmp_path, max_pages=depth, max_cycle_months=2, max_cycle_pages=4)
+    def test_the_month_pace_wires_the_client_span(self, tmp_path: Path) -> None:
+        """months_per_cycle reaches the client as max_month_span, with no page cap."""
+        calls, logs = self._run(tmp_path=tmp_path, months_per_cycle=2)
         assert calls, "the paced cycle must still browse"
-        assert calls[0]["max_pages"] == 0, "a date-driven cycle has no page cap"
+        assert calls[0]["max_pages"] == 0, "a latest cycle has no page cap"
         assert calls[0]["max_month_span"] == 2, "the first call anchors the pace on its own page"
         assert calls[0]["cutoff_date"] is None, "no floor configured leaves the month pace as the only bound"
-        assert any("max_pages (3) is unused in latest date mode" in line for line in logs), logs
-        assert not any("max_cycle_months ignored" in line for line in logs), logs
         assert not any("effectively unpaced" in line for line in logs), logs
-        assert any("ignored in latest mode" in line and "max_cycle_pages" in line for line in logs), logs
-        # A date-driven cycle must not be capped by max_pages: the fake serves one
-        # page per year, so a working pace window is six years deep with pace 2.
-        assert len(calls) > depth, f"max_pages must not cap a date-driven cycle: {len(calls)} page(s)"
 
-    def test_max_date_and_pace_beat_max_pages(self, tmp_path: Path) -> None:
-        """max_date is the floor and max_cycle_months the pace; max_pages never caps."""
-        calls, _logs = self._run(tmp_path=tmp_path, max_pages=3, max_date=202401, max_cycle_months=12)
+    def test_the_floor_and_pace_bound_the_window(self, tmp_path: Path) -> None:
+        """oldest_month is the floor and months_per_cycle the pace; no page cap applies."""
+        calls, _logs = self._run(tmp_path=tmp_path, oldest_month=202401, months_per_cycle=12)
         assert calls, "expected at least one browse call"
         assert calls[0]["cutoff_date"] == "2024-01-01", "the first call carries the floor"
         assert calls[0]["max_month_span"] == 12, "the first call anchors the pace on its own page"
@@ -9926,8 +9339,8 @@ class TestLatestMode:
         )
 
     def test_a_floor_alone_bounds_latest_without_pacing(self, tmp_path: Path) -> None:
-        """max_date without max_cycle_months sweeps to the floor in one cycle."""
-        calls, _logs = self._run(tmp_path=tmp_path, max_pages=3, max_date=202401)
+        """oldest_month without months_per_cycle sweeps to the floor in one cycle."""
+        calls, _logs = self._run(tmp_path=tmp_path, oldest_month=202401)
         assert calls
         assert all(call["max_pages"] == 0 for call in calls)
         assert all(call["cutoff_date"] == "2024-01-01" for call in calls)
@@ -9943,9 +9356,8 @@ class TestLatestMode:
         current_year = datetime.datetime.now(tz=datetime.UTC).year
         calls, logs = self._run(
             tmp_path=tmp_path,
-            max_pages=3,
-            max_date=201501,
-            max_cycle_months=6,
+            oldest_month=201501,
+            months_per_cycle=6,
             fail_years={current_year - 1, current_year - 2, current_year - 3},
         )
         years = [call["year"] for call in calls]
@@ -9958,9 +9370,8 @@ class TestLatestMode:
         """The pace may shorten the window but never opens years below the floor."""
         calls, _logs = self._run(
             tmp_path=tmp_path,
-            max_pages=3,
-            max_date=202001,
-            max_cycle_months=24,
+            oldest_month=202001,
+            months_per_cycle=24,
             games_for_year=lambda year: [{"title": "G", "slug": "g", "release_date": f"{year}-12-01"}],
         )
         years = [call["year"] for call in calls]
@@ -9980,9 +9391,8 @@ class TestLatestMode:
 
         calls, _logs = self._run(
             tmp_path=tmp_path,
-            max_pages=3,
-            max_date=202001,
-            max_cycle_months=12,
+            oldest_month=202001,
+            months_per_cycle=12,
             games_for_year=games,
         )
         years = [call["year"] for call in calls]
@@ -10003,8 +9413,7 @@ class TestLatestMode:
 
         calls, _logs = self._run(
             tmp_path=tmp_path,
-            max_pages=3,
-            max_cycle_months=12,
+            months_per_cycle=12,
             games_for_year=games,
         )
         years = [call["year"] for call in calls]
@@ -10015,8 +9424,7 @@ class TestLatestMode:
         """A normal pace stops at the slack bound; the 1958 clamp is the 1200 test."""
         calls, _logs = self._run(
             tmp_path=tmp_path,
-            max_pages=3,
-            max_cycle_months=1,
+            months_per_cycle=1,
             games_for_year=lambda _year: [],
         )
         years = [call["year"] for call in calls]
@@ -10030,7 +9438,7 @@ class TestLatestMode:
 
         current_year = datetime.datetime.now(tz=datetime.UTC).year
         floor_month = (current_year - 2) * 100 + 1
-        calls, logs = self._run(tmp_path=tmp_path, max_pages=3, max_date=floor_month, exhausted=True)
+        calls, logs = self._run(tmp_path=tmp_path, oldest_month=floor_month, exhausted=True)
         years = [call["year"] for call in calls]
         assert years == [current_year, current_year - 1, current_year - 2], (
             f"the descent must continue to the floor year: {years}"
@@ -10042,42 +9450,36 @@ class TestLatestMode:
         import datetime
 
         current_year = datetime.datetime.now(tz=datetime.UTC).year
-        calls, _logs = self._run(tmp_path=tmp_path, max_pages=3, max_date=200001, cutoff_years={current_year})
+        calls, _logs = self._run(tmp_path=tmp_path, oldest_month=200001, cutoff_years={current_year})
         years = [call["year"] for call in calls]
         assert years == [current_year], f"the cutoff stop must end the descent: {years}"
 
     def test_a_catalogue_wide_pace_skips_the_pace_cutoff(self, tmp_path: Path) -> None:
         """A pace older than the catalogue must not send a cutoff to the client."""
-        calls, _logs = self._run(tmp_path=tmp_path, max_pages=3, max_cycle_months=1200)
+        calls, _logs = self._run(tmp_path=tmp_path, months_per_cycle=1200)
         assert len(calls) > 1, "the cycle must make a later call to exercise the guard"
         assert calls[1]["cutoff_date"] is None, f"a pre-catalogue pace must be dropped: {calls[1]['cutoff_date']}"
 
     def test_a_fetch_outage_stops_the_descent_before_the_anchor(self, tmp_path: Path) -> None:
         """Two consecutive failures mean a blind descent; one broken year does not."""
-        calls, logs = self._run(tmp_path=tmp_path, max_pages=3, max_cycle_months=12, fail_all_years=True)
+        calls, logs = self._run(tmp_path=tmp_path, months_per_cycle=12, fail_all_years=True)
         assert len(calls) == 2, f"one broken year must not abandon the cycle: {[c['year'] for c in calls]}"
         assert any("consecutive years failed to browse" in line for line in logs), logs
         assert not any("no listing was found" in line for line in logs), logs
 
-    def test_a_coerced_score_sort_still_uses_the_date_window(self, tmp_path: Path) -> None:
-        """latest coerces the sort to 'new' first, so its date keys must apply."""
-        calls, logs = self._run(
-            tmp_path=tmp_path, max_pages=0, max_date=202401, max_cycle_months=2, sort_order="criticscore"
-        )
+    def test_a_configured_score_sort_is_ignored_by_latest(self, tmp_path: Path) -> None:
+        """latest always reads newest-first; a configured backlog sort never reaches the client."""
+        calls, _logs = self._run(tmp_path=tmp_path, oldest_month=202401, months_per_cycle=2, sort_order="criticscore")
         assert calls
-        assert calls[0]["max_pages"] == 0, "the page cap must be dropped even after a coerced sort"
+        assert calls[0]["max_pages"] == 0
         assert calls[0]["max_month_span"] == 2
         assert calls[0]["cutoff_date"] == "2024-01-01"
-        assert any("latest mode requires sort_order 'new'" in line.lower() for line in logs), logs
-        # The coercion runs before the depth normaliser, so 0 must not be clamped.
-        assert not any("clamping" in line.lower() for line in logs), logs
 
     def test_undated_pages_are_reported_and_stop_the_descent(self, tmp_path: Path) -> None:
         """A listing that drops release dates must stop the descent, not crawl it."""
         calls, logs = self._run(
             tmp_path=tmp_path,
-            max_pages=3,
-            max_cycle_months=2,
+            months_per_cycle=2,
             games_for_year=lambda _year: [{"title": "G", "slug": "g", "release_date": None}],
             exhausted=True,
         )
@@ -10088,7 +9490,7 @@ class TestLatestMode:
 
     def test_a_huge_pace_bounds_at_the_catalogue_floor(self, tmp_path: Path) -> None:
         """A 1200-month pace must clamp at EARLIEST_BROWSE_YEAR, not walk forever."""
-        calls, logs = self._run(tmp_path=tmp_path, max_pages=3, max_cycle_months=1200, games_for_year=lambda _y: [])
+        calls, logs = self._run(tmp_path=tmp_path, months_per_cycle=1200, games_for_year=lambda _y: [])
         years = [call["year"] for call in calls]
         assert years, "expected at least one probe"
         assert min(years) == 1958, f"the descent must clamp at the catalogue floor: {min(years)}"
@@ -10096,19 +9498,19 @@ class TestLatestMode:
 
     def test_an_all_empty_floorless_descent_names_the_bound(self, tmp_path: Path) -> None:
         """Nothing found down to a synthetic bound must be reported, not silent."""
-        calls, logs = self._run(tmp_path=tmp_path, max_pages=3, max_cycle_months=2, games_for_year=lambda _y: [])
+        calls, logs = self._run(tmp_path=tmp_path, months_per_cycle=2, games_for_year=lambda _y: [])
         assert calls
         assert any("no listing was found" in line for line in logs), logs
         assert not any("carried no usable release dates" in line for line in logs), logs
 
     def test_an_unpaced_date_window_is_reported_as_uncapped(self, tmp_path: Path) -> None:
         """An unpaced window re-reads everything each cycle; that must be visible."""
-        calls, logs = self._run(tmp_path=tmp_path, max_pages=3, max_date=202401)
+        calls, logs = self._run(tmp_path=tmp_path, oldest_month=202401)
         assert calls
         assert any("effectively unpaced" in line for line in logs), logs
         assert any("never reaches its floor" in line for line in logs), logs
         assert any("effectively unpaced" in line and "202401" in line for line in logs), logs
-        assert any("Discovery mode: latest (date window" in line for line in logs), logs
+        assert any("Discovery mode: latest (floor" in line for line in logs), logs
         assert any("Latest scan:" in line and "floor 202401" in line and "unpaced" in line for line in logs), logs
 
     def test_a_floor_covering_pace_is_not_called_unpaced(self, tmp_path: Path) -> None:
@@ -10118,31 +9520,30 @@ class TestLatestMode:
 
         # Derive the floor from the clock so the pace always covers it.
         floor_month = subtract_months(current_year_month(), 200)
-        calls, logs = self._run(tmp_path=tmp_path, max_pages=3, max_date=floor_month, max_cycle_months=240)
+        calls, logs = self._run(tmp_path=tmp_path, oldest_month=floor_month, months_per_cycle=240)
         assert calls
         assert not any("effectively unpaced" in line for line in logs), logs
         assert not any("is the floor, not a sweep target" in line for line in logs), logs
 
     def test_a_narrow_pace_states_its_scope(self, tmp_path: Path) -> None:
         """A pace narrower than the window must say the older months are not read."""
-        calls, logs = self._run(tmp_path=tmp_path, max_pages=3, max_date=202001, max_cycle_months=2)
+        calls, logs = self._run(tmp_path=tmp_path, oldest_month=202001, months_per_cycle=2)
         assert calls
-        assert any("is the floor, not a sweep target" in line for line in logs), logs
+        assert any("is not a sweep target" in line for line in logs), logs
 
     def test_a_backlog_date_cycle_reports_undated_pages_too(self, tmp_path: Path) -> None:
         """The shared no-dates warning must name the mode that hit it."""
         calls, logs = self._run(
             tmp_path=tmp_path,
             mode="backlog",
-            max_pages=3,
-            max_date=202401,
+            oldest_month=202401,
             games_for_year=lambda _year: [{"title": "G", "slug": "g", "release_date": None}],
         )
         assert calls
         assert any("cannot bound this backlog cycle" in line for line in logs), logs
 
-    def test_a_date_driven_cycle_does_not_persist_cursors(self, tmp_path: Path) -> None:
-        """The no-cursor invariant must hold on the date-driven path too."""
+    def test_a_date_mode_cycle_does_not_persist_cursors(self, tmp_path: Path) -> None:
+        """The no-cursor invariant must hold on the date-mode path too."""
         from gamarr.database import Database
 
         path = str(tmp_path / "latest-date.db")
@@ -10151,43 +9552,22 @@ class TestLatestMode:
         seed.set_last_scanned_page("pc", 2025, 7)
         seed.close()
 
-        self._run(tmp_path=tmp_path, max_pages=3, max_date=202401, max_cycle_months=2, db_path=path)
+        self._run(tmp_path=tmp_path, oldest_month=202401, months_per_cycle=2, db_path=path)
 
         db = Database(path)
-        assert db.get_last_scanned_page("pc", 2025) == 7, "a date-driven latest cycle must not move backlog cursors"
+        assert db.get_last_scanned_page("pc", 2025) == 7, "a date-mode latest cycle must not move backlog cursors"
         db.close()
 
-    def test_a_date_driven_cycle_does_not_clamp_the_depth(self, tmp_path: Path) -> None:
-        """max_pages: 0 means nothing in a date-driven cycle, so do not clamp it to 10."""
-        calls, logs = self._run(tmp_path=tmp_path, max_pages=0, max_cycle_months=2)
-        assert calls
-        assert calls[0]["max_pages"] == 0
-        assert not any("clamping" in line.lower() for line in logs), logs
-
-    def test_score_sort_is_coerced_with_a_warning(self, tmp_path: Path) -> None:
-        orders: list[str] = []
-        calls, logs = self._run(tmp_path=tmp_path, max_pages=3, sort_order="criticscore", sort_orders=orders)
-        assert any("latest mode requires sort_order 'new'" in line.lower() for line in logs), logs
-        assert calls[0]["year"] is not None, "coerced scans must keep the per-year dimension"
-        assert orders[0] == "new", (
-            "the coerced cycle must actually browse in 'new' order, else the date stop logic is dead"
-        )
-
-    def test_zero_depth_is_clamped(self, tmp_path: Path) -> None:
-        calls, logs = self._run(tmp_path=tmp_path, max_pages=0)
-        assert calls[0]["max_pages"] == 9, "the clamped depth of 10 keeps one page for the next year"
-        assert any("clamping" in line.lower() for line in logs), logs
-
     def test_latest_with_a_floor_bounds_the_window_and_filters_the_queue(self, tmp_path: Path) -> None:
-        """latest + max_date still passes the floor cutoff and the queue filter."""
-        calls, _logs = self._run(tmp_path=tmp_path, max_pages=3, max_date=202401)
+        """latest + oldest_month still passes the floor cutoff and the queue filter."""
+        calls, _logs = self._run(tmp_path=tmp_path, oldest_month=202401)
         assert calls, "expected at least one browse call"
         for call in calls:
             assert call["cutoff_date"] == "2024-01-01", call
             assert call["year"] is not None, "latest keeps the per-year dimension"
 
-    def test_latest_sort_coercion_does_not_wipe_backlog_cursors(self, tmp_path: Path) -> None:
-        """A coerced latest cycle must leave the stored sort order and cursors alone."""
+    def test_an_inert_backlog_sort_does_not_wipe_backlog_cursors(self, tmp_path: Path) -> None:
+        """A latest cycle must leave the backlog cursors and their order alone."""
         from gamarr.database import Database
 
         path = str(tmp_path / "coerce.db")
@@ -10196,7 +9576,7 @@ class TestLatestMode:
         seed.set_last_scanned_page("pc", 2025, 7)
         seed.close()
 
-        self._run(tmp_path=tmp_path, max_pages=3, sort_order="criticscore", db_path=path)
+        self._run(tmp_path=tmp_path, sort_order="criticscore", db_path=path)
 
         db = Database(path)
         assert db.get_last_scanned_page("pc", 2025) == 7, "latest mode must not reset backlog progress"
@@ -10219,16 +9599,16 @@ class TestLatestMode:
         seed.set_last_scanned_page("pc", 2025, 7)
         seed.close()
 
-        # One coerced latest cycle: critic score sort -> scan order "new".
-        self._run(tmp_path=tmp_path, max_pages=3, sort_order="criticscore", db_path=path)
+        # One latest cycle: the configured critic-score sort is inert, so the
+        # plan scans in "new" order and the cached order changes.
+        self._run(tmp_path=tmp_path, sort_order="criticscore", db_path=path)
 
         # Back to backlog in date mode (no page-budget auto-reset to mask it),
         # with the default order: the 2025 cursor belongs to another order.
         calls, _logs = self._run(
             tmp_path=tmp_path,
             mode="backlog",
-            max_pages=3,
-            max_date=202401,
+            oldest_month=202401,
             sort_order="new",
             db_path=path,
         )
@@ -10244,8 +9624,8 @@ class TestLatestMode:
         assert db.get_cursor_sort_order("pc") == "new"
         db.close()
 
-    def test_coerced_latest_does_not_clear_the_cache_every_cycle(self, tmp_path: Path) -> None:
-        """After the first coerced cycle the stored order matches, so no second clear."""
+    def test_latest_clears_the_cache_once_after_an_order_change(self, tmp_path: Path) -> None:
+        """After the first cycle the stored order matches, so no second clear."""
         from gamarr.database import Database
 
         path = str(tmp_path / "cache-thrash.db")
@@ -10261,8 +9641,8 @@ class TestLatestMode:
             return original(self, platform)
 
         with patch.object(Database, "clear_browse_cache", spy):
-            self._run(tmp_path=tmp_path, max_pages=3, sort_order="criticscore", db_path=path)
-            self._run(tmp_path=tmp_path, max_pages=3, sort_order="criticscore", db_path=path)
+            self._run(tmp_path=tmp_path, sort_order="criticscore", db_path=path)
+            self._run(tmp_path=tmp_path, sort_order="criticscore", db_path=path)
 
         assert len(cleared) == 1, f"expected one cache clear for the order change, got {len(cleared)}"
 
@@ -10273,7 +9653,7 @@ class TestLatestMode:
 
         current_year = datetime.datetime.now(tz=datetime.UTC).year
         path = str(tmp_path / "backlog.db")
-        self._run(tmp_path=tmp_path, mode="backlog", max_pages=3)
+        self._run(tmp_path=tmp_path, mode="backlog")
         db = Database(path)
         assert db.get_last_scanned_page("pc", current_year) >= 1, "backlog mode must still advance cursors"
         db.close()
@@ -10347,7 +9727,7 @@ class TestBrowseLookupPool:
                 "min_user_score": 7.5,
                 "min_user_reviews": 10,
             },
-            max_queue_days=60,
+            source_matching_days=60,
             mc=mock_mc,
             cancel_event=cancel_event,
         )
@@ -10410,7 +9790,7 @@ class TestBrowseLookupPool:
                 "min_user_score": 7.5,
                 "min_user_reviews": 10,
             },
-            max_queue_days=60,
+            source_matching_days=60,
             mc=mock_mc,
             cancel_event=cancel_event,
         )
@@ -10458,7 +9838,7 @@ class TestBrowseLookupPool:
                 "min_user_score": 7.5,
                 "min_user_reviews": 10,
             },
-            max_queue_days=60,
+            source_matching_days=60,
             mc=mock_mc,
         )
         slugs = [game.slug for game in db.get_pending()]
@@ -10608,7 +9988,7 @@ class TestExpiryRefreshedOnlyOnQualification:
                 "min_user_score": 8.0,
                 "min_user_reviews": 5,
             },
-            fitgirl_max_queue_days=60,
+            source_matching_days=60,
         )
         after = db.get_pending()[0]
         db.close()
@@ -10651,7 +10031,7 @@ class TestExpiryRefreshedOnlyOnQualification:
                 "min_user_score": 8.0,
                 "min_user_reviews": 5,
             },
-            fitgirl_max_queue_days=60,
+            source_matching_days=60,
         )
         after = db.get_pending()[0]
         db.close()
@@ -10702,63 +10082,6 @@ class TestNegationEncoding:
         assert article is not None
         assert "&#8217;" not in article
         assert "doesn\u2019t include an HV version" in article
-
-
-class TestNegativePageBudget:
-    """A negative budget must fall back to the default, not become unbounded."""
-
-    def test_negative_max_pages_uses_the_default_budget(self) -> None:
-        from gamarr.pipeline import _DEFAULT_MAX_PAGES, _normalise_latest_depth
-
-        assert _normalise_latest_depth(-5, "backlog") == _DEFAULT_MAX_PAGES
-        assert _normalise_latest_depth(-5, "latest") == _DEFAULT_MAX_PAGES
-
-    def test_zero_still_clamps_in_latest_mode(self) -> None:
-        from gamarr.pipeline import _normalise_latest_depth
-
-        assert _normalise_latest_depth(0, "latest") == 10
-        assert _normalise_latest_depth(None, "backlog") is None
-
-    def test_a_date_driven_cycle_leaves_the_depth_alone(self) -> None:
-        """The depth is unused when date keys bound the cycle, so nothing is clamped."""
-        from gamarr.pipeline import _DEFAULT_MAX_PAGES, _normalise_latest_depth
-
-        assert _normalise_latest_depth(0, "latest", date_driven=True) == 0
-        assert _normalise_latest_depth(None, "latest", date_driven=True) is None
-        # A negative value is a typo whichever mode reads it.
-        assert _normalise_latest_depth(-5, "latest", date_driven=True) == _DEFAULT_MAX_PAGES
-
-    def test_backlog_date_mode_keeps_the_negative_guard(self) -> None:
-        """Backlog replaces the budget with a floor but must still sanitise a typo."""
-        from gamarr.pipeline import _DEFAULT_MAX_PAGES, _normalise_latest_depth
-
-        assert _normalise_latest_depth(-5, "backlog", date_driven=True) == _DEFAULT_MAX_PAGES
-
-
-class TestDateDrivenResolution:
-    """Which key governs the scan: a date window or a page count."""
-
-    def test_latest_accepts_either_date_key(self) -> None:
-        from gamarr.pipeline import _date_driven
-
-        assert _date_driven("new", True, 202401, 0) is True
-        assert _date_driven("new", True, 0, 3) is True
-        assert _date_driven("new", True, 202401, 3) is True
-        assert _date_driven("new", True, 0, 0) is False
-
-    def test_backlog_still_needs_a_floor(self) -> None:
-        from gamarr.pipeline import _date_driven
-
-        assert _date_driven("new", False, 202401, 0) is True
-        assert _date_driven("new", False, 0, 3) is False
-
-    def test_a_score_sort_has_no_date_dimension(self) -> None:
-        from gamarr.pipeline import _date_driven
-
-        assert _date_driven("criticscore", False, 202401, 3) is False
-        # latest coerces the browse order to "new" before this predicate runs, so
-        # this combination cannot occur in production; it pins the predicate only.
-        assert _date_driven("userscore", True, 202401, 3) is False
 
 
 class TestCancelWhileQueueing:
@@ -10822,7 +10145,7 @@ class TestCancelWhileQueueing:
                 "pc",
                 db,
                 thresholds,
-                max_queue_days=30,
+                source_matching_days=30,
                 mc=MagicMock(),
                 cancel_event=_CancelAfterDrain(),
             )
@@ -10835,7 +10158,7 @@ class TestCancelWhileQueueing:
 class TestVerifyBeforeQueueUsesTheMatchingWindow:
     """A game queued already-verified must get the source-matching window."""
 
-    def test_insert_uses_fitgirl_window_not_the_metacritic_one(self, tmp_path: Path) -> None:
+    def test_insert_uses_the_source_matching_window(self, tmp_path: Path) -> None:
         import datetime
         from types import SimpleNamespace
         from unittest.mock import patch
@@ -10887,10 +10210,8 @@ class TestVerifyBeforeQueueUsesTheMatchingWindow:
                 db_path=db_path,
                 qbt_host="localhost",
                 qbt_port=8080,
-                mode="latest",
-                max_pages=1,
-                max_queue_days=1,
-                fitgirl_max_queue_days=60,
+                discovery=_discovery(mode="latest", months_per_cycle=1),
+                source_matching_days=45,
             )
 
         db = Database(db_path)
@@ -10899,8 +10220,8 @@ class TestVerifyBeforeQueueUsesTheMatchingWindow:
         assert len(pending) == 1, "the verified candidate should be queued"
         expiry = datetime.datetime.fromisoformat(pending[0].expires_at)
         now = datetime.datetime.now(tz=datetime.UTC)
-        assert now + datetime.timedelta(days=59) < expiry < now + datetime.timedelta(days=61), (
-            f"a match-waiting game needs the 60-day source window, got {expiry}"
+        assert now + datetime.timedelta(days=44) < expiry < now + datetime.timedelta(days=46), (
+            f"a match-waiting game needs the configured source window, not the 60-day default, got {expiry}"
         )
 
 
@@ -10949,78 +10270,6 @@ class TestMissingFeaturesBlockIsFailClosed:
     def test_clean_page_without_a_block_is_still_matched(self, tmp_path: Path) -> None:
         skipped, _logs = self._run(tmp_path, "No Block Game description. Nothing special here.")
         assert skipped is False
-
-
-class TestLatestModeReachesTheFloorYear:
-    """A deep newest year must not starve the previous year's listing."""
-
-    @staticmethod
-    def _run(tmp_path: Path, *, max_pages: int) -> list[dict[str, Any]]:
-        """Run one latest cycle against a client whose years are all deep."""
-        from loguru import logger as loguru_logger
-
-        calls: list[dict[str, Any]] = []
-        mock_mc = MagicMock()
-
-        def fake_scan(*_args: Any, **kwargs: Any) -> list:
-            calls.append(dict(kwargs))
-            grant = kwargs.get("max_pages", 0) or 1
-            start_page = kwargs.get("start_page", 1)
-            mock_mc._recent_games_last_page = start_page + grant - 1
-            mock_mc._recent_games_exhausted = False
-            mock_mc._recent_games_failed = False
-            mock_mc._recent_games_cutoff_reached = False
-            mock_mc._recent_games_stop_cutoff = None
-            return [{"title": f"G{p}", "slug": f"g-{kwargs.get('year')}-{p}"} for p in range(grant)]
-
-        mock_mc._recent_games_last_page = 0
-        mock_mc._recent_games_exhausted = False
-        mock_mc._recent_games_failed = False
-        mock_mc._recent_games_cutoff_reached = False
-        mock_mc._recent_games_stop_cutoff = None
-        mock_mc.scan_recent_games.side_effect = fake_scan
-
-        logs: list[str] = []
-        sink = loguru_logger.add(lambda msg: logs.append(str(msg)), level="INFO", format="{message}")
-        try:
-            with (
-                patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
-                patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
-                patch("gamarr.pipeline._check_scrape_health", return_value="metacritic_broken"),
-                patch("gamarr.pipeline._lookup_details", return_value=[]),
-            ):
-                mock_mc_cls.return_value = mock_mc
-                mock_qbt = MagicMock()
-                mock_qbt.is_connected.return_value = True
-                mock_qbt_cls.return_value = mock_qbt
-                run_acquisition(
-                    platform="pc",
-                    db_path=str(tmp_path / "floor.db"),
-                    qbt_host="localhost",
-                    qbt_port=8080,
-                    mode="latest",
-                    max_pages=max_pages,
-                )
-        finally:
-            loguru_logger.remove(sink)
-        return calls
-
-    def test_previous_year_is_scanned_when_the_newest_year_is_deep(self, tmp_path: Path) -> None:
-        import datetime
-
-        current_year = datetime.datetime.now(tz=datetime.UTC).year
-        calls = self._run(tmp_path, max_pages=3)
-
-        years = [call["year"] for call in calls]
-        assert current_year in years, years
-        assert (current_year - 1) in years, (
-            f"the depth budget consumed the newest year and never reached the previous one: {years}"
-        )
-
-    def test_a_one_page_depth_still_scans_something(self, tmp_path: Path) -> None:
-        calls = self._run(tmp_path, max_pages=1)
-        assert calls, "a depth of one must still browse a page"
-        assert calls[0]["max_pages"] == 1
 
 
 class TestExpiryAllowsRediscovery:
@@ -11078,7 +10327,7 @@ class TestExpiryAllowsRediscovery:
                 "pc",
                 db,
                 thresholds,
-                max_queue_days=60,
+                source_matching_days=60,
                 mc=MagicMock(),
             )
         pending = db.get_pending()
@@ -11113,7 +10362,7 @@ class TestExpiryAllowsRediscovery:
                 "pc",
                 db,
                 thresholds,
-                max_queue_days=60,
+                source_matching_days=60,
                 mc=MagicMock(),
             )
         db.close()
@@ -11141,7 +10390,7 @@ class TestExpiryRunsWithoutVerifiedPending:
         )
         seed.close()
 
-        TestLatestMode._run(tmp_path=tmp_path, max_pages=1, db_path=db_path)
+        TestLatestMode._run(tmp_path=tmp_path, db_path=db_path)
 
         db = Database(db_path)
         still_pending = db.is_pending("lapsed-row")
@@ -11226,8 +10475,7 @@ class TestLapsedRowRequeueSameCycle:
                     db_path=db_path,
                     qbt_host="localhost",
                     qbt_port=8080,
-                    mode="latest",
-                    max_pages=1,
+                    discovery=_discovery(mode="latest", months_per_cycle=1),
                 )
         finally:
             loguru_logger.remove(sink)
@@ -11263,3 +10511,107 @@ class TestFitgirlUrlHostCheck:
         )
         assert _is_fitgirl_url("https://evil.example/fitgirl-repacks.site") is False
         assert _is_fitgirl_url("not a url") is False
+
+
+class TestAcquisitionConfigCarriesThePlan:
+    """The pipeline reads a resolved plan, not the mode matrix (ADR 0001)."""
+
+    def test_the_default_plan_is_latest_one_month(self) -> None:
+        from gamarr.pipeline import AcquisitionConfig
+
+        cfg = AcquisitionConfig(min_criticscore=75, min_criticscore_reviews=10, min_user_score=7.5, min_user_reviews=10)
+        assert cfg.plan.mode == "latest"
+        assert cfg.plan.pace_months == 1
+        assert cfg.plan.date_mode is True
+        assert cfg.pending_order == "new"
+        assert cfg.source_matching_days == 60
+
+
+class TestPlanDrivenScan:
+    """The plan decides the scan shape; no key can be inert (ADR 0003, 0005)."""
+
+    def _plan(self, payload: dict[str, Any]) -> Any:
+        from gamarr.config import DiscoveryConfig
+        from gamarr.discovery import build_scan_plan
+
+        return build_scan_plan(DiscoveryConfig.model_validate(payload))
+
+    def test_latest_with_a_zero_pace_reads_to_the_floor(self) -> None:
+        plan = self._plan({"mode": "latest", "latest": {"months_per_cycle": 0}})
+        assert plan.pace_months == 0
+        assert plan.date_mode is True
+
+
+class TestScoreSweepBudget:
+    """A score-sorted sweep with page_depth 0 asks the client for no page cap."""
+
+    def test_a_zero_page_depth_reaches_the_client_as_no_cap(self, tmp_path: Path) -> None:
+        from unittest.mock import MagicMock, patch
+
+        from gamarr.config import DiscoveryConfig
+        from gamarr.pipeline import run_acquisition
+
+        calls: list[dict[str, Any]] = []
+        mock_mc = MagicMock()
+
+        def fake_scan(*_args: Any, **kwargs: Any) -> list:
+            calls.append(dict(kwargs))
+            mock_mc._recent_games_last_page = kwargs.get("start_page", 1)
+            mock_mc._recent_games_exhausted = False
+            mock_mc._recent_games_failed = False
+            mock_mc._recent_games_cutoff_reached = False
+            mock_mc._recent_games_stop_cutoff = None
+            return []
+
+        for attr, value in (
+            ("_recent_games_last_page", 0),
+            ("_recent_games_exhausted", False),
+            ("_recent_games_failed", False),
+            ("_recent_games_cutoff_reached", False),
+            ("_recent_games_stop_cutoff", None),
+        ):
+            setattr(mock_mc, attr, value)
+        mock_mc.scan_recent_games.side_effect = fake_scan
+        mock_qbt = MagicMock()
+        mock_qbt.is_connected.return_value = True
+
+        with (
+            patch("gamarr.pipeline.FitGirlSource") as source_cls,
+            patch("gamarr.pipeline.FreeGOGSource") as freegog_cls,
+            patch("gamarr.pipeline.MetacriticClient") as mc_cls,
+            patch("gamarr.pipeline.QBittorrentClient") as qbt_cls,
+        ):
+            source_cls.return_value = MagicMock()
+            freegog_cls.return_value = MagicMock()
+            mc_cls.return_value = mock_mc
+            qbt_cls.return_value = mock_qbt
+            run_acquisition(
+                db_path=str(tmp_path / "t.db"),
+                discovery=DiscoveryConfig.model_validate(
+                    {"mode": "backlog", "backlog": {"sort_order": "criticscore", "score": {"page_depth": 0}}}
+                ),
+            )
+
+        assert calls, "the score sweep must reach the client"
+        assert all(call["max_pages"] == 0 for call in calls), calls
+        assert all(call["year"] is None for call in calls), "a score sweep has no year dimension"
+
+
+class TestPendingOrderIsIndependent:
+    """The queue order comes from pending_order, not from the browse order (ADR 0006)."""
+
+    def test_a_discovery_date_order_does_not_change_a_score_queue(self) -> None:
+        from gamarr.config import DiscoveryConfig
+        from gamarr.discovery import build_scan_plan
+        from gamarr.pipeline import AcquisitionConfig
+
+        cfg = AcquisitionConfig(
+            min_criticscore=75,
+            min_criticscore_reviews=10,
+            min_user_score=7.5,
+            min_user_reviews=10,
+            plan=build_scan_plan(DiscoveryConfig.model_validate({"mode": "latest"})),
+            pending_order="userscore",
+        )
+        assert cfg.plan.scan_order == "new"
+        assert cfg.pending_order == "userscore"

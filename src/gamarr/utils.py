@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime
 import itertools
+import math
 import re
 import threading
 import time
@@ -200,11 +201,32 @@ def is_cancelled(cancel_event: CancelSignal | None) -> bool:
 EARLIEST_BROWSE_YEAR = 1958
 """Oldest year the sweeps may reach.
 
-Mirrors the ``max_date`` floor: the site has no data before this, so a
+Mirrors the ``oldest_month`` floor: the site has no data before this, so a
 year-by-year sweep below it would fetch empty listings for centuries.  The
 browse URL's all-time range (``releaseYearMin``) is a separate site capability
 and has its own literal.
 """
+
+# The repo's own July measurement: roughly 24 PC releases per browse page, and a
+# 500-page budget covers about 21 months (500 / 21 is about 24).  Every
+# page-to-month conversion uses this one measured figure.
+PAGES_PER_MONTH = 24
+
+
+def pages_to_months(pages: int) -> int:
+    """Convert a browse-page count to whole months.
+
+    Rounds up, with a minimum of 1: a converted bound must never read less than
+    the page count it replaced, and a page count must never become a 0-month
+    pace.
+
+    Args:
+        pages: The page count to convert.
+
+    Returns:
+        Whole months, at least 1.
+    """
+    return max(1, math.ceil(pages / PAGES_PER_MONTH))
 
 
 def current_year_month() -> int:
@@ -218,7 +240,7 @@ def current_year_month() -> int:
 
 
 def is_valid_year_month(value: object) -> bool:
-    """Return True when *value* is a usable ``max_date`` month.
+    """Return True when *value* is a usable ``oldest_month`` month.
 
     ``0`` disables the floor; anything else must be an ``int`` (not ``bool``)
     for a year of ``EARLIEST_BROWSE_YEAR`` or later with a month of ``01``-``12``.

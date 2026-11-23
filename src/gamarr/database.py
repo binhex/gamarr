@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
     from sqlalchemy.orm import Session
 
-# Days to use for indefinite pending expiry (when max_queue_days is 0 or negative).
+# Days to use for indefinite pending expiry (when source_matching_days is 0 or negative).
 _INDEFINITE_DAYS: int = 9999
 
 # PRAGMA user_version stamp for the one-time pending-queue hygiene migration.
@@ -644,9 +644,9 @@ class Database:
     ) -> list[PendingGame]:
         """Return non-expired pending games, optionally ordered by *sort_order*.
 
-        When *sort_order* names a known browse order, the queue is returned in
-        that order so processing (score verification, source matching,
-        delivery) follows the same ordering as discovery:
+        When *sort_order* names a known order, the queue is returned in that
+        order so processing (score verification, source matching, delivery)
+        follows the pending-queue order, which is independent of the browse order:
 
         - ``"new"``: newest ``release_date`` first, undated games last.
         - ``"criticscore"``: verified games first, then highest ``metascore``.
@@ -777,8 +777,8 @@ class Database:
                 row.last_checked_at = now
                 session.commit()
 
-    def update_pending_expiry(self, slug: str, max_queue_days: int) -> None:
-        """Recalculate expires_at to now + max_queue_days for a pending game.
+    def update_pending_expiry(self, slug: str, source_matching_days: int) -> None:
+        """Recalculate expires_at to now + source_matching_days for a pending game.
 
         Called only when a row newly qualifies (``score_checks_passed`` was not
         already true).  Games queued by verify-before-queue arrive qualified, so
@@ -786,10 +786,10 @@ class Database:
         call it on every passing re-check: that pushes the window forward forever
         and the queue grows without bound.
 
-        When *max_queue_days* is 0 or negative, the expiry is set to a far
+        When *source_matching_days* is 0 or negative, the expiry is set to a far
         future date (~27 years), making the game pend indefinitely.
         """
-        days = _INDEFINITE_DAYS if max_queue_days <= 0 else max_queue_days
+        days = _INDEFINITE_DAYS if source_matching_days <= 0 else source_matching_days
         expires_at = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=days)).isoformat()
         with self._session() as session:
             row = session.get(PendingGame, slug)
