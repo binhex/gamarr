@@ -279,11 +279,12 @@ class TestPendingGame:
 
     def test_remove_pending(self, tmp_path: Path) -> None:
         db = Database(str(tmp_path / "test.db"))
+        future = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
         db.record_pending(
             slug="test-game",
             game_title="Test Game",
             platform="pc",
-            expires_at="2026-07-05T00:00:00",
+            expires_at=future,
         )
         db.remove_pending("test-game")
         pending = db.get_pending(platform="pc")
@@ -292,11 +293,12 @@ class TestPendingGame:
 
     def test_is_pending_returns_true_for_existing(self, tmp_path: Path) -> None:
         db = Database(str(tmp_path / "test.db"))
+        future = (datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(days=30)).isoformat()
         db.record_pending(
             slug="test-game",
             game_title="Test Game",
             platform="pc",
-            expires_at="2026-07-05T00:00:00",
+            expires_at=future,
         )
         assert db.is_pending("test-game") is True
         assert db.is_pending("unknown-game") is False
@@ -2511,3 +2513,84 @@ class TestHygieneKeepsMixedShapeRows:
         assert remaining == ["mixed"], (
             "a real user score marks the row verified even when the stored metascore is browse-scale"
         )
+
+
+class TestLedgerPlayFixes:
+    """Regressions for the recorded review findings this run plays."""
+
+    def test_is_pending_excludes_a_lapsed_row(self, tmp_path: Path) -> None:
+        """A row past expires_at is not pending, matching get_pending."""
+        path = str(tmp_path / "lapsed.db")
+        db = Database(path)
+        db.record_pending(
+            slug="lapsed-game",
+            game_title="Lapsed Game",
+            platform="pc",
+            expires_at="2020-01-01T00:00:00",
+        )
+        try:
+            assert db.is_pending("lapsed-game") is False, "a lapsed row is not pending"
+            assert db.get_pending() == [], "get_pending already agrees"
+        finally:
+            db.close()
+
+    def test_repeated_expiry_records_one_history_row(self, tmp_path: Path) -> None:
+        """Re-expiring the same game must not append an Expired row per window."""
+        import sqlite3
+
+        path = str(tmp_path / "flap.db")
+        db = Database(path)
+        try:
+            for _ in range(3):
+                db.record_processed(
+                    source="metacritic",
+                    source_title="Flap Game",
+                    source_url="mc:flap-game",
+                    result="Expired",
+                )
+        finally:
+            db.close()
+        with sqlite3.connect(path) as conn:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM history WHERE source_url = 'mc:flap-game' AND result = 'Expired'"
+            ).fetchone()[0]
+        assert count == 1, f"expected one Expired row, got {count}"
+
+    def test_the_known_slugs_query_is_indexed(self, tmp_path: Path) -> None:
+        """get_known_slugs filters result != Expired and selects source_url."""
+        import sqlite3
+
+        from gamarr.database import _EXPIRED_RESULT
+
+        path = str(tmp_path / "index.db")
+        Database(path).close()
+        with sqlite3.connect(path) as conn:
+            names = {row[1] for row in conn.execute("PRAGMA index_list('history')")}
+            assert {"ix_history_known_slugs", "ix_history_expired"} <= names, f"missing partial index: {names}"
+            plan = " ".join(
+                str(row)
+                for row in conn.execute(
+                    "EXPLAIN QUERY PLAN SELECT source_url FROM history "
+                    f"WHERE source_url IS NOT NULL AND result != '{_EXPIRED_RESULT}'"
+                )
+            )
+        # A range seed ("USING INDEX ... (source_url>?)") and a covering scan are both
+        # index-only outcomes; the plan text differs between SQLite versions.
+        assert "USING INDEX ix_history_known_slugs" in plan or "USING COVERING INDEX ix_history_known_slugs" in plan, (
+            f"the index is not used: {plan}"
+        )
+
+    def test_an_existing_database_gains_the_index(self, tmp_path: Path) -> None:
+        """A database created before the index existed must gain it on open."""
+        import sqlite3
+
+        path = str(tmp_path / "old.db")
+        Database(path).close()
+        with sqlite3.connect(path) as conn:
+            conn.execute("DROP INDEX IF EXISTS ix_history_known_slugs")
+            conn.execute("DROP INDEX IF EXISTS ix_history_expired")
+            conn.commit()
+        Database(path).close()
+        with sqlite3.connect(path) as conn:
+            names = {row[1] for row in conn.execute("PRAGMA index_list('history')")}
+        assert {"ix_history_known_slugs", "ix_history_expired"} <= names, f"index not recreated: {names}"

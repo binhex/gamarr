@@ -8624,6 +8624,67 @@ class TestDateModeRegressions:
         db.close()
         assert any("mis-indexed" in line for line in logs), logs
 
+    def test_a_latest_floor_level_stop_above_the_floor_year_still_descends(self, tmp_path: Path) -> None:
+        """The mis-indexed carve-out must apply in latest mode too, not only backlog."""
+        import datetime
+
+        current_year = datetime.datetime.now(tz=datetime.UTC).year
+        path = str(tmp_path / "latest-descend.db")
+        mock_mc = MagicMock()
+        years: list[Any] = []
+
+        def fake_scan(*_args: Any, **kwargs: Any) -> list:
+            scan_year = kwargs.get("year")
+            start_page = kwargs.get("start_page", 1)
+            years.append(scan_year)
+            mock_mc._recent_games_failed = False
+            if scan_year == current_year:
+                # Mis-indexed: every page looks older than the floor.
+                mock_mc._recent_games_cutoff_reached = True
+                mock_mc._recent_games_stop_cutoff = "2024-01-01"
+                mock_mc._recent_games_exhausted = False
+                mock_mc._recent_games_last_page = start_page - 1
+                return []
+            mock_mc._recent_games_cutoff_reached = False
+            mock_mc._recent_games_stop_cutoff = None
+            mock_mc._recent_games_exhausted = True
+            mock_mc._recent_games_last_page = start_page - 1
+            return []
+
+        mock_mc._recent_games_last_page = 0
+        mock_mc._recent_games_exhausted = False
+        mock_mc._recent_games_failed = False
+        mock_mc._recent_games_cutoff_reached = False
+        mock_mc._recent_games_stop_cutoff = None
+        mock_mc.scan_recent_games.side_effect = fake_scan
+
+        from loguru import logger as loguru_logger
+
+        logs: list[str] = []
+        sink_id = loguru_logger.add(lambda msg: logs.append(str(msg)), level="WARNING", format="{message}")
+        try:
+            with (
+                patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
+                patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
+                patch("gamarr.pipeline._check_scrape_health", return_value="metacritic_broken"),
+            ):
+                mock_mc_cls.return_value = mock_mc
+                mock_qbt = MagicMock()
+                mock_qbt.is_connected.return_value = True
+                mock_qbt_cls.return_value = mock_qbt
+                run_acquisition(
+                    platform="pc",
+                    db_path=path,
+                    qbt_host="localhost",
+                    qbt_port=8080,
+                    discovery=_discovery(mode="latest", oldest_month=202401, months_per_cycle=0),
+                )
+        finally:
+            loguru_logger.remove(sink_id)
+
+        assert 2024 in years, f"latest must descend to the floor year, probed {years}"
+        assert any("mis-indexed" in line for line in logs), logs
+
     def test_games_older_than_the_floor_are_not_queued(self) -> None:
         """A mixed boundary page must not queue games older than oldest_month."""
         from gamarr.pipeline import _games_at_or_after_floor

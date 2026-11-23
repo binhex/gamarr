@@ -1100,6 +1100,29 @@ def _migrate_cache_pages_hours_to_cache_hours(raw: dict[str, Any]) -> bool:
 _DISCOVERY_LEGACY_KEYS = ("mode", "max_pages", "max_cycle_pages", "max_date", "max_cycle_months", "sort_order")
 
 
+def _coerce_int(value: int) -> int | None:
+    """Return a non-negative int, or ``None`` for a negative one."""
+    return value if value >= 0 else None
+
+
+def _coerce_float(value: float) -> int | None:
+    """Return an integral non-negative float as an int, else ``None``."""
+    return int(value) if value >= 0 and value.is_integer() else None
+
+
+def _coerce_digit_string(value: Any) -> int | None:
+    """Return a sign-free decimal string as an int, else ``None``."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    negative = text.startswith("-")
+    digits = text[1:] if negative else text
+    if not digits.isdecimal():
+        return None
+    number = int(digits)
+    return None if negative else number
+
+
 def _coerce_count(value: Any) -> int | None:
     """Return *value* as a non-negative int, or ``None`` when it is not usable.
 
@@ -1109,17 +1132,10 @@ def _coerce_count(value: Any) -> int | None:
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
-        return value if value >= 0 else None
+        return _coerce_int(value)
     if isinstance(value, float):
-        return int(value) if value >= 0 and value.is_integer() else None
-    if isinstance(value, str):
-        text = value.strip()
-        negative = text.startswith("-")
-        digits = text[1:] if negative else text
-        if digits.isdecimal():
-            number = int(digits)
-            return None if negative else number
-    return None
+        return _coerce_float(value)
+    return _coerce_digit_string(value)
 
 
 def _pop_count(
@@ -1373,6 +1389,109 @@ def _migrate_backlog_score_block(
         _place(score, "pages_per_cycle", cycle_pages, "max_cycle_pages", platform_key)
 
 
+def _ensure_block(parent: dict[str, Any], key: str) -> dict[str, Any]:
+    """Return ``parent[key]`` as a mapping, replacing a non-mapping value."""
+    block = parent.get(key)
+    if not isinstance(block, dict):
+        block = {}
+        parent[key] = block
+    return block
+
+
+def _pop_legacy_bounds(plat: dict[str, Any], platform_key: str) -> dict[str, Any]:
+    """Pop the flat discovery keys and record which selectors were present.
+
+    ``mode_present`` and ``sort_present`` are read before the pops, because the
+    presence of a legacy selector decides whether an existing block's value
+    discarded something the operator wrote.
+    """
+    existing_block = isinstance(plat.get("discovery"), dict)
+    return {
+        "mode_present": "mode" in plat,
+        "sort_present": "sort_order" in plat,
+        "mode": plat.pop("mode", "latest" if existing_block else "backlog"),
+        "sort_order": plat.pop("sort_order", "new"),
+        "max_date": _pop_count(plat, "max_date", platform_key) or 0,
+        "months": _pop_count(plat, "max_cycle_months", platform_key) or 0,
+        "pages": _pop_count(plat, "max_pages", platform_key, keep_zero=True),
+        "cycle_pages": _pop_count(plat, "max_cycle_pages", platform_key, keep_zero=True),
+    }
+
+
+def _migrate_pending_order(metacritic: dict[str, Any], sort_order: str, platform_key: str) -> None:
+    """Carry a legacy ``sort_order`` into the shared pending order."""
+    existing = metacritic.get("pending_order")
+    if existing is None:
+        metacritic["pending_order"] = sort_order
+    elif existing != sort_order:
+        logger.info(
+            "Config: platform '{}' sort_order '{}' ignored - pending_order is '{}'",
+            platform_key,
+            sort_order,
+            existing,
+        )
+
+
+def _migrate_latest_target(discovery: dict[str, Any], values: dict[str, Any], platform_key: str) -> None:
+    """Move a legacy latest cycle into ``discovery.latest`` (ADR 0003)."""
+    latest = _ensure_block(discovery, "latest")
+    _migrate_latest_block(
+        latest,
+        values["max_date"],
+        values["months"],
+        values["pages"],
+        values["cycle_pages"] or None,
+        platform_key,
+    )
+    if "oldest_month" in latest or "months_per_cycle" in latest:
+        return
+    # The legacy cycle was bounded by the old default page depth, so keep that
+    # reach instead of letting the 1-month model default shrink it.
+    reach = pages_to_months(_DEFAULT_PAGE_BUDGET)
+    _place(latest, "months_per_cycle", reach, "max_pages", platform_key)
+    logger.info(
+        "Config: no legacy bound on platform '{}' - kept the old default reach of {} month(s)",
+        platform_key,
+        reach,
+    )
+
+
+def _migrate_backlog_target(discovery: dict[str, Any], values: dict[str, Any], platform_key: str) -> None:
+    """Move a legacy backlog cycle into its per-sort blocks (ADR 0005, 0007)."""
+    backlog = _ensure_block(discovery, "backlog")
+    target_sort = _resolve_selector(
+        backlog,
+        "sort_order",
+        values["sort_order"],
+        platform_key,
+        report=values["sort_present"],
+    )
+    new_block = _ensure_block(backlog, "new")
+    _place_dates(new_block, values["max_date"], values["months"], platform_key)
+    if target_sort != "new":
+        score = _ensure_block(backlog, "score")
+        _migrate_backlog_score_block(score, values["pages"], values["cycle_pages"], platform_key)
+        return
+    _migrate_backlog_new_pages(
+        new_block,
+        values["pages"] or None,
+        values["cycle_pages"] or None,
+        platform_key,
+    )
+    if values["max_date"] or "oldest_month" in new_block:
+        return
+    # No floor was expressed.  An absent default (or an explicit 0, which the old
+    # runtime read as an uncapped ten-year window) keeps the documented default
+    # reach, instead of leaving the floor unset (a catalogue-wide sweep).
+    floor = _default_floor()
+    new_block["oldest_month"] = floor
+    logger.info(
+        "Config: no legacy floor on platform '{}' - kept the old default reach (oldest_month {})",
+        platform_key,
+        floor,
+    )
+
+
 def _migrate_platform_discovery(
     plat: dict[str, Any],
     metacritic: dict[str, Any],
@@ -1388,92 +1507,31 @@ def _migrate_platform_discovery(
         metacritic: The raw ``review_sites.metacritic`` mapping.
         platform_key: The platform name, for log lines.
     """
+    values = _pop_legacy_bounds(plat, platform_key)
+    discovery = _ensure_block(plat, "discovery")
     # A block that already exists means the new shape was written: the selector then
     # falls back to the model default rather than to the legacy one, so a leftover
     # flat key cannot flip the mode the block shows.
-    existing_block = isinstance(plat.get("discovery"), dict)
-    mode_present = "mode" in plat
-    sort_present = "sort_order" in plat
-    mode = plat.pop("mode", "latest" if existing_block else "backlog")
-    sort_order = plat.pop("sort_order", "new")
-    max_date = _pop_count(plat, "max_date", platform_key) or 0
-    months = _pop_count(plat, "max_cycle_months", platform_key) or 0
-    pages = _pop_count(plat, "max_pages", platform_key, keep_zero=True)
-    cycle_pages = _pop_count(plat, "max_cycle_pages", platform_key, keep_zero=True)
-
-    discovery = plat.get("discovery")
-    if not isinstance(discovery, dict):
-        discovery = {}
-        plat["discovery"] = discovery
-    target_mode = _resolve_selector(discovery, "mode", mode, platform_key, report=mode_present)
+    target_mode = _resolve_selector(
+        discovery,
+        "mode",
+        values["mode"],
+        platform_key,
+        report=values["mode_present"],
+    )
     logger.info(
         "Config: platform '{}' migrated to discovery (mode '{}', floor {}, pace {}, page budget {})",
         platform_key,
         target_mode,
-        max_date or "none",
-        months or "none",
-        pages if pages is not None else "none",
+        values["max_date"] or "none",
+        values["months"] or "none",
+        values["pages"] if values["pages"] is not None else "none",
     )
-    existing_order = metacritic.get("pending_order")
-    if existing_order is None:
-        metacritic["pending_order"] = sort_order
-    elif existing_order != sort_order:
-        logger.info(
-            "Config: platform '{}' sort_order '{}' ignored - pending_order is '{}'",
-            platform_key,
-            sort_order,
-            existing_order,
-        )
-
+    _migrate_pending_order(metacritic, values["sort_order"], platform_key)
     if target_mode == "latest":
-        latest = discovery.get("latest")
-        if not isinstance(latest, dict):
-            latest = {}
-            discovery["latest"] = latest
-        _migrate_latest_block(latest, max_date, months, pages, cycle_pages or None, platform_key)
-        if "oldest_month" not in latest and "months_per_cycle" not in latest:
-            # The legacy cycle was bounded by the old default page depth, so keep
-            # that reach instead of letting the 1-month model default shrink it.
-            reach = pages_to_months(_DEFAULT_PAGE_BUDGET)
-            _place(latest, "months_per_cycle", reach, "max_pages", platform_key)
-            logger.info(
-                "Config: no legacy bound on platform '{}' - kept the old default reach of {} month(s)",
-                platform_key,
-                reach,
-            )
-        _prune_empty_blocks(discovery)
-        return
-
-    backlog = discovery.get("backlog")
-    if not isinstance(backlog, dict):
-        backlog = {}
-        discovery["backlog"] = backlog
-    target_sort = _resolve_selector(backlog, "sort_order", sort_order, platform_key, report=sort_present)
-    new_block = backlog.get("new")
-    if not isinstance(new_block, dict):
-        new_block = {}
-        backlog["new"] = new_block
-    _place_dates(new_block, max_date, months, platform_key)
-    if target_sort != "new":
-        score = backlog.get("score")
-        if not isinstance(score, dict):
-            score = {}
-            backlog["score"] = score
-        _migrate_backlog_score_block(score, pages, cycle_pages, platform_key)
-        _prune_empty_blocks(discovery)
-        return
-    _migrate_backlog_new_pages(new_block, pages or None, cycle_pages or None, platform_key)
-    if not max_date and "oldest_month" not in new_block:
-        # No floor was expressed.  An absent default (or an explicit 0, which the old
-        # runtime read as an uncapped ten-year window) keeps the documented default
-        # reach, instead of leaving the floor unset (a catalogue-wide sweep).
-        floor = _default_floor()
-        new_block["oldest_month"] = floor
-        logger.info(
-            "Config: no legacy floor on platform '{}' - kept the old default reach (oldest_month {})",
-            platform_key,
-            floor,
-        )
+        _migrate_latest_target(discovery, values, platform_key)
+    else:
+        _migrate_backlog_target(discovery, values, platform_key)
     _prune_empty_blocks(discovery)
 
 
@@ -1660,19 +1718,25 @@ def _window_from(value: Any, platform_key: str) -> int | None:
     return coerced
 
 
+def _entry_states_a_window(entry: Any) -> bool:
+    """Return True when one download-site entry sets its own queue window."""
+    if not isinstance(entry, dict):
+        return False
+    settings_list = [entry] if "name" in entry else list(entry.values())
+    for settings in settings_list:
+        if not isinstance(settings, dict):
+            continue
+        if "max_queue_days" in settings or "source_matching_days" in settings:
+            return True
+    return False
+
+
 def _source_states_a_window(raw: dict[str, Any]) -> bool:
     """Return True when any download source sets its own queue window."""
     entries = raw.get("download_sites")
     if not isinstance(entries, list):
         return False
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        settings_list = [entry] if "name" in entry else list(entry.values())
-        for settings in settings_list:
-            if isinstance(settings, dict) and ("max_queue_days" in settings or "source_matching_days" in settings):
-                return True
-    return False
+    return any(_entry_states_a_window(entry) for entry in entries)
 
 
 def _migrate_platform_windows(raw: dict[str, Any], source_has_window: bool) -> bool:
@@ -2071,41 +2135,61 @@ def _inert_discovery_keys(raw: dict[str, Any]) -> list[str]:
     overrides, _ = _discovery_overrides(raw)
     names: list[str] = []
     for platform_key, plat in overrides.items():
-        discovery = plat.get("discovery") if isinstance(plat, dict) else None
-        if not isinstance(discovery, dict):
-            continue
-        if discovery.get("mode", "latest") == "latest":
-            names.extend(
-                f"{platform_key}: discovery.{path}" for path in _leaf_paths(discovery.get("backlog"), "backlog")
-            )
-            continue
-        names.extend(f"{platform_key}: discovery.{path}" for path in _leaf_paths(discovery.get("latest"), "latest"))
-        backlog = discovery.get("backlog")
-        sort_order = backlog.get("sort_order", "new") if isinstance(backlog, dict) else "new"
-        block = "score" if sort_order == "new" else "new"
-        names.extend(
-            f"{platform_key}: discovery.{path}"
-            for path in _leaf_paths(backlog.get(block) if isinstance(backlog, dict) else None, f"backlog.{block}")
-        )
+        names.extend(_inert_keys_for_platform(platform_key, plat))
+    return names
+
+
+def _unread_backlog_block(backlog: Any) -> tuple[str, Any]:
+    """Return the name and contents of the backlog block the sort does not read."""
+    sort_order = backlog.get("sort_order", "new") if isinstance(backlog, dict) else "new"
+    block = "score" if sort_order == "new" else "new"
+    return block, backlog.get(block) if isinstance(backlog, dict) else None
+
+
+def _inert_keys_for_platform(platform_key: str, plat: Any) -> list[str]:
+    """Return one platform's unread discovery keys, platform-qualified."""
+    discovery = plat.get("discovery") if isinstance(plat, dict) else None
+    if not isinstance(discovery, dict):
+        return []
+    if discovery.get("mode", "latest") == "latest":
+        paths = _leaf_paths(discovery.get("backlog"), "backlog")
+        return [f"{platform_key}: discovery.{path}" for path in paths]
+    names = [f"{platform_key}: discovery.{path}" for path in _leaf_paths(discovery.get("latest"), "latest")]
+    block, unused = _unread_backlog_block(discovery.get("backlog"))
+    names.extend(f"{platform_key}: discovery.{path}" for path in _leaf_paths(unused, f"backlog.{block}"))
     return names
 
 
 def _stray_discovery_keys(raw: dict[str, Any]) -> list[str]:
     """Return new-style discovery keys written outside the ``discovery`` block."""
-    overrides, metacritic = _discovery_overrides(raw)
-    names: list[str] = []
-    for parent, label in ((raw, "top-level"), (raw.get("review_sites"), "review_sites")):
-        if isinstance(parent, dict) and "discovery" in parent:
-            names.append(f"{label}: discovery")
+    overrides, _ = _discovery_overrides(raw)
+    names = _stray_parent_keys(raw)
+    for platform_key, plat in overrides.items():
+        names.extend(_stray_keys_for_platform(platform_key, plat))
+    return names
+
+
+def _stray_parent_keys(raw: dict[str, Any]) -> list[str]:
+    """Return ``discovery`` blocks written one level too high."""
+    names = [
+        f"{label}: discovery"
+        for parent, label in ((raw, "top-level"), (raw.get("review_sites"), "review_sites"))
+        if isinstance(parent, dict) and "discovery" in parent
+    ]
+    _, metacritic = _discovery_overrides(raw)
     if "discovery" in metacritic:
         names.append("metacritic: discovery")
-    for platform_key, plat in overrides.items():
-        if not isinstance(plat, dict):
-            continue
-        names.extend(f"{platform_key}: {key}" for key in _STRAY_DISCOVERY_KEYS if key in plat)
-        if "pending_order" in plat:
-            names.append(f"{platform_key}: pending_order")
-        names.extend(f"{platform_key}: {key}" for key in plat if str(key).startswith("discovery."))
+    return names
+
+
+def _stray_keys_for_platform(platform_key: str, plat: Any) -> list[str]:
+    """Return one platform's misplaced discovery key names."""
+    if not isinstance(plat, dict):
+        return []
+    names = [f"{platform_key}: {key}" for key in _STRAY_DISCOVERY_KEYS if key in plat]
+    if "pending_order" in plat:
+        names.append(f"{platform_key}: pending_order")
+    names.extend(f"{platform_key}: {key}" for key in plat if str(key).startswith("discovery."))
     return names
 
 

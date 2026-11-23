@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from loguru import logger
-from sqlalchemy import Boolean, Float, Integer, String, Text, create_engine, func, text
+from sqlalchemy import Boolean, Float, Index, Integer, String, Text, create_engine, func, text
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -31,10 +31,33 @@ class Base(DeclarativeBase):
     """SQLAlchemy declarative base."""
 
 
+# History result written when a queued game leaves the queue without a match.
+# Kept as a constant because it is excluded from the "already handled" check, and
+# because the partial indexes below predicate on it: a raw literal in the DDL would
+# silently stop matching if this value ever changed.
+_EXPIRED_RESULT = "Expired"
+
+
 class HistoryRow(Base):
     """ORM mapping for the ``history`` table."""
 
     __tablename__ = "history"
+    # Two partial indexes cover both sides of the expiry split.  ``get_known_slugs``
+    # runs once per browse phase and filters ``result != Expired``, which a plain
+    # b-tree cannot range; the re-expiry lookup filters ``result = Expired`` and
+    # cannot use that index, so it gets its own.
+    __table_args__ = (
+        Index(
+            "ix_history_known_slugs",
+            "source_url",
+            sqlite_where=text(f"result != '{_EXPIRED_RESULT}'"),
+        ),
+        Index(
+            "ix_history_expired",
+            "source_url",
+            sqlite_where=text(f"result = '{_EXPIRED_RESULT}'"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     source: Mapped[str] = mapped_column(String, nullable=False, index=True)
@@ -52,11 +75,6 @@ class HistoryRow(Base):
     post_process_state: Mapped[str | None] = mapped_column(String, nullable=True)
     post_process_copied_at: Mapped[str | None] = mapped_column(String, nullable=True)
     processed_at: Mapped[str] = mapped_column(String, nullable=False)
-
-
-# History result written when a queued game leaves the queue without a match.
-# Kept as a constant because it is excluded from the "already handled" check.
-_EXPIRED_RESULT = "Expired"
 
 
 class PendingGame(Base):
@@ -227,6 +245,21 @@ class Database:
         # hygiene delete targets queues written by a previous gamarr version.
         pending_games_existed = sa_inspect(self._engine).has_table("pending_games")
         Base.metadata.create_all(self._engine)
+        # ``create_all`` never adds an index to a table that already exists, so an
+        # upgraded database needs it explicitly.
+        with self._engine.begin() as conn:
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_history_known_slugs "
+                    f"ON history (source_url) WHERE result != '{_EXPIRED_RESULT}'"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_history_expired "
+                    f"ON history (source_url) WHERE result = '{_EXPIRED_RESULT}'"
+                )
+            )
         self._session_factory = sessionmaker(bind=self._engine)
         self._migrate(pending_games_existed=pending_games_existed)
         logger.debug("Database opened at '{}'", self._db_path)
@@ -839,8 +872,16 @@ class Database:
             session.commit()
 
     def is_pending(self, slug: str) -> bool:
+        """Return True when *slug* is queued and its window has not lapsed.
+
+        Matches :meth:`get_pending`, which excludes lapsed rows: an expired row is
+        still in the table until the sweep runs, so a bare primary-key lookup
+        would report a game as pending that no reader will process.
+        """
+        now = datetime.datetime.now(tz=datetime.UTC).isoformat()
         with self._session() as session:
-            return session.get(PendingGame, slug) is not None
+            row = session.get(PendingGame, slug)
+            return row is not None and str(row.expires_at) > now
 
     def get_known_slugs(self, *, source: str) -> set[str]:
         """Return the set of slugs already processed or pending.
@@ -1288,6 +1329,20 @@ class Database:
         post_process_state: str | None = None,
     ) -> None:
         with self._session() as session:
+            if result == _EXPIRED_RESULT:
+                key = source_url if source_url is not None else source_title
+                existing = (
+                    session.query(HistoryRow)
+                    .filter(HistoryRow.source_url == key, HistoryRow.result == _EXPIRED_RESULT)
+                    .first()
+                )
+                if existing is not None:
+                    # Re-expiry is the same event repeating: refresh the row rather
+                    # than appending one per window.
+                    existing.processed_at = datetime.datetime.now(tz=datetime.UTC).isoformat()
+                    existing.result_details = result_details or existing.result_details
+                    session.commit()
+                    return
             row = HistoryRow(
                 source=source,
                 source_title=source_title,
