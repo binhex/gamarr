@@ -12,26 +12,23 @@ every cycle, `backlog` sweeps backwards through it with per-year cursors.
 _Avoid_: search mode, scan mode
 
 **Window floor**:
-The oldest month a cycle may read, configured as `oldest_month`.
+The oldest month a cycle may read, configured as `oldest_month`. A score-sorted sweep reads its
+floor at year grain, because the index filters by whole release year only, so a value mid-year reads
+the whole of that year.
 
-_Avoid_: max_date, cutoff, date limit
+_Avoid_: max_date, cutoff, date limit, oldest_year
 
 **Pace**:
-How much of the window one cycle reads, counted in months (`months_per_cycle`) or in pages
-(`pages_per_cycle`).
+How much of the window one cycle reads, counted in months (`months_per_cycle`) for a date-sorted
+sweep or in pages (`pages_per_cycle`) for a score-sorted one. A page count is a workload unit only;
+it never says how far back a sweep reaches.
 
-_Avoid_: max_cycle_months, max_cycle_pages, throttle, cycle limit
-
-**Page depth**:
-The total browse-page budget a score-sorted sweep may consume across cycles, configured as
-`page_depth`; the sweep advances through it and restarts when it is exhausted. Only
-`backlog.score` uses it.
-
-_Avoid_: max_pages, page budget, depth limit
+_Avoid_: max_cycle_months, max_cycle_pages, throttle, cycle limit, page budget, page depth
 
 **Sort order**:
 Which list order discovery reads: `new` (newest release first), `criticscore`, or `userscore`. A
-`latest` cycle is always `new`.
+`latest` cycle is always `new`. A score-sorted backlog walks release years newest to oldest, because
+a score-ordered list mixes years and no page of it corresponds to a date.
 
 _Avoid_: sort mode, ordering
 

@@ -1,5 +1,8 @@
 # Every legacy page count converts to months
 
+> The conversion rule below stands; its constant is superseded by ADR 0009 (33 pages per month,
+> measured, not 24).
+
 `latest` is paced only in months and `backlog.new` is bounded only by a floor, so a legacy config
 that bounded discovery by pages had no home for those numbers. Rather than stop loading, every
 legacy page count converts to a month figure at load: a total budget becomes `oldest_month`, a
