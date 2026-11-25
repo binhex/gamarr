@@ -192,12 +192,11 @@ class ScanState(Base):
 class BacklogProgress(Base):
     """Tracks per-year backlog scan progress for each platform.
 
-    ``year = 0`` is the sentinel for the non-``"new"`` sort orders
-    (``criticscore``/``userscore``): no year dimension, all games sorted
-    by score.
-
-    ``year = N`` (e.g. 2026) is for ``sort_order = "new"`` (year-specific
-    browse pages).
+    ``year = N`` (e.g. 2026) is the release year whose browse pages the cursor
+    points into.  Both backlog sorts use it: ``sort_order = "new"`` walks the
+    date-ordered listing, and a score sort walks the score-ordered listing of
+    that year (ADR 0008).  ``year = 0`` is a legacy sentinel from the retired
+    all-time score sweep and is no longer written.
     """
 
     __tablename__ = "backlog_progress"
@@ -782,19 +781,6 @@ class Database:
         with self._session() as session:
             session.query(BacklogProgress).filter(BacklogProgress.platform == platform).delete()
             session.commit()
-
-    def sum_scanned_pages(self, platform: str, from_year: int, to_year: int) -> int:
-        with self._session() as session:
-            result = (
-                session.query(func.coalesce(func.sum(BacklogProgress.last_scanned_page), 0))
-                .filter(
-                    BacklogProgress.platform == platform,
-                    BacklogProgress.year >= from_year,
-                    BacklogProgress.year <= to_year,
-                )
-                .scalar()
-            )
-        return int(result)
 
     def get_expired_pending(self) -> list[PendingGame]:
         now = datetime.datetime.now(tz=datetime.UTC).isoformat()

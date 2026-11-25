@@ -16,7 +16,6 @@ class TestBuildScanPlan:
         assert plan.date_mode is True
         assert plan.floor_month == 0
         assert plan.pace_months == 1
-        assert plan.page_depth == 0
         assert plan.pages_per_cycle == 0
 
     def test_latest_carries_floor_and_pace(self) -> None:
@@ -35,18 +34,39 @@ class TestBuildScanPlan:
         assert plan.scan_order == "new"
         assert plan.date_mode is True
         assert plan.floor_month == 202001
-        assert plan.page_depth == 0
 
-    def test_backlog_score_is_page_mode(self) -> None:
+    def test_backlog_score_carries_a_floor_and_a_page_pace(self) -> None:
         discovery = DiscoveryConfig.model_validate(
-            {"mode": "backlog", "backlog": {"sort_order": "criticscore", "score": {"page_depth": 40}}}
+            {
+                "mode": "backlog",
+                "backlog": {"sort_order": "criticscore", "score": {"oldest_month": 201601, "pages_per_cycle": 20}},
+            }
         )
         plan = build_scan_plan(discovery)
         assert plan.scan_order == "criticscore"
-        assert plan.date_mode is False
-        assert plan.floor_month == 0
+        assert plan.date_mode is False, "a score sweep is not month-paced"
+        assert plan.floor_month == 201601, "the floor bounds the score sweep"
         assert plan.pace_months == 0
-        assert plan.page_depth == 40
+        assert plan.pages_per_cycle == 20
+
+    def test_a_zero_page_pace_is_coerced_to_twenty(self) -> None:
+        """The coercion is silent without its log line, so the line is part of the contract."""
+        import io
+
+        from loguru import logger
+
+        discovery = DiscoveryConfig.model_validate(
+            {"mode": "backlog", "backlog": {"sort_order": "userscore", "score": {"pages_per_cycle": 0}}}
+        )
+        buf = io.StringIO()
+        logger_id = logger.add(buf, format="{message}", colorize=False)
+        try:
+            plan = build_scan_plan(discovery)
+        finally:
+            logger.remove(logger_id)
+
+        assert plan.pages_per_cycle == 20, "one cycle must never crawl the catalogue"
+        assert "pages_per_cycle 0 has no meaning for a score sweep" in buf.getvalue()
 
     def test_a_floorless_unpaced_backlog_gets_a_pace(self) -> None:
         """No floor and no pace means the catalogue; pace it instead (bug 2026-11-23)."""

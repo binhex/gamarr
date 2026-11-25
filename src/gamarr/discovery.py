@@ -9,6 +9,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
+from loguru import logger
+
+from gamarr.config import DEFAULT_SCORE_PAGES_PER_CYCLE
+
 if TYPE_CHECKING:
     from gamarr.config import DiscoveryConfig
 
@@ -24,10 +28,9 @@ class ScanPlan:
     Attributes:
         mode: The selected discovery mode.
         scan_order: The browse order the cycle reads.
-        date_mode: True when release dates bound the cycle instead of a page count.
-        floor_month: The window floor as ``YYYYMM``, ``0`` when there is none.
+        date_mode: True when release months pace the cycle; a score sweep reads by year instead.
+        floor_month: The window floor as ``YYYYMM``, read by both branches and by year for score, ``0`` for none.
         pace_months: Months one cycle reads back, ``0`` for no pacing.
-        page_depth: Total page budget, ``0`` for none.
         pages_per_cycle: Per-cycle page pace, ``0`` for unlimited.
     """
 
@@ -36,7 +39,6 @@ class ScanPlan:
     date_mode: bool
     floor_month: int
     pace_months: int
-    page_depth: int
     pages_per_cycle: int
 
 
@@ -57,7 +59,6 @@ def build_scan_plan(discovery: DiscoveryConfig) -> ScanPlan:
             date_mode=True,
             floor_month=latest.oldest_month,
             pace_months=latest.months_per_cycle,
-            page_depth=0,
             pages_per_cycle=0,
         )
     backlog = discovery.backlog
@@ -75,15 +76,18 @@ def build_scan_plan(discovery: DiscoveryConfig) -> ScanPlan:
             date_mode=True,
             floor_month=floor_month,
             pace_months=pace_months,
-            page_depth=0,
             pages_per_cycle=0,
+        )
+    if backlog.score.pages_per_cycle == 0:
+        logger.info(
+            "Config: pages_per_cycle 0 has no meaning for a score sweep - "
+            f"using {DEFAULT_SCORE_PAGES_PER_CYCLE} so one cycle cannot crawl the catalogue"
         )
     return ScanPlan(
         mode="backlog",
         scan_order=backlog.sort_order,
         date_mode=False,
-        floor_month=0,
+        floor_month=backlog.score.oldest_month,
         pace_months=0,
-        page_depth=backlog.score.page_depth,
-        pages_per_cycle=backlog.score.pages_per_cycle,
+        pages_per_cycle=backlog.score.pages_per_cycle or DEFAULT_SCORE_PAGES_PER_CYCLE,
     )

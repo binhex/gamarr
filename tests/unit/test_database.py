@@ -1225,32 +1225,7 @@ class TestBacklogProgress:
         assert db.get_last_scanned_page("ps4", 2026) == 5
         db.close()
 
-    def test_sum_scanned_pages_single_year(self, tmp_path: Path) -> None:
-        from gamarr.database import Database
-
-        db = Database(str(tmp_path / "test.db"))
-        db.set_last_scanned_page("pc", 2026, 10)
-        assert db.sum_scanned_pages("pc", 2026, 2026) == 10
-        db.close()
-
-    def test_sum_scanned_pages_multi_year(self, tmp_path: Path) -> None:
-        from gamarr.database import Database
-
-        db = Database(str(tmp_path / "test.db"))
-        db.set_last_scanned_page("pc", 2026, 10)
-        db.set_last_scanned_page("pc", 2025, 50)
-        db.set_last_scanned_page("pc", 2024, 0)
-        assert db.sum_scanned_pages("pc", 2024, 2026) == 60
-        db.close()
-
-    def test_sum_scanned_pages_empty_returns_zero(self, tmp_path: Path) -> None:
-        from gamarr.database import Database
-
-        db = Database(str(tmp_path / "test.db"))
-        assert db.sum_scanned_pages("pc", 2020, 2025) == 0
-        db.close()
-
-    def test_reset_progress_criticscore_sentinel(self, tmp_path: Path) -> None:
+    def test_reset_progress_deletes_legacy_year_zero_rows(self, tmp_path: Path) -> None:
         """Reset deletes all rows for the platform regardless of sort_order."""
         from gamarr.database import Database
 

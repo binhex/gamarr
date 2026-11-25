@@ -83,7 +83,6 @@ class TestConfigModels:
         assert not hasattr(cfg, "days_since_release"), "Field was removed"
         assert not hasattr(cfg, "pending_days"), "Field was renamed to max_queue_days"
         assert not hasattr(cfg, "recheck_days"), "Field was renamed to max_queue_days"
-        assert cfg.discovery.backlog.score.page_depth == 500, "the documented 500-page budget (~21 months)"
         assert not hasattr(cfg, "cutoff_weeks"), "Field was renamed to max_pages"
         assert not hasattr(cfg, "max_games"), "Field was removed — max_pages controls game count"
 
@@ -414,13 +413,13 @@ class TestConfigModels:
         assert cfg.torrent_client.selected == "qbittorrent"
 
     def test_pages_per_cycle_default(self) -> None:
-        """discovery.backlog.score.pages_per_cycle defaults to 0."""
+        """discovery.backlog.score.pages_per_cycle defaults to 20."""
         from gamarr.config import BacklogScoreConfig
 
-        assert BacklogScoreConfig().pages_per_cycle == 0
+        assert BacklogScoreConfig().pages_per_cycle == 20
 
     def test_pages_per_cycle_ge_zero(self) -> None:
-        """pages_per_cycle must be >= 0 (0 = unlimited)."""
+        """pages_per_cycle must be >= 0 (0 is coerced to the default pace at plan time)."""
         from pydantic import ValidationError
 
         from gamarr.config import BacklogScoreConfig
@@ -642,7 +641,7 @@ class TestLoadConfig:
 
     def test_migrate_metacritic_preserves_new_section_values(self) -> None:
         from gamarr.config import _migrate_config
-        from gamarr.utils import current_year_month, subtract_months
+        from gamarr.utils import current_year_month, pages_to_months, subtract_months
 
         raw: dict[str, Any] = {
             "metacritic": {"platform_overrides": {"pc": {"max_pages": 100}}},
@@ -652,9 +651,11 @@ class TestLoadConfig:
         }
 
         assert _migrate_config(raw) is True
-        # The new section's 240 pages (10 months) win over the legacy 100 pages (5 months).
+        # The new section's 240 pages win over the legacy 100 pages.
         pc = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
-        assert pc["discovery"]["backlog"]["new"]["oldest_month"] == subtract_months(current_year_month(), 10)
+        assert pc["discovery"]["backlog"]["new"]["oldest_month"] == subtract_months(
+            current_year_month(), pages_to_months(240)
+        )
         assert "max_pages" not in pc
 
     def test_migrate_sources_to_download_sites(self) -> None:
@@ -758,7 +759,7 @@ class TestLoadConfig:
         """Old days_since_release in metacritic.platform_overrides is removed."""
 
         from gamarr.config import _migrate_config
-        from gamarr.utils import current_year_month, subtract_months
+        from gamarr.utils import current_year_month, pages_to_months, subtract_months
 
         raw: dict[str, Any] = {
             "metacritic": {
@@ -772,8 +773,10 @@ class TestLoadConfig:
         pc = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
         assert "days_since_release" not in pc
         assert "cutoff_weeks" not in pc, "cutoff_weeks was renamed to max_pages"
-        # cutoff_weeks (240 pages, 10 months) wins over days_since_release (90 days, 1 month).
-        assert pc["discovery"]["backlog"]["new"]["oldest_month"] == subtract_months(current_year_month(), 10)
+        # cutoff_weeks (240 pages) wins over days_since_release (90 days).
+        assert pc["discovery"]["backlog"]["new"]["oldest_month"] == subtract_months(
+            current_year_month(), pages_to_months(240)
+        )
 
     def test_cutoff_weeks_does_not_overwrite_existing_max_pages(self) -> None:
         from gamarr.config import _migrate_cutoff_weeks_to_max_pages
@@ -2084,8 +2087,11 @@ class TestDiscoveryConfig:
         assert backlog.sort_order == "new"
         assert backlog.new.oldest_month == 0
         assert backlog.new.months_per_cycle == 1, "default pace bounds an otherwise unbounded sweep"
-        assert backlog.score.page_depth == 500
-        assert backlog.score.pages_per_cycle == 0
+
+    def test_backlog_score_reaches_by_month_and_paces_by_pages(self) -> None:
+        score = self._defaults().backlog.score
+        assert score.oldest_month == 0, "no floor by default: the sweep reaches the earliest listing"
+        assert score.pages_per_cycle == 20, "the default workload of one cycle"
 
     def test_latest_has_no_page_keys(self) -> None:
         from pydantic import ValidationError
@@ -2122,13 +2128,29 @@ class TestDiscoveryConfig:
         with pytest.raises(ValidationError):
             LatestDiscoveryConfig(oldest_month=195701)
 
-    def test_page_depth_rejects_a_negative_value(self) -> None:
+    def test_score_oldest_month_is_validated_like_the_other_blocks(self) -> None:
+        """An unclamped future floor would make the year range empty and scan nothing."""
+        from pydantic import ValidationError
+
+        from gamarr.config import BacklogScoreConfig
+        from gamarr.utils import current_year_month
+
+        future = current_year_month() + 100
+        assert BacklogScoreConfig(oldest_month=future).oldest_month == current_year_month()
+        assert BacklogScoreConfig(oldest_month=202001).oldest_month == 202001
+        with pytest.raises(ValidationError):
+            BacklogScoreConfig(oldest_month=202013)
+        with pytest.raises(ValidationError):
+            BacklogScoreConfig(oldest_month=195701)
+
+    def test_page_depth_is_rejected_once_migrated(self) -> None:
+        """The key is gone from the model; a file that still has it is converted before validation."""
         from pydantic import ValidationError
 
         from gamarr.config import BacklogScoreConfig
 
         with pytest.raises(ValidationError):
-            BacklogScoreConfig(page_depth=-1)
+            BacklogScoreConfig.model_validate({"page_depth": 500})
 
     def test_months_per_cycle_is_capped(self) -> None:
         from pydantic import ValidationError
@@ -2189,7 +2211,7 @@ class TestDiscoveryBlockMigration:
     def test_latest_page_depth_converts_to_a_month_pace(self) -> None:
         raw = self._migrate({"mode": "latest", "max_pages": 1000, "sort_order": "new"})
         latest = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["discovery"]["latest"]
-        assert latest["months_per_cycle"] == 42
+        assert latest["months_per_cycle"] == 31
 
     def test_latest_drops_the_page_keys_it_never_read(self) -> None:
         raw = self._migrate({"mode": "latest", "max_date": 202601, "max_cycle_pages": 16, "max_pages": 1000})
@@ -2204,11 +2226,176 @@ class TestDiscoveryBlockMigration:
         new_block = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["discovery"]["backlog"]["new"]
         assert new_block["oldest_month"] == subtract_months(current_year_month(), 2)
 
-    def test_backlog_score_keeps_the_page_keys(self) -> None:
+    def test_backlog_score_converts_the_page_budget_to_a_floor(self) -> None:
+        from gamarr.utils import current_year_month, pages_to_months, subtract_months
+
         raw = self._migrate({"mode": "backlog", "max_pages": 40, "max_cycle_pages": 5, "sort_order": "criticscore"})
+        score = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["discovery"]["backlog"]["score"]
+        assert score == {
+            "oldest_month": subtract_months(current_year_month(), pages_to_months(40)),
+            "pages_per_cycle": 5,
+        }
+
+    def test_a_block_shaped_page_depth_converts_to_a_floor(self) -> None:
+        """The shape the current release writes must load and convert (ADR 0007)."""
+        from gamarr.utils import current_year_month, pages_to_months, subtract_months
+
+        raw = self._migrate(
+            {
+                "discovery": {
+                    "mode": "backlog",
+                    "backlog": {"sort_order": "criticscore", "score": {"page_depth": 500, "pages_per_cycle": 20}},
+                }
+            }
+        )
+        score = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["discovery"]["backlog"]["score"]
+        assert score == {
+            "oldest_month": subtract_months(current_year_month(), pages_to_months(500)),
+            "pages_per_cycle": 20,
+        }
+
+    def test_a_zero_page_depth_writes_no_floor(self) -> None:
+        raw = self._migrate(
+            {"discovery": {"mode": "backlog", "backlog": {"sort_order": "criticscore", "score": {"page_depth": 0}}}}
+        )
+        score = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["discovery"]["backlog"]["score"]
+        assert score["oldest_month"] == 0, "a legacy 0 budget means no budget, not a floor of now"
+        assert "page_depth" not in score
+
+    def test_an_explicit_zero_in_a_mixed_shape_beats_the_default_floor(self) -> None:
+        """A stated 0 is a bound, so the flat-key default must not invent a floor over it."""
+        raw = self._migrate(
+            {
+                "sort_order": "criticscore",
+                "discovery": {
+                    "mode": "backlog",
+                    "backlog": {
+                        "sort_order": "criticscore",
+                        "score": {"page_depth": 0, "pages_per_cycle": 20},
+                    },
+                },
+            }
+        )
+        score = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["discovery"]["backlog"]["score"]
+        assert score["oldest_month"] == 0
+        assert score["pages_per_cycle"] == 20
+
+    def test_a_flat_budget_beats_the_default_floor_in_a_mixed_shape(self) -> None:
+        """A stated flat budget converts; the no-bound default must not pre-empt it."""
+        from gamarr.utils import current_year_month, pages_to_months, subtract_months
+
+        raw = self._migrate(
+            {
+                "max_pages": 1000,
+                "sort_order": "criticscore",
+                "discovery": {
+                    "mode": "backlog",
+                    "backlog": {"sort_order": "criticscore", "score": {"pages_per_cycle": 5}},
+                },
+            }
+        )
+        score = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["discovery"]["backlog"]["score"]
+        assert score["oldest_month"] == subtract_months(current_year_month(), pages_to_months(1000))
+        assert score["pages_per_cycle"] == 5
+
+    def test_a_score_block_stating_no_bound_keeps_the_old_default_reach(self) -> None:
+        """A pre-floor block that omitted page_depth ran on the default budget; keep that reach."""
+        from gamarr.config import _default_floor
+
+        raw = self._migrate(
+            {
+                "discovery": {
+                    "mode": "backlog",
+                    "backlog": {"sort_order": "criticscore", "score": {"pages_per_cycle": 9}},
+                }
+            }
+        )
+        score = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["discovery"]["backlog"]["score"]
+        assert score["oldest_month"] == _default_floor()
+        assert score["pages_per_cycle"] == 9
+
+    def test_a_block_shaped_page_depth_beats_the_default_floor(self) -> None:
+        """A released-shape budget must convert before the no-bound default is invented."""
+        from gamarr.utils import current_year_month, pages_to_months, subtract_months
+
+        raw = self._migrate(
+            {
+                "sort_order": "criticscore",
+                "discovery": {
+                    "mode": "backlog",
+                    "backlog": {"sort_order": "criticscore", "score": {"page_depth": 100}},
+                },
+            }
+        )
+        score = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["discovery"]["backlog"]["score"]
+        assert score["oldest_month"] == subtract_months(current_year_month(), pages_to_months(100)), (
+            "the operator's own budget must win over the invented default reach"
+        )
+        assert "page_depth" not in score
+
+    def test_a_bound_free_score_config_keeps_the_old_default_reach(self) -> None:
+        """An upgrade must not widen a score sweep from the default budget to the whole catalogue."""
+        from gamarr.config import _default_floor
+
+        raw = self._migrate({"mode": "backlog", "sort_order": "criticscore"})
+        score = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["discovery"]["backlog"]["score"]
+        assert score["oldest_month"] == _default_floor()
+
+    def test_an_explicit_zero_page_budget_stays_floorless(self) -> None:
+        """An explicit 0 said "no budget", so the upgrade honours it rather than inventing a floor."""
+        raw = self._migrate({"mode": "backlog", "max_pages": 0, "sort_order": "criticscore"})
         backlog = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["discovery"]["backlog"]
-        assert backlog["sort_order"] == "criticscore"
-        assert backlog["score"] == {"page_depth": 40, "pages_per_cycle": 5}
+        assert "oldest_month" not in backlog.get("score", {})
+
+    def test_a_numeric_string_page_depth_is_coerced_not_fatal(self) -> None:
+        """The released int field accepted '500', so the conversion must too (ADR 0007)."""
+        from gamarr.utils import current_year_month, pages_to_months, subtract_months
+
+        raw = self._migrate(
+            {
+                "discovery": {
+                    "mode": "backlog",
+                    "backlog": {"sort_order": "criticscore", "score": {"page_depth": "500"}},
+                }
+            }
+        )
+        score = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["discovery"]["backlog"]["score"]
+        assert score["oldest_month"] == subtract_months(current_year_month(), pages_to_months(500))
+        assert "page_depth" not in score
+
+    def test_an_unusable_page_depth_is_dropped_without_aborting_the_load(self) -> None:
+        from gamarr.config import DiscoveryConfig, _default_floor
+
+        for bad in ("lots", True, None):
+            raw = self._migrate(
+                {
+                    "discovery": {
+                        "mode": "backlog",
+                        "backlog": {"sort_order": "criticscore", "score": {"page_depth": bad}},
+                    }
+                }
+            )
+            discovery = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["discovery"]
+            score = discovery["backlog"]["score"]
+            assert score["oldest_month"] == _default_floor(), f"{bad!r} must fall back to the default reach"
+            assert "page_depth" not in score
+            DiscoveryConfig.model_validate(discovery)
+
+    def test_an_explicit_floor_beats_a_legacy_page_depth(self) -> None:
+        raw = self._migrate(
+            {
+                "discovery": {
+                    "mode": "backlog",
+                    "backlog": {
+                        "sort_order": "criticscore",
+                        "score": {"oldest_month": 201601, "page_depth": 500},
+                    },
+                }
+            }
+        )
+        score = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["discovery"]["backlog"]["score"]
+        assert score["oldest_month"] == 201601
+        assert "page_depth" not in score
 
     def test_sort_order_feeds_the_shared_pending_order(self) -> None:
         raw = self._migrate({"mode": "backlog", "sort_order": "userscore"})
@@ -2327,7 +2514,7 @@ class TestDiscoveryMigrationBranches:
             {"review_sites": {"metacritic": {"platform_overrides": {"pc": {"mode": "latest", "max_cycle_pages": 5}}}}}
         )
         discovery = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["discovery"]
-        assert discovery["latest"]["months_per_cycle"] == 21, "the old default page reach is kept"
+        assert discovery["latest"]["months_per_cycle"] == 16, "the old default page reach is kept"
 
     def test_a_backlog_page_budget_is_dropped_when_a_floor_is_set(self) -> None:
         raw = self._migrate(
@@ -2433,14 +2620,14 @@ class TestLegacyValueConversion:
         from gamarr.config import DiscoveryConfig
         from gamarr.utils import EARLIEST_BROWSE_YEAR
 
-        discovery = self._migrate({"mode": "backlog", "max_pages": 20000, "sort_order": "new"})
+        discovery = self._migrate({"mode": "backlog", "max_pages": 100000, "sort_order": "new"})
         assert discovery["backlog"]["new"]["oldest_month"] == EARLIEST_BROWSE_YEAR * 100 + 1
         DiscoveryConfig.model_validate(discovery)
 
     def test_a_huge_latest_budget_is_clamped_to_the_pace_cap(self) -> None:
         from gamarr.config import DiscoveryConfig
 
-        discovery = self._migrate({"mode": "latest", "max_pages": 30000})
+        discovery = self._migrate({"mode": "latest", "max_pages": 100000})
         assert discovery["latest"]["months_per_cycle"] == 1200
         DiscoveryConfig.model_validate(discovery)
 
@@ -2477,7 +2664,7 @@ class TestLegacyValueConversion:
             "    platform_overrides:\n"
             "      pc:\n"
             "        mode: backlog\n"
-            "        max_pages: 20000\n"
+            "        max_pages: 100000\n"
             "        sort_order: new\n",
             encoding="utf-8",
         )
@@ -2542,11 +2729,11 @@ class TestLegacyValueConversion:
         assert _migrate_config(raw) is True
         assert "max_queue_days" not in raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]
 
-    def test_a_score_sort_keeps_an_explicit_zero_page_budget(self) -> None:
+    def test_a_score_sort_writes_no_floor_for_an_explicit_zero_page_budget(self) -> None:
         discovery = self._migrate(
             {"mode": "backlog", "max_pages": 0, "max_cycle_pages": 0, "sort_order": "criticscore"}
         )
-        assert discovery["backlog"]["score"] == {"page_depth": 0, "pages_per_cycle": 0}
+        assert discovery["backlog"]["score"] == {"pages_per_cycle": 0}, "a 0 budget means no budget, not a floor"
 
     def test_an_existing_block_mode_keeps_its_selection(self) -> None:
         from gamarr.config import _migrate_config
@@ -2626,11 +2813,17 @@ class TestLegacyValueConversion:
         _migrate_config(raw)
         assert raw["source_matching_days"] == 0
 
-    def test_empty_switch_blocks_are_pruned(self) -> None:
-        assert self._migrate({"mode": "latest"}) == {"mode": "latest", "latest": {"months_per_cycle": 21}}
+    def test_migration_writes_only_the_block_the_mode_reads(self) -> None:
+        from gamarr.config import _default_floor
+
+        # A latest cycle leaves no backlog block behind.
+        assert self._migrate({"mode": "latest"}) == {"mode": "latest", "latest": {"months_per_cycle": 16}}
+        # A score-sorted backlog keeps the reach the old default page budget gave it, so
+        # its block is filled rather than pruned (ADR 0007: an upgrade neither narrows
+        # nor widens the sweep).
         assert self._migrate({"mode": "backlog", "sort_order": "criticscore"}) == {
             "mode": "backlog",
-            "backlog": {"sort_order": "criticscore"},
+            "backlog": {"sort_order": "criticscore", "score": {"oldest_month": _default_floor()}},
         }
 
     def test_a_second_platform_sort_order_does_not_override_pending_order(self) -> None:
@@ -2775,7 +2968,7 @@ class TestGeneratedConfigCarriesDiscovery:
         assert set(discovery["latest"]) == {"oldest_month", "months_per_cycle"}
         assert discovery["backlog"]["sort_order"] == "new"
         assert set(discovery["backlog"]["new"]) == {"oldest_month", "months_per_cycle"}
-        assert set(discovery["backlog"]["score"]) == {"page_depth", "pages_per_cycle"}
+        assert set(discovery["backlog"]["score"]) == {"oldest_month", "pages_per_cycle"}
 
     def test_an_empty_discovery_block_is_filled_in(self, tmp_path: Path) -> None:
         """`ps5: {discovery: {}}` is an empty block, not an opinion to respect."""

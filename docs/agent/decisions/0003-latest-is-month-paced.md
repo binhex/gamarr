@@ -1,5 +1,8 @@
 # `latest` is paced by months, never by page depth
 
+> The page-to-month conversion named below uses the measured 33 pages per month of ADR 0009, not the
+> "roughly 24 games per browse page" premise recorded here.
+
 A `latest` cycle used to fall back to a page-depth budget whenever neither date key was set, so the
 same mode could be bounded two different ways and a config could hold a page count that silently
 did nothing. `latest` now reads a month pace (`months_per_cycle`) back from the newest release and

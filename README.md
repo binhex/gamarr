@@ -24,9 +24,11 @@ stays fresh without lifting a finger.
 - **Month-window or backlog sweep** — `discovery.latest` re-reads a month
   window every cycle: `discovery.latest.months_per_cycle` (default 1) months
   back from the newest release, optionally floored at
-  `discovery.latest.oldest_month`. `discovery.backlog` sweeps instead, down to
-  `discovery.backlog.new.oldest_month` with per-year cursors. A browse page is
-  about a day of PC releases, so 24 pages is about one month.
+  `discovery.latest.oldest_month`. `discovery.backlog` sweeps instead: `new`
+  runs down to `discovery.backlog.new.oldest_month` with per-year cursors, and
+  a score sort runs down to `discovery.backlog.score.oldest_month` at year
+  grain. A browse page is about a day of PC releases; the measured rate is
+  33 pages per month.
 - **Verify before queueing** — a game's real Metacritic detail-page scores are
   checked *before* it enters the pending queue, so the queue only ever holds
   games that already pass the thresholds. Games that fail, or whose scores are
@@ -211,8 +213,8 @@ review_sites:
             months_per_cycle: 1
 ```
 
-A `backlog` sweep that paces itself and keeps a page-budgeted score mode ready to
-switch to:
+A `backlog` sweep that paces itself, with a score-sorted sweep configured and
+ready to switch to:
 
 ```yaml
 review_sites:
@@ -227,8 +229,8 @@ review_sites:
               oldest_month: 202001
               months_per_cycle: 2
             score:
-              page_depth: 500
-              pages_per_cycle: 0
+              oldest_month: 201601
+              pages_per_cycle: 20
 ```
 
 #### `review_sites.metacritic.platform_overrides.<platform>`
@@ -245,8 +247,8 @@ review_sites:
 | `discovery.backlog.sort_order` | Which backlog block runs: `"new"` reads `backlog.new`, `"criticscore"` and `"userscore"` read `backlog.score`. | `"new"` |
 | `discovery.backlog.new.oldest_month` | Oldest month a `backlog` sweep may read, as `YYYYMM` (month `01`-`12`, year `1958` or later) — not a page count. `0` = no floor, so the sweep runs as far back as the listing goes. A later month is clamped to the current one. | `0` |
 | `discovery.backlog.new.months_per_cycle` | How many months one `backlog` sweep cycle covers. `0` = the whole sweep in one cycle when `oldest_month` bounds it; with no floor at all `0` is treated as `1` so a cycle cannot read the whole catalogue. Maximum `1200`. | `1` |
-| `discovery.backlog.score.page_depth` | Total browse-page budget for a score-sorted sweep. `0` = no budget: the sweep reaches the earliest listing. A page is about a day of PC releases, so 24 pages is about one month. | `500` |
-| `discovery.backlog.score.pages_per_cycle` | Pages per cycle for a score-sorted sweep. `0` = unlimited. | `0` |
+| `discovery.backlog.score.oldest_month` | Oldest month a score-sorted sweep may read, as `YYYYMM`. Read at year grain — the index filters by whole release year, so `201601` reads all of 2016. `0` = no floor, so the sweep runs down to the earliest listing. A later month is clamped to the current one. | `0` |
+| `discovery.backlog.score.pages_per_cycle` | Pages one cycle reads for a score-sorted sweep — a workload budget, not a reach. It bounds pages collected, not requests: a cycle also spends up to two requests per already-drained year above the year it is reading (the probe plus its drain-confirmation re-fetch, bounded by the years in range). `0` is treated as `20` so a cycle cannot crawl the catalogue. | `20` |
 | `enabled` | Enable or disable the Metacritic browse step. Disabling skips game discovery entirely. | `true` |
 | `cache_details_days` | Days to cache Metacritic detail-page results. | `7` |
 | `cache_hours` | Hours to cache Metacritic browse-page results. | `6` |
@@ -371,9 +373,13 @@ flowchart TD
    `discovery.latest.oldest_month` (`0` = no floor). `discovery.backlog` sweeps
    back instead: `discovery.backlog.sort_order` picks the walk — `new` follows
    release dates with per-year cursors, `criticscore`/`userscore` walk the
-   score-ordered list page by page. The block for the mode and sort that are
-   not in use is ignored, and any key in it whose value differs from the default
-   is named once per load, so an untouched generated block stays silent.
+   score-ordered list one release year at a time with a per-year cursor. The
+   block for the mode and sort that are not in use is ignored, and any key in
+   it whose value differs from the default is named once per load, so an
+   untouched generated block stays silent. A block the upgrade migration
+   converted (its page budget became `oldest_month`) now differs from the
+   default, so it is named per load until the key is removed, reset to its
+   default, or the block becomes the one the active sort reads.
    `review_sites.metacritic.pending_order` separately orders the pending queue
    (`new`, `criticscore`, `userscore`), independent of how discovery reads.
    **Important:** browse pages show *internal browse-only metrics*, not
@@ -386,10 +392,19 @@ flowchart TD
    `discovery.backlog.new.oldest_month` floor has been swept, stopping inside
    the boundary year as soon as a page's games are all older than the floor;
    `discovery.backlog.new.months_per_cycle` limits how many months one cycle
-   covers. A score-sorted `backlog` sweep has no date dimension:
-   `discovery.backlog.score.page_depth` is the total page budget (the scanner
-   advances across cycles and resets to the first page when it is exhausted) and
-   `discovery.backlog.score.pages_per_cycle` paces one cycle (`0` = unlimited).
+   covers. A score-sorted `backlog` sweep walks release years newest to oldest
+   with a per-year cursor, stopping at `discovery.backlog.score.oldest_month`
+   read at year grain — the index filters by whole release year, so `201601`
+   means all of 2016 — and restarts at the newest year once the floor year is
+   drained. Page boundaries drift between cycles; the sweep accepts that as
+   best-effort because deduplication stops a game being queued twice. Titles
+   with no release date cannot be reached by a score sweep at all. One cycle
+   is paced by `discovery.backlog.score.pages_per_cycle` (`0` is treated as
+   `20`, so a cycle cannot crawl the catalogue). That pace bounds the pages
+   collected, not the requests sent: each already-drained year above the year
+   being read costs up to two requests per cycle (the probe and its
+   drain-confirmation re-fetch), so a deep sweep pays a bounded number of extra
+   requests before it reaches fresh pages.
    A `latest` window has no cursors: it restarts from the newest page every
    cycle. **Note:** browse scores are on a different scale and always
    exceed the configured thresholds — they cannot filter, so the threshold
@@ -533,8 +548,10 @@ If you find the queue growing indefinitely:
 
 **A:** The floor is a calendar month, not a page count. Set
 `discovery.backlog.new.oldest_month` to `0` (no floor) or a real `YYYYMM` such as
-`202401`. A start that fails validation leaves the config file untouched — nothing is
-rewritten or reformatted — so the value you set is the value you fix. On upgrade, a legacy date
+`202401` (for a score-sorted sweep the key is
+`discovery.backlog.score.oldest_month`). A start that fails validation leaves the config file
+untouched — nothing is rewritten or reformatted — so the value you set is the value you fix.
+On upgrade, a legacy date
 bound is converted, and a value that is not a month is dropped with a warning rather
 than carried into the new key.
 

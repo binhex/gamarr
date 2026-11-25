@@ -1,5 +1,8 @@
 # `backlog` splits its keys by sort order
 
+> The block split below stands. Its `page_depth` half is superseded by ADR 0008: a score-sorted
+> sweep now reaches back to `oldest_month` and `pages_per_cycle` is only a workload pace.
+
 `backlog` was the last place where a key's meaning depended on the value of another key: with
 `sort_order: new` it used dates (`oldest_month`, `months_per_cycle`), and with a score sort it used
 pages (`page_depth`, `pages_per_cycle`), because score-ordered lists mix years and no page

@@ -1,9 +1,10 @@
 # The page-to-month constant is the measured figure, not 24
 
 ADR 0007 converts every legacy page count into months using one constant, which was set from a July
-estimate of about 24 games per browse page and 24 releases per day. Measured against 870 pages of
-the live PC index (43,500 games, Nov 2024 - Nov 2026) a page holds **50** games and the index
-releases **33.4 pages per month** across 24 complete months, climbing to 52 over the last quarter.
+estimate of about 24 games per browse page and 24 releases per day. Measured against the live PC
+index a page holds **50** games: over the 24 complete months Nov 2024 - Oct 2026 the index released
+40,043 games, which is 1,668 a month and **33.4 pages per month**, climbing to 52 over the last
+quarter. (The 870-page scan behind the measurement reaches back to 2024-10-31, about 24.8 months.)
 The constant becomes 33, with the drift stated in the ADR and README so a conversion is understood
 as an approximation that ages.
 

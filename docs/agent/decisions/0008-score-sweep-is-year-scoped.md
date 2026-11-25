@@ -2,12 +2,15 @@
 
 A score sort mixes release years, so a page of that listing has no date meaning; `page_depth` was
 therefore the only way to say how far a sweep reaches, and the number had to be re-measured as the
-catalogue grew (33.4 pages per month over 24 months, ~2,200 pages to reach 2016, ~400 more per
-year). The sweep instead walks release **years** newest to oldest, score-sorted inside each year,
-down to a floor month; pages bound only the per-cycle pace. Metacritic exposes `releaseYearMin` /
-`releaseYearMax` and no month filter, so a year is the finest scope the sweep can ask for, and a
-score-sorted year-scoped listing is confirmed to work on the live index. Reach becomes a value the
-operator states once; pace becomes a workload budget whose meaning does not drift.
+catalogue grew (33.4 pages per month at current volume, ~2,200 pages to reach 2016, ~400 more per
+year). The two figures are not a contradiction: older years are far thinner, so the page total
+accumulates at roughly half today's rate (2016 is ~96 pages against ~469 for 2026), and only the
+recent months run at 33.4 pages each. The sweep instead walks release **years** newest to oldest,
+score-sorted inside each year, down to a floor month; pages bound only the per-cycle pace.
+Metacritic exposes `releaseYearMin` / `releaseYearMax` and no month filter, so a year is the finest
+scope the sweep can ask for, and a score-sorted year-scoped listing is confirmed to work on the live
+index. Reach becomes a value the operator states once; pace becomes a workload budget whose meaning
+does not drift.
 
 ## Considered Options
 

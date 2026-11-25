@@ -353,6 +353,7 @@ def run_acquisition(
             )
 
         pages_this_cycle = 0
+        last_year_scanned: int = 0
         min_month_seen: int | None = None
         max_month_seen: int | None = None
         cutoff_stopped = False
@@ -440,62 +441,37 @@ def run_acquisition(
                     floor_month,
                 )
 
-            # Calculate year range
-            if scan_order == "new":
-                if latest_mode:
-                    # The date stops end the loop; this bound is only a safety net
-                    # beneath them.  The floored branch must be absolute: the pace
-                    # anchors on the newest release the listings actually carry,
-                    # which can lag today by years when recent listings are empty,
-                    # and a bound of "today minus the pace" would then skip the
-                    # paced window silently (latest persists no cursors, so nothing
-                    # would ever come back for it).  The floorless branch has no
-                    # floor to anchor on, so it substitutes twice the paced window
-                    # plus slack, and a descent that found no listing at all is
-                    # reported after the loop.
-                    cutoff_year = (
-                        floor_month // 100
-                        if floor_month
-                        else _floorless_latest_bound(cfg.plan.pace_months, scan_year_anchor)
-                    )
-                else:
-                    # A floor is validated at or after the catalogue's first year;
-                    # no floor means the whole catalogue, never year zero.
-                    cutoff_year = floor_month // 100 if floor_month else EARLIEST_BROWSE_YEAR
-                current_year = scan_year_anchor
-            else:
-                # sort_order != "new" (criticscore/userscore): no year dimension, use year=0 sentinel
-                cutoff_year = 0
-                current_year = 0
-
-            max_pages_cfg = cfg.plan.page_depth
+            # Calculate year range.  A latest cycle is floored by its pace; every other
+            # cycle, date-sorted or score-sorted, is floored by ``oldest_month``.
             if latest_mode:
-                # Latest is date-paced: no durable budget, no reset.
-                remaining_pages = 0
-                cycle_allowance = 0
-            elif date_mode:
-                # Date mode has no page budget: the floor bounds the sweep and
-                # the month allowance paces it.
-                remaining_pages = 0
-                cycle_allowance = 0
+                # The date stops end the loop; this bound is only a safety net
+                # beneath them.  The floored branch must be absolute: the pace
+                # anchors on the newest release the listings actually carry,
+                # which can lag today by years when recent listings are empty,
+                # and a bound of "today minus the pace" would then skip the
+                # paced window silently (latest persists no cursors, so nothing
+                # would ever come back for it).  The floorless branch has no
+                # floor to anchor on, so it substitutes twice the paced window
+                # plus slack, and a descent that found no listing at all is
+                # reported after the loop.
+                cutoff_year = (
+                    floor_month // 100
+                    if floor_month
+                    else _floorless_latest_bound(cfg.plan.pace_months, scan_year_anchor)
+                )
             else:
-                total_scanned = db.sum_scanned_pages(platform, cutoff_year, current_year)
+                # A floor is validated at or after the catalogue's first year;
+                # no floor means the whole catalogue, never year zero.  A score
+                # sweep reads the same year range, so its floor year is included
+                # and no page of it is date-filtered (year grain, ADR 0008).
+                cutoff_year = floor_month // 100 if floor_month else EARLIEST_BROWSE_YEAR
+            current_year = scan_year_anchor
 
-                # Budget check — auto-reset when exhausted
-                if max_pages_cfg > 0 and total_scanned >= max_pages_cfg:
-                    logger.info(
-                        "Budget exhausted — {} of {} pages scanned, restarting from page 1",
-                        total_scanned,
-                        max_pages_cfg,
-                    )
-                    db.reset_progress(platform, scan_order)
-                    total_scanned = 0
-
-                remaining_pages = max_pages_cfg - total_scanned if max_pages_cfg > 0 else 0
-                # Page allowance shared by the whole cycle (0 = unlimited).  It is
-                # spent on one year at a time, so a cycle drains the newest year
-                # instead of taking the per-cycle allowance from every year in the range.
-                cycle_allowance = cfg.plan.pages_per_cycle
+            # Page allowance shared by the whole cycle (0 = unlimited).  A date
+            # sweep is paced by months and bounded by the floor, so it has none.
+            # It is spent on one year at a time, so a cycle drains the newest year
+            # instead of taking the per-cycle allowance from every year in the range.
+            cycle_allowance = 0 if date_mode else cfg.plan.pages_per_cycle
 
             fetch_failed = False
             drained_probes = 0
@@ -518,14 +494,21 @@ def run_acquisition(
             for scan_year in range(current_year, cutoff_year - 1, -1):
                 if is_cancelled(cancel_event):
                     break
+                if failed_years_in_a_row >= 2:
+                    # A failed year collects nothing, so neither the month pace nor the
+                    # page allowance can ever trip on it: without this stop an outage
+                    # costs one request per remaining year, which the acquisition
+                    # watchdog then has to cut.  Cursors persist (latest has none and
+                    # resumes nothing), so stopping here loses no work.
+                    logger.warning(
+                        "Latest date scan: {} consecutive years failed to browse — stopping the descent"
+                        if latest_mode
+                        else "Backlog scan: {} consecutive years failed to browse — stopping the descent",
+                        failed_years_in_a_row,
+                    )
+                    break
                 if date_mode:
                     if cfg.plan.pace_months and _month_span(max_month_seen, min_month_seen) >= cfg.plan.pace_months:
-                        break
-                    if latest_mode and failed_years_in_a_row >= 2:
-                        logger.warning(
-                            "Latest date scan: {} consecutive years failed to browse — stopping the descent",
-                            failed_years_in_a_row,
-                        )
                         break
                     if latest_mode and undated_listing:
                         logger.warning(
@@ -534,8 +517,6 @@ def run_acquisition(
                         )
                         break
                 else:
-                    if max_pages_cfg > 0 and remaining_pages <= 0:
-                        break
                     if cycle_allowance > 0 and pages_this_cycle >= cycle_allowance:
                         break
                 start_page = 1 if latest_mode else db.get_last_scanned_page(platform, scan_year) + 1
@@ -566,13 +547,8 @@ def run_acquisition(
                             # span on this call's newest page.
                             month_span_left = cfg.plan.pace_months
                     else:
-                        # Allowance for this call: the smaller of the remaining
-                        # budget and what is left of the cycle allowance (0 = no
-                        # limit on either).
-                        allowance_left = cycle_allowance - pages_this_cycle if cycle_allowance > 0 else 0
-                        per_call_max = remaining_pages if max_pages_cfg > 0 else 0
-                        if cycle_allowance > 0 and (per_call_max == 0 or allowance_left < per_call_max):
-                            per_call_max = allowance_left
+                        # Only the cycle allowance caps a call (0 = no limit).
+                        per_call_max = cycle_allowance - pages_this_cycle if cycle_allowance > 0 else 0
                         cutoff_date = None
                         month_span_left = 0
 
@@ -585,11 +561,11 @@ def run_acquisition(
                         cancel_event=cancel_event,
                         start_page=start_page,
                         show_progress=True,
-                        year=scan_year if scan_order == "new" else None,
+                        year=scan_year,
                         max_pages=per_call_max,
                         max_month_span=month_span_left,
                     )
-                    if floor_month:
+                    if floor_month and scan_order == "new":
                         year_games = _games_at_or_after_floor(year_games, floor_month)
                     browse_games.extend(year_games)
                     last_page = mc._recent_games_last_page if isinstance(mc._recent_games_last_page, int) else 0
@@ -598,7 +574,7 @@ def run_acquisition(
                     # Only real pages advance the year's progress row.  An
                     # exhausted year keeps its last real page so the next cycle
                     # probes the same page instead of creeping forward and
-                    # spending the budget on empty fetches.
+                    # spending the allowance on empty fetches.
                     if pages_scanned > 0 and not latest_mode:
                         db.set_last_scanned_page(platform, scan_year, last_page)
 
@@ -614,11 +590,19 @@ def run_acquisition(
                         failed_years_in_a_row += 1
                     else:
                         failed_years_in_a_row = 0
+                        # The deepest year this cycle actually read: neither a failed call
+                        # nor a cancelled one (the client reports no failure for it) may
+                        # advance the progress line to a year it could not fetch.
+                        if not is_cancelled(cancel_event):
+                            last_year_scanned = scan_year
                     if pages_scanned == 0 and getattr(mc, "_recent_games_exhausted", None) is True:
                         drained_probes += 1
 
                     pages_this_cycle += pages_scanned
 
+                    cutoff_reached = False
+                    floor_stop = False
+                    empty_floor_year = False
                     if date_mode:
                         for game in year_games:
                             game_month = month_of(game.get("release_date"))
@@ -661,10 +645,6 @@ def run_acquisition(
                             and getattr(mc, "_recent_games_failed", None) is not True
                             and not is_cancelled(cancel_event)
                         )
-                        if scan_year == cutoff_year and (
-                            floor_stop or getattr(mc, "_recent_games_exhausted", None) is True or empty_floor_year
-                        ):
-                            floor_year_finished = True
                         # Break only when THIS call stopped on a date bound.  A
                         # floor-level stop above the floor year means that year's
                         # listing was mis-indexed (all its pages look older than the
@@ -677,11 +657,26 @@ def run_acquisition(
                                 "listing looks mis-indexed, so no games are queued for it this cycle",
                                 scan_year,
                             )
-                        if cutoff_reached and not (floor_stop and scan_year != cutoff_year):
-                            break
 
-                    if not date_mode and max_pages_cfg > 0:
-                        remaining_pages -= pages_scanned
+                    if scan_year == cutoff_year:
+                        if date_mode:
+                            floor_year_finished = (
+                                floor_stop or getattr(mc, "_recent_games_exhausted", None) is True or empty_floor_year
+                            )
+                        elif (
+                            (getattr(mc, "_recent_games_exhausted", None) is True or pages_scanned == 0)
+                            and getattr(mc, "_recent_games_failed", None) is not True
+                            and not is_cancelled(cancel_event)
+                        ):
+                            # Year grain: a score sweep finishes the floor year when
+                            # its listing is drained or its probe read no page.  An
+                            # unconfirmed empty page 1 therefore completes the sweep and
+                            # costs one full re-read; requiring a confirmed drain would
+                            # leave a genuinely empty floor year probing forever.
+                            floor_year_finished = True
+
+                    if date_mode and cutoff_reached and not (floor_stop and scan_year != cutoff_year):
+                        break
                 except Exception:
                     fetch_failed = True
                     failed_years_in_a_row += 1
@@ -715,31 +710,29 @@ def run_acquisition(
                     cutoff_year,
                 )
 
-            if date_mode and not latest_mode:
-                # A date sweep is complete once the floor year itself is finished
-                # (exhausted or date-bounded), or when no page at all was fetched
-                # and every year probed empty.  A fetch failure never counts.
+            if not latest_mode:
+                # A sweep is complete once the floor year itself is finished
+                # (exhausted, date-bounded, or a drained year-grain probe), or when
+                # no page at all was fetched and every year probed empty.  A fetch
+                # failure never counts.
                 sweep_complete = False
                 if not fetch_failed and not is_cancelled(cancel_event):
                     range_empty = pages_this_cycle == 0 and drained_probes > 0
                     sweep_complete = floor_year_finished or range_empty
                 if sweep_complete:
-                    reached = year_month_to_date(min_month_seen)[:7] if min_month_seen else "no pages"
-                    logger.info(
-                        "Backlog complete — reached {} (floor {}), restarting from the newest year",
-                        reached,
-                        year_month_to_date(floor_month)[:7] if floor_month else "none",
-                    )
-                    db.reset_progress(platform, scan_order)
-            elif not latest_mode:
-                # A full pass that found no pages anywhere means the range is fully
-                # drained: restart from the newest year so new releases are picked up.
-                if pages_this_cycle == 0 and drained_probes > 0 and not fetch_failed and not is_cancelled(cancel_event):
-                    logger.info(
-                        "Backlog drained — no pages left in {}..{}, restarting from the newest year",
-                        cutoff_year,
-                        current_year,
-                    )
+                    if date_mode:
+                        reached = year_month_to_date(min_month_seen)[:7] if min_month_seen else "no pages"
+                        logger.info(
+                            "Backlog complete — reached {} (floor {}), restarting from the newest year",
+                            reached,
+                            year_month_to_date(floor_month)[:7] if floor_month else "none",
+                        )
+                    else:
+                        logger.info(
+                            "Backlog complete — reached year {} (floor year {}), restarting from the newest year",
+                            last_year_scanned,
+                            floor_month // 100 if floor_month else "none",
+                        )
                     db.reset_progress(platform, scan_order)
 
             # ── Shared: process browse results into pending queue ──
@@ -787,16 +780,15 @@ def run_acquisition(
                 drained = not fetch_failed and (getattr(mc, "_recent_games_exhausted", None) is True or cutoff_stopped)
                 # An empty cached row is not usable browse data, so test
                 # truthiness rather than presence.
-                cached_exists = (
-                    drained
-                    or bool(mc._cache.get_browse_page(platform, 1, ttl_hours=cfg.cache_hours, year=0))
-                    or bool(
-                        mc._cache.get_browse_page(
-                            platform,
-                            1,
-                            ttl_hours=cfg.cache_hours,
-                            year=datetime.datetime.now(tz=datetime.UTC).year,
-                        )
+                # No mode requests the all-time listing (year 0) any more, so this check
+                # probes the current year's newest page; a mid-sweep year may also hold
+                # cached pages, but only the current year's first page is checked here.
+                cached_exists = drained or bool(
+                    mc._cache.get_browse_page(
+                        platform,
+                        1,
+                        ttl_hours=cfg.cache_hours,
+                        year=datetime.datetime.now(tz=datetime.UTC).year,
                     )
                 )
                 if not cached_exists:
@@ -955,8 +947,8 @@ def run_acquisition(
             expired_count,
         )
 
-        # Log scan progress: latest reports the window it read, date mode reports
-        # the deepest month reached, page mode keeps the page-budget percentage.
+        # Log scan progress: latest reports the window it read, a date sweep the
+        # deepest month reached, a score sweep the year it reached.
         if cfg.enabled and latest_mode:
             logger.info(
                 "Latest scan: {} page(s) read, floor {}, pace {} ({} collected, {} queued)",
@@ -973,16 +965,14 @@ def run_acquisition(
                 year_month_to_date(floor_month)[:7] if floor_month else "none",
                 pages_this_cycle,
             )
-        elif cfg.enabled and max_pages_cfg > 0:
-            total_scanned = db.sum_scanned_pages(platform, cutoff_year, current_year)
-            if total_scanned > 0:
-                pct = min(100, round(total_scanned / max_pages_cfg * 100))
-                logger.info(
-                    "Progress: {} of {} pages scanned ({}%)",
-                    total_scanned,
-                    max_pages_cfg,
-                    pct,
-                )
+        elif cfg.enabled:
+            logger.info(
+                "Backlog sweep ({} order): reached year {}, floor {}, {} page(s) this cycle",
+                scan_order,
+                last_year_scanned or "none",
+                floor_month // 100 if floor_month else "none",
+                pages_this_cycle,
+            )
 
         return matched
 

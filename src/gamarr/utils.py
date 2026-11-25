@@ -207,10 +207,11 @@ browse URL's all-time range (``releaseYearMin``) is a separate site capability
 and has its own literal.
 """
 
-# The repo's own July measurement: roughly 24 PC releases per browse page, and a
-# 500-page budget covers about 21 months (500 / 21 is about 24).  Every
-# page-to-month conversion uses this one measured figure.
-PAGES_PER_MONTH = 24
+# Measured on the live PC index: 50 games per browse page.  Over the 24 complete
+# months Nov 2024 - Oct 2026 the index released 40,043 games, which is 1,668 a month
+# and 33.4 pages per month (rising to ~52 in the last quarter).  The 870-page scan
+# behind those figures reaches back to 2024-10-31.  Supersedes ADR 0007's 24.
+PAGES_PER_MONTH = 33
 
 
 def pages_to_months(pages: int) -> int:

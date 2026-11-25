@@ -227,26 +227,21 @@ class TestYearMonthToDate:
 
 
 class TestPagesToMonths:
-    """One page is about one day of PC releases: 24 pages per month."""
-
-    def test_a_month_of_pages_is_one_month(self) -> None:
-        from gamarr.utils import pages_to_months
-
-        assert pages_to_months(24) == 1
+    """The page count converts to months with the one measured constant (ADR 0009)."""
 
     def test_rounding_is_up_and_never_zero(self) -> None:
         from gamarr.utils import pages_to_months
 
-        assert pages_to_months(1) == 1
-        assert pages_to_months(16) == 1
-        assert pages_to_months(25) == 2
+        assert pages_to_months(1) == 1, "a page count never converts to zero months"
 
-    def test_a_large_budget_matches_the_measured_figure(self) -> None:
-        from gamarr.utils import pages_to_months
-
-        assert pages_to_months(500) == 21
-
-    def test_the_constant_is_named_once(self) -> None:
+    def test_pages_per_month_is_the_measured_figure(self) -> None:
         from gamarr.utils import PAGES_PER_MONTH
 
-        assert PAGES_PER_MONTH == 24
+        assert PAGES_PER_MONTH == 33, "measured: 40,043 games over 24 complete months / 50 per page (ADR 0009)"
+
+    def test_pages_converts_with_the_measured_constant(self) -> None:
+        from gamarr.utils import pages_to_months
+
+        assert pages_to_months(500) == 16
+        assert pages_to_months(33) == 1
+        assert pages_to_months(34) == 2

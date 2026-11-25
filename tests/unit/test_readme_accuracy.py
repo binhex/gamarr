@@ -260,13 +260,13 @@ class TestReadmeDiscoveryRows:
             discovery.backlog.new.months_per_cycle
         )
 
-    def test_backlog_page_depth_default_row(self) -> None:
+    def test_backlog_score_floor_and_pace_default_rows(self) -> None:
         from gamarr.config import DiscoveryConfig
 
         discovery = DiscoveryConfig()
-        assert self._readme_defaults().get("discovery.backlog.score.page_depth") == str(
-            discovery.backlog.score.page_depth
-        )
+        defaults = self._readme_defaults()
+        assert defaults.get("discovery.backlog.score.oldest_month") == str(discovery.backlog.score.oldest_month)
+        assert defaults.get("discovery.backlog.score.pages_per_cycle") == str(discovery.backlog.score.pages_per_cycle)
 
     def test_no_legacy_discovery_rows_remain(self) -> None:
         readme = README_PATH.read_text(encoding="utf-8")

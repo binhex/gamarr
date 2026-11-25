@@ -1,5 +1,8 @@
 # Rename discovery keys to say what they do
 
+> The key list below is the 2026-06 rename. `page_depth` has since been removed from the score block
+> by ADR 0008 (a score sweep reaches back to `oldest_month`); the other names still stand.
+
 `max_date` is a date and `max_pages` is a page count, but both read as "a bound", and the
 `max_cycle_*` pair named pacing quantities without saying so. We renamed them `oldest_month`,
 `months_per_cycle`, `pages_per_cycle` and `page_depth`. The legacy flat shape is migrated on load

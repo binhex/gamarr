@@ -38,7 +38,6 @@ def _discovery(
     sort_order: str = "new",
     oldest_month: int = 0,
     months_per_cycle: int = 0,
-    page_depth: int = 500,
     pages_per_cycle: int = 0,
 ) -> Any:
     """Build the discovery config a converted test passes to run_acquisition.
@@ -60,7 +59,10 @@ def _discovery(
     if sort_order == "new":
         backlog["new"] = {"oldest_month": oldest_month, "months_per_cycle": months_per_cycle}
     else:
-        backlog["score"] = {"page_depth": page_depth, "pages_per_cycle": pages_per_cycle}
+        backlog["score"] = {
+            "oldest_month": oldest_month,
+            "pages_per_cycle": pages_per_cycle,
+        }
     return DiscoveryConfig.model_validate({"mode": "backlog", "backlog": backlog})
 
 
@@ -717,49 +719,6 @@ class TestAcquisitionConfig:
 class TestCycleAllowance:
     """The per-cycle allowance is part of the resolved plan."""
 
-    def test_the_page_depth_and_the_cycle_allowance_are_separate(self) -> None:
-        """A score backlog stores its page depth and its per-cycle allowance independently."""
-        from gamarr.discovery import build_scan_plan
-        from gamarr.pipeline import AcquisitionConfig
-
-        cfg = AcquisitionConfig(
-            min_criticscore=75,
-            min_criticscore_reviews=5,
-            min_user_score=7.5,
-            min_user_reviews=10,
-            plan=build_scan_plan(_discovery(sort_order="criticscore", page_depth=52, pages_per_cycle=100)),
-        )
-        assert cfg.plan.page_depth == 52
-        assert cfg.plan.pages_per_cycle == 100
-
-    def test_a_cycle_allowance_runs_with_the_page_depth(self) -> None:
-        """Acquisition runs without error when pages_per_cycle < page_depth."""
-        from unittest.mock import MagicMock, patch
-
-        from gamarr.pipeline import run_acquisition
-
-        with (
-            patch("gamarr.pipeline.MetacriticClient") as mock_mc_cls,
-            patch("gamarr.pipeline.QBittorrentClient") as mock_qbt_cls,
-            patch("gamarr.pipeline.FitGirlSource") as mock_source_cls,
-        ):
-            mock_mc = MagicMock()
-            mock_mc.scan_recent_games.return_value = []
-            mock_mc_cls.return_value = mock_mc
-            mock_source = MagicMock()
-            mock_source_cls.return_value = mock_source
-            mock_qbt = MagicMock()
-            mock_qbt.is_torrent_present.return_value = False
-            mock_qbt.adopt_present_torrent.return_value = None
-            mock_qbt.is_connected.return_value = True
-            mock_qbt_cls.return_value = mock_qbt
-
-            results = run_acquisition(
-                db_path=":memory:",
-                discovery=_discovery(sort_order="criticscore", page_depth=52, pages_per_cycle=100),
-            )
-            assert isinstance(results, list)
-
     def test_the_month_pace_limits_scan_recent_games(self) -> None:
         """When months_per_cycle is set, scan_recent_games receives it as max_month_span."""
         from unittest.mock import MagicMock, patch
@@ -1036,7 +995,6 @@ class TestRunAcquisition:
         mock_db = mocker.patch("gamarr.pipeline.Database")
         mock_db_instance = mock_db.return_value
         mock_db_instance.has_verified_pending.return_value = True
-        mock_db_instance.sum_scanned_pages.return_value = 0
         mock_db_instance.get_last_scanned_page.return_value = 0
         mock_db_instance.get_pending.return_value = []
 
@@ -6372,15 +6330,18 @@ class TestScanWindowAdvancing:
         assert min(years) == 2024, f"a resumed sweep must keep its floor, got {years}"
 
     def test_the_plan_sort_order_reaches_the_client(self, tmp_path: Path) -> None:
-        """A score backlog browses in its configured order and has no year dimension."""
+        """A score backlog browses in its configured order, year by year."""
+        import datetime
+
+        current_year = datetime.datetime.now(tz=datetime.UTC).year
         calls, mc = self._run(
             tmp_path,
-            discovery=_discovery(sort_order="criticscore", page_depth=40),
+            discovery=_discovery(sort_order="criticscore", oldest_month=current_year * 100 + 1),
             db_path=":memory:",
         )
         assert mc.sort_order == "criticscore"
         assert calls
-        assert calls[0]["year"] is None
+        assert calls[0]["year"] == current_year
 
 
 class TestBacklogAdvancing:
@@ -6791,23 +6752,344 @@ class TestYearDrainOrder:
         db.close()
 
 
+class TestScoreSweepYearScope:
+    """A score sweep descends release years and stops at its floor year."""
+
+    def test_a_score_sweep_passes_the_year_to_the_client(self, mocker: Any, tmp_path: Path) -> None:
+        """A score sort reads year-scoped listings, newest year first (ADR 0008)."""
+        import datetime
+
+        from gamarr.pipeline import run_acquisition
+
+        mock_db = mocker.patch("gamarr.pipeline.Database")
+        mock_db_instance = mock_db.return_value
+        mock_db_instance.has_verified_pending.return_value = False
+        mock_db_instance.get_pending.return_value = []
+        mock_db_instance.get_last_scanned_page.return_value = 0
+
+        mock_qbt = mocker.patch("gamarr.pipeline.QBittorrentClient")
+        mock_qbt.return_value.is_connected.return_value = True
+
+        mock_mc = mocker.patch("gamarr.pipeline.MetacriticClient")
+        mock_mc_instance = mock_mc.return_value
+
+        def _mock_scan(*args: Any, **kwargs: Any) -> list:
+            # Every year is already drained: an empty page was parsed.
+            mock_mc_instance._recent_games_last_page = kwargs["start_page"] - 1
+            mock_mc_instance._recent_games_exhausted = True
+            return []
+
+        mock_mc_instance.scan_recent_games = MagicMock(side_effect=_mock_scan)
+
+        run_acquisition(
+            platform="pc",
+            db_path=str(tmp_path / "test.db"),
+            enabled=True,
+            discovery=_discovery(sort_order="criticscore", oldest_month=202401, pages_per_cycle=20),
+        )
+
+        years = [c.kwargs["year"] for c in mock_mc_instance.scan_recent_games.call_args_list]
+        assert years[:1] == [datetime.datetime.now(tz=datetime.UTC).year]
+        assert min(years) == 2024, "the sweep stops at the floor year"
+        assert None not in years, "the all-time listing is never requested"
+
+    def test_the_progress_line_names_the_year_actually_read(self, mocker: Any, tmp_path: Path) -> None:
+        """A pace spent at a year boundary must not report the year it never fetched."""
+        import datetime
+        import io
+
+        from loguru import logger
+
+        from gamarr.pipeline import run_acquisition
+
+        mock_db = mocker.patch("gamarr.pipeline.Database")
+        mock_db_instance = mock_db.return_value
+        mock_db_instance.has_verified_pending.return_value = False
+        mock_db_instance.get_pending.return_value = []
+        mock_db_instance.get_last_scanned_page.return_value = 0
+
+        mock_qbt = mocker.patch("gamarr.pipeline.QBittorrentClient")
+        mock_qbt.return_value.is_connected.return_value = True
+
+        mock_mc = mocker.patch("gamarr.pipeline.MetacriticClient")
+        mock_mc_instance = mock_mc.return_value
+
+        def _mock_scan(*args: Any, **kwargs: Any) -> list:
+            # Four pages read, so a four-page allowance is spent inside this year.
+            mock_mc_instance._recent_games_last_page = kwargs["start_page"] + 3
+            mock_mc_instance._recent_games_exhausted = False
+            return []
+
+        mock_mc_instance.scan_recent_games = MagicMock(side_effect=_mock_scan)
+        anchor = datetime.datetime.now(tz=datetime.UTC).year
+
+        buf = io.StringIO()
+        logger_id = logger.add(buf, format="{message}", colorize=False)
+        try:
+            run_acquisition(
+                platform="pc",
+                db_path=str(tmp_path / "test.db"),
+                enabled=True,
+                discovery=_discovery(sort_order="criticscore", oldest_month=202001, pages_per_cycle=4),
+            )
+        finally:
+            logger.remove(logger_id)
+
+        output = buf.getvalue()
+        assert f"reached year {anchor}, floor 2020" in output, output
+        assert f"reached year {anchor - 1}" not in output, "the next year was never requested"
+
+    def test_a_score_sweep_resumes_a_year_from_its_cursor(self, mocker: Any, tmp_path: Path) -> None:
+        """A pace spent mid-year must resume at the next page, not page 1 (review focus 3)."""
+        import datetime
+
+        from gamarr.pipeline import run_acquisition
+
+        anchor = datetime.datetime.now(tz=datetime.UTC).year
+
+        mock_db = mocker.patch("gamarr.pipeline.Database")
+        mock_db_instance = mock_db.return_value
+        mock_db_instance.has_verified_pending.return_value = False
+        mock_db_instance.get_pending.return_value = []
+        mock_db_instance.get_last_scanned_page.return_value = 4
+
+        mock_qbt = mocker.patch("gamarr.pipeline.QBittorrentClient")
+        mock_qbt.return_value.is_connected.return_value = True
+
+        mock_mc = mocker.patch("gamarr.pipeline.MetacriticClient")
+        mock_mc_instance = mock_mc.return_value
+        mock_mc_instance.scan_recent_games.return_value = []
+
+        run_acquisition(
+            platform="pc",
+            db_path=str(tmp_path / "test.db"),
+            enabled=True,
+            discovery=_discovery(sort_order="criticscore", oldest_month=202001, pages_per_cycle=4),
+        )
+
+        mock_db_instance.get_last_scanned_page.assert_any_call("pc", anchor)
+        assert mock_mc_instance.scan_recent_games.call_args.kwargs["start_page"] == 5, (
+            "a score-sorted year must resume at cursor + 1"
+        )
+
+    def test_a_score_sweep_stops_after_two_failed_years(self, mocker: Any, tmp_path: Path) -> None:
+        """A stalled site must not cost one doomed request per year down to the floor."""
+        import io
+
+        from loguru import logger
+
+        from gamarr.pipeline import run_acquisition
+
+        mock_db = mocker.patch("gamarr.pipeline.Database")
+        mock_db_instance = mock_db.return_value
+        mock_db_instance.has_verified_pending.return_value = False
+        mock_db_instance.get_pending.return_value = []
+        mock_db_instance.get_last_scanned_page.return_value = 0
+
+        mock_qbt = mocker.patch("gamarr.pipeline.QBittorrentClient")
+        mock_qbt.return_value.is_connected.return_value = True
+
+        mock_mc = mocker.patch("gamarr.pipeline.MetacriticClient")
+        mock_mc_instance = mock_mc.return_value
+
+        def _mock_scan(*args: Any, **kwargs: Any) -> list:
+            # Every year fails, so no page is ever collected and the allowance never trips.
+            mock_mc_instance._recent_games_last_page = kwargs["start_page"] - 1
+            mock_mc_instance._recent_games_failed = True
+            return []
+
+        mock_mc_instance.scan_recent_games = MagicMock(side_effect=_mock_scan)
+
+        buf = io.StringIO()
+        logger_id = logger.add(buf, format="{message}", colorize=False)
+        try:
+            run_acquisition(
+                platform="pc",
+                db_path=str(tmp_path / "test.db"),
+                enabled=True,
+                discovery=_discovery(sort_order="criticscore", oldest_month=0, pages_per_cycle=20),
+            )
+        finally:
+            logger.remove(logger_id)
+
+        assert mock_mc_instance.scan_recent_games.call_count == 2, (
+            "the descent must stop after two consecutive failures, not probe every year to 1958"
+        )
+        assert any("consecutive years failed to browse" in line for line in buf.getvalue().splitlines()), (
+            "the operator's only signal that the sweep stopped early must be logged"
+        )
+
+    def test_a_score_sweep_keeps_the_whole_floor_year(self, mocker: Any, tmp_path: Path) -> None:
+        """Year grain: no per-game floor filter is applied to a score sort."""
+        from gamarr.pipeline import run_acquisition
+
+        mock_db = mocker.patch("gamarr.pipeline.Database")
+        mock_db_instance = mock_db.return_value
+        mock_db_instance.has_verified_pending.return_value = False
+        mock_db_instance.get_pending.return_value = []
+        mock_db_instance.get_last_scanned_page.return_value = 0
+
+        mock_qbt = mocker.patch("gamarr.pipeline.QBittorrentClient")
+        mock_qbt.return_value.is_connected.return_value = True
+
+        mock_mc = mocker.patch("gamarr.pipeline.MetacriticClient")
+        mock_mc_instance = mock_mc.return_value
+        mock_floor_filter = mocker.patch("gamarr.pipeline._games_at_or_after_floor")
+
+        def _mock_scan(*args: Any, **kwargs: Any) -> list:
+            mock_mc_instance._recent_games_last_page = kwargs["start_page"] - 1
+            mock_mc_instance._recent_games_exhausted = True
+            return []
+
+        mock_mc_instance.scan_recent_games = MagicMock(side_effect=_mock_scan)
+
+        run_acquisition(
+            platform="pc",
+            db_path=str(tmp_path / "test.db"),
+            enabled=True,
+            discovery=_discovery(sort_order="userscore", oldest_month=201601, pages_per_cycle=20),
+        )
+
+        mock_floor_filter.assert_not_called()
+
+    def test_a_score_sweep_writes_a_cursor_per_year(self, mocker: Any, tmp_path: Path) -> None:
+        """A pace spent mid-year resumes at the next page, not page 1."""
+        import datetime
+
+        from gamarr.pipeline import run_acquisition
+
+        mock_db = mocker.patch("gamarr.pipeline.Database")
+        mock_db_instance = mock_db.return_value
+        mock_db_instance.has_verified_pending.return_value = False
+        mock_db_instance.get_pending.return_value = []
+        mock_db_instance.get_last_scanned_page.return_value = 0
+
+        mock_qbt = mocker.patch("gamarr.pipeline.QBittorrentClient")
+        mock_qbt.return_value.is_connected.return_value = True
+
+        mock_mc = mocker.patch("gamarr.pipeline.MetacriticClient")
+        mock_mc_instance = mock_mc.return_value
+
+        def _mock_scan(*args: Any, **kwargs: Any) -> list:
+            mock_mc_instance._recent_games_last_page = kwargs["start_page"] + 3
+            mock_mc_instance._recent_games_exhausted = False
+            return []
+
+        mock_mc_instance.scan_recent_games = MagicMock(side_effect=_mock_scan)
+
+        year = datetime.datetime.now(tz=datetime.UTC).year
+        run_acquisition(
+            platform="pc",
+            db_path=str(tmp_path / "test.db"),
+            enabled=True,
+            discovery=_discovery(sort_order="criticscore", oldest_month=year * 100 + 1, pages_per_cycle=4),
+        )
+
+        mock_db_instance.set_last_scanned_page.assert_any_call("pc", year, 4)
+
+    def test_a_failure_in_the_floor_year_does_not_complete_the_sweep(self, mocker: Any, tmp_path: Path) -> None:
+        """A fetch failure must never be read as 'floor reached' (it would reset every cursor)."""
+        import datetime
+
+        from gamarr.pipeline import run_acquisition
+
+        mock_db = mocker.patch("gamarr.pipeline.Database")
+        mock_db_instance = mock_db.return_value
+        mock_db_instance.has_verified_pending.return_value = False
+        mock_db_instance.get_pending.return_value = []
+        mock_db_instance.get_last_scanned_page.return_value = 0
+        mock_db_instance.get_last_sort_order.return_value = "criticscore"
+        mock_db_instance.get_cursor_sort_order.return_value = "criticscore"
+
+        mock_qbt = mocker.patch("gamarr.pipeline.QBittorrentClient")
+        mock_qbt.return_value.is_connected.return_value = True
+
+        mock_mc = mocker.patch("gamarr.pipeline.MetacriticClient")
+        mock_mc_instance = mock_mc.return_value
+
+        def _mock_scan(*args: Any, **kwargs: Any) -> list:
+            mock_mc_instance._recent_games_last_page = 0
+            mock_mc_instance._recent_games_exhausted = False
+            mock_mc_instance._recent_games_failed = True
+            return []
+
+        mock_mc_instance.scan_recent_games = MagicMock(side_effect=_mock_scan)
+
+        year = datetime.datetime.now(tz=datetime.UTC).year
+        run_acquisition(
+            platform="pc",
+            db_path=str(tmp_path / "test.db"),
+            enabled=True,
+            discovery=_discovery(sort_order="criticscore", oldest_month=year * 100 + 1, pages_per_cycle=20),
+        )
+
+        mock_db_instance.reset_progress.assert_not_called()
+
+    def test_reaching_the_floor_year_restarts_from_the_newest_year(self, mocker: Any, tmp_path: Path) -> None:
+        """Completion resets the per-year cursors so the next pass starts over (ADR 0008)."""
+        import datetime
+        import io
+
+        from loguru import logger
+
+        from gamarr.pipeline import run_acquisition
+
+        mock_db = mocker.patch("gamarr.pipeline.Database")
+        mock_db_instance = mock_db.return_value
+        mock_db_instance.has_verified_pending.return_value = False
+        mock_db_instance.get_pending.return_value = []
+        mock_db_instance.get_last_scanned_page.return_value = 0
+        mock_db_instance.get_last_sort_order.return_value = "criticscore"
+        mock_db_instance.get_cursor_sort_order.return_value = "criticscore"
+
+        mock_qbt = mocker.patch("gamarr.pipeline.QBittorrentClient")
+        mock_qbt.return_value.is_connected.return_value = True
+
+        mock_mc = mocker.patch("gamarr.pipeline.MetacriticClient")
+        mock_mc_instance = mock_mc.return_value
+
+        def _mock_scan(*args: Any, **kwargs: Any) -> list:
+            mock_mc_instance._recent_games_last_page = kwargs["start_page"] - 1
+            mock_mc_instance._recent_games_exhausted = True
+            mock_mc_instance._recent_games_failed = False
+            return []
+
+        mock_mc_instance.scan_recent_games = MagicMock(side_effect=_mock_scan)
+
+        year = datetime.datetime.now(tz=datetime.UTC).year
+        buf = io.StringIO()
+        logger_id = logger.add(buf, format="{message}", colorize=False)
+        try:
+            run_acquisition(
+                platform="pc",
+                db_path=str(tmp_path / "test.db"),
+                enabled=True,
+                discovery=_discovery(sort_order="criticscore", oldest_month=year * 100 + 1, pages_per_cycle=20),
+            )
+        finally:
+            logger.remove(logger_id)
+
+        mock_db_instance.reset_progress.assert_called_once_with("pc", "criticscore")
+        assert f"Backlog complete — reached year {year} (floor year {year})" in buf.getvalue(), (
+            "the only operator-facing completion line must state the floor year it reached"
+        )
+
+
 class TestBacklogLatestMode:
-    """A score backlog keeps its page budget, its resets and its browse order."""
+    """A score backlog keeps its per-year cursors and its browse order."""
 
-    def test_budget_exhausted_resets_and_continues(self, mocker: Any, tmp_path: Path) -> None:
-        """When budget is exhausted, progress resets to page 1 and scanning continues."""
+    def test_a_page_budget_no_longer_caps_a_score_sweep(self, mocker: Any, tmp_path: Path) -> None:
+        """Pages only pace a cycle: the client's cap is the per-cycle pace, never a total."""
         from gamarr.pipeline import run_acquisition
 
         mock_db = mocker.patch("gamarr.pipeline.Database")
         mock_db_instance = mock_db.return_value
-        mock_db_instance.sum_scanned_pages.return_value = 20
         mock_db_instance.has_verified_pending.return_value = False
         mock_db_instance.get_pending.return_value = []
         mock_db_instance.get_last_scanned_page.return_value = 0
 
         mock_qbt = mocker.patch("gamarr.pipeline.QBittorrentClient")
-        mock_qbt_instance = mock_qbt.return_value
-        mock_qbt_instance.is_connected.return_value = True
+        mock_qbt.return_value.is_connected.return_value = True
 
         mock_mc = mocker.patch("gamarr.pipeline.MetacriticClient")
         mock_mc_instance = mock_mc.return_value
@@ -6816,49 +7098,13 @@ class TestBacklogLatestMode:
         run_acquisition(
             platform="pc",
             db_path=str(tmp_path / "test.db"),
-            min_criticscore=75,
-            min_criticscore_reviews=10,
-            min_user_score=7.5,
-            min_user_reviews=10,
             enabled=True,
-            discovery=_discovery(sort_order="criticscore", page_depth=20, pages_per_cycle=4),
+            discovery=_discovery(sort_order="criticscore", oldest_month=202601, pages_per_cycle=4),
         )
-        # Budget exhausted -> reset_progress called, then scanning continues
-        mock_db_instance.reset_progress.assert_called()
-        mock_mc_instance.scan_recent_games.assert_called()
-
-    def test_budget_exhausted_when_total_exceeds_max(self, mocker: Any, tmp_path: Path) -> None:
-        """When total_scanned > max_pages, budget resets and scanning continues."""
-        from gamarr.pipeline import run_acquisition
-
-        mock_db = mocker.patch("gamarr.pipeline.Database")
-        mock_db_instance = mock_db.return_value
-        mock_db_instance.sum_scanned_pages.return_value = 24
-        mock_db_instance.has_verified_pending.return_value = False
-        mock_db_instance.get_pending.return_value = []
-        mock_db_instance.get_last_scanned_page.return_value = 0
-
-        mock_qbt = mocker.patch("gamarr.pipeline.QBittorrentClient")
-        mock_qbt_instance = mock_qbt.return_value
-        mock_qbt_instance.is_connected.return_value = True
-
-        mock_mc = mocker.patch("gamarr.pipeline.MetacriticClient")
-        mock_mc_instance = mock_mc.return_value
-        mock_mc_instance.scan_recent_games.return_value = []
-
-        run_acquisition(
-            platform="pc",
-            db_path=str(tmp_path / "test.db"),
-            min_criticscore=75,
-            min_criticscore_reviews=10,
-            min_user_score=7.5,
-            min_user_reviews=10,
-            enabled=True,
-            discovery=_discovery(sort_order="criticscore", page_depth=20, pages_per_cycle=4),
+        assert mock_mc_instance.scan_recent_games.call_count > 0, "the sweep must browse"
+        assert mock_mc_instance.scan_recent_games.call_args.kwargs["max_pages"] <= 4, (
+            "the per-call cap is the cycle pace, not an accumulating budget"
         )
-        # Budget exceeded -> reset_progress called, then scanning continues
-        mock_db_instance.reset_progress.assert_called()
-        mock_mc_instance.scan_recent_games.assert_called()
 
     def test_metascore_to_criticscore_rename_triggers_progress_reset(self, mocker: Any, tmp_path: Path) -> None:
         """A legacy 'metascore' progress state must reset when config now says criticscore."""
@@ -6866,7 +7112,6 @@ class TestBacklogLatestMode:
 
         mock_db = mocker.patch("gamarr.pipeline.Database")
         mock_db_instance = mock_db.return_value
-        mock_db_instance.sum_scanned_pages.return_value = 0
         mock_db_instance.has_verified_pending.return_value = False
         mock_db_instance.get_pending.return_value = []
         mock_db_instance.get_last_scanned_page.return_value = 0
@@ -6879,12 +7124,14 @@ class TestBacklogLatestMode:
         mock_mc = mocker.patch("gamarr.pipeline.MetacriticClient")
         mock_mc_instance = mock_mc.return_value
         mock_mc_instance.scan_recent_games.return_value = []
+        mock_mc_instance._recent_games_last_page = 1
+        mock_mc_instance._recent_games_exhausted = False
 
         run_acquisition(
             platform="pc",
             db_path=str(tmp_path / "test.db"),
             enabled=True,
-            discovery=_discovery(sort_order="criticscore", page_depth=20, pages_per_cycle=4),
+            discovery=_discovery(sort_order="criticscore", oldest_month=202601, pages_per_cycle=4),
         )
 
         mock_db_instance.clear_browse_cache.assert_called_once()
@@ -6899,7 +7146,6 @@ class TestBacklogLatestMode:
         mock_db_instance.get_pending.return_value = []
         mock_db_instance.has_verified_pending.return_value = False
         mock_db_instance.get_last_scanned_page.return_value = 0
-        mock_db_instance.sum_scanned_pages.return_value = 0
 
         mock_qbt = mocker.patch("gamarr.pipeline.QBittorrentClient")
         mock_qbt_instance = mock_qbt.return_value
@@ -6917,7 +7163,7 @@ class TestBacklogLatestMode:
             min_user_score=7.5,
             min_user_reviews=10,
             enabled=True,
-            discovery=_discovery(sort_order="criticscore", page_depth=500, pages_per_cycle=4),
+            discovery=_discovery(sort_order="criticscore", oldest_month=202601, pages_per_cycle=4),
         )
         kwargs = mock_mc_instance.scan_recent_games.call_args[1]
         assert kwargs["start_page"] == 1
@@ -6933,7 +7179,6 @@ class TestBacklogLatestMode:
         mock_db_instance.get_pending.return_value = []
         mock_db_instance.has_verified_pending.return_value = False
         mock_db_instance.get_last_scanned_page.return_value = 0
-        mock_db_instance.sum_scanned_pages.return_value = 0
 
         mock_qbt = mocker.patch("gamarr.pipeline.QBittorrentClient")
         mock_qbt_instance = mock_qbt.return_value
@@ -6951,7 +7196,7 @@ class TestBacklogLatestMode:
             min_user_score=7.5,
             min_user_reviews=10,
             enabled=True,
-            discovery=_discovery(sort_order="criticscore", page_depth=500, pages_per_cycle=4),
+            discovery=_discovery(sort_order="criticscore", oldest_month=202601, pages_per_cycle=4),
         )
 
         # The unified loop respects the configured sort_order — no override
@@ -6959,9 +7204,8 @@ class TestBacklogLatestMode:
         assert mock_mc_instance.sort_order == "criticscore", (
             f"Unified loop must set sort_order from config. Got sort_order={mock_mc_instance.sort_order}."
         )
-        # sort_order="criticscore" means no year dimension — year=None
-        assert kwargs.get("year") is None, (
-            f"Critic sort should pass year=None (no year filter). Got year={kwargs.get('year')}."
+        assert isinstance(kwargs.get("year"), int), (
+            f"Critic sort should pass a release year. Got year={kwargs.get('year')}."
         )
 
     def test_sort_order_userscore_not_overridden(self, mocker: Any) -> None:
@@ -6974,7 +7218,6 @@ class TestBacklogLatestMode:
         mock_db_instance.get_pending.return_value = []
         mock_db_instance.has_verified_pending.return_value = False
         mock_db_instance.get_last_scanned_page.return_value = 0
-        mock_db_instance.sum_scanned_pages.return_value = 0
         mock_db_instance.get_last_sort_order.return_value = "userscore"
 
         mock_qbt = mocker.patch("gamarr.pipeline.QBittorrentClient")
@@ -6993,15 +7236,15 @@ class TestBacklogLatestMode:
             min_user_score=7.5,
             min_user_reviews=10,
             enabled=True,
-            discovery=_discovery(sort_order="userscore", page_depth=500, pages_per_cycle=4),
+            discovery=_discovery(sort_order="userscore", oldest_month=202601, pages_per_cycle=4),
         )
 
         assert mock_mc_instance.sort_order == "userscore", (
             f"Unified loop must set sort_order from config. Got sort_order={mock_mc_instance.sort_order}."
         )
         kwargs = mock_mc_instance.scan_recent_games.call_args[1]
-        assert kwargs.get("year") is None, (
-            f"Userscore sort should pass year=None (no year filter). Got year={kwargs.get('year')}."
+        assert isinstance(kwargs.get("year"), int), (
+            f"Userscore sort should pass a release year. Got year={kwargs.get('year')}."
         )
 
 
@@ -7919,7 +8162,6 @@ class TestPendingProcessingOrder:
         db = mock_db.return_value
         db.get_last_sort_order.return_value = "userscore"
         db.get_last_scanned_page.return_value = 0
-        db.sum_scanned_pages.return_value = 0
         db.get_pending.return_value = [MagicMock()]
         db.has_verified_pending.return_value = True
 
@@ -7950,7 +8192,6 @@ class TestPendingProcessingOrder:
 
         mock_db = mocker.patch("gamarr.pipeline.Database")
         mock_db_instance = mock_db.return_value
-        mock_db_instance.sum_scanned_pages.return_value = 0
         mock_db_instance.has_verified_pending.return_value = False
         mock_db_instance.get_pending.return_value = []
         mock_db_instance.get_last_scanned_page.return_value = 0
@@ -7990,7 +8231,6 @@ class TestPendingProcessingOrder:
 
         mock_db = mocker.patch("gamarr.pipeline.Database")
         mock_db_instance = mock_db.return_value
-        mock_db_instance.sum_scanned_pages.return_value = 0
         mock_db_instance.has_verified_pending.return_value = False
         mock_db_instance.get_pending.return_value = []
         mock_db_instance.get_last_scanned_page.return_value = 0
@@ -8034,7 +8274,6 @@ class TestDateModeResolution:
         oldest_month: int = 0,
         months_per_cycle: int = 0,
         sort_order: Literal["new", "criticscore", "userscore"] = "new",
-        page_depth: int = 500,
         pages_per_cycle: int = 0,
         scan_games: list[dict[str, Any]] | None = None,
         cutoff_reached: bool = False,
@@ -8079,7 +8318,11 @@ class TestDateModeResolution:
                 discovery = (
                     _discovery(oldest_month=oldest_month, months_per_cycle=months_per_cycle)
                     if sort_order == "new"
-                    else _discovery(sort_order=sort_order, page_depth=page_depth, pages_per_cycle=pages_per_cycle)
+                    else _discovery(
+                        sort_order=sort_order,
+                        oldest_month=oldest_month,
+                        pages_per_cycle=pages_per_cycle,
+                    )
                 )
                 run_acquisition(
                     platform="pc",
@@ -8109,12 +8352,20 @@ class TestDateModeResolution:
         assert min(years) == 2024
 
     def test_score_mode_has_no_date_dimension(self, tmp_path: Path) -> None:
-        """A score backlog reads one page dimension: no year, no cutoff, the page depth."""
-        calls, _logs = self._run(tmp_path=tmp_path, sort_order="criticscore", page_depth=40)
+        """A score backlog reads year-scoped pages: no date cutoff, only its page pace."""
+        import datetime
+
+        current_year = datetime.datetime.now(tz=datetime.UTC).year
+        calls, _logs = self._run(
+            tmp_path=tmp_path,
+            sort_order="criticscore",
+            oldest_month=current_year * 100 + 1,
+            pages_per_cycle=40,
+        )
         assert calls
         for call in calls:
             assert call["cutoff_date"] is None
-            assert call["year"] is None
+            assert call["year"] == current_year
             assert call["max_pages"] == 40
 
     def test_date_mode_passes_month_span(self, tmp_path: Path) -> None:
@@ -8520,10 +8771,13 @@ class TestDateModeRegressions:
 
     def test_score_mode_call_shape_has_no_date_arguments(self, tmp_path: Path) -> None:
         """A score backlog sends no date arguments, only the page allowance."""
+        import datetime
+
+        current_year = datetime.datetime.now(tz=datetime.UTC).year
         calls, _logs = TestDateModeResolution._run(
             tmp_path=tmp_path,
             sort_order="criticscore",
-            page_depth=104,
+            oldest_month=current_year * 100 + 1,
             pages_per_cycle=4,
         )
         assert calls, "Expected at least one browse call"
@@ -8873,6 +9127,12 @@ class TestDateModeRegressions:
                 discovery=_discovery(oldest_month=current_year * 100 + 1),
             )
         mock_notify.assert_called_once()
+        # The health check probes only the current year's first page: the all-time
+        # listing (year 0) is never requested, so a stale year-0 row cannot suppress
+        # a due notification.
+        probed_years = [call.kwargs.get("year") for call in mock_mc._cache.get_browse_page.call_args_list]
+        assert current_year in probed_years, probed_years
+        assert 0 not in probed_years, f"the all-time listing is never requested: {probed_years}"
 
     def test_cache_hours_is_forwarded_to_the_client(self, tmp_path: Path) -> None:
         """A non-default cache TTL must reach the client, not be hard-coded."""
@@ -9378,6 +9638,21 @@ class TestLatestMode:
         )
         assert len(calls) == 2, f"two raising years must stop the descent: {[c['year'] for c in calls]}"
         assert any("consecutive years failed to browse" in line for line in logs), logs
+
+    def test_a_backlog_outage_stops_the_descent_too(self, tmp_path: Path) -> None:
+        """The shared streak stop must fire for a date-sorted backlog, not only for latest."""
+        import datetime
+
+        current_year = datetime.datetime.now(tz=datetime.UTC).year
+        calls, logs = self._run(
+            tmp_path=tmp_path,
+            mode="backlog",
+            oldest_month=201501,
+            months_per_cycle=6,
+            raise_years={current_year, current_year - 1, current_year - 2},
+        )
+        assert len(calls) == 2, f"two raising years must stop a backlog descent: {[c['year'] for c in calls]}"
+        assert any("Backlog scan: 2 consecutive years failed to browse" in line for line in logs), logs
 
     def test_the_month_pace_wires_the_client_span(self, tmp_path: Path) -> None:
         """months_per_cycle reaches the client as max_month_span, with no page cap."""
@@ -10604,14 +10879,18 @@ class TestPlanDrivenScan:
         assert plan.date_mode is True
 
 
-class TestScoreSweepBudget:
-    """A score-sorted sweep with page_depth 0 asks the client for no page cap."""
+class TestFloorlessScoreSweep:
+    """A score-sorted sweep with no floor has no page budget, only its cycle pace."""
 
-    def test_a_zero_page_depth_reaches_the_client_as_no_cap(self, tmp_path: Path) -> None:
+    def test_a_floorless_score_sweep_caps_each_call_at_the_cycle_pace(self, tmp_path: Path) -> None:
+        """No floor means no total page budget: the cycle pace is the only cap on a call."""
+        import datetime
         from unittest.mock import MagicMock, patch
 
         from gamarr.config import DiscoveryConfig
         from gamarr.pipeline import run_acquisition
+
+        current_year = datetime.datetime.now(tz=datetime.UTC).year
 
         calls: list[dict[str, Any]] = []
         mock_mc = MagicMock()
@@ -10650,13 +10929,21 @@ class TestScoreSweepBudget:
             run_acquisition(
                 db_path=str(tmp_path / "t.db"),
                 discovery=DiscoveryConfig.model_validate(
-                    {"mode": "backlog", "backlog": {"sort_order": "criticscore", "score": {"page_depth": 0}}}
+                    {
+                        "mode": "backlog",
+                        "backlog": {
+                            "sort_order": "criticscore",
+                            "score": {"oldest_month": 0, "pages_per_cycle": 20},
+                        },
+                    }
                 ),
             )
 
-        assert calls, "the score sweep must reach the client"
-        assert all(call["max_pages"] == 0 for call in calls), calls
-        assert all(call["year"] is None for call in calls), "a score sweep has no year dimension"
+        assert calls, "the floorless score sweep must reach the client"
+        assert calls[0]["max_pages"] == 20, "the cycle pace is the only page cap"
+        assert all(0 < call["max_pages"] <= 20 for call in calls), calls
+        assert all(call["year"] <= current_year for call in calls), "a score sweep reads release years"
+        assert calls[-1]["year"] < calls[0]["year"], "with no floor the sweep keeps descending"
 
 
 class TestPendingOrderIsIndependent:

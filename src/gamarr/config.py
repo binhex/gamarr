@@ -36,6 +36,10 @@ _CONFIG_FILENAME = "gamarr.yml"
 _MAX_MONTHS_PER_CYCLE = 1200
 # The documented page budget a legacy key falls back to when its value is unusable.
 _DEFAULT_PAGE_BUDGET = 500
+# The per-cycle page pace a score sweep falls back to when the config says 0: one
+# cycle must never crawl the catalogue.  The model default, the plan and the README
+# all read this one value.
+DEFAULT_SCORE_PAGES_PER_CYCLE = 20
 _EARLIEST_MONTH = EARLIEST_BROWSE_YEAR * 100 + 1
 # New-style keys an operator can plausibly write one level too high.
 _STRAY_DISCOVERY_KEYS = ("latest", "backlog", "oldest_month", "months_per_cycle", "pages_per_cycle", "page_depth")
@@ -187,12 +191,21 @@ class BacklogNewConfig(BaseModel):
 
 
 class BacklogScoreConfig(BaseModel):
-    """Page-paced settings for ``backlog`` with a score sort (ADR 0005)."""
+    """Floor- and page-paced settings for ``backlog`` with a score sort (ADR 0005, 0008).
+
+    ``oldest_month`` is the reach of the sweep, read at year grain; ``pages_per_cycle``
+    is a workload pace, not a reach.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    page_depth: int = Field(default=500, ge=0)
-    pages_per_cycle: int = Field(default=0, ge=0)
+    oldest_month: int = 0
+    pages_per_cycle: int = Field(default=DEFAULT_SCORE_PAGES_PER_CYCLE, ge=0)
+
+    @field_validator("oldest_month")
+    @classmethod
+    def _check_oldest_month(cls, value: int) -> int:
+        return validate_oldest_month(value)
 
 
 class BacklogDiscoveryConfig(BaseModel):
@@ -440,7 +453,8 @@ def _drop_migrated_deprecated_keys(mc_pc: dict[str, Any], platform_key: str) -> 
         if old_key in mc_pc:
             logger.warning(
                 "Config: '{}' is deprecated for platform '{}'; "
-                "set 'discovery.backlog.new.oldest_month' or 'discovery.backlog.score.page_depth' instead. Ignoring value.",
+                "set 'discovery.backlog.new.oldest_month' or "
+                "'discovery.backlog.score.oldest_month' instead. Ignoring value.",
                 old_key,
                 platform_key,
             )
@@ -1399,15 +1413,53 @@ def _migrate_backlog_new_pages(
             )
 
 
+def _land_score_floor(
+    score: dict[str, Any],
+    pages: int,
+    platform_key: str,
+    *,
+    legacy: str = "page_depth",
+) -> bool:
+    """Convert a legacy page budget into the score block's floor month.
+
+    A score sweep states its reach as a month floor, so a page budget becomes the
+    month that many pages reach back to.  ``0`` means "no budget", not "a floor of
+    now", so it writes nothing.
+
+    Args:
+        score: The ``discovery.backlog.score`` block, mutated in place.
+        pages: The legacy total page budget.
+        platform_key: The platform name, for log lines.
+        legacy: The key the budget came from, for the refusal report.
+
+    Returns:
+        True when the floor was written.
+    """
+    if pages <= 0:
+        return False
+    floor = _clamp_floor(subtract_months(current_year_month(), pages_to_months(pages)), platform_key)
+    if not _place(score, "oldest_month", floor, legacy, platform_key):
+        return False
+    logger.info(
+        "Config: converted page budget {} to oldest_month {} for platform '{}' (approximate)",
+        pages,
+        floor,
+        platform_key,
+    )
+    return True
+
+
 def _migrate_backlog_score_block(
     score: dict[str, Any],
     pages: int | None,
     cycle_pages: int | None,
     platform_key: str,
 ) -> None:
-    """Copy the legacy page keys into the score block unchanged (ADR 0005).
+    """Convert the legacy page keys into the score block's floor and pace (ADR 0005).
 
-    ``0`` is a real value here ("no budget"), so it crosses unchanged.
+    The total page budget becomes the sweep's floor month; ``0`` is a real value
+    here ("no budget"), so it writes no floor.  The per-cycle page pace crosses
+    unchanged, because it stays a workload budget.
 
     Args:
         score: The ``discovery.backlog.score`` block, mutated in place.
@@ -1416,7 +1468,7 @@ def _migrate_backlog_score_block(
         platform_key: The platform name, for log lines.
     """
     if pages is not None:
-        _place(score, "page_depth", pages, "max_pages", platform_key)
+        _land_score_floor(score, pages, platform_key, legacy="max_pages")
     if cycle_pages is not None:
         _place(score, "pages_per_cycle", cycle_pages, "max_cycle_pages", platform_key)
 
@@ -1531,6 +1583,17 @@ def _migrate_backlog_target(discovery: dict[str, Any], values: dict[str, Any], p
         _keep_migrated_floor_unpaced(new_block, platform_key, floor_present)
         score = _ensure_block(backlog, "score")
         _migrate_backlog_score_block(score, values["pages"], values["cycle_pages"], platform_key)
+        if values["pages"] is None and "oldest_month" not in score:
+            # No bound was expressed, so the old runtime ran on the model's default page
+            # budget.  Keep that reach instead of leaving the sweep floorless, exactly as
+            # the `new` target below does (ADR 0007: an upgrade neither narrows nor widens).
+            floor = _default_floor()
+            score["oldest_month"] = floor
+            logger.info(
+                "Config: no legacy page bound for platform '{}' - kept the old default reach (oldest_month {})",
+                platform_key,
+                floor,
+            )
         return
     _migrate_backlog_new_pages(
         new_block,
@@ -1681,6 +1744,70 @@ def _migrate_discovery_blocks(raw: dict[str, Any]) -> bool:
         if not _has_legacy_discovery_keys(plat):
             continue
         _migrate_platform_discovery(plat, metacritic, platform_key)
+        changed = True
+    return changed
+
+
+def _migrate_score_page_depth(raw: dict[str, Any]) -> bool:
+    """Convert a ``page_depth`` an earlier release wrote inside the score block.
+
+    The released model wrote the page budget next to ``pages_per_cycle``, so a live
+    config carries it inside an already-block-shaped score block.  It converts to
+    the floor like any other page budget and is removed, so no file keeps it.
+
+    Args:
+        raw: The raw config, mutated in place.
+
+    Returns:
+        True when at least one platform's score block carried the key.
+    """
+    overrides, _ = _discovery_overrides(raw)
+    changed = False
+    for platform_key, plat in overrides.items():
+        discovery = plat.get("discovery") if isinstance(plat, dict) else None
+        backlog = discovery.get("backlog") if isinstance(discovery, dict) else None
+        score = backlog.get("score") if isinstance(backlog, dict) else None
+        if not isinstance(score, dict):
+            continue
+        if "page_depth" not in score:
+            # A block that states no reach at all is a pre-floor file: the old runtime
+            # ran it on the model's default page budget, so keep that reach instead of
+            # leaving the sweep floorless (ADR 0007).  A block this release writes always
+            # carries ``oldest_month``, so this cannot capture a new config.
+            #
+            # A file that still carries flat legacy keys is skipped here: its own budget
+            # must convert first (``_migrate_backlog_target`` runs after this step and
+            # writes the same default only when the file stated no bound).
+            if "oldest_month" in score or _has_legacy_discovery_keys(plat):
+                continue
+            floor = _default_floor()
+            score["oldest_month"] = floor
+            logger.info(
+                "Config: no floor in the score block for platform '{}' - kept the old default reach (oldest_month {})",
+                platform_key,
+                floor,
+            )
+            changed = True
+            continue
+        # The released model's ``int`` field accepted an integral float or a numeric
+        # string, so this path uses the same coercion as ``_pop_count``; a value it
+        # cannot use is reported and dropped instead of aborting the load.
+        value = _coerce_count(score.pop("page_depth"))
+        if value is None:
+            floor = _default_floor()
+            score["oldest_month"] = floor
+            logger.warning(
+                "Config: legacy 'page_depth' for platform '{}' is not a usable page count - ignored, "
+                "keeping the old default reach (oldest_month {})",
+                platform_key,
+                floor,
+            )
+        elif value == 0:
+            # An explicit 0 said "no budget": record it, so the flat-key default below
+            # cannot later read the missing floor as "nothing was expressed".
+            _place(score, "oldest_month", 0, "page_depth", platform_key)
+        else:
+            _land_score_floor(score, value, platform_key)
         changed = True
     return changed
 
@@ -1947,6 +2074,10 @@ def _migrate_config(raw: dict[str, Any]) -> bool:
             _migrate_add_freegog_to_download_sites,
             _migrate_remove_search_mode,
             _migrate_sort_order_critic_names,
+            # Before the block migration: a score block that still carries the released
+            # `page_depth` must convert its own budget first, so the flat-key path and the
+            # no-bound default cannot pre-empt it with a different reach.
+            _migrate_score_page_depth,
             _migrate_discovery_blocks,
             _migrate_source_matching_days,
             _migrate_add_discovery_blocks,
