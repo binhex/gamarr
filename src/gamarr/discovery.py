@@ -70,6 +70,11 @@ def build_scan_plan(discovery: DiscoveryConfig) -> ScanPlan:
             # default paces a sweep, so this only catches an explicit 0; bound it
             # the same way rather than trusting the file (bug 2026-11-23).
             pace_months = 1
+            logger.info(
+                "Config: months_per_cycle 0 with no oldest_month would read the whole catalogue - "
+                "using 1 month(s) per cycle; set discovery.backlog.new.months_per_cycle to change the pace, "
+                "or discovery.backlog.new.oldest_month to bound the sweep"
+            )
         return ScanPlan(
             mode="backlog",
             scan_order="new",

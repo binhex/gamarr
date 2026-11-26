@@ -9529,6 +9529,7 @@ class TestLatestMode:
         raise_years: set[int] | None = None,
         cutoff_years: set[int] | None = None,
         exhausted: bool = False,
+        page_cap: bool = False,
     ) -> tuple[list[dict[str, Any]], list[str]]:
         """Run one cycle and return (scan calls, log lines).
 
@@ -9546,6 +9547,7 @@ class TestLatestMode:
             mock_mc._recent_games_failed = fail_all_years
             mock_mc._recent_games_cutoff_reached = False
             mock_mc._recent_games_stop_cutoff = None
+            mock_mc._recent_games_page_cap_reached = page_cap
             year = int(kwargs.get("year") or 0)
             if raise_years is not None and year in raise_years:
                 raise RuntimeError("browse client blew up")
@@ -9571,6 +9573,7 @@ class TestLatestMode:
         mock_mc._recent_games_failed = False
         mock_mc._recent_games_cutoff_reached = False
         mock_mc._recent_games_stop_cutoff = None
+        mock_mc._recent_games_page_cap_reached = False
         mock_mc.scan_recent_games.side_effect = fake_scan
 
         logs: list[str] = []
@@ -9824,6 +9827,18 @@ class TestLatestMode:
         assert len(years) == 1, f"one drained undated listing is enough evidence: {years}"
         assert any("a whole listing carried no release dates" in line for line in logs), logs
         assert any("carried no usable release dates" in line for line in logs), logs
+
+    def test_an_undated_listing_cut_off_at_the_page_cap_still_stops_the_descent(self, tmp_path: Path) -> None:
+        """A capped listing is neither drained nor dated, and must still end the descent."""
+        calls, logs = self._run(
+            tmp_path=tmp_path,
+            months_per_cycle=2,
+            games_for_year=lambda _year: [{"title": "G", "slug": "g", "release_date": None}],
+            page_cap=True,
+        )
+        years = [call["year"] for call in calls]
+        assert len(years) == 1, f"a capped undated listing is evidence enough to stop: {years}"
+        assert any("a whole listing carried no release dates" in line for line in logs), logs
 
     def test_a_huge_pace_bounds_at_the_catalogue_floor(self, tmp_path: Path) -> None:
         """A 1200-month pace must clamp at EARLIEST_BROWSE_YEAR, not walk forever."""

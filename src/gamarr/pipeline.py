@@ -512,8 +512,8 @@ def run_acquisition(
                         break
                     if latest_mode and undated_listing:
                         logger.warning(
-                            "Latest date scan: a whole listing carried no release dates — stopping the descent "
-                            "before it crawls every year",
+                            "Latest date scan: a whole listing carried no release dates (or was cut off at "
+                            "the page cap) — stopping the descent before it crawls every year",
                         )
                         break
                 else:
@@ -616,16 +616,21 @@ def run_acquisition(
                             latest_mode
                             and max_month_seen is None
                             and pages_scanned > 0
-                            and getattr(mc, "_recent_games_exhausted", None) is True
+                            and (
+                                getattr(mc, "_recent_games_exhausted", None) is True
+                                # A listing cut off at the client's page cap is neither
+                                # drained nor failing, so it too is evidence that the
+                                # site publishes no dates: without it the descent probes
+                                # every year at the cap's cost per year.
+                                or getattr(mc, "_recent_games_page_cap_reached", None) is True
+                            )
                         ):
-                            # The year was drained end to end and still carried no
-                            # release date, and no earlier year in this cycle carried
-                            # one either, so no date bound can ever fire.  Stop here
-                            # instead of crawling every year down to the bound.  A
-                            # listing that is undated *and* hits the client's page cap
-                            # is not detected here; the post-loop warning still
-                            # reports it.  The latch is never cleared, so a dated year
-                            # below this one is not probed in this cycle: that is the
+                            # The year was drained end to end - or cut off at the client's page
+                            # cap - and still carried no release date, and no earlier year in
+                            # this cycle carried one either, so no date bound can ever fire.  Stop
+                            # here instead of crawling every year down to the bound.  The
+                            # post-loop warning still reports it.  The latch is never cleared, so a
+                            # dated year below this one is not probed in this cycle: that is the
                             # accepted cost of not crawling the whole window.
                             undated_listing = True
                         cutoff_reached = getattr(mc, "_recent_games_cutoff_reached", False) is True

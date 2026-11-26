@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from pathlib import Path
 
+    import pytest
+
 from gamarr.database import Database
 from gamarr.metacritic import MetacriticClient, ScoreResult
 from gamarr.metacritic_cache import MetacriticCache
@@ -865,6 +867,34 @@ class TestScanRecentGames:
         assert len(result) > 0, "Critic-score browsing should not early-stop on old games"
         # Should contain games from both pages (2 old + 1 new)
         assert len(result) == 3, f"Expected 3 games (2 old + 1 new), got {len(result)}"
+
+    def test_a_page_cap_exit_is_flagged_and_not_reported_as_drained(self) -> None:
+        """The 2000-page loop guard is a third exit the caller must be able to see."""
+        from unittest.mock import patch
+
+        from gamarr.metacritic import MetacriticClient
+
+        client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
+        # Undated pages: no cutoff can fire, so only the loop guard can end the scan.
+        page = [{"title": "G", "slug": "g"}]
+        with patch.object(client, "_fetch_browse_page", return_value=page):
+            result = client.scan_recent_games("pc", start_page=1999)
+        assert len(result) == 2, "the scan must read pages 1999 and 2000 and then stop"
+        assert client._recent_games_page_cap_reached is True, "the cap exit must be reported"
+        assert client._recent_games_exhausted is False, "a capped listing is not a drained one"
+
+    def test_a_drained_listing_does_not_report_the_page_cap(self) -> None:
+        """The flag is specific: an ordinary drain must not set it."""
+        from unittest.mock import patch
+
+        from gamarr.metacritic import MetacriticClient
+
+        client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
+        page = [{"title": "G", "slug": "g", "release_date": "2026-11-01"}]
+        with patch.object(client, "_fetch_browse_page", side_effect=[page, [], []]):
+            client.scan_recent_games("pc")
+        assert client._recent_games_page_cap_reached is False
+        assert client._recent_games_exhausted is True
 
     def test_scan_recent_games_stops_at_max_pages(self) -> None:
         """When max_pages is set, scan must stop after that many pages
@@ -1789,3 +1819,29 @@ class TestBudgetStopPageAccounting:
         assert client._recent_games_last_page == 5, (
             f"a one-page budget at page 5 must report 5, got {client._recent_games_last_page}"
         )
+
+
+class TestPageCapFlagPrecision:
+    """The cap flag reports the exit reason, not merely a page number past the guard."""
+
+    def test_a_scan_starting_past_the_cap_is_not_reported_as_capped(self) -> None:
+        from unittest.mock import patch
+
+        client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
+        page = [{"title": "G", "slug": "g", "release_date": "2026-11-01"}]
+        with patch.object(client, "_fetch_browse_page", return_value=page):
+            client.scan_recent_games("pc", start_page=2001)
+        assert client._recent_games_page_cap_reached is False, "nothing was cut off: the loop never ran"
+
+    def test_a_game_cap_exit_on_the_last_page_is_not_reported_as_capped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from unittest.mock import patch
+
+        import gamarr.metacritic as metacritic_module
+
+        monkeypatch.setattr(metacritic_module, "_MAX_BROWSE_PAGES", 1)
+        client = MetacriticClient(cache=MetacriticCache(Database(":memory:")))
+        page = [{"title": "G", "slug": "g", "release_date": "2026-11-01"}]
+        with patch.object(client, "_fetch_browse_page", return_value=page):
+            games = client.scan_recent_games("pc", max_games=1)
+        assert len(games) == 1
+        assert client._recent_games_page_cap_reached is False, "the game cap ended the scan, not the page guard"

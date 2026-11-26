@@ -380,7 +380,10 @@ flowchart TD
    untouched generated block stays silent. A block the upgrade migration
    converted (its page budget became `oldest_month`) now differs from the
    default, so it is named per load until the key is removed, reset to its
-   default, or the block becomes the one the active sort reads.
+   default, or the block becomes the one the active sort reads. A config that
+   selects a score sort but states no `discovery.backlog.score` block at all
+   keeps the old default reach, so an upgrade never widens that sweep to the
+   whole catalogue.
    `review_sites.metacritic.pending_order` separately orders the pending queue
    (`new`, `criticscore`, `userscore`), independent of how discovery reads.
    **Important:** browse pages show *internal browse-only metrics*, not

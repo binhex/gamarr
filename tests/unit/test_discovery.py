@@ -77,6 +77,48 @@ class TestBuildScanPlan:
         )
         assert plan.pace_months == 1, "an unbounded backlog must not read the whole catalogue"
 
+    def test_the_floorless_pace_coercion_is_reported(self) -> None:
+        """The file's 0 becomes 1, so a log line is the only record that it was overridden."""
+        import io
+
+        from loguru import logger
+
+        discovery = DiscoveryConfig.model_validate(
+            {"mode": "backlog", "backlog": {"sort_order": "new", "new": {"oldest_month": 0, "months_per_cycle": 0}}}
+        )
+        buf = io.StringIO()
+        logger_id = logger.add(buf, format="{message}", colorize=False)
+        try:
+            build_scan_plan(discovery)
+        finally:
+            logger.remove(logger_id)
+
+        report = buf.getvalue()
+        assert "months_per_cycle 0" in report, f"the override must name the key and value: {report!r}"
+        assert "1 month(s)" in report, f"the override must name the effective pace: {report!r}"
+
+    def test_an_unpaced_sweep_to_a_stated_floor_is_not_reported_as_coerced(self) -> None:
+        """0 with a floor stays 0, so the coercion line must not appear for it."""
+        import io
+
+        from loguru import logger
+
+        discovery = DiscoveryConfig.model_validate(
+            {
+                "mode": "backlog",
+                "backlog": {"sort_order": "new", "new": {"oldest_month": 202001, "months_per_cycle": 0}},
+            }
+        )
+        buf = io.StringIO()
+        logger_id = logger.add(buf, format="{message}", colorize=False)
+        try:
+            plan = build_scan_plan(discovery)
+        finally:
+            logger.remove(logger_id)
+
+        assert plan.pace_months == 0
+        assert "months_per_cycle 0" not in buf.getvalue(), "a floored 0 is honoured, not coerced"
+
     def test_an_unpaced_sweep_to_a_stated_floor_stays_unpaced(self) -> None:
         """A floor is a real bound, so 0 keeps meaning 'sweep to it'."""
         plan = build_scan_plan(

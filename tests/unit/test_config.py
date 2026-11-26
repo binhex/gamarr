@@ -2565,6 +2565,62 @@ class TestLegacyValueConversion:
         discovery: dict[str, Any] = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["discovery"]
         return discovery
 
+    def test_a_score_sort_with_no_score_block_keeps_the_default_reach(self) -> None:
+        """A hand-written block that selects a score sort must not widen to the catalogue."""
+        from gamarr.config import _default_floor
+
+        discovery = self._migrate({"discovery": {"mode": "backlog", "backlog": {"sort_order": "criticscore"}}})
+        assert discovery["backlog"]["score"]["oldest_month"] == _default_floor(), (
+            "a score sweep with no stated floor inherits the pre-floor default reach"
+        )
+
+    def test_a_new_sort_with_no_score_block_gains_no_inert_block(self) -> None:
+        """Only a score-selected config needs the block; the rest would never read it."""
+        discovery = self._migrate({"discovery": {"mode": "backlog", "backlog": {"sort_order": "new"}}})
+        assert "score" not in discovery["backlog"]
+
+    def test_a_flat_budget_beats_the_default_floor_for_a_score_sort(self) -> None:
+        """The legacy-key guard: the operator's own budget must convert, not the default reach."""
+        from gamarr.utils import current_year_month, pages_to_months, subtract_months
+
+        discovery = self._migrate(
+            {"max_pages": 1000, "discovery": {"mode": "backlog", "backlog": {"sort_order": "criticscore"}}}
+        )
+        expected = subtract_months(current_year_month(), pages_to_months(1000))
+        assert discovery["backlog"]["score"]["oldest_month"] == expected, (
+            "the flat budget must convert, not the 16-month default"
+        )
+
+    def test_a_latest_platform_gains_no_score_block(self) -> None:
+        """The mode guard: a latest-mode file never reads the score block, so it gets none."""
+        discovery = self._migrate({"discovery": {"mode": "latest", "backlog": {"sort_order": "criticscore"}}})
+        assert "score" not in discovery["backlog"], "an unread block would make the file name it on every load"
+
+    def test_a_score_block_that_states_no_floor_is_left_alone(self) -> None:
+        """`oldest_month: 0` is the operator's own floorless choice, not an absent one."""
+        discovery = self._migrate(
+            {"discovery": {"mode": "backlog", "backlog": {"sort_order": "criticscore", "score": {"oldest_month": 0}}}}
+        )
+        assert discovery["backlog"]["score"]["oldest_month"] == 0
+
+    def test_a_non_mapping_score_block_is_left_to_validation(self, tmp_path: Path) -> None:
+        """A typo'd score block must not be replaced by the default floor."""
+        from pydantic import ValidationError
+
+        path = tmp_path / "gamarr.yml"
+        path.write_text(
+            "review_sites:\n  metacritic:\n    platform_overrides:\n      pc:\n"
+            "        discovery:\n          mode: backlog\n          backlog:\n"
+            "            sort_order: criticscore\n            score: junk\n",
+            encoding="utf-8",
+        )
+        original = path.read_text(encoding="utf-8")
+
+        with pytest.raises(ValidationError):
+            load_config(path)
+
+        assert path.read_text(encoding="utf-8") == original, "a failed load must not rewrite the file"
+
     def test_a_floor_the_operator_already_set_keeps_its_default_pace(self) -> None:
         """Only a floor the migration lands is unpaced; an existing one keeps 1 month."""
         discovery = self._migrate({"mode": "backlog", "discovery": {"backlog": {"new": {"oldest_month": 202001}}}})
@@ -2932,6 +2988,19 @@ class TestInertDiscoveryKeys:
             loguru_logger.remove(sink_id)
         assert any("discovery.backlog.new.oldest_month" in line and "not read" in line for line in captured), captured
 
+    def test_a_null_mode_is_read_as_latest_for_the_inert_key_report(self) -> None:
+        """A null `mode:` falls back to latest, so the latest block is read, not ignored."""
+        from gamarr.config import _inert_discovery_keys
+
+        raw: dict[str, Any] = {
+            "review_sites": {
+                "metacritic": {
+                    "platform_overrides": {"pc": {"discovery": {"mode": None, "latest": {"oldest_month": 202001}}}}
+                }
+            }
+        }
+        assert _inert_discovery_keys(raw) == [], "a null mode is absent, so 'latest' is the effective mode"
+
     def test_a_rewritten_default_file_reports_nothing(self, tmp_path: Path) -> None:
         from gamarr.config import _inert_discovery_keys, _load_raw_config, create_default_config
 
@@ -2973,6 +3042,25 @@ class TestGeneratedConfigCarriesDiscovery:
         ps5 = written["review_sites"]["metacritic"]["platform_overrides"]["ps5"]
         assert ps5["discovery"]["backlog"]["new"]["months_per_cycle"] == 1
 
+    def test_a_null_discovery_value_gains_the_full_block(self, tmp_path: Path) -> None:
+        """A YAML null is absent: the platform still gains the editable keys."""
+        import yaml
+
+        from gamarr.config import create_default_config
+
+        create_default_config(tmp_path)
+        path = tmp_path / "gamarr.yml"
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        raw["review_sites"]["metacritic"]["platform_overrides"]["ps5"] = {"discovery": None}
+        path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+        load_config(path)
+
+        written = yaml.safe_load(path.read_text(encoding="utf-8"))
+        ps5 = written["review_sites"]["metacritic"]["platform_overrides"]["ps5"]["discovery"]
+        assert ps5["mode"] == "latest"
+        assert ps5["backlog"]["score"] == {"oldest_month": 0, "pages_per_cycle": 20}
+
     def test_a_non_mapping_discovery_value_is_left_to_validation(self) -> None:
         """A non-mapping `discovery:` value is the operator's data, not ours to overwrite."""
         from gamarr.config import _migrate_config
@@ -2980,6 +3068,85 @@ class TestGeneratedConfigCarriesDiscovery:
         raw: dict[str, Any] = {"review_sites": {"metacritic": {"platform_overrides": {"pc": {"discovery": "backlog"}}}}}
         _migrate_config(raw)
         assert raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["discovery"] == "backlog"
+
+    def test_a_typoed_discovery_value_beside_a_legacy_key_is_reported(self, tmp_path: Path) -> None:
+        """The legacy key must not turn a typo'd block into a valid one."""
+        from pydantic import ValidationError
+
+        path = tmp_path / "gamarr.yml"
+        path.write_text(
+            "review_sites:\n  metacritic:\n    platform_overrides:\n      pc:\n"
+            "        discovery: junk\n        max_pages: 500\n",
+            encoding="utf-8",
+        )
+        original = path.read_text(encoding="utf-8")
+
+        with pytest.raises(ValidationError) as excinfo:
+            load_config(path)
+
+        assert "discovery" in str(excinfo.value), f"the report must name the offending key: {excinfo.value}"
+        assert path.read_text(encoding="utf-8") == original, "a failed load must not rewrite the file"
+
+    def test_a_partial_second_platform_block_gains_the_keys_its_mode_reads(self, tmp_path: Path) -> None:
+        """`ps5: {discovery: {mode: backlog}}` must gain the keys the README promises."""
+        import yaml
+
+        from gamarr.config import create_default_config
+
+        create_default_config(tmp_path)
+        path = tmp_path / "gamarr.yml"
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        raw["review_sites"]["metacritic"]["platform_overrides"]["ps5"] = {"discovery": {"mode": "backlog"}}
+        path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+        load_config(path)
+
+        written = yaml.safe_load(path.read_text(encoding="utf-8"))
+        ps5 = written["review_sites"]["metacritic"]["platform_overrides"]["ps5"]["discovery"]
+        assert ps5["backlog"]["new"] == {"oldest_month": 0, "months_per_cycle": 1}
+        assert "score" not in ps5["backlog"], "the score block is unread while sort_order is new"
+        assert "latest" not in ps5, "a fragment of the unselected mode would be an unread block"
+
+    def test_a_partial_latest_platform_block_gains_the_latest_keys(self, tmp_path: Path) -> None:
+        """The `latest` completion arm writes that mode's keys and no backlog block."""
+        import yaml
+
+        from gamarr.config import create_default_config
+
+        create_default_config(tmp_path)
+        path = tmp_path / "gamarr.yml"
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        raw["review_sites"]["metacritic"]["platform_overrides"]["ps5"] = {"discovery": {"mode": "latest"}}
+        path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+        load_config(path)
+
+        written = yaml.safe_load(path.read_text(encoding="utf-8"))
+        ps5 = written["review_sites"]["metacritic"]["platform_overrides"]["ps5"]["discovery"]
+        assert ps5["latest"] == {"oldest_month": 0, "months_per_cycle": 1}
+        assert "backlog" not in ps5, "the unselected mode must not be written"
+
+    def test_completing_a_partial_block_rewrites_the_file_once(self, tmp_path: Path) -> None:
+        """Completion must be idempotent: a second load may not bump the version again."""
+        import yaml
+
+        from gamarr.config import create_default_config
+
+        create_default_config(tmp_path)
+        path = tmp_path / "gamarr.yml"
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        raw["review_sites"]["metacritic"]["platform_overrides"]["ps5"] = {"discovery": {"mode": "backlog"}}
+        path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+        load_config(path)
+        after_first = path.read_text(encoding="utf-8")
+        completed = yaml.safe_load(after_first)
+        ps5 = completed["review_sites"]["metacritic"]["platform_overrides"]["ps5"]["discovery"]
+        assert "backlog" in ps5, "the first load must complete the block, or this test proves nothing"
+
+        load_config(path)
+
+        assert path.read_text(encoding="utf-8") == after_first, "a completed file must not be rewritten again"
 
     def test_a_second_platform_gains_the_discovery_block(self, tmp_path: Path) -> None:
         """`pc` gets the block from the defaults; any other platform needs the migration."""
@@ -3114,3 +3281,141 @@ class TestValidationErrorReport:
         from gamarr.config import format_config_errors
 
         assert format_config_errors(ValidationError.from_exception_data("Config", []))
+
+
+class TestNullDiscoveryValues:
+    """A YAML null is absent, not a value: it must not leave a score sweep floorless."""
+
+    def test_a_null_score_block_gains_the_default_floor(self, tmp_path: Path) -> None:
+        from gamarr.config import _default_floor
+
+        path = tmp_path / "gamarr.yml"
+        path.write_text(
+            "review_sites:\n  metacritic:\n    platform_overrides:\n      pc:\n"
+            "        discovery:\n          mode: backlog\n          backlog:\n"
+            "            sort_order: criticscore\n            score:\n",
+            encoding="utf-8",
+        )
+
+        cfg = load_config(path)
+
+        score = cfg.review_sites.metacritic.platform_overrides["pc"].discovery.backlog.score
+        assert score.oldest_month == _default_floor(), "a null score block kept the old default reach"
+
+    def test_a_null_score_floor_gains_the_default_floor(self, tmp_path: Path) -> None:
+        from gamarr.config import _default_floor
+
+        path = tmp_path / "gamarr.yml"
+        path.write_text(
+            "review_sites:\n  metacritic:\n    platform_overrides:\n      pc:\n"
+            "        discovery:\n          mode: backlog\n          backlog:\n"
+            "            sort_order: criticscore\n            score:\n"
+            "              oldest_month:\n",
+            encoding="utf-8",
+        )
+
+        cfg = load_config(path)
+
+        score = cfg.review_sites.metacritic.platform_overrides["pc"].discovery.backlog.score
+        assert score.oldest_month == _default_floor(), "a null floor is absent, so the default reach applies"
+
+    def test_a_null_floor_does_not_block_a_page_budget_conversion(self, tmp_path: Path) -> None:
+        from gamarr.config import _default_floor
+
+        path = tmp_path / "gamarr.yml"
+        path.write_text(
+            "review_sites:\n  metacritic:\n    platform_overrides:\n      pc:\n"
+            "        discovery:\n          mode: backlog\n          backlog:\n"
+            "            sort_order: criticscore\n            score:\n"
+            "              oldest_month:\n              page_depth: 500\n",
+            encoding="utf-8",
+        )
+
+        cfg = load_config(path)
+
+        score = cfg.review_sites.metacritic.platform_overrides["pc"].discovery.backlog.score
+        assert score.oldest_month == _default_floor(), "the budget must convert, not be blocked by a null key"
+
+    def test_a_null_floor_in_an_unread_score_block_is_left_alone(self) -> None:
+        """The default-floor repair must not write into a block the active config never reads."""
+        from gamarr.config import _migrate_config
+
+        raw: dict[str, Any] = {
+            "review_sites": {
+                "metacritic": {
+                    "platform_overrides": {
+                        "pc": {
+                            "discovery": {
+                                "mode": "latest",
+                                "backlog": {"sort_order": "new", "score": {"oldest_month": None}},
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        _migrate_config(raw)
+        score = raw["review_sites"]["metacritic"]["platform_overrides"]["pc"]["discovery"]["backlog"]["score"]
+        assert score.get("oldest_month") is None, "an unread block must not gain the default floor"
+
+    def test_a_completed_backlog_block_omits_the_unselected_sort(self, tmp_path: Path) -> None:
+        """Completion writes only what the selected sort reads, so no unread score block appears."""
+        import yaml
+
+        from gamarr.config import create_default_config
+
+        create_default_config(tmp_path)
+        path = tmp_path / "gamarr.yml"
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        raw["review_sites"]["metacritic"]["platform_overrides"]["ps5"] = {"discovery": {"mode": "backlog"}}
+        path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+        load_config(path)
+
+        ps5 = yaml.safe_load(path.read_text(encoding="utf-8"))
+        block = ps5["review_sites"]["metacritic"]["platform_overrides"]["ps5"]["discovery"]["backlog"]
+        assert block["new"] == {"oldest_month": 0, "months_per_cycle": 1}
+        assert "score" not in block, "the score block is unread while sort_order is new"
+
+    def test_switching_a_completed_block_to_a_score_sort_gains_the_default_floor(self, tmp_path: Path) -> None:
+        """The completed block must not pre-empt the floor migration with a written 0."""
+        import yaml
+
+        from gamarr.config import _default_floor, create_default_config
+
+        create_default_config(tmp_path)
+        path = tmp_path / "gamarr.yml"
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        raw["review_sites"]["metacritic"]["platform_overrides"]["ps5"] = {"discovery": {"mode": "backlog"}}
+        path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+        load_config(path)
+
+        edited = yaml.safe_load(path.read_text(encoding="utf-8"))
+        ps5_discovery = edited["review_sites"]["metacritic"]["platform_overrides"]["ps5"]["discovery"]
+        ps5_discovery["backlog"]["sort_order"] = "criticscore"
+        path.write_text(yaml.safe_dump(edited), encoding="utf-8")
+
+        cfg = load_config(path)
+
+        block = cfg.review_sites.metacritic.platform_overrides["ps5"].discovery.backlog.score
+        assert block.oldest_month == _default_floor(), (
+            "the switch must inherit the default reach, not a catalogue sweep"
+        )
+
+    def test_an_empty_selected_mode_block_is_completed(self, tmp_path: Path) -> None:
+        """`latest: {}` is absent, not an opinion: the platform still gains its keys."""
+        import yaml
+
+        from gamarr.config import create_default_config
+
+        create_default_config(tmp_path)
+        path = tmp_path / "gamarr.yml"
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        raw["review_sites"]["metacritic"]["platform_overrides"]["ps5"] = {"discovery": {"mode": "latest", "latest": {}}}
+        path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+        load_config(path)
+
+        written = yaml.safe_load(path.read_text(encoding="utf-8"))
+        latest = written["review_sites"]["metacritic"]["platform_overrides"]["ps5"]["discovery"]["latest"]
+        assert latest == {"oldest_month": 0, "months_per_cycle": 1}

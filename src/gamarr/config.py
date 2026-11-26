@@ -1564,7 +1564,7 @@ def _pop_legacy_bounds(plat: dict[str, Any], platform_key: str) -> dict[str, Any
 
 
 def _migrate_add_discovery_blocks(raw: dict[str, Any]) -> bool:
-    """Give every platform override the discovery block when it has none.
+    """Give every platform override the discovery block, completing the selected mode's block.
 
     ``_default_config_dict`` dumps the model, whose overrides are ``{"pc"}`` only, so
     a second platform (``ps5``) would never gain the keys from the merge.  Adding them
@@ -1574,17 +1574,51 @@ def _migrate_add_discovery_blocks(raw: dict[str, Any]) -> bool:
         raw: The raw config, mutated in place.
 
     Returns:
-        True when any block was added.
+        True when any block was added or completed.
     """
     overrides, _ = _discovery_overrides(raw)
+    defaults = DiscoveryConfig().model_dump()
     added = False
     for platform_key, plat in overrides.items():
-        if not isinstance(plat, dict) or ("discovery" in plat and plat["discovery"] != {}):
+        if not isinstance(plat, dict):
             continue
-        plat["discovery"] = DiscoveryConfig().model_dump()
-        logger.info("Config: added the discovery block to platform '{}'", platform_key)
+        existing = plat.get("discovery")
+        if existing is None or existing == {}:
+            plat["discovery"] = copy.deepcopy(defaults)
+            logger.info("Config: added the discovery block to platform '{}'", platform_key)
+            added = True
+            continue
+        if not isinstance(existing, dict):
+            # A typo'd value is left to validation (see _migrate_platform_discovery).
+            continue
+        mode = existing.get("mode", defaults["mode"])
+        if mode not in ("latest", "backlog") or existing.get(mode) not in (None, {}):
+            # Not a value to invent, and a block the operator or the legacy migration
+            # already wrote is left exactly as it is: its absent keys mean the model
+            # default, which is what a file written this release looks like.
+            continue
+        # Only what the active config reads: an unread sort block would carry a written
+        # ``oldest_month: 0`` that later pre-empts the score-floor migration.
+        existing[mode] = _selected_mode_defaults(mode, defaults)
+        logger.info("Config: completed the discovery block for platform '{}'", platform_key)
         added = True
     return added
+
+
+def _selected_mode_defaults(mode: str, defaults: dict[str, Any]) -> dict[str, Any]:
+    """Return the default block for *mode*, dropping the sort sub-block it never reads.
+
+    Args:
+        mode: ``latest`` or ``backlog``.
+        defaults: A ``DiscoveryConfig().model_dump()``.
+
+    Returns:
+        A copy of that mode's default block, minus the unread sort's sub-block.
+    """
+    block: dict[str, Any] = copy.deepcopy(defaults[mode])
+    if mode == "backlog":
+        block.pop("score" if block["sort_order"] == "new" else "new")
+    return block
 
 
 def _migrate_pending_order(metacritic: dict[str, Any], sort_order: str, platform_key: str) -> None:
@@ -1705,7 +1739,7 @@ def _migrate_platform_discovery(
     plat: dict[str, Any],
     metacritic: dict[str, Any],
     platform_key: str,
-) -> None:
+) -> bool:
     """Move one platform override's flat discovery keys into blocks.
 
     ``0`` means "disabled" for the date keys, but it is a real value for the score
@@ -1715,7 +1749,17 @@ def _migrate_platform_discovery(
         plat: The raw platform override, mutated in place.
         metacritic: The raw ``review_sites.metacritic`` mapping.
         platform_key: The platform name, for log lines.
+
+    Returns:
+        True when this platform's keys were migrated.
     """
+    existing_block = plat.get("discovery")
+    if existing_block is not None and not isinstance(existing_block, dict):
+        # A typo'd value is the operator's data, not ours to replace: converting the
+        # legacy keys into a block would launder the mistake into a valid file, so
+        # validation is left to report it and the file is left exactly as written.
+        # ``None`` is absent, not a typo, so it still migrates.
+        return False
     values = _pop_legacy_bounds(plat, platform_key)
     discovery = _ensure_block(plat, "discovery")
     # A block that already exists means the new shape was written: the selector then
@@ -1742,6 +1786,7 @@ def _migrate_platform_discovery(
     else:
         _migrate_backlog_target(discovery, values, platform_key)
     _prune_empty_blocks(discovery)
+    return True
 
 
 def _prune_empty_blocks(discovery: dict[str, Any]) -> None:
@@ -1804,9 +1849,14 @@ def _migrate_discovery_blocks(raw: dict[str, Any]) -> bool:
     for platform_key, plat in ordered:
         if not _has_legacy_discovery_keys(plat):
             continue
-        _migrate_platform_discovery(plat, metacritic, platform_key)
-        changed = True
+        if _migrate_platform_discovery(plat, metacritic, platform_key):
+            changed = True
     return changed
+
+
+# The score sorts.  Kept in step with ``BacklogDiscoveryConfig.sort_order``: a new
+# score sort added to that Literal must be added here too, or its sweep stays floorless.
+_SCORE_SORTS = ("criticscore", "userscore")
 
 
 def _raw_score_block(plat: Any) -> dict[str, Any] | None:
@@ -1830,20 +1880,33 @@ def _migrate_score_page_depth(raw: dict[str, Any]) -> bool:
 
     The released model wrote the page budget next to ``pages_per_cycle``, so a live
     config carries it inside an already-block-shaped score block.  It converts to
-    the floor like any other page budget and is removed, so no file keeps it.
+    the floor like any other page budget and is removed, so no file keeps it.  A
+    score-selected config that has no score block at all gains the default floor.
 
     Args:
         raw: The raw config, mutated in place.
 
     Returns:
-        True when at least one platform's score block carried the key.
+        True when a score block carried the key or a missing score block was filled.
     """
     overrides, _ = _discovery_overrides(raw)
     changed = False
     for platform_key, plat in overrides.items():
+        backlog = _raw_backlog_block(plat)
         score = _raw_score_block(plat)
         if score is None:
+            # No score block at all.  A config that selects a score sort and states no
+            # floor would sweep the whole catalogue, so it keeps the pre-floor default
+            # reach.  Only a score-selected config is touched: another sort never reads
+            # the block, and writing one would add an unread key.
+            if _land_missing_score_block(backlog, plat, platform_key):
+                changed = True
             continue
+        if _score_block_is_read(plat) and "oldest_month" in score and score["oldest_month"] is None:
+            # A YAML null is absent, not "no floor": the config merge drops None, so
+            # leaving the key in place would both block a page-budget conversion and
+            # validate to the floorless model default.  An unread block is left alone.
+            del score["oldest_month"]
         if "page_depth" not in score:
             # A block that states no reach at all is a pre-floor file: the old runtime
             # ran it on the model's default page budget, so keep that reach instead of
@@ -1852,8 +1915,10 @@ def _migrate_score_page_depth(raw: dict[str, Any]) -> bool:
             #
             # A file that still carries flat legacy keys is skipped here: its own budget
             # must convert first (``_migrate_backlog_target`` runs after this step and
-            # writes the same default only when the file stated no bound).
-            if "oldest_month" in score or _has_legacy_discovery_keys(plat):
+            # writes the same default only when the file stated no bound).  An unread
+            # block is skipped too: writing the default there would only make the file
+            # name it as inert on every load.
+            if "oldest_month" in score or _has_legacy_discovery_keys(plat) or not _score_block_is_read(plat):
                 continue
             floor = _default_floor()
             score["oldest_month"] = floor
@@ -1864,27 +1929,111 @@ def _migrate_score_page_depth(raw: dict[str, Any]) -> bool:
             )
             changed = True
             continue
-        # The released model's ``int`` field accepted an integral float or a numeric
-        # string, so this path uses the same coercion as ``_pop_count``; a value it
-        # cannot use is reported and dropped instead of aborting the load.
-        value = _coerce_count(score.pop("page_depth"))
-        if value is None:
-            floor = _default_floor()
-            score["oldest_month"] = floor
-            logger.warning(
-                "Config: legacy 'page_depth' for platform '{}' is not a usable page count - ignored, "
-                "keeping the old default reach (oldest_month {})",
-                platform_key,
-                floor,
-            )
-        elif value == 0:
-            # An explicit 0 said "no budget": record it, so the flat-key default below
-            # cannot later read the missing floor as "nothing was expressed".
-            _place(score, "oldest_month", 0, "page_depth", platform_key)
-        else:
-            _land_score_floor(score, value, platform_key)
+        _land_page_depth_budget(score, platform_key)
         changed = True
     return changed
+
+
+def _land_page_depth_budget(score: dict[str, Any], platform_key: str) -> None:
+    """Convert or drop the released model's ``page_depth`` budget.
+
+    The released model's ``int`` field accepted an integral float or a numeric string,
+    so this uses the same coercion as ``_pop_count``; a value it cannot use is reported
+    and dropped instead of aborting the load.
+
+    Args:
+        score: The score block, whose ``page_depth`` key is removed.
+        platform_key: The platform name, for log lines.
+    """
+    value = _coerce_count(score.pop("page_depth"))
+    if value is None:
+        floor = _default_floor()
+        score["oldest_month"] = floor
+        logger.warning(
+            "Config: legacy 'page_depth' for platform '{}' is not a usable page count - ignored, "
+            "keeping the old default reach (oldest_month {})",
+            platform_key,
+            floor,
+        )
+    elif value == 0:
+        # An explicit 0 said "no budget": record it, so the flat-key default below
+        # cannot later read the missing floor as "nothing was expressed".
+        _place(score, "oldest_month", 0, "page_depth", platform_key)
+    else:
+        _land_score_floor(score, value, platform_key)
+
+
+def _raw_backlog_block(plat: Any) -> dict[str, Any] | None:
+    """Return a platform override's raw ``discovery.backlog`` block, or None.
+
+    Args:
+        plat: One raw platform override, which may be malformed above the block.
+
+    Returns:
+        The backlog block mapping, or ``None`` when the shape is absent or not a mapping.
+    """
+    discovery = plat.get("discovery") if isinstance(plat, dict) else None
+    backlog = discovery.get("backlog") if isinstance(discovery, dict) else None
+    return backlog if isinstance(backlog, dict) else None
+
+
+def _land_missing_score_block(backlog: dict[str, Any] | None, plat: Any, platform_key: str) -> bool:
+    """Give a score-selected config the default floor when it has no score block.
+
+    Args:
+        backlog: The raw ``discovery.backlog`` block, or ``None``.
+        plat: The raw platform override, for the legacy-key and mode guards.
+        platform_key: The platform name, for the log line.
+
+    Returns:
+        True when a score block was written.
+    """
+    if backlog is None or not _needs_score_block(backlog, plat):
+        return False
+    floor = _default_floor()
+    backlog["score"] = {"oldest_month": floor}
+    logger.info(
+        "Config: no score block for platform '{}' - kept the old default reach (oldest_month {})",
+        platform_key,
+        floor,
+    )
+    return True
+
+
+def _needs_score_block(backlog: dict[str, Any], plat: Any) -> bool:
+    """Return True when a score-selected config states no score block at all.
+
+    Args:
+        backlog: The raw ``discovery.backlog`` block.
+        plat: The raw platform override, for the legacy-key and mode guards.
+
+    Returns:
+        True when the block the sweep reads is absent and may be written.
+    """
+    if _has_legacy_discovery_keys(plat) or not _score_block_is_read(plat):
+        return False
+    score = backlog.get("score")
+    if score is not None and not isinstance(score, dict):
+        # A hand-written non-mapping is the operator's data; validation reports it.
+        # ``None`` is absent (the merge drops it), so it counts as no block at all.
+        return False
+    return score is None
+
+
+def _score_block_is_read(plat: Any) -> bool:
+    """Return True when the active mode and sort read ``discovery.backlog.score``.
+
+    Args:
+        plat: One raw platform override.
+
+    Returns:
+        True when the block is the one this config actually reads.
+    """
+    discovery = plat.get("discovery") if isinstance(plat, dict) else None
+    if not isinstance(discovery, dict) or discovery.get("mode", "latest") != "backlog":
+        return False
+    backlog = discovery.get("backlog")
+    return isinstance(backlog, dict) and backlog.get("sort_order") in _SCORE_SORTS
 
 
 def _default_floor() -> int:
@@ -2439,7 +2588,8 @@ def _discovery_defaults() -> dict[str, Any]:
 
 def _unread_items(discovery: dict[str, Any]) -> list[tuple[str, Any]]:
     """Return the ``(path, value)`` leaves of the blocks the selected mode ignores."""
-    if discovery.get("mode", "latest") == "latest":
+    # A null `mode:` is absent, so the effective mode is the model default.
+    if (discovery.get("mode") or "latest") == "latest":
         return _leaf_items(discovery.get("backlog"), "backlog")
     items = _leaf_items(discovery.get("latest"), "latest")
     block, unused = _unread_backlog_block(discovery.get("backlog"))

@@ -42,6 +42,10 @@ _READ_TIMEOUT = 90.0
 # user-facing name for it and must be translated before URL construction.
 _SORT_SLUG_OVERRIDES: Final[dict[str, str]] = {"criticscore": "metascore"}
 
+# The browse loop's own guard.  Reaching it is a third exit, distinct from a drained
+# listing and a failed fetch, so the caller must be able to see it.
+_MAX_BROWSE_PAGES = 2000
+
 _BROWSE_GAME_KEY_PATTERN = re.compile(r'"(browse-game-[^"]*)":\s*(\d+)')
 
 
@@ -596,6 +600,10 @@ class MetacriticClient:
         # distinguish a stop at its own absolute floor from a pace (month-span)
         # stop.  None when no date bound stopped the scan.
         self._recent_games_stop_cutoff: str | None = None
+        # True only when the last scan ended because the browse loop's own page
+        # guard stopped it.  Such a listing is neither drained nor failed: it was
+        # cut off, so an "undated site" latch keyed on exhaustion cannot see it.
+        self._recent_games_page_cap_reached: bool = False
 
     def _classify_page(
         self,
@@ -939,9 +947,10 @@ class MetacriticClient:
         self._recent_games_failed = False
         self._recent_games_cutoff_reached = False
         self._recent_games_stop_cutoff = None
+        self._recent_games_page_cap_reached = False
         span_anchor: int | None = None
         budget_spent = False
-        while len(all_games) < effective_max and page_number <= 2000:
+        while len(all_games) < effective_max and page_number <= _MAX_BROWSE_PAGES:
             games = self._fetch_browse_page(platform, page_number, cache_pages_hours, year=year)
             if _needs_drain_confirmation(games, page_number, cancel_event):
                 # Empty parses are never cached, so this re-probe is a real fetch.
@@ -980,6 +989,11 @@ class MetacriticClient:
 
             page_number += 1
 
+        # The guard only ended the scan when it started inside the range and neither
+        # the game cap nor a break ended it first (a budget stop is `budget_spent`).
+        self._recent_games_page_cap_reached = (
+            start_page <= _MAX_BROWSE_PAGES and page_number > _MAX_BROWSE_PAGES and len(all_games) < effective_max
+        )
         return self._finish_scan(all_games, page_number, start_page, budget_spent, year)
 
     def _finish_scan(
