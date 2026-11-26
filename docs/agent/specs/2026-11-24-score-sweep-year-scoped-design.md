@@ -52,7 +52,7 @@ Before:
 discovery:
   mode: backlog
   backlog:
-    sort_order: score
+    sort_order: criticscore
     score:
       page_depth: 500        # total page budget, no date meaning
       pages_per_cycle: 20
@@ -64,7 +64,7 @@ After:
 discovery:
   mode: backlog
   backlog:
-    sort_order: score
+    sort_order: criticscore
     score:
       oldest_month: 201601   # reach: nothing older than 2016 (read at year grain)
       pages_per_cycle: 20    # workload per cycle, never re-tuned

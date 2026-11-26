@@ -573,16 +573,9 @@ class TestLoadConfig:
         written = yaml.safe_load(config_file.read_text(encoding="utf-8"))
         assert cfg.general.config_version == str(written["general"]["config_version"])
 
-    def test_a_validation_error_with_no_details_falls_back_to_its_text(self) -> None:
-        """The summary helper must not crash on an error object with no entries."""
-        from gamarr.config import _first_validation_error
-
-        empty = ValidationError.from_exception_data("Config", [])
-        assert "validation error" in _first_validation_error(empty)
-
-    def test_an_invalid_floor_names_the_file_key_and_value(self, tmp_path: Path) -> None:
-        """The operator must see which file and key to fix, not just a pydantic path."""
-        from loguru import logger
+    def test_an_invalid_floor_names_key_and_value(self, tmp_path: Path) -> None:
+        """The operator must see which key and value to fix, not just a pydantic path."""
+        from gamarr.config import format_config_errors
 
         config_file = tmp_path / "gamarr.yml"
         config_file.write_text(
@@ -590,16 +583,10 @@ class TestLoadConfig:
             "        discovery:\n          mode: backlog\n          backlog:\n            new:\n"
             "              oldest_month: 120\n"
         )
-        captured: list[str] = []
-        sink_id = logger.add(lambda msg: captured.append(str(msg)), level="ERROR", format="{message}")
-        try:
-            with pytest.raises(ValidationError):
-                load_config(config_file)
-        finally:
-            logger.remove(sink_id)
+        with pytest.raises(ValidationError) as excinfo:
+            load_config(config_file)
 
-        message = "\n".join(captured)
-        assert str(config_file) in message, f"the file must be named: {message!r}"
+        message = "\n".join(format_config_errors(excinfo.value))
         assert "backlog.new.oldest_month" in message, f"the key must be named: {message!r}"
         assert "120" in message, f"the offending value must be named: {message!r}"
 
@@ -1538,14 +1525,13 @@ class TestSortOrder:
         assert BacklogDiscoveryConfig(sort_order="criticscore").sort_order == "criticscore"
         assert BacklogDiscoveryConfig(sort_order="userscore").sort_order == "userscore"
 
-    def test_sort_order_rejects_metascore_and_unknown(self) -> None:
+    def test_sort_order_accepts_metascore_and_rejects_unknown(self) -> None:
         import pydantic
         import pytest
 
         from gamarr.config import BacklogDiscoveryConfig
 
-        with pytest.raises(pydantic.ValidationError):
-            BacklogDiscoveryConfig(sort_order="metascore")  # type: ignore[arg-type]
+        assert BacklogDiscoveryConfig(sort_order="metascore").sort_order == "criticscore"  # type: ignore[arg-type]
         with pytest.raises(pydantic.ValidationError):
             BacklogDiscoveryConfig(sort_order="bogus")  # type: ignore[arg-type]
 
@@ -2182,13 +2168,14 @@ class TestQueueConfig:
         assert entry.source_matching_days == 90
         assert SourceConfigEntry(name="fitgirl").source_matching_days is None, "unset inherits the top-level window"
 
-    def test_pending_order_rejects_an_unknown_value(self) -> None:
+    def test_pending_order_accepts_metascore_and_rejects_an_unknown_value(self) -> None:
         from pydantic import ValidationError
 
         from gamarr.config import MetacriticConfig
 
+        assert MetacriticConfig(pending_order="metascore").pending_order == "criticscore"  # type: ignore[arg-type]
         with pytest.raises(ValidationError):
-            MetacriticConfig(pending_order="metascore")  # type: ignore[arg-type]
+            MetacriticConfig(pending_order="bogus")  # type: ignore[arg-type]
 
 
 class TestDiscoveryBlockMigration:
@@ -3018,3 +3005,112 @@ class TestGeneratedConfigCarriesDiscovery:
         )
         load_config(path)
         assert "discovery:" in path.read_text(encoding="utf-8"), "the rewrite must add the block"
+
+
+class TestSortOrderValues:
+    """The sort-order value is not the block name, and legacy names still load."""
+
+    def test_a_pending_order_metascore_is_rewritten_without_platform_overrides(self) -> None:
+        """The queue order is shared, so it must be rewritten even with no platform block."""
+        from gamarr.config import _migrate_config
+
+        raw: dict[str, object] = {"review_sites": {"metacritic": {"pending_order": "metascore"}}}
+
+        _migrate_config(raw)
+
+        metacritic = raw["review_sites"]["metacritic"]  # type: ignore[index]
+        assert metacritic["pending_order"] == "criticscore"
+
+    def test_a_pending_order_metascore_is_corrected_on_disk(self, tmp_path: Path) -> None:
+        """The rewrite, not just the in-memory dict, must drop the legacy name."""
+        config_file = tmp_path / "gamarr.yml"
+        config_file.write_text("review_sites:\n  metacritic:\n    pending_order: metascore\n")
+
+        load_config(config_file)
+
+        written = config_file.read_text()
+        assert "criticscore" in written
+        assert "metascore" not in written
+
+    def test_a_secret_value_is_hidden_in_the_report(self) -> None:
+        """A mistyped credential must not be echoed to the console or a bug report."""
+        from pydantic import ValidationError
+
+        from gamarr.config import Config, format_config_errors
+
+        raw = {"notification": {"apprise_urls": "discord://123456/SECRETTOKEN"}}
+        with pytest.raises(ValidationError) as excinfo:
+            Config.model_validate(raw)
+
+        lines = format_config_errors(excinfo.value)
+
+        assert lines, "the problem must still be reported"
+        assert not any("SECRETTOKEN" in line for line in lines), lines
+        assert any("<hidden>" in line for line in lines), lines
+
+    def test_a_block_shaped_metascore_is_rewritten_by_the_migration(self) -> None:
+        """The alias must not leave the legacy name in the file on the next rewrite."""
+        from gamarr.config import _migrate_config
+
+        raw: dict[str, object] = {
+            "review_sites": {
+                "metacritic": {
+                    "pending_order": "metascore",
+                    "platform_overrides": {
+                        "pc": {"discovery": {"mode": "backlog", "backlog": {"sort_order": "metascore"}}}
+                    },
+                }
+            }
+        }
+
+        _migrate_config(raw)
+
+        metacritic = raw["review_sites"]["metacritic"]  # type: ignore[index]
+        discovery = metacritic["platform_overrides"]["pc"]["discovery"]
+        assert metacritic["pending_order"] == "criticscore", "pending_order must be rewritten"
+        assert discovery["backlog"]["sort_order"] == "criticscore", "the block sort must be rewritten"
+
+    def test_a_score_sort_order_names_the_real_choices(self) -> None:
+        """`score` names the block, not the sort, so the error must say what to write instead."""
+        from pydantic import ValidationError
+
+        from gamarr.config import BacklogDiscoveryConfig
+
+        with pytest.raises(ValidationError) as excinfo:
+            BacklogDiscoveryConfig.model_validate({"sort_order": "score"})
+        message = str(excinfo.value)
+        assert "'score' is the backlog block name" in message, message
+        assert "criticscore" in message and "userscore" in message, message
+
+
+class TestValidationErrorReport:
+    """Every problem in the file is reported, one readable line each."""
+
+    def test_every_error_becomes_one_line_naming_key_value_and_reason(self) -> None:
+        from pydantic import ValidationError
+
+        from gamarr.config import Config, format_config_errors
+
+        raw = {
+            "review_sites": {
+                "metacritic": {
+                    "pending_order": "bogus",
+                    "platform_overrides": {"pc": {"discovery": {"mode": "bogus"}}},
+                }
+            }
+        }
+        with pytest.raises(ValidationError) as excinfo:
+            Config.model_validate(raw)
+
+        lines = format_config_errors(excinfo.value)
+
+        assert len(lines) == 2, lines
+        assert any("pending_order" in line and "bogus" in line for line in lines), lines
+        assert any("discovery.mode" in line and "bogus" in line for line in lines), lines
+
+    def test_an_error_with_no_entries_still_reports_something(self) -> None:
+        from pydantic import ValidationError
+
+        from gamarr.config import format_config_errors
+
+        assert format_config_errors(ValidationError.from_exception_data("Config", []))

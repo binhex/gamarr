@@ -1,8 +1,11 @@
 """Tests for gamarr CLI."""
 
 from importlib.metadata import PackageNotFoundError
+from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
+import pytest
 from click.testing import CliRunner
 
 from gamarr.cli import cli
@@ -240,3 +243,146 @@ class TestCliOverrides:
         _apply_cli_overrides(config)  # no overrides
         assert config.general.db_path == "db"
         assert config.general.pid_path == "pids"
+
+
+class TestInvalidConfigReporting:
+    """A broken config must read as a message the operator can act on, not a traceback."""
+
+    @staticmethod
+    def _write_config(directory: Path, body: str) -> None:
+        (directory / "gamarr.yml").write_text(body, encoding="utf-8")
+
+    def test_an_invalid_config_exits_cleanly_instead_of_raising(self, tmp_path: Path) -> None:
+        """The command must exit 1 with the reasons, not leak the validation error."""
+        self._write_config(
+            tmp_path,
+            "review_sites:\n  metacritic:\n    platform_overrides:\n      pc:\n"
+            "        discovery:\n          mode: backlog\n          backlog:\n"
+            "            sort_order: score\n",
+        )
+
+        result = CliRunner().invoke(cli, ["--config-path", str(tmp_path), "--test"])
+
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit), f"unhandled {type(result.exception).__name__}"
+        assert "gamarr.yml" in result.output, result.output
+        assert "sort_order" in result.output, result.output
+        assert "criticscore" in result.output, result.output
+
+    def test_every_config_problem_is_reported_at_once(self, tmp_path: Path) -> None:
+        """An operator should see all the bad keys in one run, not one per restart."""
+        self._write_config(
+            tmp_path,
+            "review_sites:\n  metacritic:\n    pending_order: bogus\n"
+            "    platform_overrides:\n      pc:\n        discovery:\n          mode: bogus\n",
+        )
+
+        result = CliRunner().invoke(cli, ["--config-path", str(tmp_path), "--test"])
+
+        assert result.exit_code == 1
+        assert "pending_order" in result.output, result.output
+        assert "discovery.mode" in result.output, result.output
+
+    def test_debug_shows_the_traceback(self, tmp_path: Path) -> None:
+        """--debug is the escape hatch for a bug report: it must raise the original error."""
+        from pydantic import ValidationError
+
+        self._write_config(
+            tmp_path,
+            "review_sites:\n  metacritic:\n    platform_overrides:\n      pc:\n"
+            "        discovery:\n          mode: backlog\n          backlog:\n"
+            "            sort_order: score\n",
+        )
+
+        result = CliRunner().invoke(cli, ["--config-path", str(tmp_path), "--test", "--debug"])
+
+        assert isinstance(result.exception, ValidationError)
+
+    def test_a_yaml_syntax_error_exits_cleanly(self, tmp_path: Path) -> None:
+        """A malformed YAML file is a config problem, not a reason to dump a traceback."""
+        self._write_config(tmp_path, "review_sites:\n\tmetacritic: broken\n")
+
+        result = CliRunner().invoke(cli, ["--config-path", str(tmp_path), "--test"])
+
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit), f"unhandled {type(result.exception).__name__}"
+        assert "line 2" in result.output, result.output
+        problem_lines = [
+            line for line in result.output.splitlines() if line.strip() and not line.startswith("Configuration")
+        ]
+        assert problem_lines, result.output
+        for line in problem_lines[:-1]:  # the last line is the remediation trailer
+            assert line.startswith("  - "), f"every problem line is a list item: {line!r}"
+
+    def test_a_non_mapping_config_root_exits_cleanly(self, tmp_path: Path) -> None:
+        """A YAML root that is not a mapping is reported, not raised."""
+        self._write_config(tmp_path, "- just\n- a list\n")
+
+        result = CliRunner().invoke(cli, ["--config-path", str(tmp_path), "--test"])
+
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit), f"unhandled {type(result.exception).__name__}"
+        assert "must be a YAML mapping" in result.output, result.output
+
+    def test_an_unreadable_config_exits_cleanly(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A filesystem problem is reported as one line, not a PermissionError traceback.
+
+        The denial is injected rather than set with file mode: root ignores mode 000,
+        so a mode-based test would silently pass or fail depending on the runner's uid.
+        """
+        self._write_config(tmp_path, "general:\n  log_path: logs\n")
+        real_open = Path.open
+
+        def _deny(self: Path, *args: Any, **kwargs: Any) -> Any:
+            raise PermissionError(13, "Permission denied", str(self))
+
+        monkeypatch.setattr(Path, "open", _deny)
+        try:
+            result = CliRunner().invoke(cli, ["--config-path", str(tmp_path), "--test"])
+        finally:
+            monkeypatch.setattr(Path, "open", real_open)
+
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit), f"unhandled {type(result.exception).__name__}"
+        assert "could not be read or parsed" in result.output, result.output
+        assert "Fix the keys above" not in result.output, "a filesystem problem is not a key problem"
+
+    def test_mixed_type_keys_do_not_crash_the_inert_key_report(self, tmp_path: Path) -> None:
+        """A numeric key in the unread block is a config error, not a TypeError."""
+        self._write_config(
+            tmp_path,
+            "review_sites:\n  metacritic:\n    platform_overrides:\n      pc:\n"
+            "        discovery:\n          mode: backlog\n          backlog:\n"
+            "            sort_order: criticscore\n            new:\n              2025: 1\n"
+            "              oldest_month: 0\n",
+        )
+
+        result = CliRunner().invoke(cli, ["--config-path", str(tmp_path), "--test"])
+
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit), f"unhandled {type(result.exception).__name__}"
+        assert "Keys should be strings" in result.output, result.output
+
+    def test_load_config_leaves_reporting_to_the_cli(self, tmp_path: Path) -> None:
+        """One reporter: load_config must not also log the first problem."""
+        from loguru import logger
+
+        from gamarr.config import load_config
+
+        self._write_config(
+            tmp_path,
+            "review_sites:\n  metacritic:\n    platform_overrides:\n      pc:\n"
+            "        discovery:\n          mode: backlog\n          backlog:\n"
+            "            sort_order: score\n",
+        )
+        from pydantic import ValidationError
+
+        captured: list[str] = []
+        sink_id = logger.add(lambda msg: captured.append(str(msg)), level="ERROR", format="{message}")
+        try:
+            with pytest.raises(ValidationError):
+                load_config(tmp_path / "gamarr.yml")
+        finally:
+            logger.remove(sink_id)
+
+        assert captured == [], f"the CLI is the only reporter: {captured}"

@@ -174,6 +174,28 @@ class LatestDiscoveryConfig(BaseModel):
         return validate_oldest_month(value)
 
 
+def _normalise_sort_value(value: Any) -> Any:
+    """Accept the pre-rename ``metascore`` and explain the block name ``score``.
+
+    Args:
+        value: The raw value written for a sort-order key.
+
+    Returns:
+        The value to validate, with legacy aliases applied.
+
+    Raises:
+        ValueError: When the value is the block name, which is not a sort order.
+    """
+    if value == "metascore":
+        return "criticscore"
+    if value == "score":
+        raise ValueError(
+            "'score' is the backlog block name, not a sort order: use 'criticscore' or 'userscore'"
+            " (or 'new' for the date-ordered sweep)"
+        )
+    return value
+
+
 class BacklogNewConfig(BaseModel):
     """Date-paced settings for ``backlog`` with ``sort_order: new``."""
 
@@ -217,6 +239,11 @@ class BacklogDiscoveryConfig(BaseModel):
     new: BacklogNewConfig = Field(default_factory=BacklogNewConfig)
     score: BacklogScoreConfig = Field(default_factory=BacklogScoreConfig)
 
+    @field_validator("sort_order", mode="before")
+    @classmethod
+    def _check_sort_order(cls, value: Any) -> Any:
+        return _normalise_sort_value(value)
+
 
 class DiscoveryConfig(BaseModel):
     """How one cycle walks the release list (ADR 0001)."""
@@ -250,6 +277,11 @@ class MetacriticConfig(BaseModel):
     platform_overrides: dict[str, MetacriticPlatformConfig] = Field(
         default_factory=lambda: {"pc": MetacriticPlatformConfig()}
     )
+
+    @field_validator("pending_order", mode="before")
+    @classmethod
+    def _check_pending_order(cls, value: Any) -> Any:
+        return _normalise_sort_value(value)
 
 
 class QbittorrentConfig(BaseModel):
@@ -1017,11 +1049,12 @@ def _migrate_sort_order_critic_names(raw: dict[str, Any]) -> bool:
     """Rename critic-score keys/values to critic-style names.
 
     Renames ``min_metascore`` -> ``min_criticscore``,
-    ``min_metascore_reviews`` -> ``min_criticscore_reviews``, and the
-    ``sort_order`` value ``"metascore"`` -> ``"criticscore"`` for every
-    platform override. Returns True if any migration was applied; the
-    caller (load_config) then rewrites gamarr.yml in place, so the
-    rename is naturally one-time.
+    ``min_metascore_reviews`` -> ``min_criticscore_reviews``, and every
+    ``sort_order``/``pending_order`` value ``"metascore"`` -> ``"criticscore"`` -
+    the flat platform key, the ``discovery.backlog.sort_order`` selector and the
+    shared ``pending_order``.  Returns True if any migration was applied; the
+    caller (load_config) then rewrites gamarr.yml in place, so the rename is
+    naturally one-time.
     """
     changed = False
     review_sites = raw.get("review_sites")
@@ -1030,9 +1063,15 @@ def _migrate_sort_order_critic_names(raw: dict[str, Any]) -> bool:
     metacritic = review_sites.get("metacritic")
     if not isinstance(metacritic, dict):
         return False
+    if metacritic.get("pending_order") == "metascore":
+        # The queue order is shared, so it is rewritten before the platform loop and
+        # does not depend on any platform block existing.
+        metacritic["pending_order"] = "criticscore"
+        logger.info("Config: migrated pending_order 'metascore'->'criticscore'")
+        changed = True
     overrides = metacritic.get("platform_overrides")
     if not isinstance(overrides, dict):
-        return False
+        return changed
     for platform_key, mc_pc in overrides.items():
         if not isinstance(mc_pc, dict):
             continue
@@ -1042,7 +1081,29 @@ def _migrate_sort_order_critic_names(raw: dict[str, Any]) -> bool:
             mc_pc["sort_order"] = "criticscore"
             logger.info("Config: migrated sort_order 'metascore'->'criticscore' for platform '{}'", platform_key)
             changed = True
+        changed |= _rename_block_sort_order(mc_pc, platform_key)
     return changed
+
+
+def _rename_block_sort_order(mc_pc: dict[str, Any], platform_key: str) -> bool:
+    """Rewrite a block-shaped ``discovery.backlog.sort_order`` legacy value.
+
+    Args:
+        mc_pc: The raw platform override, mutated in place.
+        platform_key: The platform name, for log lines.
+
+    Returns:
+        True when the value was rewritten.
+    """
+    discovery = mc_pc.get("discovery")
+    backlog = discovery.get("backlog") if isinstance(discovery, dict) else None
+    if not isinstance(backlog, dict) or backlog.get("sort_order") != "metascore":
+        return False
+    backlog["sort_order"] = "criticscore"
+    logger.info(
+        "Config: migrated discovery.backlog.sort_order 'metascore'->'criticscore' for platform '{}'", platform_key
+    )
+    return True
 
 
 def _rename_metacritic_cache_hours(raw: dict[str, Any]) -> bool:
@@ -1748,6 +1809,22 @@ def _migrate_discovery_blocks(raw: dict[str, Any]) -> bool:
     return changed
 
 
+def _raw_score_block(plat: Any) -> dict[str, Any] | None:
+    """Return a platform override's raw ``discovery.backlog.score`` block, or None.
+
+    Args:
+        plat: One raw platform override, which may be malformed in any of the three
+            levels above the score block.
+
+    Returns:
+        The score block mapping, or ``None`` when the shape is absent or not a mapping.
+    """
+    discovery = plat.get("discovery") if isinstance(plat, dict) else None
+    backlog = discovery.get("backlog") if isinstance(discovery, dict) else None
+    score = backlog.get("score") if isinstance(backlog, dict) else None
+    return score if isinstance(score, dict) else None
+
+
 def _migrate_score_page_depth(raw: dict[str, Any]) -> bool:
     """Convert a ``page_depth`` an earlier release wrote inside the score block.
 
@@ -1764,10 +1841,8 @@ def _migrate_score_page_depth(raw: dict[str, Any]) -> bool:
     overrides, _ = _discovery_overrides(raw)
     changed = False
     for platform_key, plat in overrides.items():
-        discovery = plat.get("discovery") if isinstance(plat, dict) else None
-        backlog = discovery.get("backlog") if isinstance(discovery, dict) else None
-        score = backlog.get("score") if isinstance(backlog, dict) else None
-        if not isinstance(score, dict):
+        score = _raw_score_block(plat)
+        if score is None:
             continue
         if "page_depth" not in score:
             # A block that states no reach at all is a pre-floor file: the old runtime
@@ -2377,7 +2452,7 @@ def _leaf_items(block: Any, prefix: str) -> list[tuple[str, Any]]:
     if not isinstance(block, dict):
         return []
     items: list[tuple[str, Any]] = []
-    for key, value in sorted(block.items()):
+    for key, value in sorted(block.items(), key=lambda item: str(item[0])):
         path = f"{prefix}.{key}" if prefix else key
         if isinstance(value, dict):
             items.extend(_leaf_items(value, path))
@@ -2446,22 +2521,45 @@ def _report_inert_discovery_keys(raw: dict[str, Any]) -> None:
             logger.warning("Config: '{}' is outside the discovery block - ignored", name)
 
 
-def _first_validation_error(exc: ValidationError) -> str:
-    """Return one readable line naming the offending key, its value and the reason.
+_SECRET_KEY_HINTS = ("password", "secret", "token", "credential", "api_key", "api-key", "url")
+
+
+def _is_secret_key(loc: tuple[Any, ...]) -> bool:
+    """Return True when the failing key names a value that must not be echoed.
+
+    Args:
+        loc: The error's location tuple, ending in the field name.
+
+    Returns:
+        True when the last segment looks like a secret-bearing key.
+    """
+    if not loc:
+        return False
+    field = str(loc[-1]).lower()
+    return any(hint in field for hint in _SECRET_KEY_HINTS)
+
+
+def format_config_errors(exc: ValidationError) -> list[str]:
+    """Return one readable line per validation error.
 
     Args:
         exc: The validation failure raised by ``Config.model_validate``.
 
     Returns:
-        A single line naming the dotted key, the input value and the error text,
-        or ``str(exc)`` when the error carries no entries.
+        One line per error, each naming the dotted key, the input value and the
+        reason. An error with no entries falls back to ``str(exc)``.
     """
     errors = exc.errors()
     if not errors:
-        return str(exc)
-    first = errors[0]
-    key = ".".join(str(part) for part in first.get("loc", ()))
-    return f"{key} = {first.get('input')!r} ({first.get('msg')})"
+        return [str(exc)]
+    lines = []
+    for error in errors:
+        loc = tuple(error.get("loc", ()))
+        # A mistyped credential must not reach the console (or the bug report the
+        # README asks for), so a secret-shaped key reports the reason only.
+        value = "<hidden>" if _is_secret_key(loc) else repr(error.get("input"))
+        lines.append("{} = {} ({})".format(".".join(str(part) for part in loc), value, error.get("msg")))
+    return lines
 
 
 def load_config(config_path: str | Path) -> Config:
@@ -2483,9 +2581,9 @@ def load_config(config_path: str | Path) -> Config:
 
     # Migrate renamed fields (e.g. exclude_keywords → reject_keywords)
     migrated = _migrate_config(raw)
-    # Belt-and-braces: the critic-name rename is Literal-sensitive (a
-    # legacy "metascore" value would hard-fail validation), so re-apply it
-    # here even if an earlier migration step swallowed an exception.
+    # Belt-and-braces: re-apply the critic-name rename here even if an earlier
+    # migration step swallowed an exception.  The model aliases "metascore" now, so
+    # validation would accept it either way, but the file should be rewritten corrected.
     migrated = _migrate_sort_order_critic_names(raw) or migrated
     _report_inert_discovery_keys(raw)
 
@@ -2495,15 +2593,12 @@ def load_config(config_path: str | Path) -> Config:
     # (PyYAML parses ``2025-01-01`` as a date, but the model expects str)
     merged = _normalize_date_values(merged)
 
-    # Validate first: a start that dies here must leave the operator's file exactly
-    # as it was, so the failure is visible and fixable instead of silently persisted.
-    try:
-        # Validate a copy: keyed-list parsing injects ``name`` into the nested source
-        # dicts, and the rewrite below must persist the operator's own shape.
-        config = Config.model_validate(copy.deepcopy(merged))
-    except ValidationError as exc:
-        logger.error("Config file '{}' is invalid: {}", path, _first_validation_error(exc))
-        raise
+    # Validate first: a start that dies here must leave the operator's file exactly as
+    # it was, so the failure is visible and fixable instead of silently persisted.  The
+    # validation takes a copy because keyed-list parsing injects ``name`` into the nested
+    # source dicts, and the rewrite below must persist the operator's own shape.  The CLI
+    # is the single reporter for a failure, so nothing is logged here.
+    config = Config.model_validate(copy.deepcopy(merged))
 
     # If migration made changes or the config is missing keys that the
     # current model defines, write the merged config back to the file

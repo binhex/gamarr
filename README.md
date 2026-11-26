@@ -117,6 +117,7 @@ gamarr
 | `--qbt-password <pass>` | Override qBittorrent password from config |
 | `--clear-cache <sources>` | Clear cached data. Comma-separated: `freegog`, `fitgirl`, `metacritic`, or `all` |
 | `--test` | Validate configuration and exit |
+| `--debug` | Show the full traceback when the configuration is invalid |
 | `--version` | Show version and exit |
 | `--help` | Show help message and exit |
 
@@ -554,6 +555,13 @@ untouched — nothing is rewritten or reformatted — so the value you set is th
 On upgrade, a legacy date
 bound is converted, and a value that is not a month is dropped with a warning rather
 than carried into the new key.
+
+Whenever the config is invalid, gamarr lists every problem it found — the dotted key, the
+value it read and the reason — and exits with status `1`, leaving the file untouched. A file
+that cannot be parsed reports the parser's own position instead of a key, an unreadable file
+reports its filesystem error, and a value whose key looks like a credential (`password`,
+`token`, `url`, …) is shown as `<hidden>`. Add `--debug` to see the full traceback instead,
+which is what to attach to a bug report.
 
 **Q: Why is there one `source_matching_days` and a per-source override?**
 

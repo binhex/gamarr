@@ -94,6 +94,50 @@ def _apply_cli_overrides(config: Config, **overrides: Any) -> None:
     _apply_qbt_overrides(config, overrides)
 
 
+def _report_config_error(exc: Exception, config_path: str) -> None:
+    """Report every problem in an unusable config and exit with status 1.
+
+    A schema failure lists one line per bad key; a parse or filesystem failure lists
+    the parser's own message, one line per line, so the report keeps its shape.
+
+    Args:
+        exc: The exception ``load_config`` raised.
+        config_path: The directory or file the operator passed.
+
+    Raises:
+        SystemExit: Always, with status 1.
+    """
+    from pydantic import ValidationError
+
+    from gamarr.config import format_config_errors
+
+    if isinstance(exc, ValidationError):
+        problems = format_config_errors(exc)
+        headline, fix_target = "Configuration is invalid", "keys"
+    else:
+        problems = str(exc).splitlines() or [type(exc).__name__]
+        headline, fix_target = "Configuration could not be read or parsed", "file"
+    click.echo(f"{headline} — {len(problems)} problem(s) in {_config_file_for(config_path)}:", err=True)
+    for problem in problems:
+        click.echo(f"  - {problem}", err=True)
+    click.echo(f"Fix the {fix_target} above and start again; add --debug to see the full traceback.", err=True)
+    raise SystemExit(1)
+
+
+def _config_file_for(config_path: str) -> str:
+    """Return the config file path to name in an error message.
+
+    Args:
+        config_path: The directory (or file) the operator passed.
+
+    Returns:
+        The path the loader would use, so the message and the loader agree.
+    """
+    from gamarr.config import _config_file_path
+
+    return str(_config_file_path(config_path))
+
+
 @click.command()
 @click.option(
     "--config-path",
@@ -124,6 +168,12 @@ def _apply_cli_overrides(config: Config, **overrides: Any) -> None:
     is_flag=True,
     default=False,
     help="Validate configuration and exit without running any tasks.",
+)
+@click.option(
+    "--debug",
+    is_flag=True,
+    default=False,
+    help="Show the full traceback when the configuration is invalid.",
 )
 @click.option(
     "--db-path",
@@ -193,6 +243,7 @@ def cli(
     log_level: str | None,
     log_path: str | None,
     test: bool,
+    debug: bool = False,
     db_path: str | None = None,
     pid_path: str | None = None,
     library_path_list: str | None = None,
@@ -211,9 +262,17 @@ def cli(
     Runs in scheduled mode when ``schedule.enabled`` is
     ``true`` in the config file, or as a single pass otherwise.
     """
+    from pydantic import ValidationError
+    from yaml import YAMLError
+
     from gamarr.config import load_config
 
-    config = load_config(config_path)
+    try:
+        config = load_config(config_path)
+    except (ValidationError, YAMLError, ValueError, OSError) as exc:
+        if debug:
+            raise
+        _report_config_error(exc, config_path)
 
     _apply_cli_overrides(
         config,
